@@ -20,6 +20,7 @@ pub mod reader;
 mod share_link;
 mod sharing;
 mod tasks;
+mod thread_sweep;
 pub mod tier;
 mod tool_servers;
 mod usage_sweep;
@@ -28,15 +29,16 @@ mod user_tools;
 pub use app::{
     AGENT_NAME_WAIT, AgentDescription, AgentList, App, AppConfig, ApplyOutcome, BranchView,
     Branches, ChildCloseState, ChildSessionDrop, ChildSessionStats, Creation,
-    DEFAULT_MAX_EXPORT_BYTES, DEFAULT_MAX_EXPORT_EVENTS, FeedItem, FirstMessage, ForkAt,
-    ForkRequest, Forked, Inbound, NewThread, Received, SharedRead, SiblingView, StartChildSession,
-    ThreadExport,
+    DEFAULT_MAX_EXPORT_BYTES, DEFAULT_MAX_EXPORT_EVENTS, DEFAULT_THREAD_RETENTION_DAYS, FeedItem,
+    FirstMessage, ForkAt, ForkRequest, Forked, Inbound, NewThread, Received, SharedRead,
+    SiblingView, StartChildSession, ThreadExport,
 };
+pub use app::{AttachmentRefusal, StoredAttachment};
 pub use app::{
     DEFAULT_USAGE_RETENTION_MONTHS, DeleteStats, DownloadMode, DownloadModeError, HistorySettings,
-    HistoryStats, JobFiles, LateSource, ReadableFile, TierStats, UploadCaller, UploadRefusal,
-    UploadRequest, UploadSettings, UploadSettingsError, UploadSlot, UsageDrop, UsageSettings,
-    UsageStats,
+    HistoryStats, JobFiles, LateSource, LoadStats, ReadableFile, SubscriberGuard, TierStats,
+    UploadCaller, UploadRefusal, UploadRequest, UploadSettings, UploadSettingsError, UploadSlot,
+    UsageDrop, UsageSettings, UsageStats,
 };
 pub use asks::{AskCall, AskHandle};
 pub use authz::{
@@ -74,6 +76,7 @@ pub use sharing::{
     SharingSettings, SharingStats,
 };
 pub use tasks::{PublicConfig, TaskSettings, UiHistory, UiSettings};
+pub use thread_sweep::{ThreadSweepConfig, ThreadSweepWorker};
 pub use tier::THREAD_TIER_KEY;
 pub use tool_servers::{THREAD_TOOLS_KEY, ToolServerInfo};
 pub use usage_sweep::{

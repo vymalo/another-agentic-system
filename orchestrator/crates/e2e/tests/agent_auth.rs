@@ -122,8 +122,8 @@ async fn an_unreachable_agent_blocks_the_thread_after_bounded_retries(backend: B
     let orch = world.instance("orch-1").await;
     let chat = world.chat(&orch);
     let id = chat.create_thread("plain", "echo nobody home", None).await;
-    chat.wait_state(&id, "blocked").await;
-    let events = chat.events(&id).await;
+    // Observe the log, which keeps what happened, not a polled state a fast path can pass.
+    let events = chat.wait_events(&id, 3).await;
     assert_eq!(
         shape(&events),
         ["user_message", "error", "thread_state:blocked"]

@@ -5,14 +5,15 @@ use std::time::Duration;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     EditLink, Event, EventBody, EventKind, ForkKind, ForkNode, ForkedFrom, Job, NONCE_LEN,
-    RankError, ThreadId, ThreadRecord, ThreadShare, UsageChange, UsageMonth, UsageMonthTotals,
-    UsageRow, UsageTaskKey, UserId, between, search, spread, usage_change, usage_counted_through,
+    RankError, ThreadId, ThreadRecord, ThreadShare, ThreadState, UsageChange, UsageMonth,
+    UsageMonthTotals, UsageRow, UsageTaskKey, UserId, between, search, spread, usage_change,
+    usage_counted_through,
 };
 
 use crate::{
     AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder, Commit,
-    CommitOutcome, ForkOrigin, InboxFinal, InboxId, InboxItem, InboxLease, InboxStatus, Lease,
-    ListOrder, NewInbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind,
+    CommitOutcome, ForkOrigin, IdleThread, InboxFinal, InboxId, InboxItem, InboxLease, InboxStatus,
+    Lease, ListOrder, NewInbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind,
     OutboxStats, OutboxStatus, Parking, Place, Received, SearchBackfill, SearchPosition,
     SearchRank, SearchRequest, SearchRow, SearchRows, SharingChange, StoreError, TIMER_SOURCE,
     ThreadListing, ThreadSearch, ThreadStore, UsageBackfill, UsageLedger,
@@ -135,6 +136,8 @@ pub struct MemoryStore {
     search_control: Arc<SearchControl>,
     /// The prompt library (ADR 0070): every person's prompts and what is shared with whom.
     pub(super) prompts: Arc<Mutex<super::prompts::PromptShelf>>,
+    /// The team presets (ADR 0074): every person's saved teams.
+    pub(super) team_presets: Arc<Mutex<super::teams::TeamShelf>>,
 }
 
 /// Test hooks of [`ThreadSearch::search_threads`]: a search can be made to fail as an unreachable store
@@ -1435,6 +1438,37 @@ impl ThreadStore for MemoryStore {
         Ok(self.lock().purges.len() as u64)
     }
 
+    async fn idle_threads(
+        &self,
+        before: Timestamp,
+        after: Option<(Timestamp, ThreadId)>,
+        limit: u32,
+    ) -> Result<Vec<IdleThread>, StoreError> {
+        let inner = self.lock();
+        let mut idle: Vec<IdleThread> = inner
+            .threads
+            .values()
+            .map(|t| &t.record)
+            .filter(|r| {
+                r.child_of.is_none()
+                    && !matches!(
+                        r.state,
+                        ThreadState::Queued | ThreadState::Working | ThreadState::Verifying
+                    )
+                    && r.updated_at < before
+                    && after.is_none_or(|(at, id)| (r.updated_at, r.id) > (at, id))
+            })
+            .map(|r| IdleThread {
+                id: r.id,
+                owner: r.owner.clone(),
+                updated_at: r.updated_at,
+            })
+            .collect();
+        idle.sort_by_key(|t| (t.updated_at, t.id));
+        idle.truncate(limit as usize);
+        Ok(idle)
+    }
+
     async fn commit(
         &self,
         thread: ThreadId,
@@ -1492,6 +1526,24 @@ impl ThreadStore for MemoryStore {
                     .collect()
             })
             .unwrap_or_default())
+    }
+
+    async fn messages_since(
+        &self,
+        owner: &UserId,
+        since: Timestamp,
+    ) -> Result<Vec<Timestamp>, StoreError> {
+        let inner = self.lock();
+        let mut at: Vec<Timestamp> = inner
+            .threads
+            .values()
+            .filter(|e| &e.record.owner == owner)
+            .flat_map(|e| e.events.iter())
+            .filter(|s| s.event.kind() == EventKind::UserMessage && s.event.at >= since)
+            .map(|s| s.event.at)
+            .collect();
+        at.sort_unstable();
+        Ok(at)
     }
 
     async fn list_events(

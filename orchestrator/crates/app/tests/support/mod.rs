@@ -1,6 +1,8 @@
 //! Shared harness: in-memory stack with a scripted agent and fast dispatcher timings.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
+pub mod billing;
+
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;

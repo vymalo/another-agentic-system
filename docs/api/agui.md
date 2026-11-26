@@ -581,6 +581,24 @@ What each side reads:
 Goldens: [`steer`, `stop-and-send`](examples/README.md) (the viewer's stream) and `run-steer`, `run-stop-and-send` (the two
 responses, in order).
 
+## An agent that is asleep
+
+An agent whose deployment scales to zero while it is idle is **woken** by the platform (a held request or a `503` with
+`Retry-After`, the platform's plan for sleep when idle, [plat#83](https://github.com/vymalo/another-agentic-platform/pull/83);
+[ADR 0096](../decisions/0096-a-held-stream-is-a-projection-of-the-log-so-a-sleeping-agent-is-invisible-to-it.md)). The
+**stream is unaffected**: it is a projection of the log, so a client's connection stays open and simply has no new events
+while the agent is at zero. What a client sees is what a **dispatch** is doing.
+
+- **The state.** While a send is being retried against a sleeping agent the thread reads **`waking`** — a `RunAgentState` a
+  client already renders, so nothing new is required of it.
+- **The event.** One custom event, `vymalo.waking`, with `{ thread, since, attempt, wakeTimeoutSecs }`, so a client can say
+  *why* it is waiting rather than showing a generic spinner.
+- **The bound.** `agents.sleep.wakeTimeoutSecs` in `GET /api/config` ([config.md](config.md)); absent means this deployment
+  does not wake agents and a client renders the ordinary `queued` state. Nothing here is required for a client to work.
+- **The failure.** Past the bound the thread goes **`failed`** with a message a person can read — *"the agent did not wake
+  within N seconds"* — never a silent hang and never a raw `503`. A **suspended** agent is refused by name, because a
+  person suspended it and a retry will not help ([ADR 0096](../decisions/0096-a-held-stream-is-a-projection-of-the-log-so-a-sleeping-agent-is-invisible-to-it.md), decision 6).
+
 ## Verification (the gate)
 
 *Built 2026-09-30 (MVP slice 3, [ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md)).* A thread whose gate
@@ -1590,6 +1608,20 @@ carries inline is the one the run carried, and a run that carries a v1 document 
 answers the refetch with an error to read, as a thread with no catalog does, because a v1.0 reader refuses a v1
 document. Its next run from a v2 screen records version 9, which becomes current by the ledger's rule.
 
+## Chat contract of an application client
+
+What an application that embeds the orchestrator (`orch-embed`) or reaches it through a cloud
+adapter relies on, the same on both. The HTTP binding already has each piece: replay is
+`Last-Event-ID` ([Connect binding](#connect-binding)), the client message id is the AG-UI `messageId`
+of a user message, and the version gate is [client-version.md](client-version.md).
+
+| Piece | Contract |
+|---|---|
+| **Replay from a seq** | A client that holds frames up to the last `id:` it saw asks for the rest. Everything the log says up to that `seq` is folded and not said; the stream then starts with the opening frames of the run that is open (`RUN_STARTED`, the open `SUBAGENT_STARTED`, a `STATE_SNAPSHOT`) and goes on with the frames after it. Only a frame with a resume id is a point to resume from. Embedded: `Embedded::stream_agui_from(thread, after)`. |
+| **Client message id** | The application names a message it sends (`messageId`). Sending it again under the same id is the same message: the thread holds it once and the answer is the logged message. Embedded: `Embedded::post_message_with_id`. A retry is not new work and is not counted against a limit. |
+| **Limit reached (402)** | Before new work starts the application may refuse it because the person has used what they may use. It is one `CUSTOM` event named `vymalo.limit_reached`, value `{status: 402, code, message}`: `code` is stable and machine-readable, `message` is what the person is told. It is not part of the message sequence; a client that does not know it loses nothing else. Embedded: `EmbedError::LimitReached(Limit)`, `Limit::event()`; the application's rule is an `Admission` it supplies, and with none nothing is refused. |
+| **Update required (426)** | With a minimum set (`EmbedPorts::min_client_version`), an operation by a client that states a lower version, an unreadable one or none is refused with the problem of [client-version.md](client-version.md) (`code: client_update_required`, `minClientVersion`). Embedded: `EmbedError::ClientUpdateRequired { min }`, `Embedded::with_client_version`. No minimum: no client is refused. |
+
 ## Run binding
 
 `POST /agui/agents/{agentId}` with `Content-Type: application/json`, `Accept: text/event-stream`
@@ -1629,6 +1661,7 @@ was streamed and nothing was written.
 | 413 | The body is larger than 8 MiB; an A2UI action is larger than the limits allow (`name`, `surfaceId`, `sourceComponentId` at most 256 bytes, `context` at most 16 KiB); a `vymalo.uiCatalog` whose `catalog` is larger than 64 KiB |
 | 415 | `Content-Type` is not `application/json` |
 | 422 | A `vymalo.fork` whose `after` is not an event of the parent; a `vymalo.mentions` reference that does not hold against the text, the registry or the caller's roles (see its row above); nothing to run (no new message, no answer, and a `runId` the thread does not hold — a resent message the log holds attaches to the run it opened, whatever `runId` it carries, ADR 0082); a message id the log holds sent with other words (`code: message_id_reused`: an id is bound to its text, so an edited message needs a new id); more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, names one whose operations are not `"1.0"`, or comes with a message, an answer or a cancel; a `vymalo.tools` that names a server the deployment does not offer for the agent, or more than 16 (ADR 0024) |
+| 429 | `code: over_limit`: the caller reached their role's `messages_per_minute` in the last minute; `limit` names it, `inUse` and `max` give the usage and the value, and `Retry-After` says when the oldest message of the window leaves it. Nothing was written and no agent was asked ([ADR 0081](../decisions/0081-limits-per-person-before-a-run-starts.md)) |
 | 502 / 503 | The agent's card cannot be read to validate a release; the store is unavailable or the thread is contended (`Retry-After`); the agent registry cannot say whether the `agentId` exists, or whether a mentioned agent does (503, "the agent registry is unreachable", `Retry-After`: never a 404 or a 422 while the registry is down, ADR 0022) |
 
 ## Connect binding

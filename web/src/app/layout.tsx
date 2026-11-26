@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { PANEL_SCRIPT } from "@/features/panel/lib/panel-state";
 import { ClaimedCallbackListener } from "@/features/session/components/claimed-callback-listener";
 import { SessionBanner } from "@/features/session/components/session-banner";
+import { UpdateRequiredScreen } from "@/features/session/components/update-required-screen";
 import { ShortcutsSheet } from "@/features/shortcuts/components/shortcuts-sheet";
 import { SIDEBAR_SCRIPT } from "@/features/threads/lib/sidebar-state";
 import { THEME_COLORS, THEME_SCRIPT } from "@/lib/theme";
@@ -52,6 +53,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <SessionBanner />
         <ClaimedCallbackListener />
         <ShortcutsSheet />
+        <UpdateRequiredScreen />
       </body>
     </html>
   );

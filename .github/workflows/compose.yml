@@ -15,8 +15,11 @@ on:
   pull_request:
     paths:
       - "compose.yaml"
+      - "tools/check-compose-project.sh"
       - "compose.live.yaml"
       - ".env.example"
+      - "docs/api/*.yaml"
+      - "docs/api/*.openapi.json"
       - "dev/**"
       - "orchestrator/crates/a2a-mapping/**"
       - "orchestrator/crates/agent-a2a/**"
@@ -28,8 +31,11 @@ on:
     branches: [main]
     paths:
       - "compose.yaml"
+      - "tools/check-compose-project.sh"
       - "compose.live.yaml"
       - ".env.example"
+      - "docs/api/*.yaml"
+      - "docs/api/*.openapi.json"
       - "dev/**"
       - "orchestrator/crates/a2a-mapping/**"
       - "orchestrator/crates/agent-a2a/**"
@@ -55,6 +61,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "orchestrator -> target"
+      - name: Two checkouts get two project names
+        run: sh tools/check-compose-project.sh
       - name: Every profile parses
         run: |
           docker compose config -q
@@ -71,6 +79,15 @@ jobs:
           sh dev/check-browser-auth-config.sh
           # the orchestrator beside a kagent 1.x agent on a kind cluster (dev/compose.kagent.yaml; the Kagent E2E workflow runs it)
           docker compose -f compose.yaml -f dev/compose.kagent.yaml --profile '*' config -q
+      - name: The api-docs profile names every OpenAPI document
+        # Swagger UI lists each document and mounts it (compose.yaml, profile `api-docs`): a document under docs/ that says
+        # `openapi:` and is not named there fails here, so the dropdown stays "every document".
+        run: |
+          docker compose --profile api-docs config --services | grep -Fx swagger-ui
+          for f in $(grep -rlE '^openapi:|"openapi" *: *"3' docs --include='*.yaml' --include='*.yml' --include='*.json' | grep -v '/examples/'); do
+            echo "openapi document: $f"
+            grep -q "$f:/usr/share/nginx/html/openapi/" compose.yaml || { echo "$f is not mounted by the api-docs profile in compose.yaml" >&2; exit 1; }
+          done
       - name: The edge's Caddyfile parses without the browser-auth routes, and with them
         # dev/Caddyfile imports /etc/caddy/browser-auth/*.caddy: no such directory (the default stack) matches nothing, and the override's file adds the
         # routes of ADR 0054 (the web's pages with no sign-in, a DPoP request straight to the orchestrator). Both are what Caddy 2.11.4, the edge's pin, accepts.

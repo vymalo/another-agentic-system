@@ -87,6 +87,16 @@ jobs:
             web/playwright-report-session
             web/playwright-report-browser
 
+  # The committed screenshots (web/e2e/__screens__) are generated in the `screens` target of web/Dockerfile, never on a host: this
+  # regenerates them there and fails on any difference (web/README.md "screens-docker.sh").
+  screens:
+    needs: check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Generate the screens in the image and compare
+        run: sh web/scripts/screens-docker.sh check
+
   image:
     needs: [check, e2e]
     runs-on: ubuntu-latest

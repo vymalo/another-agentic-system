@@ -827,6 +827,17 @@ impl OutboxItem {
     }
 }
 
+/// A thread the retention sweep may erase ([`ThreadStore::idle_threads`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdleThread {
+    /// The thread.
+    pub id: ThreadId,
+    /// Its owner.
+    pub owner: UserId,
+    /// When its conversation last changed.
+    pub updated_at: Timestamp,
+}
+
 /// A count of the open outbox rows at one instant, for metrics and autoscaling
 /// ([`ThreadStore::outbox_stats`]). A row is open while it is `pending` or `inflight`; the
 /// three counts partition the open rows.
@@ -960,9 +971,16 @@ impl Classify for StoreError {
 ///
 /// **It is also the store of a person's prompt library** ([`PromptStore`](crate::PromptStore), ADR 0070), as it is
 /// of their usage ledger and their search index: every `ThreadStore` is one, and an adapter for another database
-/// implements it beside its threads.
+/// implements it beside its threads. It is likewise the store of a person's **team presets**
+/// ([`TeamPresetStore`](crate::TeamPresetStore), ADR 0074).
 pub trait ThreadStore:
-    crate::UsageLedger + crate::ThreadSearch + crate::PromptStore + Send + Sync + 'static
+    crate::UsageLedger
+    + crate::ThreadSearch
+    + crate::PromptStore
+    + crate::TeamPresetStore
+    + Send
+    + Sync
+    + 'static
 {
     /// Cheap reachability check (readiness).
     fn ping(&self) -> impl Future<Output = Result<(), StoreError>> + Send;
@@ -1053,6 +1071,20 @@ pub trait ThreadStore:
         threads: &[(ThreadId, i64)],
         now: Timestamp,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Threads nobody has touched since `before`, for the retention sweep: top-level threads (no
+    /// child session, which goes with its parent) whose state is not `queued`, `working` or
+    /// `verifying` and whose `updated_at` is earlier than `before`, oldest first (ties by id),
+    /// strictly after the `after` position when given, at most `limit`. Every owner's threads
+    /// are read. The rail (pin, archive, order) never changes `updated_at`, so it never keeps a
+    /// thread alive. A thread with a running ask is still returned: the application refuses
+    /// its delete and moves on.
+    fn idle_threads(
+        &self,
+        before: Timestamp,
+        after: Option<(Timestamp, ThreadId)>,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<IdleThread>, StoreError>> + Send;
 
     /// Claims up to `limit` threads whose files are still to be erased (a `thread_purges` row that
     /// no worker holds, or whose lease has lapsed), oldest deletion first: sets the lease to
@@ -1190,6 +1222,18 @@ pub trait ThreadStore:
         kind: EventKind,
         limit: u32,
     ) -> impl Future<Output = Result<Vec<Event>, StoreError>> + Send;
+
+    /// The `at` of every `user_message` event of `owner`'s threads at or after `since`, oldest
+    /// first: what a role's `messages_per_minute` counts before a message is written (ADR 0081,
+    /// decisions 2 and 3). A query over the log and never an in-memory counter, so every replica
+    /// counts the same and a restart loses nothing. A message a fork copied from its parent counts
+    /// for the fork's owner with the parent's time; the orchestrator asks for one minute, so the
+    /// result is small by construction and no window is ever kept anywhere else.
+    fn messages_since(
+        &self,
+        owner: &UserId,
+        since: Timestamp,
+    ) -> impl Future<Output = Result<Vec<Timestamp>, StoreError>> + Send;
 
     /// The newest `ui_catalog` event of `thread` whose catalog has this `digest`, or `None` when the
     /// thread has none (or no thread has this id): the thread-tools endpoint reads the catalog its

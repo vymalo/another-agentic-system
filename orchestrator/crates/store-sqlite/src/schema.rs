@@ -71,8 +71,13 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 7,
+        description: "user_team_presets",
+        sql: include_str!("../migrations/0007_user_team_presets.sql"),
+    },
+    Migration {
+        version: 8,
         description: "user_tool_server_last4",
-        sql: include_str!("../migrations/0007_user_tool_server_last4.sql"),
+        sql: include_str!("../migrations/0008_user_tool_server_last4.sql"),
     },
 ];
 

@@ -1,31 +1,38 @@
 //! In-memory implementations of the ports, for tests and for running the orchestrator
 //! without any network dependency. Behind the `testkit` feature.
 
+mod account_erase;
 mod agent;
 mod artifacts;
 mod auth;
+mod entitlement;
 mod fixtures;
 mod model;
 mod pending;
 mod prompts;
+mod provisioner;
 mod registry;
 mod run_leases;
 mod secrets;
 mod store;
+mod teams;
 mod tools;
 mod user_tools;
 mod vault;
 mod wakeup;
 
+pub use account_erase::MemoryAccountErase;
 pub use agent::{
     AnswerFault, Call, STREAM_PIECES, ScriptedAgent, SendCall, VerdictScript, stream_id,
     stream_text,
 };
 pub use artifacts::{Download, MemoryArtifacts};
 pub use auth::MemoryAuth;
+pub use entitlement::MemoryEntitlement;
 pub use fixtures::{FixedClock, SeqIds, sample_releases};
 pub use model::{ModelStep, ScriptedModel};
 pub use pending::MemoryPendingAuthorizations;
+pub use provisioner::MemoryProvisioner;
 pub use registry::{MEMORY_SOURCE, MemoryRegistry};
 pub use run_leases::{MemoryModelCredentials, MemoryRunBindingStore, MemoryRunLeases};
 pub use secrets::MemorySecretStore;

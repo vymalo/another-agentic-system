@@ -8,6 +8,13 @@
   run because a slot is busy", "role now, plan later", and a device's settings never cap a cloud agent. It folds system
   issues **#282** (nothing checks a person's allowance before a run starts) and **#170** (a webhook burst starts every
   job). The code follows in the plan's slice 8; this record fixes the semantics that slice implements.
+- **Slice 2026-11-25 — the messages limit.** `messages_per_minute` is enforced: a message over the person's role's limit is
+  a `429` with `Retry-After` and `code: over_limit` (`limit`, `inUse`, `max`), decided before anything is written and
+  before any agent is asked (`orchestrator/crates/app/src/app.rs`, `check_message_limit`). The count is a query over the log
+  (`ThreadStore::messages_since`, the person's `user_message` events of the last minute), not an in-memory counter, so
+  several replicas count the same and a restart loses nothing (decision 3); the same-transaction advisory lock of decision 3
+  is **not** part of this slice, so two messages at the same instant may both pass. The other limits of decision 2 are still
+  parsed only. The webhook burst (decision 4) is part 2, waiting on its own decision.
 
 ## Context
 

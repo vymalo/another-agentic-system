@@ -79,7 +79,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 } else {
                     match self
                         .description_in_language(&row, task, &events, thread.description.as_deref())
-                        .await
+                        .await?
                     {
                         Some(description) => Input::Described { job, description },
                         None => Input::DescriptionDeclined { job },
@@ -150,7 +150,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         task: &TaskSettings,
         events: &[Event],
         previous: Option<&str>,
-    ) -> Option<String> {
+    ) -> Result<Option<String>, DispatchError> {
         let spec = |retry| TaskPrompt {
             kind: TaskKind::Description,
             guidance: task.guidance.as_deref(),
@@ -158,27 +158,32 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             previous,
             retry,
         };
-        let description = self
+        let Some(description) = self
             .description_from(row, task, events, spec(false))
-            .await?;
+            .await?
+        else {
+            return Ok(None);
+        };
         let Err(wrong) = check_task_language(task.language, events, &description) else {
-            return Some(description);
+            return Ok(Some(description));
         };
         tracing::debug!(
             id = %row.id,
             script = ?wrong.script,
             "the description is in a script the language rule does not allow; asking once more"
         );
-        let description = self.description_from(row, task, events, spec(true)).await?;
+        let Some(description) = self.description_from(row, task, events, spec(true)).await? else {
+            return Ok(None);
+        };
         if let Err(wrong) = check_task_language(task.language, events, &description) {
             tracing::debug!(
                 id = %row.id,
                 script = ?wrong.script,
                 "the second description is in the wrong script too; the thread keeps what it has"
             );
-            return None;
+            return Ok(None);
         }
-        Some(description)
+        Ok(Some(description))
     }
 
     /// One question to the model and the description its answer stands for (`None` for nothing to
@@ -189,7 +194,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         task: &TaskSettings,
         events: &[Event],
         spec: TaskPrompt<'_>,
-    ) -> Option<String> {
+    ) -> Result<Option<String>, DispatchError> {
         let (system, user) = task_prompt(&spec, events);
         let request = ChatRequest {
             endpoint: task.endpoint.clone(),
@@ -197,19 +202,21 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             system,
             user,
             max_tokens: task.max_tokens,
+            run: None,
         };
         let text = self
             .ask_model(
                 row,
+                TaskKind::Description,
                 task,
                 &request,
                 "the model could not describe the thread",
             )
             .await?;
-        let description = clean_description(&text, task.max_chars);
+        let description = text.and_then(|text| clean_description(&text, task.max_chars));
         if description.is_none() {
             tracing::debug!(id = %row.id, "the model had no description for the conversation yet");
         }
-        description
+        Ok(description)
     }
 }

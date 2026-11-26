@@ -1,5 +1,5 @@
 -- The last four characters of the key a person typed for their own MCP server, the SQLite form of
--- Postgres migration 0032 (see it for what the column means): exactly four characters, or NULL.
+-- Postgres migration 0033 (see it for what the column means): exactly four characters, or NULL.
 --
 -- Never edit an applied migration; add a new one.
 

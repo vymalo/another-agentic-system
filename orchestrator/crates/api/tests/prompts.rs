@@ -110,7 +110,10 @@ impl Contract {
             None => declared.clone(),
         };
         if let Some(content) = declared.get("content").and_then(Value::as_object) {
-            let (_, media) = content.iter().next().unwrap();
+            let (_, media) = content
+                .iter()
+                .find(|(ct, _)| *ct != "application/cbor")
+                .unwrap();
             self.validate(&media["schema"], body);
         }
     }

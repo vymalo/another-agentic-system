@@ -12,10 +12,10 @@ use orch_pg_connect::PgOptions;
 use orch_pg_migrate::Migrator;
 use orch_ports::{
     AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder, Commit,
-    CommitOutcome, ForkOrigin, InboxFinal, InboxId, InboxItem, InboxLease, Lease, ListOrder,
-    NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal, OutboxId, OutboxItem,
-    OutboxPayload, OutboxStats, Parking, Place, Received, SharingChange, StoreError, TIMER_SOURCE,
-    ThreadListing, ThreadStore,
+    CommitOutcome, ForkOrigin, IdleThread, InboxFinal, InboxId, InboxItem, InboxLease, Lease,
+    ListOrder, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal, OutboxId,
+    OutboxItem, OutboxPayload, OutboxStats, Parking, Place, Received, SharingChange, StoreError,
+    TIMER_SOURCE, ThreadListing, ThreadStore,
 };
 use tokio_postgres::Row as PgRow;
 
@@ -68,7 +68,8 @@ fn migrator() -> Result<Migrator, StoreError> {
         "0029_trusted_requests.sql",
         "0030_run_leases.sql",
         "0031_thread_pick.sql",
-        "0032_user_tool_server_last4.sql",
+        "0032_user_team_presets.sql",
+        "0033_user_tool_server_last4.sql",
     )
     .map_err(migrate_err)?;
     Migrator::new(MIGRATIONS_TABLE, migrations).map_err(migrate_err)
@@ -1794,6 +1795,41 @@ impl ThreadStore for PgStore {
         Ok(rows.into_iter().map(|(_, id)| ThreadId(id)).collect())
     }
 
+    async fn idle_threads(
+        &self,
+        before: Timestamp,
+        after: Option<(Timestamp, ThreadId)>,
+        limit: u32,
+    ) -> Result<Vec<IdleThread>, StoreError> {
+        let (after_at, after_id) = match after {
+            Some((at, id)) => (Some(to_db(at)), Some(id.0)),
+            None => (None, None),
+        };
+        let rows = query(
+            "SELECT id, owner, updated_at FROM threads \
+             WHERE child_of IS NULL AND state NOT IN ('queued', 'working', 'verifying') \
+               AND updated_at < $1 \
+               AND ($2::timestamptz IS NULL OR (updated_at, id) > ($2, $3::uuid)) \
+             ORDER BY updated_at, id LIMIT $4",
+        )
+        .bind(to_db(before))
+        .bind(after_at)
+        .bind(after_id)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        rows.iter()
+            .map(|row| {
+                Ok(IdleThread {
+                    id: ThreadId(row.try_get::<_, uuid::Uuid>("id").map_err(store_err)?),
+                    owner: UserId::new(&row.try_get::<_, String>("owner").map_err(store_err)?),
+                    updated_at: get_ts(row, "updated_at")?,
+                })
+            })
+            .collect()
+    }
+
     async fn finish_purge(&self, thread: ThreadId) -> Result<(), StoreError> {
         query("DELETE FROM thread_purges WHERE thread_id = $1")
             .bind(thread.0)
@@ -2118,6 +2154,28 @@ impl ThreadStore for PgStore {
         .iter()
         .map(|row| event_from_row(thread, row))
         .collect()
+    }
+
+    async fn messages_since(
+        &self,
+        owner: &UserId,
+        since: Timestamp,
+    ) -> Result<Vec<Timestamp>, StoreError> {
+        // A person's messages of the minute, over the log: the thread's owner and the event's
+        // time (ADR 0081, decision 3). No index of its own yet: the window is one minute.
+        let rows = query(
+            "SELECT e.at FROM events e JOIN threads t ON t.id = e.thread_id \
+             WHERE t.owner = $1 AND e.kind = $2 AND e.at >= $3 ORDER BY e.at",
+        )
+        .bind(owner.as_str())
+        .bind(EventKind::UserMessage.as_str())
+        .bind(to_db(since))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        rows.iter()
+            .map(|row| row.try_get::<_, Timestamp>("at").map_err(store_err))
+            .collect()
     }
 
     async fn thread_pick(&self, thread: ThreadId) -> Result<orch_core::ModelPick, StoreError> {
@@ -2727,6 +2785,6 @@ mod tests {
             .unwrap();
         let first = &migrator.migrations()[0];
         assert_eq!((first.version(), first.description()), (1, "init"));
-        assert_eq!(migrator.migrations().len(), 32);
+        assert_eq!(migrator.migrations().len(), 33);
     }
 }

@@ -24,10 +24,10 @@ use orch_core::{
 };
 use orch_ports::{
     AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder, Commit,
-    CommitOutcome, ForkOrigin, InboxFinal, InboxId, InboxItem, InboxLease, Lease, ListOrder,
-    MAX_CHILD_SESSION_CHARS, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer, OutboxFinal,
-    OutboxId, OutboxItem, OutboxPayload, OutboxStats, Parking, Place, Received, SharingChange,
-    StoreError, TIMER_SOURCE, ThreadListing, ThreadStore,
+    CommitOutcome, ForkOrigin, IdleThread, InboxFinal, InboxId, InboxItem, InboxLease, Lease,
+    ListOrder, MAX_CHILD_SESSION_CHARS, NewEvent, NewInbox, NewOutbox, NewThreadRecord, NewTimer,
+    OutboxFinal, OutboxId, OutboxItem, OutboxPayload, OutboxStats, Parking, Place, Received,
+    SharingChange, StoreError, TIMER_SOURCE, ThreadListing, ThreadStore,
 };
 use rusqlite::types::Value;
 use rusqlite::{
@@ -1808,6 +1808,37 @@ impl ThreadStore for SqliteStore {
         .await
     }
 
+    async fn idle_threads(
+        &self,
+        before: Timestamp,
+        after: Option<(Timestamp, ThreadId)>,
+        limit: u32,
+    ) -> Result<Vec<IdleThread>, StoreError> {
+        let before = to_db(before)?;
+        let (after_at, after_id) = match after {
+            Some((at, id)) => (to_db(at)?, id.0.to_string()),
+            None => (i64::MIN, String::new()),
+        };
+        self.call(move |conn| {
+            rows(
+                conn,
+                "SELECT id, owner, updated_at FROM threads \
+                 WHERE child_of IS NULL AND state NOT IN ('queued', 'working', 'verifying') \
+                   AND updated_at < ?1 AND (updated_at > ?2 OR (updated_at = ?2 AND id > ?3)) \
+                 ORDER BY updated_at, id LIMIT ?4",
+                &[&before, &after_at, &after_id, &i64::from(limit)],
+                |row| {
+                    Ok(IdleThread {
+                        id: ThreadId(parse_id(&row.get::<_, String>(0).map_err(store_err)?)?),
+                        owner: UserId::new(&row.get::<_, String>(1).map_err(store_err)?),
+                        updated_at: from_db(row.get::<_, i64>(2).map_err(store_err)?)?,
+                    })
+                },
+            )
+        })
+        .await
+    }
+
     async fn finish_purge(&self, thread: ThreadId) -> Result<(), StoreError> {
         let id = thread.0.to_string();
         self.call(move |conn| {
@@ -1871,6 +1902,27 @@ impl ThreadStore for SqliteStore {
                  WHERE thread_id = ?1 AND kind = ?2 ORDER BY seq DESC LIMIT ?3",
                 &[&thread.0.to_string(), &kind, &i64::from(limit)],
                 |row| event_from_row(thread, row),
+            )
+        })
+        .await
+    }
+
+    async fn messages_since(
+        &self,
+        owner: &UserId,
+        since: Timestamp,
+    ) -> Result<Vec<Timestamp>, StoreError> {
+        // The Postgres statement with SQLite's types: the person's messages of the window, over
+        // the log (ADR 0081, decision 3).
+        let owner = owner.as_str().to_owned();
+        let since = to_db(since)?;
+        self.call(move |conn| {
+            rows(
+                conn,
+                "SELECT e.at FROM events e JOIN threads t ON t.id = e.thread_id \
+                 WHERE t.owner = ?1 AND e.kind = ?2 AND e.at >= ?3 ORDER BY e.at",
+                &[&owner, &EventKind::UserMessage.as_str(), &since],
+                |row| from_db(row.get::<_, i64>(0).map_err(store_err)?),
             )
         })
         .await

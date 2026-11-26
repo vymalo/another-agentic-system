@@ -5,6 +5,7 @@ use orch_core::{
 };
 use orch_ports::{AgentError, ArtifactError, RegistryError, StoreError};
 
+use crate::app::AttachmentRefusal;
 use crate::authz::Permission;
 use crate::prompts::PromptRefusal;
 use crate::sharing::SharingMode;
@@ -100,6 +101,11 @@ pub enum AppError {
     /// is too long. See [`PromptRefusal`].
     #[error(transparent)]
     Prompt(PromptRefusal),
+    /// A person's own file is refused (ADR 0067, slice 12): a size, an empty body, a type that is
+    /// not one media type, a name that is not usable, or a deployment that keeps no files. See
+    /// [`AttachmentRefusal`].
+    #[error(transparent)]
+    Attachment(AttachmentRefusal),
     /// The store failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -134,6 +140,21 @@ pub enum AppError {
     CardUnavailable {
         /// The agent whose card it was.
         agent: AgentId,
+    },
+    /// A message over the person's role's `messages_per_minute` (ADR 0081, decision 4): refused
+    /// before anything is written and before any agent is asked, with the seconds until the oldest
+    /// message in the window leaves it. `limit` is the name the problem body carries and `max` its
+    /// value; `in_use` is how many messages the window holds.
+    #[error("the limit {limit} is reached: {in_use} in the last minute, at most {max}")]
+    MessageLimit {
+        /// The limit's name (`messages_per_minute`).
+        limit: &'static str,
+        /// The messages the person sent in the window.
+        in_use: u32,
+        /// The role's limit.
+        max: u32,
+        /// How long until the oldest message in the window leaves it, in whole seconds.
+        retry_after: Duration,
     },
     /// The thread kept changing under the optimistic commit loop; try again.
     #[error("the thread is being changed concurrently")]
@@ -290,6 +311,13 @@ impl Classify for AppError {
                 | PromptRefusal::InvalidAnswer(_)
                 | PromptRefusal::RenderedTooLong => ErrorClass::Rejected,
             },
+            AppError::Attachment(refusal) => match refusal {
+                AttachmentRefusal::NoStore => ErrorClass::Unsupported,
+                AttachmentRefusal::TooLarge { .. }
+                | AttachmentRefusal::Empty
+                | AttachmentRefusal::BadMediaType
+                | AttachmentRefusal::BadFilename => ErrorClass::Invalid,
+            },
             AppError::Fork(e) => e.class(),
             AppError::Store(e) => e.class(),
             AppError::Artifacts(e) => e.class(),
@@ -297,6 +325,7 @@ impl Classify for AppError {
             AppError::Upstream { source, .. } => source.class(),
             AppError::RegistryUnavailable { source } => source.class(),
             AppError::CardUnavailable { .. } => ErrorClass::Transient,
+            AppError::MessageLimit { .. } => ErrorClass::RateLimited,
             AppError::Contended => ErrorClass::Conflict,
             AppError::Internal { .. } => ErrorClass::Internal,
         }
@@ -306,6 +335,7 @@ impl Classify for AppError {
         match self {
             AppError::Store(e) => e.retry_after(),
             AppError::Upstream { source, .. } => source.retry_after(),
+            AppError::MessageLimit { retry_after, .. } => Some(*retry_after),
             AppError::RegistryUnavailable { .. } | AppError::CardUnavailable { .. } => None,
             AppError::NotFound
             | AppError::Forbidden { .. }
@@ -322,6 +352,7 @@ impl Classify for AppError {
             | AppError::Blocked { .. }
             | AppError::UserTool(_)
             | AppError::Prompt(_)
+            | AppError::Attachment(_)
             | AppError::Fork(_)
             | AppError::Artifacts(_)
             | AppError::Transition(_)
@@ -436,6 +467,12 @@ mod tests {
                 agent: AgentId::new("coder"),
             },
             AppError::Contended,
+            AppError::MessageLimit {
+                limit: "messages_per_minute",
+                in_use: 3,
+                max: 2,
+                retry_after: Duration::from_secs(4),
+            },
             AppError::internal("broken"),
         ];
         for e in all {
@@ -471,6 +508,10 @@ mod tests {
                     PromptRefusal::Invalid(_) => ErrorClass::Invalid,
                     _ => ErrorClass::Rejected,
                 },
+                AppError::Attachment(refusal) => match refusal {
+                    AttachmentRefusal::NoStore => ErrorClass::Unsupported,
+                    _ => ErrorClass::Invalid,
+                },
                 AppError::Fork(inner) => inner.class(),
                 AppError::Store(inner) => inner.class(),
                 AppError::Artifacts(inner) => inner.class(),
@@ -479,6 +520,7 @@ mod tests {
                 AppError::RegistryUnavailable { source } => source.class(),
                 AppError::CardUnavailable { .. } => ErrorClass::Transient,
                 AppError::Contended => ErrorClass::Conflict,
+                AppError::MessageLimit { .. } => ErrorClass::RateLimited,
                 AppError::Internal { .. } => ErrorClass::Internal,
             };
             assert_eq!(e.class(), expected, "{e}");

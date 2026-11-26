@@ -837,6 +837,14 @@ for (const scheme of ["light", "dark"] as const) {
 
     test("the agent's own commands: the / menu", async ({ page, context }) => {
       const lib = await promptsSession(context, "user");
+      // the "Your prompts" group is drawn only for a person who has one: this session starts with none
+      await lib.make({
+        name: "standup",
+        title: "Write my standup",
+        description: "A short note of what I did, what is next and what blocks me.",
+        body: "Write my standup from {{notes}}.",
+        variables: [{ id: "notes", question: "Your notes", type: "longText" }],
+      });
       expect(
         (
           await lib.hook("/__mock/commands", {
@@ -1294,6 +1302,21 @@ for (const scheme of ["light", "dark"] as const) {
       await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
       await conversation(page).getByRole("button", { name: "Read aloud" }).hover();
       await shot(page, "read-aloud", { hovering: true });
+    });
+
+    // last too: a session of its own, whose deployment serves only a newer application (ADR 0076)
+    test("update required: the screen that takes the page", async ({ page, context }) => {
+      const session = `screens-update-${uuidv7()}`;
+      await fetch(`${MOCK_URL}/__mock/config?minClient=999.0.0&session=${session}`, {
+        method: "POST",
+      });
+      await context.clearCookies({ name: "mock-registry" });
+      await context.addCookies([
+        { name: "mock-registry", value: session, url: "http://127.0.0.1:3000" },
+      ]);
+      await page.goto("/");
+      await expect(page.locator('[data-slot="update-required"]')).toBeVisible();
+      await shot(page, "update-required");
     });
   });
 }

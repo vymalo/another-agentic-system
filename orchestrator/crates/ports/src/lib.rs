@@ -17,6 +17,8 @@
 //! - [`AgentRegistry`]: which agents exist right now, read live and failing closed (ADR 0022), with
 //!   [`FixedRegistry`] (the static list) and [`CompositeRegistry`] (two registries as one); each
 //!   entry says whom it is for ([`AgentAudience`], ADR 0045);
+//! - [`EntitlementSource`]: whether a person's plan covers them right now, read on a sweep and
+//!   failing closed, so a lapse suspends their own agents;
 //! - [`ArtifactStore`]: where the files agents hand over are kept, by the hash of their content;
 //!   the log keeps only the reference (ADR 0032); [`NoArtifacts`] is a deployment without one;
 //! - [`ToolServerClient`]: the orchestrator as a client of an MCP server, to list its tools and call
@@ -41,9 +43,17 @@
 //! - [`PendingAuthorizations`]: the OAuth authorizations that have begun and whose callback has not
 //!   come, `state → (owner, server, until)`, used at most once, kept by the state's digest (ADR 0046,
 //!   slice 4c); [`NoPendingAuthorizations`] refuses every call;
+//! - [`TeamPresetStore`]: a person's saved teams (a lead, up to eight members, a charter, the cap of
+//!   hand-offs, the approval mode, the checkpoint rules), kept beside the log with a revision per
+//!   write (ADR 0074); a supertrait of [`ThreadStore`], as the prompt library is;
 //! - [`EgressPolicy`]: whether a URL a person typed may be fetched and whether a connection may be
 //!   made to the addresses its host resolved to (ADR 0046, decision 5); pure, so the broker and the
 //!   relay apply one function;
+//! - [`PromptSigner`]: who signs the orchestrator's prompt statement on the cloud path, with a certified key; it
+//!   takes only an [`AttestedPayload`], a statement the integrity rule of `orch-prompt-statement` passed (ADR 0087,
+//!   the note of 2026-11-25);
+//! - [`AccountErase`]: deleting an account erases what a person owns, in one decision, refused while a job runs,
+//!   and keeps only counts under a pseudonym for a set time (ADR 0098);
 //! - [`Clock`], [`IdGen`]: time and identifiers.
 //!
 //! No implementation type appears in any signature. Implementations live in separate crates;
@@ -51,6 +61,7 @@
 //! testkit every `ThreadStore` / `Wakeup` / `AgentClient` / `AgentRegistry` / `ChatModel` / `ArtifactStore` /
 //! `ToolServerClient` implementation must pass.
 
+mod account_erase;
 mod agent;
 mod artifacts;
 mod auth;
@@ -58,16 +69,21 @@ mod bundle;
 mod clock;
 mod credentials;
 mod egress;
+mod entitlement;
 mod inbox;
 mod lookup;
 mod model;
 mod pending;
+mod platform_credentials;
+mod prompt_signer;
 mod prompts;
+mod provisioner;
 mod registry;
 mod route;
 mod search;
 mod secrets;
 mod store;
+mod teams;
 mod tools;
 mod usage_ledger;
 mod user_tools;
@@ -79,6 +95,7 @@ pub mod memory;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 
+pub use account_erase::{AccountErase, EraseError, EraseOutcome};
 pub use agent::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream,
     AgentTransport, IdemKey, MentionInfo, SendContent, SendRequest, TaskHandle, TaskSnapshot,
@@ -106,6 +123,7 @@ pub use egress::{
     AddressClass, CheckedAddrs, EgressHost, EgressPolicy, EgressRefusal, EgressTarget, HostPattern,
     HostPatternError, MAX_URL_BYTES, classify_address, is_public_address,
 };
+pub use entitlement::{Entitlement, EntitlementError, EntitlementSource};
 pub use inbox::{
     InboxFinal, InboxId, InboxItem, InboxLease, InboxPayload, InboxStatus, NewInbox, NewTimer,
     Parking, Received, TIMER_SOURCE, UndecodablePayload,
@@ -116,9 +134,17 @@ pub use pending::{
     NoPendingAuthorizations, PendingAuthorization, PendingAuthorizationError,
     PendingAuthorizations, StateDigest,
 };
+pub use platform_credentials::{
+    PlatformCredentials, PlatformCredentialsError, PlatformToken, PlatformTokenFuture,
+};
+pub use prompt_signer::{AttestedPayload, PromptSigner, SignedStatement, SignerError, SignerState};
 pub use prompts::{
     MAX_PROMPTS, PROMPT_PAGE, PromptPage, PromptRevision, PromptScope, PromptStore,
     PromptStoreError, PromptSummary, PromptViewer, StoredPrompt,
+};
+pub use provisioner::{
+    AgentKind, AgentOwner, AgentProvisioner, AgentState, InvalidAgentOwner, MAX_OWNER_CHARS,
+    ProvisionError, ProvisionedAgent,
 };
 pub use registry::{
     AUDIENCE_EVERYONE, AgentAudience, AgentListing, AgentRegistry, AudienceRoles,
@@ -136,9 +162,13 @@ pub use secrets::{
 };
 pub use store::{
     AgentBinding, ArchivedFilter, Arrangement, BindingUpdate, ChildThread, ClaimOrder, Commit,
-    CommitOutcome, ForkOrigin, Lease, ListOrder, MAX_CHILD_SESSION_CHARS, NewEvent, NewOutbox,
-    NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxPayload, OutboxStats,
-    OutboxStatus, Place, SharingChange, StoreError, ThreadListing, ThreadStore,
+    CommitOutcome, ForkOrigin, IdleThread, Lease, ListOrder, MAX_CHILD_SESSION_CHARS, NewEvent,
+    NewOutbox, NewThreadRecord, OutboxFinal, OutboxId, OutboxItem, OutboxKind, OutboxPayload,
+    OutboxStats, OutboxStatus, Place, SharingChange, StoreError, ThreadListing, ThreadStore,
+};
+pub use teams::{
+    MAX_TEAM_PRESETS, StoredTeamPreset, TEAM_PRESET_PAGE, TeamPresetPage, TeamPresetRevision,
+    TeamPresetStore, TeamPresetStoreError, TeamPresetSummary,
 };
 pub use tools::{
     ActingFor, MAX_REMOTE_MESSAGE_BYTES, MAX_RESULT_BYTES, MAX_USER_SERVER_TOOLS,

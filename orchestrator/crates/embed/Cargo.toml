@@ -16,6 +16,7 @@ orch-core.workspace = true
 orch-ports.workspace = true
 orch-store-sqlite.workspace = true
 futures.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -24,6 +25,7 @@ tokio-util.workspace = true
 # The example runs a thread on the in-process scripted agent; the crate itself names no adapter
 # beyond the SQLite store (ADR 0076 decision 4).
 orch-ports = { workspace = true, features = ["testkit"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]
 workspace = true

@@ -29,7 +29,7 @@ metadata:
   name: another-agentic-db
 spec:
   instances: 1
-  # imageName: "<database.imageName, if the deployment sets one>"
+  # imageName: "<database.imageName: the chart default is a pinned CNPG standard image>"
   storage:
     size: 10Gi
     storageClass: longhorn

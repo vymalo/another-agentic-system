@@ -193,6 +193,9 @@ async fn start(db: &pgdb::TestDb, scratch: Scratch) -> Started {
         ("MODEL_KEY", MODEL_KEY),
         ("SMOKE_AGENT_TOKEN", OTHER_TOKEN),
         ("NO_PROXY", "127.0.0.1,localhost"),
+        // Every level, so the log the tests grep is the whole log: a value that only a `debug` line
+        // would carry is still caught (the default filter is `info`).
+        ("RUST_LOG", "debug"),
     ];
     if let Some(direct) = &direct {
         env.push(("DATABASE_DIRECT_URL", direct.as_str()));
@@ -334,6 +337,10 @@ async fn a_bind_then_a_lease_over_a_real_socket() {
     );
     let lease: serde_json::Value = response.json().await.unwrap();
     assert_eq!(lease["token"], MODEL_KEY);
+    assert_eq!(
+        lease["accountId"], PERSON,
+        "the lease names the account whose call it is: {lease}"
+    );
     assert!(lease["expiresAt"].as_str().is_some(), "{lease}");
 
     // The bound agent is refused its own run's lease (ADR 0084 decision 2, amended 2026-11-24):
@@ -348,8 +355,7 @@ async fn a_bind_then_a_lease_over_a_real_socket() {
     .await;
     assert_eq!(status, 404, "{body}");
     assert_eq!(code(&body), "run_not_bound");
-    // The key is in the answer and nowhere else.
-    assert!(!started.run.borrow().log().contains(MODEL_KEY));
+    assert!(!body.contains(PERSON), "a refusal names no account: {body}");
 
     // Removed, the run is not bound any more.
     let (status, _) = call(
@@ -371,6 +377,17 @@ async fn a_bind_then_a_lease_over_a_real_socket() {
     .await;
     assert_eq!(status, 404, "{body}");
     assert_eq!(code(&body), "run_not_bound");
+    assert!(!body.contains(PERSON), "a refusal names no account: {body}");
+
+    // The key and the account are in the answer and nowhere else: no line the broker logged holds
+    // either (ADR 0084 decision 3, amended 2026-11-24).
+    let log = started.run.borrow().log();
+    assert!(log.contains("the run routes listen"), "{log}");
+    assert!(!log.contains(MODEL_KEY), "the key is in the log:\n{log}");
+    assert!(
+        !log.contains(PERSON),
+        "the account id is in the log:\n{log}"
+    );
 }
 
 #[tokio::test]

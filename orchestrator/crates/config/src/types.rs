@@ -125,6 +125,9 @@ pub struct Config {
     /// prices `GET /api/me/usage` puts on a month. Absent: 24 months kept and nothing priced.
     #[serde(default)]
     pub usage: Usage,
+    /// How long threads are kept (`retention.threads.days`, default 90). Absent: 90 days.
+    #[serde(default)]
+    pub retention: Retention,
     /// The OpenAI-compatible endpoints the orchestrator asks itself (ADR 0005, ADR 0035).
     #[serde(default)]
     pub models: Models,
@@ -144,6 +147,11 @@ pub struct Config {
     /// connect to for them, and the OAuth client it presents. Absent: off, and nothing changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_tool_servers: Option<UserToolServers>,
+    /// The person's own agents on the platform (the `AgentProvisioner`): the Platform API's URL,
+    /// which kinds are made, and what the orchestrator presents to it. Absent: off, and nothing
+    /// changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provisioner: Option<Provisioner>,
     /// What the web is told (`GET /api/config`).
     #[serde(default)]
     pub ui: Ui,
@@ -169,6 +177,95 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 64))]
     pub tool_servers: Vec<ToolServer>,
+}
+
+/// The kinds of agent made for each person. The shared chat agent is never one of them.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProvisionedKind {
+    /// A coding agent (a task to a pull request).
+    Coder,
+    /// A workspace agent.
+    Workspace,
+}
+
+impl ProvisionedKind {
+    /// The name used in the file.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ProvisionedKind::Coder => "coder",
+            ProvisionedKind::Workspace => "workspace",
+        }
+    }
+}
+
+/// What the orchestrator presents to the Platform API. One variant, for the local stack.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ProvisionerCredentials {
+    /// A token from an OIDC issuer by the OAuth `client_credentials` grant, with the extension
+    /// parameters of the local stack's `mock-oidc` (`user`, `audience`, `roles`). A development
+    /// adapter: use another in a deployment.
+    #[serde(rename_all = "camelCase")]
+    DevOidc {
+        /// The issuer's token endpoint (`http` or `https`, no user name or password).
+        token_url: String,
+        /// The client id.
+        client_id: String,
+        /// The client secret.
+        client_secret: SecretRef,
+        /// The user the token is for (a `mock-oidc` extension), none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<String>,
+        /// The audience (a `mock-oidc` extension), none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        audience: Option<String>,
+        /// The roles of the token (a `mock-oidc` extension), none: the user's own. The token
+        /// must carry `platform:agents.own`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        roles: Option<Vec<String>>,
+    },
+}
+
+/// The default of `provisioner.requestTimeoutSecs`.
+pub const DEFAULT_PROVISIONER_REQUEST_SECS: u64 = 5;
+/// The default of `provisioner.readyTimeoutSecs`.
+pub const DEFAULT_PROVISIONER_READY_SECS: u64 = 120;
+
+const fn default_provisioner_request_secs() -> u64 {
+    DEFAULT_PROVISIONER_REQUEST_SECS
+}
+
+const fn default_provisioner_ready_secs() -> u64 {
+    DEFAULT_PROVISIONER_READY_SECS
+}
+
+/// A person's own agents on the platform. **Off unless the section is present.**
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Provisioner {
+    /// The Platform API's base URL, `http` or `https`, with a host and no user name or password.
+    pub url: String,
+    /// The kinds made for each person (`coder`, `workspace`), at least one, each once. The shared
+    /// chat agent is never provisioned.
+    #[schemars(length(min = 1, max = 2))]
+    pub kinds: Vec<ProvisionedKind>,
+    /// The agent form of each kind (the platform's form without `name`, `owner` and `suspend`),
+    /// one for every kind in `kinds`.
+    #[serde(default)]
+    pub forms: BTreeMap<ProvisionedKind, serde_json::Map<String, serde_json::Value>>,
+    /// What the orchestrator presents to the platform.
+    pub credentials: ProvisionerCredentials,
+    /// Seconds one request to the platform may take, 1 to 60 (default 5).
+    #[serde(default = "default_provisioner_request_secs")]
+    #[schemars(range(min = 1, max = 60))]
+    pub request_timeout_secs: u64,
+    /// Seconds to wait for a made or resumed agent to be ready, 1 to 600 (default 120).
+    #[serde(default = "default_provisioner_ready_secs")]
+    #[schemars(range(min = 1, max = 600))]
+    pub ready_timeout_secs: u64,
 }
 
 /// What this process runs. A closed enum owned by the host library (`adam-host`); the names are
@@ -276,6 +373,14 @@ pub struct Server {
     /// call, which is what the web on the edge's own origin needs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cors: Option<ServerCors>,
+    /// The lowest application version this deployment serves: one to four dotted decimal numbers
+    /// (`1.4.0`). A client states its version in the request header `X-Client-Version`; a request
+    /// of the resource API from a lower version, or from a client that states none or an unreadable
+    /// one, is refused with the problem `client_update_required` (status 426), which the
+    /// application shows as "update the application" (`docs/api/client-version.md`). Absent: no
+    /// client is refused. A hard cutover raises it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_client_version: Option<String>,
     /// What one page of a thread's history may hold (ADR 0059, `docs/api/history.md`).
     #[serde(default)]
     pub history: ServerHistory,
@@ -344,7 +449,7 @@ impl Default for ServerHistory {
 
 /// The origins that may call this API from a page of their own (`server.cors`, ADR 0047). The answer
 /// allows the methods of the API, the request headers `Authorization`, `DPoP`, `Content-Type`,
-/// `Accept`, `Last-Event-ID` and `X-Web-Revision`, exposes `WWW-Authenticate`, `Date` and
+/// `Accept`, `Last-Event-ID`, `X-Web-Revision` and `X-Client-Version`, exposes `WWW-Authenticate`, `Date` and
 /// `Content-Disposition`, and **never credentials**: a cross-origin caller sends a DPoP-bound token,
 /// never a cookie.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -394,6 +499,7 @@ impl Default for Server {
             shutdown_grace_secs: default_shutdown_grace_secs(),
             environment: Environment::default(),
             cors: None,
+            min_client_version: None,
             history: ServerHistory::default(),
             internal: None,
         }
@@ -817,6 +923,43 @@ impl Default for Asks {
             max_per_job: default_ask_per_job(),
             max_running: default_ask_running(),
             timeout_secs: default_ask_timeout_secs(),
+        }
+    }
+}
+
+/// The default of `retention.threads.days`: ninety days.
+pub const DEFAULT_THREAD_RETENTION_DAYS: u64 = 90;
+/// The most `retention.threads.days` may be: a hundred years.
+pub const MAX_THREAD_RETENTION_DAYS: u64 = 36_500;
+
+/// What the orchestrator keeps and for how long.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Retention {
+    /// The threads of the people.
+    #[serde(default)]
+    pub threads: ThreadRetention,
+}
+
+/// The retention of threads: a thread with no active job whose last event is older than `days` is
+/// erased by the sweep, through the same path as the person's own delete.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThreadRetention {
+    /// How many days a thread is kept after its last event, 1 to 36500 (default 90).
+    #[serde(default = "default_thread_retention_days")]
+    #[schemars(range(min = 1, max = 36500))]
+    pub days: u64,
+}
+
+fn default_thread_retention_days() -> u64 {
+    DEFAULT_THREAD_RETENTION_DAYS
+}
+
+impl Default for ThreadRetention {
+    fn default() -> Self {
+        ThreadRetention {
+            days: DEFAULT_THREAD_RETENTION_DAYS,
         }
     }
 }
@@ -1453,6 +1596,9 @@ pub enum SecretStoreKind {
     /// A table of the orchestrator's own Postgres (`secrets.pg`), each secret sealed with
     /// AES-256-GCM under a key of this file. Needs the Cargo feature `secrets-pg`.
     Pg,
+    /// A KV v2 mount of a self-hosted OpenBao or Vault (`secrets.openbao`), which seals what it
+    /// keeps. Needs the Cargo feature `secrets-openbao`.
+    Openbao,
 }
 
 impl SecretStoreKind {
@@ -1460,6 +1606,7 @@ impl SecretStoreKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             SecretStoreKind::Pg => "pg",
+            SecretStoreKind::Openbao => "openbao",
         }
     }
 
@@ -1467,6 +1614,7 @@ impl SecretStoreKind {
     pub const fn feature(self) -> &'static str {
         match self {
             SecretStoreKind::Pg => "secrets-pg",
+            SecretStoreKind::Openbao => "secrets-openbao",
         }
     }
 }
@@ -1476,12 +1624,43 @@ impl SecretStoreKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UserSecrets {
-    /// Which store: `pg` (a sealed table in the orchestrator's own database). The section of the
-    /// store chosen is required.
+    /// Which store: `pg` (a sealed table in the orchestrator's own database) or `openbao` (a KV v2
+    /// mount of a self-hosted OpenBao). The section of the store chosen is required.
     pub store: SecretStoreKind,
     /// The sealed Postgres store. Required with `store: pg`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pg: Option<UserSecretsPg>,
+    /// The OpenBao store. Required with `store: openbao`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openbao: Option<UserSecretsOpenbao>,
+}
+
+/// The OpenBao (or Vault) KV v2 store: where it is, which mount, and the token it is let in with.
+/// OpenBao seals what it keeps, so there is no key here. The token is a reference, never a value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UserSecretsOpenbao {
+    /// The server's address: an `https` URL with a host and no credential, query or fragment
+    /// (`https://bao.internal:8200`). A token never travels in the clear.
+    #[schemars(length(min = 1, max = 2048))]
+    pub address: String,
+    /// The KV v2 mount (`secret` by default): 1 to 128 characters of `A-Z a-z 0-9 . _ -` and `/`,
+    /// not starting or ending with `/`.
+    #[serde(default = "default_openbao_mount")]
+    #[schemars(length(min = 1, max = 128))]
+    pub mount: String,
+    /// The token the orchestrator reads and writes with, a secret.
+    pub token: SecretRef,
+    /// A file of PEM certificates the server's certificate is checked against, besides the system's
+    /// own roots (a private authority). Absent: the system's roots alone. Relative to the
+    /// configuration file's directory, read at startup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 1024))]
+    pub ca_file: Option<String>,
+}
+
+fn default_openbao_mount() -> String {
+    "secret".to_owned()
 }
 
 /// The sealed Postgres store: the keys that seal, and the one that does now.
@@ -1978,6 +2157,14 @@ pub struct Auth {
     )]
     #[schemars(schema_with = "default_role_schema")]
     pub default_role: Option<Option<String>>,
+    /// The signing clients (ADR 0087, decision 1): the clients of the issuer (the token's `azp`, or
+    /// `client_id`) whose prompts must carry `vymalo.promptSignature`, for example the desktop, iOS and
+    /// Android clients. Each is a client id with no space, at most 64 are listed, none twice, and none is
+    /// `auth.browser.clientId` (the web is not asked for a signature). Absent or empty (the default), no
+    /// client is a signing client and nothing changes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 64))]
+    pub signing_clients: Vec<String>,
     /// What each role grants, by the name the identity provider gives the role (a group, a realm
     /// role: `auth.jwt.rolesClaim`), compared exactly. A role that is not defined here grants
     /// nothing. Absent: `user` (everything but `admin`, over one's own threads) and `admin` (also
@@ -2091,6 +2278,72 @@ pub struct AuthRole {
     /// with a role that holds `agent.invoke`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tier: Option<AuthTier>,
+    /// The limits of a person with this role, checked before a run starts (ADR 0081). Absent: the
+    /// defaults of [`AuthLimits`]. Nothing reads them yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<AuthLimits>,
+}
+
+impl AuthRole {
+    /// The limits of this role: what it says, with the defaults of [`AuthLimits`] for what it
+    /// leaves out.
+    #[must_use]
+    pub fn effective_limits(&self) -> AuthLimits {
+        self.limits.clone().unwrap_or_default()
+    }
+}
+
+/// The default of [`AuthLimits::runs_at_once`] and [`AuthLimits::model_calls_in_flight`].
+pub const DEFAULT_RUNS_AT_ONCE: u32 = 4;
+
+fn default_runs_at_once() -> u32 {
+    DEFAULT_RUNS_AT_ONCE
+}
+
+/// What one person may use at a time, by role (ADR 0081 decision 2). A key left out is the
+/// default, and a key with no default is no limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuthLimits {
+    /// The person's jobs that have not finished (queued, working or waiting for an ask). Default 4.
+    #[serde(default = "default_runs_at_once")]
+    #[schemars(range(min = 1), default = "default_runs_at_once")]
+    pub runs_at_once: u32,
+    /// The person's messages in the last minute. Absent (the default): no limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub messages_per_minute: Option<u32>,
+    /// The jobs a webhook source starts in the last minute. Absent (the default): no limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub webhook_jobs_per_minute: Option<u32>,
+    /// The person's tokens in the period, from the usage ledger (ADR 0065). Absent (the default):
+    /// no limit; a deployment that wants one sets it here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub tokens_per_period: Option<u64>,
+    /// The orchestrator's own model calls in flight for the person (titles, descriptions).
+    /// Default 4.
+    #[serde(default = "default_runs_at_once")]
+    #[schemars(range(min = 1), default = "default_runs_at_once")]
+    pub model_calls_in_flight: u32,
+    /// Seconds a run waits for a slot before it parks. Absent: the dispatcher's own short wait.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub admission_wait_secs: Option<u64>,
+}
+
+impl Default for AuthLimits {
+    fn default() -> Self {
+        Self {
+            runs_at_once: DEFAULT_RUNS_AT_ONCE,
+            messages_per_minute: None,
+            webhook_jobs_per_minute: None,
+            tokens_per_period: None,
+            model_calls_in_flight: DEFAULT_RUNS_AT_ONCE,
+            admission_wait_secs: None,
+        }
+    }
 }
 
 /// An access tier, as `auth.roles.<role>.maxTier` writes it (ADR 0061). The names are the

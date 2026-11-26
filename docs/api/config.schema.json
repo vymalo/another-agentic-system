@@ -273,6 +273,14 @@
           },
           "description": "What each role grants, by the name the identity provider gives the role (a group, a realm role: `auth.jwt.rolesClaim`), compared exactly. A role that is not defined here grants nothing. Absent: `user` (everything but `admin`, over one's own threads) and `admin` (also `admin`: operational, and no more access to threads than a user has, ADR 0039). Given, it replaces both.",
           "type": "object"
+        },
+        "signingClients": {
+          "description": "The signing clients (ADR 0087, decision 1): the clients of the issuer (the token's `azp`, or `client_id`) whose prompts must carry `vymalo.promptSignature`, for example the desktop, iOS and Android clients. Each is a client id with no space, at most 64 are listed, none twice, and none is `auth.browser.clientId` (the web is not asked for a signature). Absent or empty (the default), no client is a signing client and nothing changes.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array"
         }
       },
       "type": "object"
@@ -332,6 +340,51 @@
       ],
       "type": "object"
     },
+    "AuthLimits": {
+      "additionalProperties": false,
+      "description": "What one person may use at a time, by role (ADR 0081 decision 2). A key left out is the default, and a key with no default is no limit.",
+      "properties": {
+        "admissionWaitSecs": {
+          "description": "Seconds a run waits for a slot before it parks. Absent: the dispatcher's own short wait.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "messagesPerMinute": {
+          "description": "The person's messages in the last minute. Absent (the default): no limit.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "modelCallsInFlight": {
+          "default": 4,
+          "description": "The orchestrator's own model calls in flight for the person (titles, descriptions). Default 4.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "runsAtOnce": {
+          "default": 4,
+          "description": "The person's jobs that have not finished (queued, working or waiting for an ask). Default 4.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "tokensPerPeriod": {
+          "description": "The person's tokens in the period, from the usage ledger (ADR 0065). Absent (the default): no limit; a deployment that wants one sets it here.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "webhookJobsPerMinute": {
+          "description": "The jobs a webhook source starts in the last minute. Absent (the default): no limit.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "AuthMode": {
       "description": "How a request says who it is from.",
       "enum": [
@@ -367,6 +420,10 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "limits": {
+          "$ref": "#/$defs/AuthLimits",
+          "description": "The limits of a person with this role, checked before a run starts (ADR 0081). Absent: the defaults of [`AuthLimits`]. Nothing reads them yet."
         },
         "maxTier": {
           "$ref": "#/$defs/AuthTier",
@@ -863,6 +920,117 @@
         }
       ]
     },
+    "ProvisionedKind": {
+      "description": "The kinds of agent made for each person. The shared chat agent is never one of them.",
+      "enum": [
+        "coder",
+        "workspace"
+      ],
+      "type": "string"
+    },
+    "Provisioner": {
+      "additionalProperties": false,
+      "description": "A person's own agents on the platform. **Off unless the section is present.**",
+      "properties": {
+        "credentials": {
+          "$ref": "#/$defs/ProvisionerCredentials",
+          "description": "What the orchestrator presents to the platform."
+        },
+        "forms": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "default": {},
+          "description": "The agent form of each kind (the platform's form without `name`, `owner` and `suspend`), one for every kind in `kinds`.",
+          "type": "object"
+        },
+        "kinds": {
+          "description": "The kinds made for each person (`coder`, `workspace`), at least one, each once. The shared chat agent is never provisioned.",
+          "items": {
+            "$ref": "#/$defs/ProvisionedKind"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "type": "array"
+        },
+        "readyTimeoutSecs": {
+          "default": 120,
+          "description": "Seconds to wait for a made or resumed agent to be ready, 1 to 600 (default 120).",
+          "format": "uint64",
+          "maximum": 600,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "requestTimeoutSecs": {
+          "default": 5,
+          "description": "Seconds one request to the platform may take, 1 to 60 (default 5).",
+          "format": "uint64",
+          "maximum": 60,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "url": {
+          "description": "The Platform API's base URL, `http` or `https`, with a host and no user name or password.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "kinds",
+        "credentials"
+      ],
+      "type": "object"
+    },
+    "ProvisionerCredentials": {
+      "description": "What the orchestrator presents to the Platform API. One variant, for the local stack.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A token from an OIDC issuer by the OAuth `client_credentials` grant, with the extension parameters of the local stack's `mock-oidc` (`user`, `audience`, `roles`). A development adapter: use another in a deployment.",
+          "properties": {
+            "audience": {
+              "description": "The audience (a `mock-oidc` extension), none.",
+              "type": "string"
+            },
+            "clientId": {
+              "description": "The client id.",
+              "type": "string"
+            },
+            "clientSecret": {
+              "$ref": "#/$defs/SecretRef",
+              "description": "The client secret."
+            },
+            "roles": {
+              "description": "The roles of the token (a `mock-oidc` extension), none: the user's own. The token must carry `platform:agents.own`.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "tokenUrl": {
+              "description": "The issuer's token endpoint (`http` or `https`, no user name or password).",
+              "type": "string"
+            },
+            "type": {
+              "const": "dev-oidc",
+              "type": "string"
+            },
+            "user": {
+              "description": "The user the token is for (a `mock-oidc` extension), none.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "tokenUrl",
+            "clientId",
+            "clientSecret"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Recompute": {
       "additionalProperties": false,
       "description": "When a new description is asked for.",
@@ -915,6 +1083,20 @@
       ],
       "type": "object"
     },
+    "Retention": {
+      "additionalProperties": false,
+      "description": "What the orchestrator keeps and for how long.",
+      "properties": {
+        "threads": {
+          "$ref": "#/$defs/ThreadRetention",
+          "default": {
+            "days": 90
+          },
+          "description": "The threads of the people."
+        }
+      },
+      "type": "object"
+    },
     "Role": {
       "description": "What this process runs. A closed enum owned by the host library (`adam-host`); the names are the same for every host. `all`: the control plane and the workers, in one process. `control-plane`: the HTTP server, the resource API and the surfaces, no dispatcher. `worker`: the dispatcher, and a router with only `/healthz` and `/readyz`.",
       "enum": [
@@ -958,7 +1140,8 @@
     "SecretStoreKind": {
       "description": "Which store keeps a person's secrets, one of the implementations of the `SecretStore` port. A build that does not have the Cargo feature of the one named refuses it (exit 78), never ignores it.",
       "enum": [
-        "pg"
+        "pg",
+        "openbao"
       ],
       "type": "string"
     },
@@ -997,6 +1180,10 @@
           "description": "The socket address to listen on (default `0.0.0.0:8080`). Replaces `LISTEN_ADDR`.",
           "type": "string"
         },
+        "minClientVersion": {
+          "description": "The lowest application version this deployment serves: one to four dotted decimal numbers (`1.4.0`). A client states its version in the request header `X-Client-Version`; a request of the resource API from a lower version, or from a client that states none or an unreadable one, is refused with the problem `client_update_required` (status 426), which the application shows as \"update the application\" (`docs/api/client-version.md`). Absent: no client is refused. A hard cutover raises it.",
+          "type": "string"
+        },
         "publicUrl": {
           "description": "The public origin of the chat, for example `https://chat.example.com`: the MCP surface gives `start_job` a `web_url` from it. Replaces `ORCH_PUBLIC_URL`.",
           "type": "string"
@@ -1026,7 +1213,7 @@
     },
     "ServerCors": {
       "additionalProperties": false,
-      "description": "The origins that may call this API from a page of their own (`server.cors`, ADR 0047). The answer allows the methods of the API, the request headers `Authorization`, `DPoP`, `Content-Type`, `Accept`, `Last-Event-ID` and `X-Web-Revision`, exposes `WWW-Authenticate`, `Date` and `Content-Disposition`, and **never credentials**: a cross-origin caller sends a DPoP-bound token, never a cookie.",
+      "description": "The origins that may call this API from a page of their own (`server.cors`, ADR 0047). The answer allows the methods of the API, the request headers `Authorization`, `DPoP`, `Content-Type`, `Accept`, `Last-Event-ID`, `X-Web-Revision` and `X-Client-Version`, exposes `WWW-Authenticate`, `Date` and `Content-Disposition`, and **never credentials**: a cross-origin caller sends a DPoP-bound token, never a cookie.",
       "properties": {
         "allowedOrigins": {
           "description": "Each an origin compared exactly with the request's `Origin`: `scheme://host[:port]`, with no path, query, fragment, credentials or trailing slash, for example `tauri://localhost` or `http://tauri.localhost`. Never `*` or `null`. In production `http://` is refused, but for `localhost`, `127.0.0.1`, `[::1]` and a name under `.localhost` (Tauri's own on Windows and Android).",
@@ -1235,6 +1422,21 @@
         "title": {
           "$ref": "#/$defs/TitleTask",
           "description": "The thread title. Absent: titles are off."
+        }
+      },
+      "type": "object"
+    },
+    "ThreadRetention": {
+      "additionalProperties": false,
+      "description": "The retention of threads: a thread with no active job whose last event is older than `days` is erased by the sweep, through the same path as the person's own delete.",
+      "properties": {
+        "days": {
+          "default": 90,
+          "description": "How many days a thread is kept after its last event, 1 to 36500 (default 90).",
+          "format": "uint64",
+          "maximum": 36500,
+          "minimum": 1,
+          "type": "integer"
         }
       },
       "type": "object"
@@ -1609,17 +1811,55 @@
       "additionalProperties": false,
       "description": "The store of a person's own credentials (ADR 0046): the tokens, keys and client secrets of the MCP servers people add, kept by `(person, server)`, sealed at rest.",
       "properties": {
+        "openbao": {
+          "$ref": "#/$defs/UserSecretsOpenbao",
+          "description": "The OpenBao store. Required with `store: openbao`."
+        },
         "pg": {
           "$ref": "#/$defs/UserSecretsPg",
           "description": "The sealed Postgres store. Required with `store: pg`."
         },
         "store": {
           "$ref": "#/$defs/SecretStoreKind",
-          "description": "Which store: `pg` (a sealed table in the orchestrator's own database). The section of the store chosen is required."
+          "description": "Which store: `pg` (a sealed table in the orchestrator's own database) or `openbao` (a KV v2 mount of a self-hosted OpenBao). The section of the store chosen is required."
         }
       },
       "required": [
         "store"
+      ],
+      "type": "object"
+    },
+    "UserSecretsOpenbao": {
+      "additionalProperties": false,
+      "description": "The OpenBao (or Vault) KV v2 store: where it is, which mount, and the token it is let in with. OpenBao seals what it keeps, so there is no key here. The token is a reference, never a value.",
+      "properties": {
+        "address": {
+          "description": "The server's address: an `https` URL with a host and no credential, query or fragment (`https://bao.internal:8200`). A token never travels in the clear.",
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string"
+        },
+        "caFile": {
+          "description": "A file of PEM certificates the server's certificate is checked against, besides the system's own roots (a private authority). Absent: the system's roots alone. Relative to the configuration file's directory, read at startup.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        },
+        "mount": {
+          "default": "secret",
+          "description": "The KV v2 mount (`secret` by default): 1 to 128 characters of `A-Z a-z 0-9 . _ -` and `/`, not starting or ending with `/`.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "token": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The token the orchestrator reads and writes with, a secret."
+        }
+      },
+      "required": [
+        "address",
+        "token"
       ],
       "type": "object"
     },
@@ -1883,6 +2123,19 @@
         "endpoints": {}
       },
       "description": "The OpenAI-compatible endpoints the orchestrator asks itself (ADR 0005, ADR 0035)."
+    },
+    "provisioner": {
+      "$ref": "#/$defs/Provisioner",
+      "description": "The person's own agents on the platform (the `AgentProvisioner`): the Platform API's URL, which kinds are made, and what the orchestrator presents to it. Absent: off, and nothing changes."
+    },
+    "retention": {
+      "$ref": "#/$defs/Retention",
+      "default": {
+        "threads": {
+          "days": 90
+        }
+      },
+      "description": "How long threads are kept (`retention.threads.days`, default 90). Absent: 90 days."
     },
     "secrets": {
       "$ref": "#/$defs/UserSecrets",

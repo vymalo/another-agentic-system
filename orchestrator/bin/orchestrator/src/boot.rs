@@ -688,6 +688,18 @@ fn control_plane_router(cfg: &Config, app: &Arc<App<Stack>>) -> Result<Router, C
         public_limits: Some(cfg.public_limits),
         browser_auth,
         cors_allowed_origins: cfg.cors_allowed_origins.clone(),
+        min_client_version: cfg
+            .min_client_version
+            .as_deref()
+            .map(|v| {
+                v.parse().map_err(
+                    |e: orch_api::client_version::NotAVersion| ConfigError::Invalid {
+                        var: "server.minClientVersion",
+                        reason: e.to_string(),
+                    },
+                )
+            })
+            .transpose()?,
         client_metadata,
         ..ApiConfig::default()
     };
@@ -776,6 +788,12 @@ fn usage_sweep_worker(app: &Arc<App<Stack>>) -> Arc<UsageSweepWorker<Stack>> {
     UsageSweepWorker::new(Arc::clone(app), UsageSweepConfig::default())
 }
 
+/// The worker's thread retention sweep over `app`: it erases the threads idle for longer than
+/// `retention.threads.days`, once at start and then every hour.
+fn thread_sweep_worker(app: &Arc<App<Stack>>) -> Arc<orch_app::ThreadSweepWorker<Stack>> {
+    orch_app::ThreadSweepWorker::new(Arc::clone(app), orch_app::ThreadSweepConfig::default())
+}
+
 /// Marks the process as stopping: `/healthz` and `/readyz` turn 503 and open event streams end
 /// once caught up, so clients reconnect elsewhere. Idempotent.
 fn mark_stopping(app: &App<Stack>) {
@@ -816,6 +834,15 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
     install_crypto_provider();
 
     let Shared { store, app, local } = setup(&cfg).await?;
+
+    // The platform's provisioner, built from the file so that a bad section stops the process here
+    // (exit 78) and not at a person's first message. Nothing calls it yet: the message path asks
+    // for it in a later change.
+    #[cfg(feature = "provisioner-platform")]
+    let _provisioner = match &cfg.provisioner {
+        Some(settings) => Some(crate::provisioner::build(settings)?),
+        None => None,
+    };
 
     // Arm the shutdown signal before the address is bound. A future that waits for SIGTERM installs
     // its handler the first time it is polled, and the host polls `shutdown` only once every
@@ -916,6 +943,14 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
     let host = host.worker("the usage retention sweep", move |stop| async move {
         let _mark = mark;
         usage_sweep.run(stop).await;
+        Ok(())
+    });
+
+    let thread_sweep = thread_sweep_worker(&app);
+    let mark = MarkStopping(Arc::clone(&app));
+    let host = host.worker("the thread retention sweep", move |stop| async move {
+        let _mark = mark;
+        thread_sweep.run(stop).await;
         Ok(())
     });
 

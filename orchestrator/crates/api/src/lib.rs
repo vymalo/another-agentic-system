@@ -19,8 +19,11 @@
 //! [ADR 0033]: ../../../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md
 
 mod artifacts;
+mod attachments;
 mod auth;
 mod authorize_limit;
+mod cbor;
+pub mod client_version;
 pub mod cors;
 mod export;
 mod extract;
@@ -118,6 +121,10 @@ pub struct ApiConfig {
     /// identifier outside sign-in (ADR 0046, slice 4c): `Some` when `userToolServers.oauth
     /// .clientMetadataUrl` is set and credentials are kept, and no such route is mounted otherwise.
     pub client_metadata: Option<ClientMetadata>,
+    /// `server.minClientVersion`: the lowest application version served. `Some`: a request of the
+    /// resource API whose client states a lower version (header `X-Client-Version`), an unreadable
+    /// one or none gets the problem of [`client_version`]. `None` (the default): no client is refused.
+    pub min_client_version: Option<client_version::ClientVersion>,
 }
 
 impl Default for ApiConfig {
@@ -135,6 +142,7 @@ impl Default for ApiConfig {
                 refill: Duration::from_millis(500),
             },
             client_metadata: None,
+            min_client_version: None,
         }
     }
 }
@@ -366,6 +374,10 @@ pub fn router_with_surfaces<P: Ports>(
             "/api/threads/{thread_id}/artifacts/{sha256}",
             get(artifacts::get_artifact::<P>),
         )
+        .route(
+            "/api/threads/{thread_id}/attachments",
+            post(attachments::upload_attachment::<P>),
+        )
         // Sharing by a revocable link (ADR 0040): the owner's routes, then what a signed-in reader
         // of a shared thread asks.
         .route(
@@ -521,6 +533,15 @@ pub fn router_with_surfaces<P: Ports>(
             identity_app,
             auth::require_identity::<P>,
         ));
+    // A deployment that sets a minimum refuses an older application before anything else of the
+    // resource API runs (identity included); the health, public, OAuth and machine routes are not
+    // the application's and are not asked.
+    // JSON stays the default; `application/cbor` is the second media type of the same bodies.
+    let api = api.layer(axum::middleware::from_fn(cbor::negotiate));
+    let api = match cfg.min_client_version {
+        Some(min) => api.layer(from_fn_with_state(min, client_version::require_minimum)),
+        None => api,
+    };
     // Machine routes are merged beside the identity-guarded routes, not under them: their surface
     // guards them. A path they do not own falls through to the guarded router's 401/404.
     let router = edge_layers(

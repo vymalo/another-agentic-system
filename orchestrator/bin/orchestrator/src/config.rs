@@ -51,6 +51,7 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::artifacts::ArtifactSettings;
+use crate::provisioner::ProvisionerSettings;
 use crate::user_tools::UserToolsSettings;
 
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:8080";
@@ -1236,10 +1237,20 @@ fn policy_of(auth: &orch_config::Auth) -> Policy {
         Some(None) => None,
         Some(Some(name)) => Some(name.trim().to_owned()),
     };
-    Policy::new(roles, default_role.map(orch_ports::Role::new)).unwrap_or_else(|e| {
+    let mut policy = Policy::new(roles, default_role.map(orch_ports::Role::new)).unwrap_or_else(|e| {
         tracing::error!(error = %e, "auth.defaultRole is not one of auth.roles; no role grants anything");
         Policy::deny_all()
-    })
+    });
+    // A role's `limits.messagesPerMinute` (ADR 0081, decision 2): no default, so a deployment that
+    // sets none refuses nothing.
+    if let Some(roles) = &auth.roles {
+        for (name, role) in roles {
+            if let Some(max) = role.effective_limits().messages_per_minute {
+                policy = policy.with_messages_per_minute(name.as_str(), max);
+            }
+        }
+    }
+    policy
 }
 
 /// The complete, validated configuration.
@@ -1351,6 +1362,9 @@ pub struct Config {
     /// section and with it off (and always from the environment alone: the section has no variable).
     /// Its `Debug` shows the hosts of the lists and the ids of the keys, never a key.
     pub user_tools: Option<UserToolsSettings>,
+    /// `provisioner` of the configuration file: a person's own agents on the platform. `None`
+    /// without the section (it has no variable), and then nothing changes. Redacted in `Debug`.
+    pub provisioner: Option<ProvisionerSettings>,
     /// `sharing` of the configuration file (ADR 0040): the cap on what can be shared, the secret
     /// the links are made with and what a public reader may see. Disabled without the section (and
     /// always from the environment alone: the section has no variable). Its `Debug` never shows a
@@ -1361,12 +1375,17 @@ pub struct Config {
     /// the section (and always from the environment alone: the section has no variable): 24 months
     /// and nothing priced.
     pub usage: orch_app::UsageSettings,
+    /// `retention.threads.days`: days a thread is kept after its last event (default 90).
+    pub thread_retention_days: u32,
     /// `sharing.rateLimit`: the limits of the public routes, built whenever the process serves
     /// routes (a deployment that is not `public` never reaches them, but they stand guard).
     pub public_limits: orch_api::PublicLimits,
     /// `server.cors.allowedOrigins` (ADR 0047): the origins whose pages may call this API. Empty:
     /// no CORS header at all.
     pub cors_allowed_origins: Vec<String>,
+    /// `server.minClientVersion`: the lowest application version served. `None`: no client is
+    /// refused.
+    pub min_client_version: Option<String>,
     /// `server.history` (ADR 0059): what one page of a thread's history may hold. The defaults from
     /// the environment alone (the section has no variable).
     pub history: orch_app::HistorySettings,
@@ -1415,6 +1434,7 @@ impl fmt::Debug for Config {
             .field("sharing", &self.sharing)
             .field("public_limits", &self.public_limits)
             .field("cors_allowed_origins", &self.cors_allowed_origins)
+            .field("min_client_version", &self.min_client_version)
             .field("history", &self.history)
             .field("internal", &self.internal)
             .field("dispatcher_order", &self.dispatcher_order)
@@ -1433,7 +1453,8 @@ impl fmt::Debug for Config {
             .field("shutdown_grace", &self.shutdown_grace)
             .field("log_format", &self.log_format)
             .field("artifacts", &self.artifacts)
-            .field("user_tools", &self.user_tools);
+            .field("user_tools", &self.user_tools)
+            .field("provisioner", &self.provisioner);
         #[cfg(feature = "agent-local")]
         debug.field("agent_local_concurrency", &self.agent_local_concurrency);
         #[cfg(feature = "registry-platform")]
@@ -1846,10 +1867,13 @@ impl Config {
             log_format,
             artifacts: resolved.artifacts,
             user_tools: resolved.user_tools,
+            provisioner: resolved.provisioner,
             usage: resolved.usage,
+            thread_retention_days: resolved.thread_retention_days,
             sharing: resolved.sharing,
             public_limits: resolved.public_limits,
             cors_allowed_origins: resolved.cors_allowed_origins,
+            min_client_version: resolved.min_client_version,
             history: resolved.history,
             internal: resolved.internal,
             dispatcher_order: resolved.dispatcher_order,
@@ -1918,6 +1942,7 @@ impl Config {
             tool_servers: self.tool_servers.clone(),
             sharing: self.sharing.clone(),
             usage: self.usage.clone(),
+            thread_retention_days: self.thread_retention_days,
             // The ingest's limits (ADR 0032); without an `artifacts` section there is no store and
             // they are never reached.
             files: self
@@ -2010,6 +2035,10 @@ pub struct EndpointSettings {
     pub base_url_ref: Option<orch_config::SecretRef>,
     /// The bearer token, when the endpoint wants one.
     pub api_key: Option<SecretString>,
+    /// The file the bearer is read from at each call, when the reference was a `{ file }` with an
+    /// absolute path (a projected service-account token a deployment rotates). The endpoint's key
+    /// is still read once at startup: this only refreshes it.
+    pub api_key_file: Option<std::path::PathBuf>,
     /// How long one question may take.
     pub timeout: Duration,
 }
@@ -2030,6 +2059,10 @@ impl fmt::Debug for EndpointSettings {
         f.debug_struct("EndpointSettings")
             .field("base_url", &self.shown_url())
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field(
+                "api_key_file",
+                &self.api_key_file.as_ref().map(|_| "<file>"),
+            )
             .field("timeout", &self.timeout)
             .finish()
     }
@@ -2074,6 +2107,7 @@ fn model_settings(
                 base_url,
                 base_url_ref: None,
                 api_key: api_key.map(SecretString::from),
+                api_key_file: None,
                 timeout,
             },
         )]),
@@ -2796,6 +2830,8 @@ struct Resolved {
     artifacts: Option<ArtifactSettings>,
     /// `userToolServers` and the keys of `secrets`, when the feature is enabled (no variable).
     user_tools: Option<UserToolsSettings>,
+    /// `provisioner`, read as the file said it (it has no variable).
+    provisioner: Option<ProvisionerSettings>,
     /// `auth.mode` and `auth.jwt`: keys that have no variable, so no string to go through.
     auth: AuthSettings,
     /// `models.endpoints` and `tasks`, read: they replace what the legacy variables make.
@@ -2804,12 +2840,16 @@ struct Resolved {
     public: Option<PublicConfig>,
     /// `usage` (ADR 0065): the retention of the usage ledger and its price table.
     usage: orch_app::UsageSettings,
+    /// `retention.threads.days`.
+    thread_retention_days: u32,
     /// `sharing` (ADR 0040), built from the file; disabled without the section.
     sharing: SharingSettings,
     /// `sharing.rateLimit`.
     public_limits: orch_api::PublicLimits,
     /// `server.cors.allowedOrigins`.
     cors_allowed_origins: Vec<String>,
+    /// `server.minClientVersion`.
+    min_client_version: Option<String>,
     /// `server.history`.
     history: orch_app::HistorySettings,
     /// `server.internal` (ADR 0084 decision 5): the listener, its tokens and the agents' read.

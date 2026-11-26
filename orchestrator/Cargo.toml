@@ -26,6 +26,7 @@ orch-store-sqlite = { path = "crates/store-sqlite" }
 orch-a2a-mapping = { path = "crates/a2a-mapping" }
 orch-agent-a2a = { path = "crates/agent-a2a" }
 orch-agent-adam = { path = "crates/agent-adam" }
+orch-provisioner-platform = { path = "crates/provisioner-platform" }
 orch-registry-platform = { path = "crates/registry-platform" }
 orch-auth-header = { path = "crates/auth-header" }
 orch-auth-jwt = { path = "crates/auth-jwt" }
@@ -33,6 +34,7 @@ orch-model-openai = { path = "crates/model-openai" }
 orch-tools-mcp = { path = "crates/tools-mcp" }
 orch-credential-broker = { path = "crates/credential-broker" }
 orch-secrets-pg = { path = "crates/secrets-pg" }
+orch-secrets-openbao = { path = "crates/secrets-openbao" }
 orch-pg-migrate = { path = "crates/pg-migrate" }
 orch-pg-connect = { path = "crates/pg-connect" }
 orch-artifacts-fs = { path = "crates/artifacts-fs" }
@@ -47,6 +49,8 @@ orch-surface-webhook = { path = "crates/surface-webhook" }
 orch-testsupport = { path = "crates/testsupport" }
 orch-thread-token = { path = "crates/thread-token" }
 orch-signed-request = { path = "crates/signed-request" }
+orch-prompt-statement = { path = "crates/prompt-statement" }
+orch-prompt-signer-static = { path = "crates/prompt-signer-static" }
 orch-agui-proto = { path = "crates/agui-proto" }
 orch-agui-projection = { path = "crates/agui-projection" }
 # The adam-rs crates (ADR 0015), all pinned to one full commit sha, never a branch or a tag; a PR
@@ -67,9 +71,12 @@ adam-a2a-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "7
 adam-store-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ea653f2e9d80eaca493916bcb160d6df314ef29" }
 adam-notify-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ea653f2e9d80eaca493916bcb160d6df314ef29" }
 adam-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ea653f2e9d80eaca493916bcb160d6df314ef29" }
+adam-engine = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ea653f2e9d80eaca493916bcb160d6df314ef29" }
+adam-store-sqlite = { git = "https://github.com/vymalo/another-adam-rs", rev = "7ea653f2e9d80eaca493916bcb160d6df314ef29" }
 clap = { version = "4.6", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+ciborium = "=0.2.2"
 thiserror = "2.0.21"
 anyhow = "1.0.104"
 uuid = { version = "1.26", features = ["v7", "serde"] }
@@ -139,3 +146,5 @@ base64 = "0.22"
 # Ed25519 for the signed requests to a tool server (`orch-signed-request`, ADR 0080): already in the tree as rustls'
 # crypto provider, so the crate adds no new library.
 aws-lc-rs = "1.18"
+# RFC 8785 numbers as ECMAScript prints them (`orch-prompt-statement`); already in the lock through adam-a2a.
+ryu-js = "1"

@@ -68,6 +68,16 @@ pub async fn binds_then_leases_to_the_injector(broker: &impl RunLeases) {
         .await
         .expect("lease");
     assert_eq!(lease.token(), &token(), "the deployment's key is leased");
+    assert_eq!(
+        lease.account(),
+        &person(),
+        "the lease names the person's account"
+    );
+    let shown = format!("{lease:?}");
+    assert!(
+        !shown.contains(person().as_str()) && !shown.contains("provider-key-for-tests"),
+        "Debug shows neither the account nor the key"
+    );
     assert!(
         lease.expires_at() <= Timestamp::now() + Duration::from_secs(30),
         "a lease lives at most 30 s"
@@ -191,5 +201,39 @@ pub async fn a_lease_never_outlives_its_binding(broker: &impl RunLeases) {
     assert!(
         lease.expires_at() <= Timestamp::now() + Duration::from_secs(5),
         "the binding's deadline bounds the lease"
+    );
+}
+
+/// The meter alone is answered the account of a bound run; every other caller, and an unknown run,
+/// is `run_not_bound`, and the meter is refused the lease.
+pub async fn answers_the_account_to_the_meter_alone(broker: &impl RunLeases) {
+    broker.bind(binding("run-10", 60)).await.expect("bind");
+    let run = RunId::new("run-10");
+    let account = broker
+        .account(&run, &RunCaller::Meter)
+        .await
+        .expect("the meter reads the account");
+    assert_eq!(account, person(), "the account is the binding's person");
+    for (caller, name) in [
+        (RunCaller::Orchestrator, "the orchestrator"),
+        (RunCaller::Injector, "the injector"),
+        (RunCaller::Agent(coder()), "the bound agent"),
+        (RunCaller::Agent(chat()), "another agent"),
+    ] {
+        match broker.account(&run, &caller).await {
+            Err(RunLeaseError::NotBound) => {}
+            other => panic!("{name}: expected run_not_bound, got {other:?}"),
+        }
+    }
+    match broker
+        .account(&RunId::new("never-bound"), &RunCaller::Meter)
+        .await
+    {
+        Err(RunLeaseError::NotBound) => {}
+        other => panic!("unknown run: expected run_not_bound, got {other:?}"),
+    }
+    expect_not_bound(
+        broker.lease(&run, &RunCaller::Meter).await,
+        "the meter, for the lease",
     );
 }

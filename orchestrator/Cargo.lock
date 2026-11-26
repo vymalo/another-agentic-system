@@ -159,6 +159,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "adam-assembly"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
+dependencies = [
+ "adam-a2a",
+ "adam-a2a-runtime",
+ "adam-agent-fs",
+ "adam-core",
+ "adam-error",
+ "adam-llm-agent",
+ "adam-model",
+ "adam-runtime",
+ "async-trait",
+ "jiff",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "adam-core"
 version = "0.1.0"
 source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
@@ -171,6 +194,32 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "adam-engine"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
+dependencies = [
+ "a2a-lf",
+ "adam-a2a",
+ "adam-a2a-runtime",
+ "adam-agent-fs",
+ "adam-assembly",
+ "adam-core",
+ "adam-error",
+ "adam-llm-agent",
+ "adam-model",
+ "adam-runtime",
+ "adam-schedule",
+ "adam-ui",
+ "async-trait",
+ "futures",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -189,6 +238,28 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "adam-llm-agent"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
+dependencies = [
+ "adam-core",
+ "adam-error",
+ "adam-model",
+ "adam-runtime",
+ "async-trait",
+ "base64 0.22.1",
+ "futures",
+ "jiff",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -267,6 +338,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "adam-schedule"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
+dependencies = [
+ "adam-agent-fs",
+ "adam-core",
+ "adam-runtime",
+ "async-trait",
+ "jiff",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "adam-store-postgres"
 version = "0.1.0"
 source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
@@ -280,6 +371,45 @@ dependencies = [
  "serde_json",
  "tokio-postgres",
  "uuid",
+]
+
+[[package]]
+name = "adam-store-sqlite"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
+dependencies = [
+ "adam-core",
+ "adam-error",
+ "async-trait",
+ "jiff",
+ "rusqlite",
+ "rustix",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "adam-ui"
+version = "0.1.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=7ea653f2e9d80eaca493916bcb160d6df314ef29#7ea653f2e9d80eaca493916bcb160d6df314ef29"
+dependencies = [
+ "a2a-lf",
+ "adam-a2a",
+ "adam-a2a-runtime",
+ "adam-core",
+ "adam-llm-agent",
+ "adam-model",
+ "adam-runtime",
+ "async-trait",
+ "jiff",
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -726,6 +856,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "ciborium"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42e69ffd6f0917f5c029256a24d0161db17cea3997d185db0d35926308770f0e"
+dependencies = [
+ "ciborium-io",
+ "ciborium-ll",
+ "serde",
+]
+
+[[package]]
+name = "ciborium-io"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05afea1e0a06c9be33d539b876f1ce3692f4afea2cb41f740e7743225ed1c757"
+
+[[package]]
+name = "ciborium-ll"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57663b653d948a338bfb3eeba9bb2fd5fcfaecb9e199e87e1eda4d9e8b240fd9"
+dependencies = [
+ "ciborium-io",
+ "half",
+]
+
+[[package]]
 name = "cipher"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -908,6 +1065,12 @@ checksum = "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78"
 dependencies = [
  "cfg-if",
 ]
+
+[[package]]
+name = "crunchy"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "crypto-common"
@@ -1441,6 +1604,17 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "half"
+version = "2.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b"
+dependencies = [
+ "cfg-if",
+ "crunchy",
+ "zerocopy",
 ]
 
 [[package]]
@@ -2362,10 +2536,12 @@ dependencies = [
  "adam-a2a",
  "adam-a2a-runtime",
  "adam-core",
+ "adam-engine",
  "adam-notify-postgres",
  "adam-postgres",
  "adam-runtime",
  "adam-store-postgres",
+ "adam-store-sqlite",
  "async-trait",
  "deadpool-postgres",
  "futures",
@@ -2420,6 +2596,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bytes",
+ "ciborium",
  "futures",
  "jiff",
  "jsonschema",
@@ -2654,6 +2831,7 @@ dependencies = [
  "orch-core",
  "orch-ports",
  "orch-store-sqlite",
+ "serde_json",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -2716,12 +2894,15 @@ dependencies = [
 name = "orch-ports"
 version = "0.1.0"
 dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
  "bytes",
  "futures",
  "getrandom 0.3.4",
  "jiff",
  "orch-core",
  "orch-ports",
+ "orch-prompt-statement",
  "proptest",
  "serde",
  "serde_json",
@@ -2734,6 +2915,47 @@ dependencies = [
  "url",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "orch-prompt-signer-static"
+version = "0.1.0"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "orch-ports",
+ "orch-prompt-statement",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
+name = "orch-prompt-statement"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ryu-js",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+]
+
+[[package]]
+name = "orch-provisioner-platform"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "orch-core",
+ "orch-ports",
+ "reqwest",
+ "rustls",
+ "secrecy",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -2752,6 +2974,24 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "orch-secrets-openbao"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "orch-core",
+ "orch-ports",
+ "reqwest",
+ "rustls",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -3028,6 +3268,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-window"
+version = "0.1.0"
+dependencies = [
+ "orch-core",
+ "orch-ports",
+ "orch-window",
+ "serde",
+ "thiserror",
+ "tokio",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "orchestrator"
 version = "0.1.0"
 dependencies = [
@@ -3053,7 +3307,9 @@ dependencies = [
  "orch-model-openai",
  "orch-pg-connect",
  "orch-ports",
+ "orch-provisioner-platform",
  "orch-registry-platform",
+ "orch-secrets-openbao",
  "orch-secrets-pg",
  "orch-signed-request",
  "orch-store-postgres",
@@ -4398,7 +4654,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

@@ -64,6 +64,7 @@ fn question(f: &impl ModelFixture) -> ChatRequest {
         system: "Reply with a short title.".to_owned(),
         user: "Title this: how do I fix the build?".to_owned(),
         max_tokens: 24,
+        run: None,
     }
 }
 
