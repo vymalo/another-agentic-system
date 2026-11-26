@@ -1,4 +1,4 @@
-//! CBOR as a second media type of the JSON API (ADR 0100), negotiated in one place.
+//! CBOR as a second media type of the JSON API (ADR 0102), negotiated in one place.
 //!
 //! A request body sent as `application/cbor` is checked, decoded by `ciborium` into the JSON value
 //! the handlers already read and handed on as `application/json`; an answer is encoded as CBOR when

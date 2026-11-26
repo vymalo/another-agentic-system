@@ -2848,7 +2848,7 @@ mod validator_bites {
 }
 
 /// Every `content` map that lists `application/json` lists `application/cbor` with the same
-/// schema (ADR 0100), anywhere in the document.
+/// schema (ADR 0102), anywhere in the document.
 #[test]
 fn every_json_body_is_also_offered_as_cbor() {
     fn walk(value: &Value, at: &str, bad: &mut Vec<String>) {

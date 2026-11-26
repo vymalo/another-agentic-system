@@ -78,6 +78,6 @@ lacks one before the person sends a message that needs it.
 
 ## CBOR
 
-Every JSON body of `chat-api.yaml` is also offered as `application/cbor` with the same schema (ADR 0100). Send
+Every JSON body of `chat-api.yaml` is also offered as `application/cbor` with the same schema (ADR 0102). Send
 `Content-Type: application/cbor` for a request and `Accept: application/cbor` for an answer; JSON is the default. Errors stay
 `application/problem+json`, and the event streams stay `text/event-stream`.

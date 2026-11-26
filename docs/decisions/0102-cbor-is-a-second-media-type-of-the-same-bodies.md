@@ -1,4 +1,4 @@
-# ADR 0100 — CBOR is a second media type of the chat API's JSON bodies
+# ADR 0102 — CBOR is a second media type of the chat API's JSON bodies
 
 - **Status:** **Accepted (2026-11-26)** by the owner: *"Yes, I'm OK with CBOR. The question was mostly for the -system and -platform, which will use OpenAPI to communicate and not CrateStack."* Built in `orchestrator/crates/api/src/cbor.rs`.
 
