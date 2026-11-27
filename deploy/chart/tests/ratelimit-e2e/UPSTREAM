@@ -21,8 +21,8 @@
 #     digest, and a pull by digest from it works). The chart's `image.digest` replaces the tag; `versionOverride` tells its version checks which Traefik that is.
 #   * traefik/whoami:v1.11.0, index digest below (mirror.gcr.io answered the tag; the digest pulls). curlimages/curl:8.22.0, index digest below (the tag is the one
 #     the docker-compose-patterns skill's sidecar names; the digest pulls).
-#   * kind v0.33.0, kubectl v1.35.9 and helm v3.19.0 and the node image kindest/node:v1.35.0: the pins of backup-e2e (their checksums were recomputed on 2026-10-17
-#     from kind's .sha256sum, dl.k8s.io's .sha256 and get.helm.sh's .sha256sum; this file does not recompute them).
+#   * kind v0.33.0, kubectl v1.37.3 and helm v4.3.2 and the node image kindest/node:v1.37.0: the pins of backup-e2e (their checksums were recomputed on
+#     2026-11-27 from kind's .sha256sum, dl.k8s.io's .sha256 and get.helm.sh's .sha256sum; this file does not recompute them).
 #   * The facts the assertions rest on are from Traefik's own source at v3.7.15 (raw.githubusercontent.com/traefik/traefik/v3.7.15), and the scenario above ran them:
 #       - pkg/middlewares/ratelimiter/rate_limiter.go: a token bucket per source, `burst` tokens, refilled at average/period; a request that finds the bucket empty is
 #         refused with 429 and `Retry-After` and `X-Retry-In` when the wait would exceed half the interval of a token (a cap of 500 ms below one request a second),
@@ -45,8 +45,8 @@ traefik_image_digest=sha256:1336e85aaed293bd63d005086e0dd013b04078b26aaeb1c18b26
 whoami_image=traefik/whoami:v1.11.0@sha256:200689790a0a0ea48ca45992e0450bc26ccab5307375b41c84dfc4f2475937ab
 curl_image=curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
 # The cluster the workflow makes (the pin of backup-e2e/UPSTREAM and dev/kagent/UPSTREAM):
-kind_node_image=kindest/node:v1.35.0@sha256:4613778f3cfcd10e615029370f5786704559103cf27bef934597ba562b269661
+kind_node_image=kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 # The tools the workflow installs (each checked against its checksum, which is in the workflow):
 #   kind v0.33.0    sha256 aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
-#   kubectl v1.35.9 sha256 3cfeaf80be482b435b0aa214aff6e0b2c312ee23c0ff20810c75517b6004c6eb
-#   helm v3.19.0    sha256 a7f81ce08007091b86d8bd696eb4d86b8d0f2e1b9f6c714be62f82f96a594496
+#   kubectl v1.37.3 sha256 9a1b55af2795b25dd288dbef62387db9b5530087ab918d28c6ad067f2e3cb07c
+#   helm v4.3.2    sha256 d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983

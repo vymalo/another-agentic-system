@@ -26,13 +26,15 @@ svc=$(kc -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway
   -o jsonpath='{.items[0].metadata.name}')
 [ -n "$svc" ] || { echo "spike.sh: no gateway service; run up.sh first" >&2; exit 1; }
 
-kc -n envoy-gateway-system port-forward "svc/$svc" 18080:80 >/dev/null 2>&1 &
+# its output is kept: when the tunnel dies, why it died is the only useful line in the log
+pf_log=$(mktemp)
+kc -n envoy-gateway-system port-forward "svc/$svc" 18080:80 >"$pf_log" 2>&1 &
 pf=$!
 # WireMock's own admin API, straight to its Service: the journal is what the gateway actually received.
 kc -n default port-forward svc/spike-gateway 18081:80 >/dev/null 2>&1 &
 pf2=$!
 body=$(mktemp)
-trap 'kill $pf $pf2 2>/dev/null || true; rm -f "$body"' EXIT
+trap 'kill $pf $pf2 2>/dev/null || true; rm -f "$body" "$pf_log"' EXIT
 
 request() { # request ARGS...
   curl -sS -o "$body" -w '%{http_code}' -X POST http://127.0.0.1:18080/v1/chat/completions \
@@ -79,12 +81,16 @@ hcount() { req_last "$1" | jq -r --arg k "$2" \
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
-# Wait for the port-forwards: any answer but none at all means the tunnel is up.
-for _ in $(seq 1 30); do
+# Wait for the port-forwards AND the gateway: a 5xx is the gateway still rolling (the controller rolls its Deployment
+# once more when the routes land, and Helm 4's server-side apply made that roll visible at the spike's first request on
+# 2026-11-27), not the spike's finding, so it keeps waiting; only a 2xx/4xx means the tunnel and the gateway are up.
+ready=0
+for _ in $(seq 1 90); do
   code=$(request -H 'X-Run-Id: warmup' -d '{"model":"spike-model","messages":[]}' || true)
   curl -fsS http://127.0.0.1:18081/__admin/health >/dev/null 2>&1 || code=""
-  case "$code" in ""|000) sleep 1 ;; *) break ;; esac
+  case "$code" in ""|000|5??) sleep 2 ;; *) ready=1; break ;; esac
 done
+[ "$ready" = 1 ] || { echo "spike.sh: the gateway's port-forward said:" >&2; cat "$pf_log" >&2; fail "the gateway did not answer within 180s (last status: ${code:-none})"; }
 
 marker=anr250-lease-marker-7f3c-run-1
 account=acct-run-1

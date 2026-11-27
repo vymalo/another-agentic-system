@@ -33,10 +33,10 @@ on:
       - .github/workflows/deploy.yml
 
 env:
-  HELM_VERSION: v3.19.0
+  HELM_VERSION: v4.3.2
   KUBECONFORM_VERSION: v0.7.0
   # The Kubernetes version the rendered manifests are validated against.
-  KUBERNETES_VERSION: 1.31.0
+  KUBERNETES_VERSION: 1.37.0
 
 concurrency:
   group: deploy-${{ github.ref }}

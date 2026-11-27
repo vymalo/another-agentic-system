@@ -54,6 +54,7 @@ spec:
       ports:
         - protocol: TCP
           port: 8081
+
 ---
 # Source: another-agentic-system/templates/networkpolicy.yaml
 # The chat agent: the orchestrator only.
@@ -85,6 +86,7 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+
 ---
 # Source: another-agentic-system/templates/orchestrator-service.yaml
 # ClusterIP only. The edge reaches it for /api and /agui; the agents reach it for the thread tools
@@ -115,3 +117,4 @@ spec:
       port: 8081
       targetPort: internal
       protocol: TCP
+

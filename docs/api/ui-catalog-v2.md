@@ -1,11 +1,10 @@
 # A2A extension: UI catalog (v2)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/ui-catalog/v2`
-- **Status:** **contract written 2026-11-19** (slice C0 of the A2UI v1.0 cutover,
-  [epic #380](https://github.com/vymalo/another-agentic-system/issues/380)); **nothing is built.** The orchestrator's side is
-  slice S1, the web's S2, the dev stack's S3, and adam-rs's A1 and A2. They reach `main` together in one merge, after S4
-  ([ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md), decision 9). Until then, [`ui-catalog-v1.md`](ui-catalog-v1.md) is
-  what is built.
+- **Status:** **built 2026-11-20** (the A2UI v1.0 cutover, [epic #380](https://github.com/vymalo/another-agentic-system/issues/380),
+  [ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md), decision 9). The contract was written 2026-11-19 (slice C0); the
+  orchestrator's side (S1), the web's (S2), the dev stack's (S3) and adam-rs's (A1 and A2) are the cutover's sides, built
+  as [`extensions.md`](extensions.md) says. [`ui-catalog-v1.md`](ui-catalog-v1.md) is retired and no longer detected.
 - **Replaces:** [`ui-catalog/v1`](ui-catalog-v1.md), **retired at the cutover**. That page stays as the record of v1. A
   reader of v1 cannot read this page's document, so this is a new URI and not an edit ([`extensions.md`](extensions.md)).
 - **Decided in:** [ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md) (decision 5, and the owner's answers of

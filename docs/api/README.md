@@ -83,3 +83,17 @@ lacks one before the person sends a message that needs it.
 Every JSON body of `chat-api.yaml` is also offered as `application/cbor` with the same schema (ADR 0102). Send
 `Content-Type: application/cbor` for a request and `Accept: application/cbor` for an answer; JSON is the default. Errors stay
 `application/problem+json`, and the event streams stay `text/event-stream`.
+
+## Status icons
+
+One legend for every status table of the documentation (the same table is in the structure file the sites share). The word stays beside the icon, so nothing is carried by the icon alone.
+
+| Icon | Word | Means |
+|---|---|---|
+| ✅ | built | fully supported or built |
+| ⚠️ | partial | partially: the cell says what is missing |
+| ❌ | not supported | not supported |
+| 🚧 | planned | in progress or planned |
+| 🧪 | experimental | works, and may change or be removed |
+| ➖ | n/a · retired | not applicable, or retired |
+| 🔒 | needs a role | needs a permission or a role |

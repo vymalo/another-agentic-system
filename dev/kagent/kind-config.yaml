@@ -5,7 +5,8 @@
 # Why the feature gates: kagent 1.x runs every agent as an Actor of Agent Substrate (ate-system), whose WorkerPools project pod
 # identities and trust bundles into the sandbox that runs the agent; that needs ClusterTrustBundle, its projection and
 # PodCertificateRequest on the API server, and the certificates.k8s.io/v1beta1 API (kagent's kind-config.yaml says so; the Substrate chart
-# says it in its values.yaml). They are on in kindest/node v1.35.0, which kagent's CI uses (`KIND_IMAGE_VERSION=1.35.0`, scripts/kind/setup-kind.sh).
+# says it in its values.yaml). kagent's CI turned them on with `KIND_IMAGE_VERSION=1.35.0` (scripts/kind/setup-kind.sh); this stack pins
+# kindest/node v1.37.0 (dev/kagent/UPSTREAM, the owner's floor of 2026-11-27, ADR 0103), where they are on too.
 #
 # The node container is `kagent-control-plane` on the docker network `kind`: the orchestrator of the compose stack joins that network
 # (dev/compose.kagent.yaml) and reaches the controller at http://kagent-control-plane:30083, the NodePort below (the card advertises that
