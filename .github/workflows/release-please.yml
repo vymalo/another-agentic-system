@@ -1,8 +1,9 @@
 name: release-please
 
 # Opens one release PR from Conventional Commits, and updates that same PR as
-# more changes land. When it merges, release-please creates vX.Y.Z and the
-# desktop-release workflow builds the distributable assets for that tag.
+# more changes land. When it merges, release-please creates vX.Y.Z: release.yml
+# publishes the orchestrator and web images and the chart at X.Y.Z (ADR 0106), and
+# the desktop-release workflow builds the distributable assets for that tag.
 #
 # The default GITHUB_TOKEN deliberately cannot be used: actions it creates do
 # not trigger the tag workflow. This GitHub App therefore needs only
