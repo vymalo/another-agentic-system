@@ -61,6 +61,8 @@ two halves on its side, and this record uses its names rather than inventing oth
 - **The adam half is ANR-139:** adam serves `model-pick/v1` (card, activation, `InvalidParams`, echo) over `vymalo.model`; it
   waits on ANR-117 / adam-rs#338. Until it lands no card lists the extension, so every model pick is a `422 model_not_offered`
   with an empty `offered` and the web shows no model chip; the effort control works as soon as an agent lists `reasoning/v1`.
+  **Amended 2026-11-27:** built. adam-rs `9f90f1e6` lists `model-pick/v1` when its profiles name models (`MODEL_ALIASES_FILE`), and the
+  stack's `chat` does (`dev/model-profiles.json`, `dev/pick-real-e2e.sh`); the sentence "no card lists the extension" no longer holds there.
 - `chat-api.yaml` changes are additive only (two optional members on the message and the thread; two error codes).
 - A new value type in the core, `ModelPick` (a validated alias and a closed `ReasoningEffort` enum), carries the pick; every
   constructor of the send request gains a `None`. The log holds it as `user_message.pick` (one member, `{model?, reasoningEffort?}`);
