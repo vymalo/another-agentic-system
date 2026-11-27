@@ -43,7 +43,7 @@ switch, carrying the mode on its own reworks like the tier)" to this repository.
    (which the orchestrator never sends: an unpicked mode is no member) **when a new task starts**. A thread default that the card has since dropped is a `422`
    for the message that resolves to it, naming the mode; never a silent fallback. The `422` code `mode_not_offered` is **aligned with adam's own name** for its `InvalidParams`; `mode` and `vymalo.mode` are this record's, matching the model pick (and `vymalo.mode` is also adam's run-context key `CONTEXT_MODE`, as `vymalo.model` is: no collision).
    **The hold rule is the tier's** ([`access-tier-v1.md`](../api/access-tier-v1.md)): the mode holds until another is picked; the newest message that names one wins from the next step and one that names none leaves it. The ladder applies when a task starts; within a task an unpicked message keeps the task's mode, and clearing the thread default cannot bring a running task back to the agent's default.
-   **Reworks and answers mirror the tier:** the orchestrator sends the job's last mode on the messages it sends for the thread (a rework, an A2UI answer, an MCP `start_job`), and nothing to a child's task: a child run starts in its parent's mode, adam's behaviour.
+   **Reworks and answers mirror the tier:** the job's last mode is carried on the gate's reworks, an A2UI action's delegation, an answer to a blocked job and an MCP `answer` or post while the job is unfinished; an MCP `start_job` and a message to a finished job resolve it as a first message (message, thread default, nothing), and a mode is never carried from one job to the next. Nothing goes to a child's task: a child run starts in its parent's mode, adam's behaviour.
    **The name** on `PATCH` and `forwardedProps` is any non-blank string of at most 64 bytes with no control characters (adam requires only non-blank, and folder file names vary); the card decides what is offered, with the `422`.
 5. **What is stored.** The `user_message` holds the resolved mode as its own member `mode: "<name>"` (omitted when none); the thread row holds its
    default (its own column in each store, no event). A redelivery, a fork's first message and an edit that names none carry it; a
@@ -58,14 +58,14 @@ switch, carrying the mode on its own reworks like the tier)" to this repository.
 ## Consequences
 
 - Nothing runs differently until an agent lists the extension. A plain A2A agent gets the same request as before.
-- `chat-api.yaml` changes are additive only (one optional member on the message and the thread, one error code, one capabilities
-  member), when the build lands.
+- `chat-api.yaml` changes are additive only (`mode` on `ThreadPatch`, `ForkRequest` and the `user_message` data, the `forwardedProps` key `vymalo.mode`, one error code, one capabilities
+  member on `Agent`), when the build lands.
 - **Prerequisites of the proof:** the coder pin (`compose.yaml` about line 196, `dev/coder/UPSTREAM` `9f90f1e`) predates adam-rs `2c2b551d`, so a `bump-adam` comes first; and `dev/agents/chat/agent/` needs a `modes/` folder with two modes that narrow by `tools:` only.
 - **The proof is a scenario, *unbuilt* (ANR-913)** in `dev/e2e-all.sh`: see the page's "Conformance".
 
 ## Alternatives rejected
 
-- **A member inside `pick` (ADR 0086):** the mode is a separate extension with its own URI, its own refusal and its own hold rule, so it gets its own `mode` member on the `user_message` and its own column; `pick` is the model and the effort, which hold per message and travel on the model extensions.
+- **A member inside `pick` (ADR 0086):** the mode is a separate extension with its own URI, its own refusal and its own hold rule, so it gets its own `mode` member on the `user_message` and its own column. `pick` is the model and the effort: other URIs, other refusal codes (`model_not_offered`, `reasoning_not_offered`) and, for the model, a coupling to an endpoint and the run's lease that a mode does not have. (They hold like the mode in adam; that is not the reason.)
 - **Folding the mode into the access tier:** a tier is a limit the person sets on what the agent may do; a mode is a way of working
   the agent defines. A mode may be `plan` under the `auto` tier, and the tier caps every mode.
 - **A silent fallback to the default for an unlisted mode:** the person's choice would be ignored without a word.

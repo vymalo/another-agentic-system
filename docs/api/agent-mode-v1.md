@@ -35,9 +35,16 @@ The URI is activated in `A2A-Extensions` and `message.extensions`; `message.meta
 
 ## The hold rule
 
-The mode holds until another is picked, as the tier does ([`access-tier-v1.md`](access-tier-v1.md)): the **newest message that names one wins** from the agent's next step, and a message that names none leaves it as it is (adam's behaviour, *verified 2026-11-27*, `crates/adam-a2a-runtime/README.md`). The ladder above applies **when a new task starts**. Within a task an unpicked message keeps the task's mode, and clearing the thread default cannot bring a running task back to the agent's default. A new task never inherits the last one's mode.
+The mode holds until another is picked, as the tier does ([`access-tier-v1.md`](access-tier-v1.md)): the **newest message that names one wins** from the agent's next step, and a message that names none leaves it as it is (adam's behaviour, *verified 2026-11-27*, `crates/adam-a2a-runtime/README.md`). The ladder above applies **when a new task starts**. Within a task an unpicked message keeps the task's mode, and clearing the thread default cannot bring a running task back to the agent's default. *Unverified:* that a new task never inherits the last one's mode: adam's docs and tests cover only holding within a task, so this page makes no claim about adam there; the orchestrator never carries a mode from one job to the next.
 
-Like the tier, the orchestrator sends the job's last mode choice on the messages it sends on the thread's behalf: a rework, an A2UI answer, an MCP `start_job` for that thread. Nothing goes to a child's task: a child run starts in its parent's mode, which is adam's doing.
+Like the tier ([`access-tier-v1.md`](access-tier-v1.md), its table of the orchestrator's own messages), the job's last mode choice is carried on:
+
+- the verification gate's reworks (a failed check, a CI report, a verifier's findings, a timer that ends a wait);
+- the delegation of an A2UI action;
+- an answer to a blocked job;
+- an MCP `answer`, and an MCP post to a thread while the job is unfinished.
+
+These resolve the mode as a first message (the message's own, then the thread's default, then nothing sent): an MCP `start_job`, and an MCP message to a finished job, which starts a new job. A mode is never carried from one job to the next. Nothing goes to a child's task: a child run starts in its parent's mode, which is adam's doing.
 
 ## What the orchestrator checks
 
@@ -102,7 +109,7 @@ A mode only narrows what the agent does; the access tier still caps every mode. 
 
 ## What the build changes
 
-- `docs/api/chat-api.yaml`, additive only: `mode` on `ThreadPatch` (which is `additionalProperties: false`, about line 2944), on the fork body and on the thread; `mode` in the `user_message` data; the descriptions of `patchThread`, the fork and the AG-UI run (about lines 851, 875, 1132, 1418, 1451) gain the `422 mode_not_offered`; `AgentInfo` gains the modes; the AG-UI `forwardedProps` key `vymalo.mode`.
+- `docs/api/chat-api.yaml`, additive only (names checked against the file): `mode` on `ThreadPatch` (`additionalProperties: false`, so it must be added) and on `ForkRequest` (also `additionalProperties: false`, served by `forkThread`), beside `model` and `reasoningEffort`; `mode` in `EventData` for the `user_message`, beside `pick`; the modes the live card lists on `Agent` (and so `AgentList`), beside its `pick` member; the descriptions of `patchThread`, `forkThread` and the AG-UI run (its 400 and 422 answers) gain `mode_not_offered`, and the run gains the `forwardedProps` key `vymalo.mode`. The thread's default is the stored column; as with model pick it is **not a member of the `Thread` schema**: only the answer of `patchThread` carries it. (`AgentInfo` is the web's own type name, not a schema here.)
 - The core: a validated mode name, `user_message.mode`, a `threads.mode` column in each store (no event), the card read and the activation in the A2A client.
 - The web: a switch beside the tier's, drawn only from a live card that lists modes.
 
