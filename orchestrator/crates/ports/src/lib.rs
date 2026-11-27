@@ -135,6 +135,7 @@ pub use pending::{
     PendingAuthorizations, StateDigest,
 };
 pub use platform_credentials::{
+    PlatformCertificateFuture, PlatformClientCertificate, PlatformClientCertificates,
     PlatformCredentials, PlatformCredentialsError, PlatformToken, PlatformTokenFuture,
 };
 pub use prompt_signer::{AttestedPayload, PromptSigner, SignedStatement, SignerError, SignerState};

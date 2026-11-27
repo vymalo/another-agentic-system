@@ -13,6 +13,11 @@
 //! * **Ready** is the agent's `state`, polled until [`PlatformConfig::ready_timeout`].
 //! * The form of each kind is the deployment's ([`PlatformConfig::with_form`]): the adapter adds
 //!   `name`, `owner` and `suspend` and nothing else, so it holds no model, image or secret.
+//! * What the orchestrator presents is one of two modes ([`PlatformAuth`]): a bearer token from a
+//!   [`PlatformCredentials`], or a **client certificate** on the TLS connection from a
+//!   [`PlatformClientCertificates`] (ANR-809). A mode is chosen when the provisioner is built and
+//!   never falls back to the other: in certificate mode a certificate that cannot be had sends
+//!   nothing, and no `Authorization` header is sent.
 
 mod oidc;
 
@@ -20,13 +25,17 @@ pub use oidc::{OidcClientConfig, OidcClientCredentials};
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as B64;
 use orch_core::BoxError;
 use orch_ports::{
-    AgentKind, AgentOwner, AgentProvisioner, AgentState, BlockedReason, PlatformCredentials,
+    AgentKind, AgentOwner, AgentProvisioner, AgentState, BlockedReason, Clock,
+    PlatformClientCertificate, PlatformClientCertificates, PlatformCredentials,
     PlatformCredentialsError, PlatformToken, PlatformTokenFuture, ProvisionError, ProvisionedAgent,
+    SystemClock,
 };
 use reqwest::header::{AUTHORIZATION, ETAG, HeaderValue, IF_MATCH, IF_NONE_MATCH};
 use reqwest::{Method, StatusCode};
@@ -34,19 +43,45 @@ use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 use tokio::time::Instant;
 use url::Url;
+use zeroize::Zeroizing;
 
 /// Times a write is tried again after the platform says the agent changed meanwhile.
 const MAX_RACES: u32 = 8;
+
+/// What the orchestrator presents to the Platform API. One mode per provisioner, chosen at build
+/// time: the two never fall back to one another.
+#[derive(Clone)]
+pub enum PlatformAuth {
+    /// A bearer token, asked of the port before every request and never kept.
+    Bearer(Arc<dyn PlatformCredentials>),
+    /// A client certificate presented on the TLS connection, asked of the port before every request
+    /// (so a renewal is the port's business); no `Authorization` header is sent.
+    ClientCertificate(Arc<dyn PlatformClientCertificates>),
+}
+
+impl fmt::Debug for PlatformAuth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PlatformAuth::Bearer(_) => f.write_str("PlatformAuth::Bearer(<redacted>)"),
+            PlatformAuth::ClientCertificate(_) => {
+                f.write_str("PlatformAuth::ClientCertificate(<redacted>)")
+            }
+        }
+    }
+}
 
 /// How to reach the Platform API.
 #[derive(Clone)]
 pub struct PlatformConfig {
     /// The API's base URL (`https://platform.example.com`), `http` or `https`, with a host and no
-    /// user name or password. `/v1/...` is appended.
+    /// user name or password. `/v1/...` is appended. A client certificate needs `https`.
     pub url: String,
     /// What the orchestrator presents (it must hold `platform:agents.own`). Asked before every
-    /// request, so a token that expires or rotates is the port's business.
-    pub credentials: Arc<dyn PlatformCredentials>,
+    /// request, so a token or a certificate that expires or rotates is the port's business.
+    pub auth: PlatformAuth,
+    /// PEM certificates the listener's certificate is also checked against, besides the system's
+    /// roots (a private authority). `None`: the system's roots alone.
+    pub server_ca_pem: Option<String>,
     /// The agent form of each kind, without `name`, `owner` and `suspend`.
     pub forms: HashMap<AgentKind, Value>,
     /// How long one request may take.
@@ -57,6 +92,10 @@ pub struct PlatformConfig {
     pub poll_interval: Duration,
     /// Whether to honour `HTTP(S)_PROXY` from the environment.
     pub use_system_proxy: bool,
+    /// What "now" is for the one thing the provisioner judges itself: a client certificate whose
+    /// end of validity has passed is not presented. The system clock; the same one the certificate
+    /// source is given in a deployment, and one clock in a test ([`with_clock`](Self::with_clock)).
+    pub clock: Arc<dyn Clock>,
 }
 
 impl PlatformConfig {
@@ -71,14 +110,29 @@ impl PlatformConfig {
         url: impl Into<String>,
         credentials: Arc<dyn PlatformCredentials>,
     ) -> Self {
+        Self::with_auth(url, PlatformAuth::Bearer(credentials))
+    }
+
+    /// The same, presenting the client certificate `certificates` gives at each request, on the
+    /// TLS connection and with no `Authorization` header. `url` must be `https`.
+    pub fn with_client_certificate(
+        url: impl Into<String>,
+        certificates: Arc<dyn PlatformClientCertificates>,
+    ) -> Self {
+        Self::with_auth(url, PlatformAuth::ClientCertificate(certificates))
+    }
+
+    fn with_auth(url: impl Into<String>, auth: PlatformAuth) -> Self {
         PlatformConfig {
             url: url.into(),
-            credentials,
+            auth,
+            server_ca_pem: None,
             forms: HashMap::new(),
             timeout: Duration::from_secs(5),
             ready_timeout: Duration::from_secs(120),
             poll_interval: Duration::from_secs(2),
             use_system_proxy: true,
+            clock: Arc::new(SystemClock),
         }
     }
 
@@ -103,6 +157,20 @@ impl PlatformConfig {
         self
     }
 
+    /// Also trusts the PEM certificates in `pem` for the listener (a private authority).
+    #[must_use]
+    pub fn with_server_ca_pem(mut self, pem: impl Into<String>) -> Self {
+        self.server_ca_pem = Some(pem.into());
+        self
+    }
+
+    /// Judges the end of a client certificate's validity on `clock` (the system clock by default).
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
     /// Reaches the API directly, whatever the environment's proxy says.
     #[must_use]
     pub fn without_system_proxy(mut self) -> Self {
@@ -115,7 +183,7 @@ impl fmt::Debug for PlatformConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PlatformConfig")
             .field("url", &self.url)
-            .field("credentials", &"<redacted>")
+            .field("auth", &self.auth)
             .field("kinds", &self.forms.keys().collect::<Vec<_>>())
             .field("ready_timeout", &self.ready_timeout)
             .finish_non_exhaustive()
@@ -130,12 +198,87 @@ pub enum BuildError {
         "the platform URL must be an absolute http:// or https:// URL with a host and no user name or password"
     )]
     BadUrl,
+    /// A client certificate is presented on a TLS connection, so the URL must be `https`.
+    #[error("a client certificate needs an https:// platform URL")]
+    CertificateNeedsHttps,
+    /// The PEM certificates given for the listener cannot be read.
+    #[error("the platform's server CA is not a PEM certificate bundle")]
+    BadServerCa,
     /// A form is not a JSON object, or sets a field the adapter owns.
     #[error("the form of {0:?} must be a JSON object without name, owner or suspend")]
     BadForm(AgentKind),
     /// The HTTP client could not be built.
     #[error("cannot build the platform HTTP client")]
     Http(#[source] BoxError),
+}
+
+/// What every client of the provisioner shares.
+struct ClientSettings {
+    timeout: Duration,
+    use_system_proxy: bool,
+    roots: Vec<reqwest::Certificate>,
+}
+
+impl ClientSettings {
+    /// A client with these settings, presenting `identity` on the TLS connection when there is one.
+    fn build(&self, identity: Option<reqwest::Identity>) -> Result<reqwest::Client, BuildError> {
+        // Err means a provider is already installed, which is what we want.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let mut builder = reqwest::Client::builder()
+            .timeout(self.timeout)
+            .connect_timeout(self.timeout)
+            // What is presented goes to the configured URL and nowhere else.
+            .redirect(reqwest::redirect::Policy::none());
+        if !self.use_system_proxy {
+            builder = builder.no_proxy();
+        }
+        for root in &self.roots {
+            builder = builder.add_root_certificate(root.clone());
+        }
+        if let Some(identity) = identity {
+            builder = builder.identity(identity);
+        }
+        builder
+            .build()
+            .map_err(|e| BuildError::Http(e.without_url().into()))
+    }
+}
+
+/// A port's refusal is the platform's refusal; anything else is "try later".
+fn credentials_error(e: PlatformCredentialsError) -> ProvisionError {
+    match e {
+        PlatformCredentialsError::Refused => ProvisionError::Refused,
+        other => ProvisionError::unavailable(other),
+    }
+}
+
+/// The TLS identity of a certificate: its chain and its key, as the one PEM buffer reqwest reads.
+/// The buffer holds the key, so it is wiped when it is dropped.
+fn identity_of(
+    certificate: &PlatformClientCertificate,
+) -> Result<reqwest::Identity, ProvisionError> {
+    let mut pem = Zeroizing::new(String::new());
+    for der in certificate.chain_der() {
+        push_pem(&mut pem, "CERTIFICATE", der);
+    }
+    push_pem(&mut pem, "PRIVATE KEY", certificate.expose_key_pkcs8());
+    reqwest::Identity::from_pem(pem.as_bytes())
+        .map_err(|_| ProvisionError::unavailable("the platform client certificate is unusable"))
+}
+
+fn push_pem(out: &mut String, label: &str, der: &[u8]) {
+    let mut body = Zeroizing::new(String::new());
+    B64.encode_string(der, &mut body);
+    out.push_str("-----BEGIN ");
+    out.push_str(label);
+    out.push_str("-----\n");
+    for line in body.as_bytes().chunks(64) {
+        out.extend(line.iter().map(|b| char::from(*b)));
+        out.push('\n');
+    }
+    out.push_str("-----END ");
+    out.push_str(label);
+    out.push_str("-----\n");
 }
 
 /// What a read of one agent said.
@@ -172,9 +315,16 @@ impl PlatformCredentials for StaticCredentials {
 /// The [`AgentProvisioner`] over the Platform API.
 #[derive(Clone)]
 pub struct PlatformProvisioner {
+    /// The client of the bearer mode (and a plain one, never used, in the certificate mode).
     http: reqwest::Client,
+    /// How the clients are built, for the certificate mode which builds one per certificate.
+    settings: Arc<ClientSettings>,
+    /// The certificate mode's client and the serial of the certificate it presents: rebuilt exactly
+    /// when the serial changes.
+    mtls: Arc<Mutex<Option<(String, reqwest::Client)>>>,
     base: Url,
-    credentials: Arc<dyn PlatformCredentials>,
+    auth: PlatformAuth,
+    clock: Arc<dyn Clock>,
     forms: HashMap<AgentKind, Value>,
     ready_timeout: Duration,
     poll_interval: Duration,
@@ -208,25 +358,30 @@ impl PlatformProvisioner {
                 return Err(BuildError::BadForm(*kind));
             }
         }
-        // Err means a provider is already installed, which is what we want.
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        let builder = reqwest::Client::builder()
-            .timeout(cfg.timeout)
-            .connect_timeout(cfg.timeout)
-            // The token goes to the configured URL and nowhere else.
-            .redirect(reqwest::redirect::Policy::none());
-        let builder = if cfg.use_system_proxy {
-            builder
-        } else {
-            builder.no_proxy()
-        };
-        let http = builder
-            .build()
-            .map_err(|e| BuildError::Http(e.without_url().into()))?;
+        let mut roots = Vec::new();
+        if let Some(pem) = &cfg.server_ca_pem {
+            roots = reqwest::Certificate::from_pem_bundle(pem.as_bytes())
+                .map_err(|_| BuildError::BadServerCa)?;
+            if roots.is_empty() {
+                return Err(BuildError::BadServerCa);
+            }
+        }
+        if matches!(cfg.auth, PlatformAuth::ClientCertificate(_)) && base.scheme() != "https" {
+            return Err(BuildError::CertificateNeedsHttps);
+        }
+        let settings = Arc::new(ClientSettings {
+            timeout: cfg.timeout,
+            use_system_proxy: cfg.use_system_proxy,
+            roots,
+        });
+        let http = settings.build(None)?;
         Ok(PlatformProvisioner {
             http,
+            settings,
+            mtls: Arc::new(Mutex::new(None)),
             base,
-            credentials: cfg.credentials,
+            auth: cfg.auth,
+            clock: cfg.clock,
             forms: cfg.forms,
             ready_timeout: cfg.ready_timeout,
             poll_interval: cfg.poll_interval,
@@ -262,6 +417,53 @@ impl PlatformProvisioner {
         Ok(form)
     }
 
+    /// The client to send with and, in the bearer mode, the `Authorization` header.
+    async fn identity(&self) -> Result<(reqwest::Client, Option<HeaderValue>), ProvisionError> {
+        match &self.auth {
+            PlatformAuth::Bearer(credentials) => {
+                let token = credentials.token().await.map_err(credentials_error)?;
+                let mut authorization =
+                    HeaderValue::from_str(&format!("Bearer {}", token.expose()))
+                        .map_err(|_| ProvisionError::Refused)?;
+                authorization.set_sensitive(true);
+                Ok((self.http.clone(), Some(authorization)))
+            }
+            PlatformAuth::ClientCertificate(certificates) => {
+                let certificate = certificates.current().await.map_err(credentials_error)?;
+                // The port answers a certificate that is valid now; the platform would refuse one
+                // that is not, but it is not the only check: nothing is sent with a lapsed one.
+                if certificate.not_after() <= self.clock.now() {
+                    return Err(ProvisionError::unavailable(
+                        "the platform client certificate is over",
+                    ));
+                }
+                Ok((self.certificate_client(&certificate)?, None))
+            }
+        }
+    }
+
+    /// The client that presents `certificate`: the cached one while the serial is the same, a new
+    /// one (a new connection pool, so a new TLS handshake with the new identity) when it changed.
+    fn certificate_client(
+        &self,
+        certificate: &PlatformClientCertificate,
+    ) -> Result<reqwest::Client, ProvisionError> {
+        let mut cache = self.mtls.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((_, client)) = cache
+            .as_ref()
+            .filter(|(serial, _)| serial.as_str() == certificate.serial())
+        {
+            return Ok(client.clone());
+        }
+        let identity = identity_of(certificate)?;
+        let client = self
+            .settings
+            .build(Some(identity))
+            .map_err(ProvisionError::unavailable)?;
+        *cache = Some((certificate.serial().to_owned(), client.clone()));
+        Ok(client)
+    }
+
     async fn send(
         &self,
         method: Method,
@@ -269,18 +471,13 @@ impl PlatformProvisioner {
         headers: &[(reqwest::header::HeaderName, HeaderValue)],
         body: Option<&Value>,
     ) -> Result<reqwest::Response, ProvisionError> {
-        // Asked at every request, and never kept: the port owns expiry and rotation.
-        let token = self.credentials.token().await.map_err(|e| match e {
-            PlatformCredentialsError::Refused => ProvisionError::Refused,
-            _ => ProvisionError::unavailable(e),
-        })?;
-        let mut authorization = HeaderValue::from_str(&format!("Bearer {}", token.expose()))
-            .map_err(|_| ProvisionError::Refused)?;
-        authorization.set_sensitive(true);
-        let mut request = self
-            .http
-            .request(method, url)
-            .header(AUTHORIZATION, authorization);
+        // Asked at every request, and never kept: the port owns expiry and rotation. In the
+        // certificate mode an error ends here: nothing is sent without an identity.
+        let (client, authorization) = self.identity().await?;
+        let mut request = client.request(method, url);
+        if let Some(authorization) = authorization {
+            request = request.header(AUTHORIZATION, authorization);
+        }
         for (name, value) in headers {
             request = request.header(name, value.clone());
         }
