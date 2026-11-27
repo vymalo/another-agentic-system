@@ -3,6 +3,7 @@ import Md3Theme from "@vaam-apps/vitepress-md3";
 import { theme as openapiTheme, useOpenapi } from "vitepress-openapi/client";
 import "vitepress-openapi/dist/style.css";
 import { DEFAULT_TAG } from "../openapi/shared";
+import "virtual:group-icons.css";
 import "./extras.css";
 
 // Only the configuration of the library is here; the contract itself is loaded by the API pages (openapi/client.ts).

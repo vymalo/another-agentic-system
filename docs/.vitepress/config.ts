@@ -5,6 +5,7 @@ import { defineMd3Config } from "@vaam-apps/vitepress-md3/config";
 import { withMermaid } from "vitepress-plugin-mermaid";
 import { useSidebar } from "vitepress-openapi";
 import llmstxt from "vitepress-plugin-llms";
+import { groupIconMdPlugin, groupIconVitePlugin } from "vitepress-plugin-group-icons";
 import { DEFAULT_BASE, DEFAULT_TAG } from "./openapi/shared";
 import { loadSpec } from "./openapi/spec";
 import { llmsSidebar } from "./llms";
@@ -169,11 +170,13 @@ export default withMermaid(
       search: { provider: "local" },
       socialLinks: [{ icon: "github", link: "https://github.com/vymalo/another-agentic-system" }],
     },
-    markdown: { config: (md) => { md.use(inDepth); escapeUnknownTags(md); }, attrs: { disable: true } },
+    markdown: { config: (md) => { md.use(inDepth); escapeUnknownTags(md); md.use(groupIconMdPlugin); }, attrs: { disable: true } },
     mermaid: {},
     // llms.txt, llms-full.txt and a .md per page, for agents that read the docs (ANR-1088, STRUCTURE.md).
     vite: {
       plugins: [
+        // Icons of titled fences and code-group tabs; names from the bundled sets only, so nothing is fetched (never a URL icon).
+        groupIconVitePlugin({ customIcon: { terminal: "vscode-icons:file-type-shell", sh: "vscode-icons:file-type-shell", docker: "logos:docker-icon", compose: "logos:docker-icon", helm: "vscode-icons:file-type-helm", kubectl: "logos:kubernetes", kubernetes: "logos:kubernetes", cargo: "vscode-icons:file-type-cargo", rust: "vscode-icons:file-type-rust" } }),
         llmstxt({
           title: "another-agentic-system",
           description: "A protocol-agnostic orchestration layer for multi-agent work: a chat surface and a stateless orchestrator over one Postgres event log.",
