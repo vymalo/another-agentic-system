@@ -15,9 +15,14 @@ on:
 permissions:
   contents: read
 
+# A pull request run is replaced by the next push to its branch. A push to main has a group of its own, its sha, and is
+# never cancelled or replaced: release.yml copies the sha-<7> image of the newest commit that changed this workflow's paths,
+# and no one can say in advance which commit that is. A shared group would not be enough: it keeps one running and one
+# pending run, and a newer pending run cancels the older pending one even with cancel-in-progress false (ANR-1197, ADR 0106
+# amended 2026-11-27).
 concurrency:
-  group: web-${{ github.ref }}
-  cancel-in-progress: true
+  group: web-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
