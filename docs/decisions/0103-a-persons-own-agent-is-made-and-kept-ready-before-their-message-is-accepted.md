@@ -115,11 +115,13 @@ This amendment replaces its first version, which recomputed the route from the c
       `refunded` of ADR 0016 over again), raised by the new `ThreadStore::wait_outbox`, which the stop's wait for a
       delegation in flight calls instead of `retry_outbox`. `attempts` still only goes up (it is the fencing token of the
       lease); every cap and backoff of the dispatcher reads `OutboxItem::counted_attempts()` (`attempts - refunded`), so
-      the listing wait and the `CancelTask` of a stop count only their own claims. The checks that ask whether an earlier
+      the listing wait and the `CancelTask` of a stop count only the claims that tried something (they share that one counted
+      counter, and a lapse counts). The checks that ask whether an earlier
       claim may have sent the message (the lookup by message id of a delegation, a verify and an ask) stay on the raw
       `attempts`, and so does the bound of the wait itself, the one cap that has to count the waits (so `wake_headroom`
-      is still needed). A stop that never waited is as it was. A rolling deploy: a replica of an older build ignores
-      `refunded` and may dead-letter a waited row earlier than this build would; the row ends as it ended before. Not
+      is still needed). A stop that never waited is as it was. A rolling deploy: a replica of an older build that is
+      already running ignores `refunded` and may dead-letter a waited row earlier than this build would (the row ends as it ended
+      before); a restarted old-build pod is refused by the database, `orch-pg-migrate` returning `VersionMissing` as for every migration. Not
       changed: a claim handed back at shutdown (`release_leases`) is still counted for an outbox row. *Verified 2026-11-27*
       by `crates/app/tests/provisioning.rs` and the store conformance case
       `a_wait_is_refunded_and_a_retry_and_a_lapse_are_counted` on the memory store; unverified on Postgres and SQLite until CI has run it.

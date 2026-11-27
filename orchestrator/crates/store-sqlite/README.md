@@ -37,7 +37,7 @@ of the owner's advisory lock, one counter for revisions, the audience as a JSON 
 [`store-postgres/src/teams.rs`](../store-postgres/src/teams.rs) the same way: one `BEGIN IMMEDIATE`
 transaction in place of the owner's advisory lock, one counter for revisions, the owner predicate in
 every statement, and the limit of fifty kept by the one writer. The definitions of people's own MCP servers (`src/user_tool_servers.rs`,
-`migrations/0005_user_tool_servers.sql`, and `0008_user_tool_server_last4.sql` for the `last4` column, and `0009_outbox_refunded.sql` for `outbox.refunded`, the claims that only waited, ANR-1078: written by `wait_outbox` (`retry_outbox` plus `refunded = refunded + 1`, fenced on `attempts`, which only goes up) and read by `OutboxItem::counted_attempts()`; a replica of an older build ignores it and may dead-letter a waited row earlier, which is benign) mirror
+`migrations/0005_user_tool_servers.sql`, and `0008_user_tool_server_last4.sql` for the `last4` column, and `0009_outbox_refunded.sql` for `outbox.refunded`, the claims that only waited, ANR-1078: written by `wait_outbox` (`retry_outbox` plus `refunded = refunded + 1`, fenced on `attempts`, which only goes up) and read by `OutboxItem::counted_attempts()`; an older build of the application ignores it, which is benign: the embedded store is one process, [ADR 0076](../../../docs/decisions/0076-the-orchestrator-as-a-library-in-an-application.md)) mirror
 [`store-postgres/src/user_tool_servers.rs`](../store-postgres/src/user_tool_servers.rs) the same way:
 `BEGIN IMMEDIATE` in place of the owner's advisory lock makes the limit of eight atomic, the id, the
 count and the insert with nobody between them, and the compare and swap of a revision is one
@@ -147,7 +147,7 @@ power loss may lose the last transactions).
 
 ## The schema is not the Postgres one
 
-The 29 migrations of `orch-store-postgres` are not portable: `jsonb`, `uuid`, `bytea`,
+The migrations of `orch-store-postgres` are not portable: `jsonb`, `uuid`, `bytea`,
 `array_to_tsvector`, partial indexes over expressions, `NOT VALID`. `migrations/0001_init.sql`
 states the same tables in SQLite's types:
 
