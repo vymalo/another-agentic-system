@@ -170,6 +170,13 @@ pub async fn binds_once(broker: &impl RunLeases) {
         Err(RunLeaseError::Conflict) => {}
         other => panic!("expected run_already_bound, got {other:?}"),
     }
+    // A refused bind of a LIVE run leaves it alone: the guard that drops a tombstone (`ended_at IS
+    // NOT NULL` in Postgres, `ended_at.is_some()` in memory) must not reach a live row, or this
+    // lease would be `run_not_bound`.
+    broker
+        .lease(&RunId::new("run-6"), &RunCaller::Injector)
+        .await
+        .expect("a refused bind leaves the live run leasable");
 }
 
 /// A binding that names no model cannot be leased.
@@ -383,7 +390,7 @@ pub async fn an_ended_run_is_not_rebound_to_another_person_or_agent(broker: &imp
     let run = RunId::new("run-16");
     broker.unbind(&run).await.expect("unbind");
     let mut theirs = binding("run-16", 60);
-    theirs.person = other_person.clone();
+    theirs.person = other_person;
     match broker.bind(theirs).await {
         Err(RunLeaseError::Conflict) => {}
         other => panic!("another person: expected run_already_bound, got {other:?}"),
@@ -410,7 +417,7 @@ pub async fn an_ended_run_is_not_rebound_to_another_person_or_agent(broker: &imp
         Err(RunLeaseError::NotBound) => {}
         other => panic!("the meter must not be told anyone's account, got {other:?}"),
     }
-    // The same binding makes it live again, and it still names the first person.
+    // After the drop the run is unbound, so this bind is a fresh insert of the first person.
     broker.bind(binding("run-17", 60)).await.expect("bind anew");
     assert_eq!(
         broker
@@ -430,4 +437,40 @@ pub async fn an_ended_run_is_not_rebound_to_another_person_or_agent(broker: &imp
         .lease(&run, &RunCaller::Injector)
         .await
         .expect("a revived run is leased");
+}
+
+/// An ended run is attributed by agent and person alone: the same agent and person bind it again
+/// with **another model**, and it is live with the new model (a person who picks another model on a
+/// reused task id loses nothing; no attribution is at stake). A live run keeps the full rule
+/// (`binds_once`).
+pub async fn an_ended_run_is_revived_by_the_same_agent_and_person_with_another_model(
+    broker: &impl RunLeases,
+) {
+    broker.bind(binding("run-18", 60)).await.expect("bind");
+    let run = RunId::new("run-18");
+    broker.unbind(&run).await.expect("unbind");
+    expect_not_bound(
+        broker.lease(&run, &RunCaller::Injector).await,
+        "an ended run is not leased",
+    );
+    let mut again = binding("run-18", 60);
+    again.model = Some("unknown-model".to_owned());
+    broker
+        .bind(again)
+        .await
+        .expect("the same agent and person may bind an ended run with another model");
+    // Live now, and on the new model: it has no deployment credential, which is `unavailable`
+    // (the old model's lease would have succeeded, and an unrevived run is `run_not_bound`).
+    expect_unavailable(
+        broker.lease(&run, &RunCaller::Injector).await,
+        "the revived run names the new model",
+    );
+    assert_eq!(
+        broker
+            .account(&run, &RunCaller::Meter)
+            .await
+            .expect("live")
+            .as_str(),
+        person().as_str()
+    );
 }

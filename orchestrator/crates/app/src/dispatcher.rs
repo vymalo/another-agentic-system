@@ -648,7 +648,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             Err(RunBindingError::Conflict) => tracing::warn!(
                 run = %task,
                 thread = %ctx.thread,
-                "the run is already bound to another model endpoint; the pick is refused and the run keeps its own"
+                "refused: the run is bound live to another binding, or an ended run's tombstone was dropped (another agent or person)"
             ),
             Err(e) => tracing::warn!(
                 run = %task,

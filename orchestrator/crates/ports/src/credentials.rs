@@ -901,10 +901,15 @@ pub fn account_of(person: &UserId) -> Result<AccountId, RunLeaseError> {
 /// agent (ADR 0084 decision 2, amended 2026-11-24).
 pub trait RunLeases: Send + Sync + 'static {
     /// Binds `binding`. Idempotent for the same binding; [`RunLeaseError::Conflict`] for a different
-    /// one on the same run.
+    /// one on a live run. A run that **ended** is made live again only by the same agent and person
+    /// (the new model and deadline are taken); any other bind of it drops its tombstone and is
+    /// refused with `Conflict`, so the run is unattributed and never attributed to someone else
+    /// (ADR 0107 decision 6).
     fn bind(&self, binding: RunBinding) -> impl Future<Output = Result<(), RunLeaseError>> + Send;
 
-    /// Removes the run's binding; idempotent, and a no-op for a run that was never bound.
+    /// Ends the run's binding: no lease is lent after it, and a tombstone (the person, for the
+    /// account route alone) is kept for the implementation's bound, which is zero where no meter
+    /// can read it. Idempotent, and a no-op for a run that was never bound.
     fn unbind(&self, run: &RunId) -> impl Future<Output = Result<(), RunLeaseError>> + Send;
 
     /// Leases the run's model credential to `caller`, which must be the bound agent (or, for the
@@ -936,8 +941,10 @@ pub trait RunLeases: Send + Sync + 'static {
 /// person, `ended_at`) for the account route alone (ADR 0107 decision 6); [`get`](Self::get) never
 /// returns it, so no lease is lent after the end.
 pub trait RunBindingStore: Send + Sync + 'static {
-    /// Writes `binding`; [`RunLeaseError::Conflict`] when the run is bound to something else. A run
-    /// that ended is bound anew: its tombstone is replaced and the run is live again.
+    /// Writes `binding`; [`RunLeaseError::Conflict`] when a live run is bound to another agent,
+    /// person or model. A run that **ended** is made live again only by the same agent and person
+    /// (the new model and deadline replace the old); any other bind of it deletes the tombstone and
+    /// is a `Conflict` (fail closed: the run is unattributed, never misattributed).
     fn upsert(
         &self,
         binding: &RunBinding,

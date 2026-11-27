@@ -196,4 +196,4 @@ binary's smoke test.
 
 [`orch-ports`](../ports/README.md), [`orch-e2e`](../e2e/README.md).
 
-**BREAKING for an implementer of `RunBindingStore` (ADR 0107):** `PgRunBindings` implements `end(run, ended_at, sweep_before)` in place of `delete`, `person_of(run, ended_after)`, and `get` returns live bindings only; an ended run is bound again only by the same agent, person and model (any other bind drops the tombstone and is a `Conflict`). The two statements of `end` (the `UPDATE` and the sweep `DELETE`) are idempotent and need no transaction.
+**BREAKING for an implementer of `RunBindingStore` (ADR 0107):** `PgRunBindings` implements `end(run, ended_at, sweep_before)` in place of `delete`, `person_of(run, ended_after)`, and `get` returns live bindings only; an ended run is bound again only by the same agent and person (the model may change; any other bind drops the tombstone and is a `Conflict`). The two statements of `end` (the `UPDATE` and the sweep `DELETE`) are idempotent and need no transaction.

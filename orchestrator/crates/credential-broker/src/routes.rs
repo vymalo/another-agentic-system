@@ -116,7 +116,9 @@ impl RunCallerAuth for SharedTokens {
             .ok()?
             .strip_prefix("Bearer ")?;
         let presented = digest(presented);
-        // Constant time, so a wrong token costs what a right one does (the digests are fixed size).
+        // Constant time for the fixed callers, so a wrong token costs what a right one does (the
+        // digests are fixed size). The agents' lookup below is a `BTreeMap` keyed by the SHA-256
+        // digest of the presented value: harmless, since the keys compared are hashes of it.
         let is = |token: &[u8; 32]| bool::from(presented[..].ct_eq(&token[..]));
         if is(&self.orchestrator) {
             return Some(RunCaller::Orchestrator);

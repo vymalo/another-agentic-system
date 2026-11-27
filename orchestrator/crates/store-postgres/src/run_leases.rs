@@ -52,10 +52,12 @@ impl RunBindingStore for PgRunBindings {
         let written: Result<Option<(String,)>, SqlError> = query_as(
             "INSERT INTO run_leases (run, agent, person, model, expires_at) \
              VALUES ($1, $2, $3, $4, $5) \
-             ON CONFLICT (run) DO UPDATE SET expires_at = EXCLUDED.expires_at, ended_at = NULL \
+             ON CONFLICT (run) DO UPDATE SET model = EXCLUDED.model, \
+                 expires_at = EXCLUDED.expires_at, ended_at = NULL \
              WHERE run_leases.agent = EXCLUDED.agent \
                AND run_leases.person = EXCLUDED.person \
-               AND run_leases.model IS NOT DISTINCT FROM EXCLUDED.model \
+               AND (run_leases.ended_at IS NOT NULL \
+                    OR run_leases.model IS NOT DISTINCT FROM EXCLUDED.model) \
              RETURNING run",
         )
         .bind(binding.run.as_str())

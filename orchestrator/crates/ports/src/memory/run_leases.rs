@@ -23,10 +23,13 @@ struct Entry {
     ended_at: Option<Timestamp>,
 }
 
-/// Whether two bindings of one run differ in what a binding fixes: the agent, the person and the
-/// model. A run is bound to one of each (ADR 0084 decision 1).
-fn differs(a: &RunBinding, b: &RunBinding) -> bool {
-    a.agent != b.agent || a.person != b.person || a.model != b.model
+/// Whether `binding` may not replace the entry `held` for its run: a live run is bound to one
+/// agent, person and model (ADR 0084 decision 1), but an ended run is attributed by agent and
+/// person alone, so the same person may pick another model on a reused task id (ADR 0107).
+fn differs(held: &Entry, binding: &RunBinding) -> bool {
+    held.binding.agent != binding.agent
+        || held.binding.person != binding.person
+        || (held.ended_at.is_none() && held.binding.model != binding.model)
 }
 
 /// What binding `binding` does to the entry already held for its run, if any: `Ok(())` to write it
@@ -38,7 +41,7 @@ fn admit(bindings: &mut BTreeMap<RunId, Entry>, binding: &RunBinding) -> Result<
     let Some(held) = bindings.get(&binding.run) else {
         return Ok(());
     };
-    if !differs(&held.binding, binding) {
+    if !differs(held, binding) {
         return Ok(());
     }
     if held.ended_at.is_some() {

@@ -1190,6 +1190,15 @@ macro_rules! run_leases_conformance {
             }
         }
         #[tokio::test]
+        async fn an_ended_run_is_revived_by_the_same_agent_and_person_with_another_model() {
+            match $make().await {
+                Some(b) => {
+                    $crate::testkit::run_leases::an_ended_run_is_revived_by_the_same_agent_and_person_with_another_model(&b).await
+                }
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
         async fn an_ended_run_is_not_found_after_the_bound() {
             match $make_unkept().await {
                 Some(b) => {
