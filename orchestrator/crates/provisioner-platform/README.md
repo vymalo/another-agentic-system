@@ -106,7 +106,11 @@ written from the OpenAPI document (bearer, `ETag`, `If-None-Match: *`, `If-Match
 another owner). It is a stateful axum server and not a WireMock stub, because the cases make an
 agent and then read it back. It also checks: a wrong token makes nothing, an agent of another owner
 with the same name is never written, the form that is sent, a wait that times out, and an
-unreachable platform.
+unreachable platform, and the platform's states: a `Blocked` agent (a store not ready) waited for until
+it is ready; `Blocked` for `NameConflict` and for `CNPGNotInstalled` refused at once (`Blocked`, a
+time bound and two reads); look-alike conditions (`RuntimeReady` `True` with `NameConflict`, `Ready`
+`False` with `NameConflict`) and `ConfigInvalid` still waited for, ending in `NotReady { last: Blocked }`;
+a `Degraded` agent waited for until it is ready, and `NotReady { last: Degraded }` when it stays so.
 
 The testkit itself is proven able to fail: `crates/ports/tests/provisioner_kit_catches.rs` builds
 fakes that each break one rule (a create that races, a resume that does not wait, a suspend that

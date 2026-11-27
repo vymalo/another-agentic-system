@@ -187,7 +187,7 @@ cnpg_chart_sha256=$(pin "$upstream_backup" cnpg_chart_sha256)
 cnpg_chart_url=$(pin "$upstream_backup" cnpg_chart_url)
 curl_image=$(pin "$upstream_ratelimit" curl_image)
 wiremock_image=$(pin "$upstream" wiremock_image)
-grep -qF "image: ${wiremock_image} " "$repo/compose.yaml" || die "UPSTREAM's wiremock_image (${wiremock_image}) is not the tag and digest compose.yaml's x-wiremock runs: move them together"
+grep -qxE "[[:space:]]*image: $(printf '%s' "$wiremock_image" | sed 's/[.[\*^$]/\\&/g')([[:space:]].*)?" "$repo/compose.yaml" || die "UPSTREAM's wiremock_image (${wiremock_image}) is not the tag and digest compose.yaml's x-wiremock runs: move them together"
 node_image=$(sed -n 's/^FROM \(node:[^ ]*@sha256:[0-9a-f]*\).*$/\1/p' "$repo/dev/mock-oidc/Dockerfile" | head -n 1)
 [ -n "$node_image" ] || die "dev/mock-oidc/Dockerfile has no FROM line with a node image by tag and digest"
 
