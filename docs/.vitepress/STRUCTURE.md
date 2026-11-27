@@ -60,6 +60,16 @@ A page is read in layers, so it is progressive: the reader stops when they have 
   written, which is why the key is not `title`. The site's `config.ts` reads `sidebarTitle` and fails the build, naming
   the file and its length, when a label from a file is over 40. (VitePress 1.6.4 has no such key of its own; this
   one is ours.) The operations of the chat API take their titles from the spec's summaries, so they are the spec's to keep short.
+- **Title a fence that shows a file or a terminal, and group real alternatives.** `vitepress-plugin-group-icons` 1.8.2
+  (pinned, `docs/package.json`; *verified 2026-11-27*, MIT, peer dependency `vite >=3`) puts an icon before the title.
+  Write the title in the fence's info string: ```` ```yaml [orchestrator.yaml] ````, ```` ```sh [terminal] ````,
+  ```` ```toml [Cargo.toml] ````. Where a page truly offers alternatives (two ways to do one thing), put one fence each in
+  a `::: code-group`, each titled with the name of its alternative (`[sha256sum]`, `[python3]`). Never group a request
+  with its response, a command with its output or fences that are steps one after the other: tabs hide what is to be read
+  in order. **Never title a `mermaid` fence:** `tools/docs-check` finds a diagram by the exact line ```` ```mermaid ````, so a
+  title would hide it from the check. A fence that is not a file or a terminal (a JSON message, a command's output) has no title.
+  Icons come from the bundled sets (`@iconify-json/logos`, `@iconify-json/vscode-icons`) by name, so nothing is fetched at
+  build time; **never configure a URL icon**.
 - **Status tables use the legend below.** The icon always comes with its word in the cell (`✅ built`), because an icon
   alone says nothing to a screen reader or to a reader who does not know it. The cell keeps its facts after the word.
 
@@ -86,6 +96,7 @@ Two files, in `docs/.vitepress/theme/`, and two lines:
   the file and line.
 - `extras.css`: the sidebar width and the block's style (both colour schemes, from the md3 tokens). In `theme/index.ts`,
   `import "./extras.css"`.
+- The group icons: in `config.ts`, `md.use(groupIconMdPlugin)` in the markdown hook and `groupIconVitePlugin({ customIcon })` in `vite.plugins` (the names of `terminal`, `sh`, `docker`, `compose`, `helm`, `kubectl`, `kubernetes`, `cargo` and `rust` are ours); in `theme/index.ts`, `import "virtual:group-icons.css"`.
 
 Optional, and worth copying with them: `in-depth.test.mjs` (`node --test`, run by CI) and the check in
 `tools/docs-check/check-docs.mjs` that fails on an unclosed `::: in-depth`.

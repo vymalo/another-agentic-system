@@ -73,7 +73,7 @@ public `ui` subset of this file from [`GET /api/config`](#get-apiconfig).
 
 ## An example
 
-```yaml
+```yaml [orchestrator.yaml]
 version: 1
 server:
   listen: 0.0.0.0:8080
@@ -225,7 +225,7 @@ and the injector's lease of the deployment's model key for it. They are served o
 surface, no `/healthz`, no resource API, and no Ingress or edge route names it. Only a process that serves routes (`all`,
 `control-plane`) binds it; a worker that shares the file reads and checks the section and opens nothing.
 
-```yaml
+```yaml [orchestrator.yaml]
 server:
   listen: 0.0.0.0:8080
   internal:
@@ -588,7 +588,7 @@ its attachments); it is no longer told to their agents, and a person can detach 
 
 ### Authentication
 
-```yaml
+```yaml [orchestrator.yaml]
 server:
   environment: production
 auth:
@@ -641,7 +641,7 @@ character. The chart's `tests/bff-only.values.yaml` is such a deployment ([`depl
   (no identity, the public routes' rate limit, `Cache-Control: no-store`), and answers **404** when it is absent, which is
   the web of before (the edge's cookie).
 
-```yaml
+```yaml [orchestrator.yaml]
 auth:
   mode: jwt
   jwt: { issuer: https://idp.example/realms/main, audiences: [another-agentic], rolesClaim: agentic_roles }
@@ -666,7 +666,14 @@ grants nothing (the names are compared exactly: `Admin` is not `admin`). A perso
 `auth.defaultRole`, and a person with nothing at all is refused (403) by every operation but
 [`GET /api/me`](chat-api.yaml), which says why.
 
-```yaml
+The first tab is what an absent `auth.roles` means (the built-in roles). The built-in `admin` is a `user` that also holds `admin`, which is
+operational and gives no access to what people wrote (see below): since [ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)
+(2026-10-03) **no role reads or acts on another person's thread**. A deployment that wants Keycloak groups to decide, and
+nobody else in, writes the second:
+
+::: code-group
+
+```yaml [built-in roles]
 auth:
   defaultRole: user
   roles:
@@ -674,12 +681,7 @@ auth:
     admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, admin], scope: own, agents: ["*"] }
 ```
 
-That is what an absent `auth.roles` means (the built-in roles). The built-in `admin` is a `user` that also holds `admin`, which is
-operational and gives no access to what people wrote (see below): since [ADR 0039](../decisions/0039-nobody-reads-another-persons-thread.md)
-(2026-10-03) **no role reads or acts on another person's thread**. A deployment that wants Keycloak groups to decide, and
-nobody else in:
-
-```yaml
+```yaml [Keycloak groups]
 auth:
   jwt: { issuer: https://idp.example/realms/main, audiences: [oauth2-proxy-client-id], rolesClaim: groups }
   roles:
@@ -687,6 +689,8 @@ auth:
     chat-admins: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, admin], agents: ["*"] }
   # no defaultRole: a token with neither group is refused (403)
 ```
+
+:::
 
 | Permission | What it lets the person do |
 |---|---|
@@ -744,7 +748,7 @@ auth:
   offers that is not above the lower of its default and the cap. `GET /api/me` says the person's cap as `maxTier` (a hint for the
   screen, over the roles that hold `agent.invoke` at all, absent when there is none):
 
-  ```yaml
+  ```yaml [orchestrator.yaml]
   auth:
     roles:
       chat-only: { permissions: [agent.read, agent.invoke, thread.read, thread.write], agents: [chat], maxTier: auto }
@@ -791,7 +795,7 @@ do not. No other crate of `orchestrator/` reads the environment outside tests an
 
 **Built (PR S18, 2026-10-02); the web reads it (PR S19, 2026-10-02).** The public subset of the configuration, for the web.
 
-```http
+```http [GET /api/config]
 GET /api/config
 → 200 application/json
 { "search": { "maxQueryLength": 200, "maxTerms": 8 },
