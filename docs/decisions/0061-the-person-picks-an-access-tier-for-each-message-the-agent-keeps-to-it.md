@@ -10,14 +10,16 @@ sidebarTitle: "0061 · An access tier for each message"
   below. **The six open questions were settled the same day on the owner's direction** that the agent be fully autonomous and
   permissions easy, as the task brief recorded it, **and await the owner's own confirmation, notably that no role has a cap by
   default** (*Questions settled*, at the end). **Built 2026-10-11 on mocks: the orchestrator and the web**
-  (the checks, the log, the dispatcher, `maxTier`, the chip); **adam-rs's side is not built.** Extends
+  (the checks, the log, the dispatcher, `maxTier`, the chip); **adam-rs's side is not built** *(superseded by the status note of 2026-11-27 below)*. Extends
   [ADR 0008](0008-platform-integration-via-a2a-extension.md) (the optional-extension pattern) and
   [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md) (roles). When it is accepted,
   [ADR 0014](0014-adam-coder-default-agent-over-a2a.md)'s note on the coder's consent forms gets a dated amendment. The wire
   contract is [`api/access-tier-v1.md`](../api/access-tier-v1.md). **Amended 2026-10-17:** decision 6 (the person's cap is kept
   when no tier could be decided, and a mention pins the cap on the mentioned agent), question 1 (an ask is sent under that cap) and
   question 2 (a form an asked agent shows is not answered by a model, and an ask is sent the job's UI catalog so that a question with
-  choices is a form; a question in words is a narrower known gap).
+  choices is a form; a question in words is a narrower known gap). **Status note, 2026-11-27:** adam-rs's side is built (adam-rs #111:
+  adam-coder lists the extension and keeps to the tier), and `dev/tier-real-e2e.sh` proves the two halves together against the real coder;
+  it is unrun until CI's Coder E2E runs it.
 
 ## Context
 

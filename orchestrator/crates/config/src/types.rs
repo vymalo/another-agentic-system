@@ -201,7 +201,8 @@ impl ProvisionedKind {
     }
 }
 
-/// What the orchestrator presents to the Platform API. One variant, for the local stack.
+/// What the orchestrator presents to the Platform API: a bearer token from a development issuer, or
+/// its workload certificate on the TLS connection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ProvisionerCredentials {
@@ -227,6 +228,77 @@ pub enum ProvisionerCredentials {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         roles: Option<Vec<String>>,
     },
+    /// The orchestrator's **workload certificate**, presented on the TLS connection to the platform
+    /// (ANR-809): a client-authentication certificate signed by an OpenBao PKI role over the pod's
+    /// Kubernetes service-account login, its key made in memory and renewed before it expires.
+    /// Nothing is sent without it, and no `Authorization` header is. Needs an `https`
+    /// `provisioner.url` and no secret: the service-account token is read from its file at each
+    /// login.
+    #[serde(rename_all = "camelCase")]
+    OpenbaoPki {
+        /// OpenBao's address: an `https` URL with a host and no user name, password, query or
+        /// fragment (the service-account token goes to it).
+        #[schemars(length(min = 1, max = 2048))]
+        address: String,
+        /// A file of PEM certificates OpenBao's certificate is checked against, besides the system's
+        /// own roots (a private authority). Absent: the system's roots alone. Relative to the
+        /// configuration file's directory, read at startup.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(length(min = 1, max = 1024))]
+        ca_file: Option<String>,
+        /// The Kubernetes auth method's mount (default `kubernetes`).
+        #[serde(default = "default_pki_kubernetes_mount")]
+        #[schemars(length(min = 1, max = 128))]
+        kubernetes_mount: String,
+        /// The role of that method the pod's service account logs in as.
+        #[schemars(length(min = 1, max = 128))]
+        auth_role: String,
+        /// The file the pod's service-account token is read from, at each login (an absolute path;
+        /// default `/var/run/secrets/kubernetes.io/serviceaccount/token`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(length(min = 1, max = 1024))]
+        service_account_token_file: Option<String>,
+        /// The PKI secrets engine's mount: parts of `A-Z a-z 0-9 . _ -` joined by `/`.
+        #[schemars(length(min = 1, max = 128))]
+        pki_mount: String,
+        /// The PKI role that signs this certificate: its own, for this one use, with client
+        /// authentication only (ADR 0110).
+        #[schemars(length(min = 1, max = 128))]
+        pki_role: String,
+        /// The SPIFFE id the certificate must carry as its one name, `spiffe://<trust domain>/<path>`
+        /// in the plain form (lower-case host, no port, query or fragment).
+        #[schemars(length(min = 1, max = 2048))]
+        spiffe_id: String,
+        /// The life asked of each certificate in seconds, 60 to 604800 (default 86400): with no
+        /// revocation list, a certificate's life is its revocation window. The role's `max_ttl` may
+        /// cut it.
+        #[serde(default = "default_pki_ttl_secs")]
+        #[schemars(range(min = 60, max = 604_800))]
+        ttl_secs: u64,
+        /// A certificate is renewed once it has this many seconds left (default 28800); less than
+        /// `ttlSecs`.
+        #[serde(default = "default_pki_renewal_margin_secs")]
+        #[schemars(range(min = 1, max = 604_799))]
+        renewal_margin_secs: u64,
+        /// A file of PEM certificates the platform's listener is checked against, besides the
+        /// system's own roots (a private authority). Absent: the system's roots alone. Relative to
+        /// the configuration file's directory, read at startup.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(length(min = 1, max = 1024))]
+        server_ca_file: Option<String>,
+    },
+}
+
+fn default_pki_kubernetes_mount() -> String {
+    "kubernetes".to_owned()
+}
+
+const fn default_pki_ttl_secs() -> u64 {
+    86_400
+}
+
+const fn default_pki_renewal_margin_secs() -> u64 {
+    28_800
 }
 
 /// The default of `provisioner.requestTimeoutSecs`.
