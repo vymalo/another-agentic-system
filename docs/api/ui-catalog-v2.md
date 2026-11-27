@@ -1,7 +1,7 @@
 # A2A extension: UI catalog (v2)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/ui-catalog/v2`
-- **Status:** **built 2026-11-20** (the A2UI v1.0 cutover, [epic #380](https://github.com/vymalo/another-agentic-system/issues/380),
+- **Status:** ✅ built · **built 2026-11-20** (the A2UI v1.0 cutover, [epic #380](https://github.com/vymalo/another-agentic-system/issues/380),
   [ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md), decision 9). The contract was written 2026-11-19 (slice C0); the
   orchestrator's side (S1), the web's (S2), the dev stack's (S3) and adam-rs's (A1 and A2) are the cutover's sides, built
   as [`extensions.md`](extensions.md) says. [`ui-catalog-v1.md`](ui-catalog-v1.md) is retired and no longer detected.
