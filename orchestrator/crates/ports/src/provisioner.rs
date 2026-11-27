@@ -141,6 +141,113 @@ impl ProvisionError {
             source: source.into(),
         }
     }
+
+    /// A copy of this error, for one more waiter of a call they share (the error is not `Clone`:
+    /// an `Unavailable` holds a boxed driver error). The copy is the same variant with the same
+    /// fields; an `Unavailable`'s cause is copied as text, **with its whole `source()` chain** (so
+    /// a log that walks the chain still sees "connection refused" under "error sending request"),
+    /// but it is no longer the driver's own type.
+    ///
+    /// The match is exhaustive on purpose, with no `_` arm: **a variant added to this enum must be
+    /// copied faithfully here**, and the compiler refuses to build until it is. A fallback arm would
+    /// turn it into another kind of error for every waiter but the first.
+    #[must_use]
+    pub fn duplicate(&self) -> Self {
+        match self {
+            ProvisionError::Unavailable { source } => ProvisionError::Unavailable {
+                source: Box::new(CopiedError::of(&**source)),
+            },
+            ProvisionError::Refused => ProvisionError::Refused,
+            ProvisionError::Invalid => ProvisionError::Invalid,
+            ProvisionError::NotReady { last } => ProvisionError::NotReady { last: *last },
+            ProvisionError::Deleting => ProvisionError::Deleting,
+        }
+    }
+}
+
+/// An error copied as text with its `source()` chain: what [`ProvisionError::duplicate`] puts in
+/// an `Unavailable`.
+#[derive(Debug)]
+struct CopiedError {
+    text: String,
+    source: Option<Box<CopiedError>>,
+}
+
+impl CopiedError {
+    fn of(error: &(dyn std::error::Error + 'static)) -> Self {
+        CopiedError {
+            text: error.to_string(),
+            source: error.source().map(|cause| Box::new(CopiedError::of(cause))),
+        }
+    }
+}
+
+impl fmt::Display for CopiedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+impl std::error::Error for CopiedError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source
+            .as_deref()
+            .map(|cause| cause as &(dyn std::error::Error + 'static))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct Outer(std::io::Error);
+
+    impl fmt::Display for Outer {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("error sending request")
+        }
+    }
+
+    impl std::error::Error for Outer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    #[test]
+    fn a_duplicate_keeps_the_variant_and_the_cause_chain() {
+        let error = ProvisionError::unavailable(Outer(std::io::Error::other("connection refused")));
+        let copy = error.duplicate();
+        let ProvisionError::Unavailable { source } = &copy else {
+            panic!("not Unavailable: {copy:?}");
+        };
+        assert_eq!(source.to_string(), "error sending request");
+        let cause = std::error::Error::source(&**source).expect("the cause is kept");
+        assert_eq!(cause.to_string(), "connection refused");
+        assert!(matches!(
+            ProvisionError::NotReady {
+                last: AgentState::Blocked
+            }
+            .duplicate(),
+            ProvisionError::NotReady {
+                last: AgentState::Blocked
+            }
+        ));
+        assert!(matches!(
+            ProvisionError::Refused.duplicate(),
+            ProvisionError::Refused
+        ));
+        assert!(matches!(
+            ProvisionError::Invalid.duplicate(),
+            ProvisionError::Invalid
+        ));
+        assert!(matches!(
+            ProvisionError::Deleting.duplicate(),
+            ProvisionError::Deleting
+        ));
+    }
 }
 
 impl Classify for ProvisionError {
