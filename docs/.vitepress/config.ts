@@ -122,47 +122,45 @@ export function escapeUnknownTags(md: any) {
   }
 }
 
-export default (
-  defineMd3Config({
-    title: "another-agentic-system",
-    description: "A protocol-agnostic orchestration layer for multi-agent work.",
-    base: process.env.DOCS_BASE ?? DEFAULT_BASE,
-    cleanUrls: true,
-    rewrites: { "api/README.md": "api/index.md" },
-    // Pages link to source files outside docs/ (checked by tools/docs-check); every other dead link fails the build.
-    ignoreDeadLinks: [/^\.\/(\.\.\/)+/, /(^|\/)examples\//],
-    // Each operation and tag page has its own title, from the route's pageTitle.
-    transformPageData(pageData) {
-      const title = pageData.params?.pageTitle;
-      if (typeof title === "string" && title) pageData.title = title;
-    },
-    // tester-note.md is a draft for the owner: it stays in the repository and is not on the site.
-    srcExclude: ["**/node_modules/**", "**/examples/**", "tester-note.md"],
-    themeConfig: {
-      md3: { style: "expressive", seed: "#0f766e" },
-      nav: [
-        { text: "Vision", link: "/vision" },
-        { text: "Architecture", link: "/architecture" },
-        { text: "API", link: "/api/" },
-        { text: "Decisions", link: "/decisions/" },
-      ],
-      sidebar,
-      search: { provider: "local" },
-      socialLinks: [{ icon: "github", link: "https://github.com/vymalo/another-agentic-system" }],
-    },
-    markdown: { config: (md) => { md.use(inDepth); escapeUnknownTags(md); }, attrs: { disable: true } },
-    // llms.txt, llms-full.txt and a .md per page, for agents that read the docs (ANR-1088, STRUCTURE.md).
-    vite: {
-      plugins: [
-        llmstxt({
-          title: "another-agentic-system",
-          description: "A protocol-agnostic orchestration layer for multi-agent work: a chat surface and a stateless orchestrator over one Postgres event log.",
-          details: "The chat API's machine-readable form is the OpenAPI file [chat-api.yaml](" + (process.env.DOCS_BASE ?? DEFAULT_BASE) + "api/chat-api.yaml).",
-          ignoreFiles: ["api/reference.md", "api/operations/*", "api/tags/*", "tester-note.md"],
-          injectLLMHint: false,
-          sidebar: (s) => llmsSidebar(s as never) as never,
-        }),
-      ],
-    },
-  }),
-);
+export default defineMd3Config({
+  title: "another-agentic-system",
+  description: "A protocol-agnostic orchestration layer for multi-agent work.",
+  base: process.env.DOCS_BASE ?? DEFAULT_BASE,
+  cleanUrls: true,
+  rewrites: { "api/README.md": "api/index.md" },
+  // Pages link to source files outside docs/ (checked by tools/docs-check); every other dead link fails the build.
+  ignoreDeadLinks: [/^\.\/(\.\.\/)+/, /(^|\/)examples\//],
+  // Each operation and tag page has its own title, from the route's pageTitle.
+  transformPageData(pageData) {
+    const title = pageData.params?.pageTitle;
+    if (typeof title === "string" && title) pageData.title = title;
+  },
+  // tester-note.md is a draft for the owner: it stays in the repository and is not on the site.
+  srcExclude: ["**/node_modules/**", "**/examples/**", "tester-note.md"],
+  themeConfig: {
+    md3: { style: "expressive", seed: "#0f766e" },
+    nav: [
+      { text: "Vision", link: "/vision" },
+      { text: "Architecture", link: "/architecture" },
+      { text: "API", link: "/api/" },
+      { text: "Decisions", link: "/decisions/" },
+    ],
+    sidebar,
+    search: { provider: "local" },
+    socialLinks: [{ icon: "github", link: "https://github.com/vymalo/another-agentic-system" }],
+  },
+  markdown: { config: (md) => { md.use(inDepth); escapeUnknownTags(md); }, attrs: { disable: true } },
+  // llms.txt, llms-full.txt and a .md per page, for agents that read the docs (ANR-1088, STRUCTURE.md).
+  vite: {
+    plugins: [
+      llmstxt({
+        title: "another-agentic-system",
+        description: "A protocol-agnostic orchestration layer for multi-agent work: a chat surface and a stateless orchestrator over one Postgres event log.",
+        details: "The chat API's machine-readable form is the OpenAPI file [chat-api.yaml](" + (process.env.DOCS_BASE ?? DEFAULT_BASE) + "api/chat-api.yaml).",
+        ignoreFiles: ["api/reference.md", "api/operations/*", "api/tags/*", "tester-note.md"],
+        injectLLMHint: false,
+        sidebar: (s) => llmsSidebar(s as never) as never,
+      }),
+    ],
+  },
+});

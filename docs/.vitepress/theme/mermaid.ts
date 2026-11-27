@@ -3,7 +3,7 @@
 // so the tokens are read from the page, in the scheme it is in, and handed over as plain colours.
 // The same colours are read again on every light/dark switch. Styles: ./mermaid.css.
 import { h, nextTick, onMounted, onUnmounted, watch } from "vue";
-import { useData } from "vitepress";
+import { onContentUpdated, useData } from "vitepress";
 import { Layout as Md3Layout } from "@vaam-apps/vitepress-md3";
 import "./mermaid.css";
 
@@ -74,7 +74,14 @@ function sizeBoxes() {
   });
 }
 
-async function start(dark: boolean) {
+// The renderer (a chunk of 700 KB with Mermaid) is fetched by the first page that has a diagram, and kept after that:
+// its own route listener only exists once it is loaded.
+let loaded = false;
+async function start() {
+  if (!loaded) {
+    if (!document.querySelector(".language-mermaid")) return;
+    loaded = true;
+  }
   const { createMermaidRenderer } = await import("vitepress-mermaid-renderer");
   const renderer = createMermaidRenderer({
     theme: "base",
@@ -95,33 +102,42 @@ async function start(dark: boolean) {
     mobile: { positions: { vertical: "top", horizontal: "right" } },
     fullscreen: { copyCode: "enabled", toggleFullscreen: "enabled", resetView: "enabled", zoomOut: "enabled", zoomIn: "enabled", zoomLevel: "enabled", download: "enabled" },
   });
-  document.documentElement.dataset.diagramScheme = dark ? "dark" : "light";
 }
 
-// Layout of the theme: the md3 layout, with the renderer started in the browser once the page is up.
+// Layout of the theme: the md3 layout, with the renderer started in the browser where a page has a diagram.
 export const Layout = {
   name: "DiagramsLayout",
   setup() {
     const { isDark } = useData();
-    // The renderer closes its fullscreen dialog by a click on the backdrop or the key `f`; Escape does it too.
+    // The renderer closes its fullscreen dialog by a click on the backdrop or the key `f`; Escape does it too, unless
+    // something else (the search box) has taken the key.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") document.querySelector<HTMLElement>(".mermaid-dialog-backdrop")?.click();
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const other = (document.activeElement as HTMLElement | null)?.closest('[role="dialog"]');
+      if (other && !other.closest(".mermaid-container")) return;
+      document.querySelector<HTMLElement>(".mermaid-dialog-backdrop")?.click();
     };
-    onUnmounted(() => document.removeEventListener("keydown", onKey));
+    // A drawing arrives, or is redrawn in the other scheme, as new nodes or a new viewBox: size its box again.
+    let queued = false;
+    const observer = typeof MutationObserver === "undefined" ? null : new MutationObserver(() => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => { queued = false; sizeBoxes(); });
+    });
     onMounted(() => {
       document.addEventListener("keydown", onKey);
-      nextTick(() => start(isDark.value));
-      // A drawing arrives, or is redrawn in the other scheme, as new nodes or a new viewBox: size its box again.
-      let queued = false;
-      new MutationObserver(() => {
-        if (queued) return;
-        queued = true;
-        requestAnimationFrame(() => { queued = false; sizeBoxes(); });
-      }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["viewBox"] });
+      observer?.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["viewBox"] });
       window.addEventListener("resize", sizeBoxes);
     });
+    onUnmounted(() => {
+      document.removeEventListener("keydown", onKey);
+      observer?.disconnect();
+      window.removeEventListener("resize", sizeBoxes);
+    });
+    // On every page (first load and client navigation): load the renderer if the page has a diagram.
+    onContentUpdated(() => { if (!loaded) start(); });
     // VitePress flips the `dark` class after this watcher fires: wait a frame so the tokens read are the new ones.
-    watch(isDark, (dark) => nextTick(() => requestAnimationFrame(() => start(dark))));
+    watch(isDark, () => { if (loaded) nextTick(() => requestAnimationFrame(() => start())); });
     return () => h(Md3Layout);
   },
 };
