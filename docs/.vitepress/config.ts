@@ -6,6 +6,7 @@ import { withMermaid } from "vitepress-plugin-mermaid";
 import { useSidebar } from "vitepress-openapi";
 import { DEFAULT_BASE, DEFAULT_TAG } from "./openapi/shared";
 import { loadSpec } from "./openapi/spec";
+import { inDepth } from "./theme/in-depth";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -106,6 +107,7 @@ const HTML = new Set(
 export function escapeUnknownTags(md: any) {
   // `{{` is a Vue expression to the compiler; the docs mean the characters.
   const render = md.render.bind(md);
+  md.use(inDepth);
   md.render = (src: string, env: unknown) => render(src, env).replace(/\{\{/g, "&#123;&#123;");
   for (const rule of ["html_inline", "html_block"]) {
     const original = md.renderer.rules[rule];
