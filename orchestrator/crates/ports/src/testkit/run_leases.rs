@@ -17,8 +17,15 @@ pub fn chat() -> AgentId {
     AgentId("chat".to_owned())
 }
 
-/// The person `person@example.com`.
+/// The person whose identity-provider `sub` is `4f2a9c1e-0b7d-4c55-9e1a-6d3f8a2b7c10`: the one
+/// kind of person a lease or the meter is answered an account for (ADR 0108).
 pub fn person() -> UserId {
+    UserId::new("4f2a9c1e-0b7d-4c55-9e1a-6d3f8a2b7c10")
+}
+
+/// A person whose id is an e-mail address, as a deployment that reads `userClaim: email` has:
+/// never answered as an account.
+pub fn email_person() -> UserId {
     UserId::new("person@example.com")
 }
 
@@ -69,8 +76,8 @@ pub async fn binds_then_leases_to_the_injector(broker: &impl RunLeases) {
         .expect("lease");
     assert_eq!(lease.token(), &token(), "the deployment's key is leased");
     assert_eq!(
-        lease.account(),
-        &person(),
+        lease.account().as_str(),
+        person().as_str(),
         "the lease names the person's account"
     );
     let shown = format!("{lease:?}");
@@ -163,6 +170,13 @@ pub async fn binds_once(broker: &impl RunLeases) {
         Err(RunLeaseError::Conflict) => {}
         other => panic!("expected run_already_bound, got {other:?}"),
     }
+    // A refused bind of a LIVE run leaves it alone: the guard that drops a tombstone (`ended_at IS
+    // NOT NULL` in Postgres, `ended_at.is_some()` in memory) must not reach a live row, or this
+    // lease would be `run_not_bound`.
+    broker
+        .lease(&RunId::new("run-6"), &RunCaller::Injector)
+        .await
+        .expect("a refused bind leaves the live run leasable");
 }
 
 /// A binding that names no model cannot be leased.
@@ -213,7 +227,11 @@ pub async fn answers_the_account_to_the_meter_alone(broker: &impl RunLeases) {
         .account(&run, &RunCaller::Meter)
         .await
         .expect("the meter reads the account");
-    assert_eq!(account, person(), "the account is the binding's person");
+    assert_eq!(
+        account.as_str(),
+        person().as_str(),
+        "the account is the binding's person"
+    );
     for (caller, name) in [
         (RunCaller::Orchestrator, "the orchestrator"),
         (RunCaller::Injector, "the injector"),
@@ -235,5 +253,224 @@ pub async fn answers_the_account_to_the_meter_alone(broker: &impl RunLeases) {
     expect_not_bound(
         broker.lease(&run, &RunCaller::Meter).await,
         "the meter, for the lease",
+    );
+}
+
+/// One `sub` bound under two runs is the same account, byte for byte, to the meter and in the
+/// lease: the account is the person's, not the run's, so a person's runs add up under one id.
+pub async fn one_sub_under_two_runs_is_one_account_byte_for_byte(broker: &impl RunLeases) {
+    broker.bind(binding("run-11", 60)).await.expect("bind");
+    broker.bind(binding("run-12", 60)).await.expect("bind");
+    let first = broker
+        .account(&RunId::new("run-11"), &RunCaller::Meter)
+        .await
+        .expect("the first run's account");
+    let second = broker
+        .account(&RunId::new("run-12"), &RunCaller::Meter)
+        .await
+        .expect("the second run's account");
+    assert_eq!(first.as_str().as_bytes(), second.as_str().as_bytes());
+    assert_eq!(
+        first.as_str(),
+        person().as_str(),
+        "the sub itself, unchanged"
+    );
+    let leased = broker
+        .lease(&RunId::new("run-12"), &RunCaller::Injector)
+        .await
+        .expect("lease");
+    assert_eq!(
+        leased.account().as_str().as_bytes(),
+        first.as_str().as_bytes(),
+        "the lease names the account the meter is told"
+    );
+}
+
+/// A run whose person is an e-mail address is never answered an account: not to the meter, not in a
+/// lease; nothing with an `@` leaves, and the refusal quotes nothing.
+pub async fn never_answers_an_email_person(broker: &impl RunLeases) {
+    let mut bound = binding("run-13", 60);
+    bound.person = email_person();
+    broker
+        .bind(bound)
+        .await
+        .expect("a binding is accepted: the check is on the answer");
+    let run = RunId::new("run-13");
+    match broker.account(&run, &RunCaller::Meter).await {
+        Err(RunLeaseError::AccountNotOpaque) => {}
+        other => panic!("the meter: expected account_not_opaque, got {other:?}"),
+    }
+    for caller in [RunCaller::Injector, RunCaller::Orchestrator] {
+        match broker.lease(&run, &caller).await {
+            Err(RunLeaseError::AccountNotOpaque) => {}
+            other => panic!("{caller:?}: expected account_not_opaque, got {other:?}"),
+        }
+    }
+    let shown = RunLeaseError::AccountNotOpaque.to_string();
+    assert!(
+        !shown.contains('@') && !shown.contains("example"),
+        "{shown}"
+    );
+    // The check does not make the run known to anyone else: every other caller is still not bound.
+    match broker.account(&run, &RunCaller::Agent(coder())).await {
+        Err(RunLeaseError::NotBound) => {}
+        other => panic!("an agent: expected run_not_bound, got {other:?}"),
+    }
+}
+
+/// A run that ended is still answered to the meter (within the bound, 24 hours by default) and is
+/// never leased again: no credential outlives the job. A run never bound leaves nothing behind, and
+/// ending twice is harmless.
+pub async fn a_run_that_ended_is_answered_to_the_meter_and_never_leased(broker: &impl RunLeases) {
+    broker.bind(binding("run-14", 60)).await.expect("bind");
+    let run = RunId::new("run-14");
+    broker.unbind(&run).await.expect("unbind");
+    broker.unbind(&run).await.expect("unbind twice");
+    let account = broker
+        .account(&run, &RunCaller::Meter)
+        .await
+        .expect("an ended run is still answered to the meter within the bound");
+    assert_eq!(account.as_str(), person().as_str());
+    expect_not_bound(
+        broker.lease(&run, &RunCaller::Injector).await,
+        "an ended run is not leased",
+    );
+    for caller in [RunCaller::Orchestrator, RunCaller::Injector] {
+        match broker.account(&run, &caller).await {
+            Err(RunLeaseError::NotBound) => {}
+            other => panic!("{caller:?}: expected run_not_bound, got {other:?}"),
+        }
+    }
+    broker
+        .unbind(&RunId::new("run-never"))
+        .await
+        .expect("unbind of a run never bound");
+    match broker
+        .account(&RunId::new("run-never"), &RunCaller::Meter)
+        .await
+    {
+        Err(RunLeaseError::NotBound) => {}
+        other => panic!("a run never bound keeps no tombstone, got {other:?}"),
+    }
+    // Bound again, the run is live: leased, and its tombstone is gone.
+    broker
+        .bind(binding("run-14", 60))
+        .await
+        .expect("bind again");
+    broker
+        .lease(&run, &RunCaller::Injector)
+        .await
+        .expect("a run bound anew is leased");
+}
+
+/// For a broker built with a tombstone bound of **zero**: a run that ended is `run_not_bound` to the
+/// meter at once, the answer after the bound.
+pub async fn an_ended_run_is_not_found_after_the_bound(broker: &impl RunLeases) {
+    broker.bind(binding("run-15", 60)).await.expect("bind");
+    let run = RunId::new("run-15");
+    broker
+        .account(&run, &RunCaller::Meter)
+        .await
+        .expect("a live run is answered, whatever the bound");
+    broker.unbind(&run).await.expect("unbind");
+    match broker.account(&run, &RunCaller::Meter).await {
+        Err(RunLeaseError::NotBound) => {}
+        other => panic!("past the bound: expected run_not_bound, got {other:?}"),
+    }
+}
+
+/// An ended run is not handed to another person or agent: the run id is the agent's to choose, so a
+/// bind of an ended run id by someone else is refused `Conflict`, the tombstone is dropped (the run
+/// is then unattributed: `NotBound` to the meter, never misattributed), and the same binding again
+/// makes the run live (ADR 0108 decision 6).
+pub async fn an_ended_run_is_not_rebound_to_another_person_or_agent(broker: &impl RunLeases) {
+    let other_person = UserId::new("9c8b7a65-4d3e-4f21-8a0b-1c2d3e4f5a6b");
+    // Another person.
+    broker.bind(binding("run-16", 60)).await.expect("bind");
+    let run = RunId::new("run-16");
+    broker.unbind(&run).await.expect("unbind");
+    let mut theirs = binding("run-16", 60);
+    theirs.person = other_person;
+    match broker.bind(theirs).await {
+        Err(RunLeaseError::Conflict) => {}
+        other => panic!("another person: expected run_already_bound, got {other:?}"),
+    }
+    match broker.account(&run, &RunCaller::Meter).await {
+        Err(RunLeaseError::NotBound) => {}
+        other => panic!("the meter must not be told anyone's account, got {other:?}"),
+    }
+    expect_not_bound(
+        broker.lease(&run, &RunCaller::Injector).await,
+        "the refused bind leased nothing",
+    );
+    // Another agent.
+    broker.bind(binding("run-17", 60)).await.expect("bind");
+    let run = RunId::new("run-17");
+    broker.unbind(&run).await.expect("unbind");
+    let mut theirs = binding("run-17", 60);
+    theirs.agent = chat();
+    match broker.bind(theirs).await {
+        Err(RunLeaseError::Conflict) => {}
+        other => panic!("another agent: expected run_already_bound, got {other:?}"),
+    }
+    match broker.account(&run, &RunCaller::Meter).await {
+        Err(RunLeaseError::NotBound) => {}
+        other => panic!("the meter must not be told anyone's account, got {other:?}"),
+    }
+    // After the drop the run is unbound, so this bind is a fresh insert of the first person.
+    broker.bind(binding("run-17", 60)).await.expect("bind anew");
+    assert_eq!(
+        broker
+            .account(&run, &RunCaller::Meter)
+            .await
+            .expect("live")
+            .as_str(),
+        person().as_str()
+    );
+    // The same binding again, straight after an end, is the one case that revives the tombstone.
+    broker.unbind(&run).await.expect("unbind");
+    broker
+        .bind(binding("run-17", 60))
+        .await
+        .expect("same binding");
+    broker
+        .lease(&run, &RunCaller::Injector)
+        .await
+        .expect("a revived run is leased");
+}
+
+/// An ended run is attributed by agent and person alone: the same agent and person bind it again
+/// with **another model**, and it is live with the new model (a person who picks another model on a
+/// reused task id loses nothing; no attribution is at stake). A live run keeps the full rule
+/// (`binds_once`).
+pub async fn an_ended_run_is_revived_by_the_same_agent_and_person_with_another_model(
+    broker: &impl RunLeases,
+) {
+    broker.bind(binding("run-18", 60)).await.expect("bind");
+    let run = RunId::new("run-18");
+    broker.unbind(&run).await.expect("unbind");
+    expect_not_bound(
+        broker.lease(&run, &RunCaller::Injector).await,
+        "an ended run is not leased",
+    );
+    let mut again = binding("run-18", 60);
+    again.model = Some("unknown-model".to_owned());
+    broker
+        .bind(again)
+        .await
+        .expect("the same agent and person may bind an ended run with another model");
+    // Live now, and on the new model: it has no deployment credential, which is `unavailable`
+    // (the old model's lease would have succeeded, and an unrevived run is `run_not_bound`).
+    expect_unavailable(
+        broker.lease(&run, &RunCaller::Injector).await,
+        "the revived run names the new model",
+    );
+    assert_eq!(
+        broker
+            .account(&run, &RunCaller::Meter)
+            .await
+            .expect("live")
+            .as_str(),
+        person().as_str()
     );
 }

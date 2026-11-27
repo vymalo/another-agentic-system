@@ -31,7 +31,7 @@ const OTHER_TOKEN: &str = "other-run-token-0123456789abcdef0123456789abcdef";
 /// The deployment's key for the endpoint `default`, and what a lease of it answers.
 const MODEL_KEY: &str = "model-key-0123456789abcdef0123456789abcdef";
 const AGENT: &str = "fake";
-const PERSON: &str = "alice@example.com";
+const PERSON: &str = "4f2a9c1e-0b7d-4c55-9e1a-6d3f8a2b7c10";
 
 /// A scratch directory removed on drop.
 struct Scratch(PathBuf);

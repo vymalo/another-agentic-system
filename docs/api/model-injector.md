@@ -123,7 +123,7 @@ sequenceDiagram
 |---|---|---|
 | no bearer, or a token for another audience | `401` | nothing; the broker is not asked |
 | no `X-Run-Id` | `403` | nothing |
-| the broker refuses (401, 404 `run_not_bound`, 410 `lease_expired`) | `403` | nothing |
+| the broker refuses (401, 404 `run_not_bound`, 410 `lease_expired`, 422 `account_not_opaque`) | `403` | nothing |
 | a lease with no token | `403` | nothing |
 | a lease with no account id | `403` | nothing |
 | the ledger refuses or cannot answer (401, 503, timeout) | `403` | nothing |
@@ -175,7 +175,7 @@ injector adds the provider key and the person's account exactly as it does for a
 | Who binds | the dispatcher, at the first sight of the run's task id (ADR 0084) | the title/description worker, **before it asks the model** |
 | The lease id | the root run's id (the A2A task id) | `thread:<thread id>:<title\|description>` |
 | The agent | the run's agent | the thread's own agent |
-| The person (the account) | the run's person | the **thread's owner** (`UserId`, ADR 0065) |
+| The person (the account) | the run's person | the **thread's owner** (their `sub`, an `AccountId`, ADR 0108) |
 | The model | the endpoint the live card maps the pick to | the task's `endpoint` (`tasks.title` / `tasks.description`) |
 | Bound again by | a retried message of the same run | an outbox retry of the same row |
 
@@ -225,9 +225,11 @@ was actually spent; the injector's read is a snapshot, cached for at most `injec
 overshoot by what they spend inside that window, and an overshoot is settled as debt, not prevented. The injector cannot
 move money: it has no route that debits, and the ledger's budget read is read-only by contract.
 
-**The account id is a person, not a provider account.** It is the run's person, a `UserId` — the key the usage ledger is
-kept by (`usage_tasks.owner`, ADR 0065) — never a provider account, a ledger-service account number or an API key id
-(ADR 0084).
+**The account id is a person's identity-provider `sub`, not a provider account.** It is the run's person as an `AccountId`
+(ADR 0108): the `sub` the deployment reads with `auth.jwt.userClaim: sub`, trimmed and lower-cased as every owner key is, an id of the closed alphabet `[A-Za-z0-9._:/-]{1,128}`
+that the platform's usage contract accepts — never an e-mail address, a provider account, a ledger-service account number or an
+API key id (ADR 0084). A deployment keyed by e-mail is refused: the broker answers `422 account_not_opaque`, the lease is not
+lent, and the injector's call fails closed (`403`).
 
 **The run id is a capability, not a proof of ownership.** The injector checks that the caller is *an* agent pod it
 accepts; it does not check that the caller is *the* pod the run was bound to. Any pod holding a service-account token of

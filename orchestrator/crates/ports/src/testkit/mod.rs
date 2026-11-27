@@ -1058,11 +1058,17 @@ macro_rules! bearer_token_conformance {
 
 /// Generates one `#[tokio::test]` per [`RunLeases`](crate::RunLeases) conformance case (ADR 0084).
 /// `$make` is an `async fn() -> Option<F>` returning a fresh broker whose deployment token for
-/// `glm-5.3` is [`run_leases::token`](crate::testkit::run_leases::token); `None` skips the suite.
+/// `glm-5.3` is [`run_leases::token`](crate::testkit::run_leases::token); `None` skips the suite. The
+/// tombstone bound is the default (24 hours).
+///
+/// `$make_unkept` is the same, **built with a tombstone bound of zero** (ADR 0108 decision 6: where no
+/// meter can read it, an ended run keeps nothing): the case
+/// [`an_ended_run_is_not_found_after_the_bound`](crate::testkit::run_leases::an_ended_run_is_not_found_after_the_bound)
+/// runs on it, so an adapter cannot forget the bound.
 /// The calling crate needs `tokio` (with `macros` and `rt`) as a dev-dependency.
 #[macro_export]
 macro_rules! run_leases_conformance {
-    ($make:path) => {
+    ($make:path, $make_unkept:path) => {
         #[tokio::test]
         async fn binds_then_leases_to_the_injector() {
             match $make().await {
@@ -1144,6 +1150,60 @@ macro_rules! run_leases_conformance {
             match $make().await {
                 Some(b) => {
                     $crate::testkit::run_leases::answers_the_account_to_the_meter_alone(&b).await
+                }
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
+        async fn one_sub_under_two_runs_is_one_account_byte_for_byte() {
+            match $make().await {
+                Some(b) => {
+                    $crate::testkit::run_leases::one_sub_under_two_runs_is_one_account_byte_for_byte(&b).await
+                }
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
+        async fn never_answers_an_email_person() {
+            match $make().await {
+                Some(b) => {
+                    $crate::testkit::run_leases::never_answers_an_email_person(&b).await
+                }
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
+        async fn a_run_that_ended_is_answered_to_the_meter_and_never_leased() {
+            match $make().await {
+                Some(b) => {
+                    $crate::testkit::run_leases::a_run_that_ended_is_answered_to_the_meter_and_never_leased(&b).await
+                }
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
+        async fn an_ended_run_is_not_rebound_to_another_person_or_agent() {
+            match $make().await {
+                Some(b) => {
+                    $crate::testkit::run_leases::an_ended_run_is_not_rebound_to_another_person_or_agent(&b).await
+                }
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
+        async fn an_ended_run_is_revived_by_the_same_agent_and_person_with_another_model() {
+            match $make().await {
+                Some(b) => {
+                    $crate::testkit::run_leases::an_ended_run_is_revived_by_the_same_agent_and_person_with_another_model(&b).await
+                }
+                None => eprintln!("skipped: no run-lease broker available"),
+            }
+        }
+        #[tokio::test]
+        async fn an_ended_run_is_not_found_after_the_bound() {
+            match $make_unkept().await {
+                Some(b) => {
+                    $crate::testkit::run_leases::an_ended_run_is_not_found_after_the_bound(&b).await
                 }
                 None => eprintln!("skipped: no run-lease broker available"),
             }

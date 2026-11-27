@@ -2797,7 +2797,7 @@ The design choices are closed enums, authentication at the edge with authorizati
 
 *Decided 2026-11-27, nothing built:* the rules of these tables move into the database, as functions for the mutations that carry one and views for such reads, with PostgreSQL 18 as the floor ([ADR 0107](decisions/0107-the-sql-adapters-keep-their-rules-in-the-database.md)); each slice updates this section with the functions and views its migration creates.
 
-**Built.** 34 migrations of the Postgres store, `crates/store-postgres/migrations/0001_init.sql` to `0034_outbox_refunded.sql` (the tables of this section carry the number of the migration that added each column; `orch-secrets-pg` keeps three of its own, and the SQLite store of an embedded application nine; *verified 2026-11-27* by counting the files of those directories), applied at boot by every
+**Built.** 35 migrations of the Postgres store, `crates/store-postgres/migrations/0001_init.sql` to `0035_run_leases_tombstone.sql` (the tables of this section carry the number of the migration that added each column; `run_leases` (the broker's bindings, `0030`) has `ended_at` from `0035`, the tombstone of an ended run that only the meter's account route reads, [ADR 0108](decisions/0108-a-run-is-charged-to-the-identity-providers-sub-and-an-ended-run-is-still-answered-to-the-meter.md); `orch-secrets-pg` keeps three of its own, and the SQLite store of an embedded application nine; *verified 2026-11-27* by counting the files of those directories), applied at boot by every
 replica (`orch-pg-migrate` takes sqlx's advisory lock and keeps its history; an applied migration is never edited).
 
 ```mermaid

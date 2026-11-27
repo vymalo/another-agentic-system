@@ -233,3 +233,120 @@ fn a_worker_reads_and_checks_the_section_it_never_opens() {
     let errors = lines(load(&file, &fake));
     assert!(errors.iter().any(|e| e.contains("MISSING")), "{errors:?}");
 }
+
+/// A file with the run routes on, the meter's token, and the given `auth` section.
+fn with_meter(auth: &str) -> String {
+    format!(
+        "\
+version: 1
+server:
+  internal:
+    token: {{ env: ORCH_RUN_TOKEN }}
+    meter: {{ env: METER_RUN_TOKEN }}
+{auth}database:
+  url: {{ env: DATABASE_URL }}
+agents:
+  file: agents.yaml
+"
+    )
+}
+
+const JWT_SUB: &str = concat!(
+    "auth:\n",
+    "  mode: jwt\n",
+    "  jwt: { issuer: 'https://idp.example/realms/main', audiences: [web], userClaim: sub }\n",
+);
+
+fn meter_env() -> Fake {
+    env().env(
+        "METER_RUN_TOKEN",
+        "meter0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab",
+    )
+}
+
+#[test]
+fn a_meter_token_is_read_when_the_deployment_reads_sub() {
+    let valid = load(&with_meter(JWT_SUB), &meter_env()).unwrap();
+    assert_eq!(
+        valid.config.server.internal.as_ref().unwrap().meter,
+        Some(SecretRef::Env("METER_RUN_TOKEN".to_owned()))
+    );
+    let token = valid.secrets.internal_meter_token.as_ref().unwrap();
+    assert!(token.expose().starts_with("meter0123"));
+    let shown = format!("{valid:?}");
+    assert!(!shown.contains(token.expose()), "{shown}");
+}
+
+#[test]
+fn a_meter_token_is_refused_under_an_email_claim() {
+    // Today's default claim, spelled out, and the default itself.
+    for auth in [
+        "auth:\n  mode: jwt\n  jwt: { issuer: 'https://idp.example/realms/main', audiences: [web], userClaim: email }\n",
+        "auth:\n  mode: jwt\n  jwt: { issuer: 'https://idp.example/realms/main', audiences: [web] }\n",
+    ] {
+        let errors = lines(load(&with_meter(auth), &meter_env()));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("server.internal.meter") && e.contains("userClaim: sub")),
+            "{auth}: {errors:?}"
+        );
+        assert!(
+            errors.iter().all(|e| !e.contains("meter0123")),
+            "{errors:?}"
+        );
+    }
+}
+
+#[test]
+fn a_meter_token_is_refused_without_a_token_issuer_or_beside_the_identity_header() {
+    // No `auth` section: the proxy header names the person, an e-mail address.
+    let errors = lines(load(&with_meter(""), &meter_env()));
+    assert!(
+        errors.iter().any(|e| e.contains("server.internal.meter")),
+        "{errors:?}"
+    );
+    // A mode that also reads the header gives some people an e-mail for an id.
+    let both = JWT_SUB.replace("mode: jwt", "mode: jwt_or_proxy_header");
+    let errors = lines(load(&with_meter(&both), &meter_env()));
+    assert!(
+        errors.iter().any(|e| e.contains("server.internal.meter")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn the_meter_has_a_token_of_its_own_that_is_long_enough() {
+    let fake = meter_env().env("SHORT_METER", "too-short");
+    let errors = lines(load(
+        &with_meter(JWT_SUB).replace("METER_RUN_TOKEN", "SHORT_METER"),
+        &fake,
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("server.internal.meter") && e.contains("shorter than")),
+        "{errors:?}"
+    );
+    assert!(
+        errors.iter().all(|e| !e.contains("too-short")),
+        "{errors:?}"
+    );
+    // The orchestrator's token is not the meter's.
+    let errors = lines(load(
+        &with_meter(JWT_SUB).replace("METER_RUN_TOKEN", "ORCH_RUN_TOKEN"),
+        &meter_env(),
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("server.internal.meter") && e.contains("same token")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn without_a_meter_nothing_changes_for_an_email_deployment() {
+    let valid = load(&text(SECTION), &env()).unwrap();
+    assert!(valid.secrets.internal_meter_token.is_none());
+}

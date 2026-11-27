@@ -205,6 +205,7 @@ secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` 
 | `server.internal.listen` | socket address, `0.0.0.0:8081`; never `server.listen` on a port that is not 0 (exit 78 naming the key) | — | now; [ADR 0084](../decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md), card ANR-578. The **internal listener** of the credential broker's run routes, below. Absent: no second listener |
 | `server.internal.token` | **secret**, required, at least 32 bytes | — | now. The orchestrator's own bearer on the run routes: `POST /internal/runs` and `DELETE /internal/runs/{run}` |
 | `server.internal.agents` | map from an agent id (`a-z`, `0-9`, `-`, at most 63) to a **secret**, at least 32 bytes each; none | — | now. Each agent's bearer on the internal listener, so an agent is told apart and refused: binding or unbinding is `403`, and it may not read a run's lease, its own run included (ADR 0084 decision 2, amended 2026-11-24). No two callers may share a token (exit 78 naming the second key) |
+| `server.internal.meter` | **secret**, at least 32 bytes, not another caller's token; none | — | now; [ADR 0108](../decisions/0108-a-run-is-charged-to-the-identity-providers-sub-and-an-ended-run-is-still-answered-to-the-meter.md), card ANR-1099. The operator's pod-minute meter's bearer on the run routes: the one caller of `GET /internal/runs/{run}/account`. **Refused (exit 78 naming this key) unless `auth.mode` is `jwt` and `auth.jwt.userClaim` is `sub`**: the meter is answered the person's `UserId` under the identity provider's `sub` (trimmed and lower-cased), never an e-mail address. Absent: nobody may ask |
 | `server.environment` | `development` \| `production`, `development` | — (plan 10 §3.4 called it `ORCH_ENV`; it is a key, not a variable) | now. A `production` process refuses `auth.mode: proxy_header`, and an `http://` `auth.jwt.issuer` or `jwksUrl` ([Authentication](#authentication)) |
 | `log.format` | `json` \| `text`, `json` | `LOG_FORMAT` | now |
 | `database.url` | **secret** (required) | `DATABASE_URL` | now |
@@ -233,21 +234,28 @@ server:
     token: { file: /run/secrets/orchestrator/internal-token }
     agents:
       coder: { file: /run/secrets/orchestrator/internal-agent-coder-token }
+    meter: { file: /run/secrets/orchestrator/internal-meter-token }   # only with auth.jwt.userClaim: sub
 ```
 
 | Route | Caller | Answer |
 |---|---|---|
 | `POST /internal/runs` | the orchestrator (its `token`) | `204`; `409 run_already_bound` for a different binding of a run |
 | `DELETE /internal/runs/{run}` | the orchestrator (its `token`) | `204`, idempotent |
-| `GET /internal/runs/{run}/lease` | the orchestrator or the injector — never an agent, its own run included | `200 {"token","accountId","expiresAt"}`, `Cache-Control: no-store` |
-| `GET /internal/runs/{run}/account` | the operator's meter identity alone | `200 {"accountId"}`, `Cache-Control: no-store`; `404 run_not_bound` for an unknown run and for any other caller |
+| `GET /internal/runs/{run}/lease` | the orchestrator or the injector — never an agent, its own run included | `200 {"token","accountId","expiresAt"}`, `Cache-Control: no-store`; `422 account_not_opaque` when the person is not an account id |
+| `GET /internal/runs/{run}/account` | the operator's meter identity alone | `200 {"accountId"}`, `Cache-Control: no-store`; `404 run_not_bound` for an unknown run, for a run that ended more than 24 hours ago and for any other caller; `422 account_not_opaque` when the person is not an account id |
 
-`accountId` is the run's person, the identity the usage ledger is keyed by (ADR 0065): a `UserId`, the claim the deployment maps a principal
-from (`email` or `sub`) — never a provider account or an account number of a ledger service. The injector gets it beside the key so it can say
+`accountId` is the person's `UserId` under the identity provider's **`sub`** (ADR 0108; the claim **trimmed and lower-cased**, so only an identity provider whose `sub` is lower-case ASCII joins with its raw `sub`): an id of the platform's closed alphabet `[A-Za-z0-9._:/-]{1,128}` and **never an
+e-mail address**, so a deployment that reads `auth.jwt.userClaim: email` is answered `422 account_not_opaque` and cannot run the meter (the configuration
+refuses `server.internal.meter` there). It is the same id in the lease and in the meter's answer. The injector gets it beside the key so it can say
 whose call it is (ADR 0084, amended 2026-11-24). It is in no log line, no refusal, no error and no message to an agent.
 
+The `{run}` of every route is adam's A2A task id. A run pod carries it as the annotation `adam.vymalo.com/run-id` (its label `adam.vymalo.com/run`
+is a 12-hex hash the broker does not accept): the meter reads `metadata.annotations["adam.vymalo.com/run-id"]`, asks
+`GET /internal/runs/{run}/account` and is answered `{"accountId"}`. A run that **ended** is still answered for 24 hours (its binding is kept as a
+tombstone that no lease reads, swept by the next end after that), because a pod lives up to 900 s idle after its job and the meter backfills up to 24 hours.
+
 A refusal is one of the ruled slugs: `run_not_bound` (`404`, also for a caller that is not the run's agent, so the answer never
-says whether a run exists), `lease_expired` (`410`), `unavailable` (`503`, among them a model the deployment has no key for: never
+says whether a run exists), `lease_expired` (`410`), `account_not_opaque` (`422`), `unavailable` (`503`, among them a model the deployment has no key for: never
 an empty header), `unauthenticated` (`401`) and `not_allowed` (`403`, an agent binding or unbinding). A configuration that would not
 run is refused at startup, exit 78 naming the key: a `listen` that is not a socket address or that is `server.listen`, a token
 shorter than 32 bytes, a key of `agents` that is not an agent id, and two callers sharing one token (the door compares the
@@ -580,8 +588,8 @@ application, the API and the log hold only the part that is not secret. Replaces
 
 A server's `signing.key` is a secret of the contract too, by the same rules (a reference, resolved at startup, printed by `--print-config` as the
 reference): **the nineteenth in the schema**, counting the ones that later changes added (the run routes'
-`server.internal.token` and `server.internal.agents`, ADR 0084; `secrets.openbao.token` is the twentieth); the list the test
-`the_secrets_are_the_twenty_the_contract_names` keeps is the authority. A server's `bearer` and each of its `headers` are two of the **fourteen** secrets of the contract (the ten of ADR 0032, the
+`server.internal.token` and `server.internal.agents`, ADR 0084; `secrets.openbao.token` is the twentieth, and `server.internal.meter`, ADR 0108, the twenty-first); the list the test
+`the_secrets_are_the_twenty_one_the_contract_names` keeps is the authority. A server's `bearer` and each of its `headers` are two of the **fourteen** secrets of the contract (the ten of ADR 0032, the
 two here and the two of `sharing`): a reference, resolved at startup, with an error that names the key and the variable or path and never a value, and
 printed by `--print-config` as the reference. The public part of each server (`id`, `name`, `description`, `icon`, `tools`,
 `agents`, the timeout) is what reaches the application; `GET /api/tool-servers` shows the first four and `agents`, never the

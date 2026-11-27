@@ -223,6 +223,17 @@ orchestrator:
       enabled: false
       namespace: ""
       matchLabels: {}
+    # The operator's pod-minute meter (ADR 0108): the one caller of `GET /internal/runs/{run}/account`, which answers the
+    # person's identity-provider `sub` for a run pod, also for 24 hours after the run ended. OFF by default. It is answered
+    # the `sub` and nothing else, so it needs `auth.userClaim: sub` (a deployment that keys its people by e-mail has no account
+    # to give it, and the render is refused). The token is the property of the AWS secret (`externalSecrets.key`) whose value
+    # it presents, never a value of this chart, at least 32 bytes and not another caller's. The meter is another chart's, so
+    # its namespace and labels are values, and an empty selector is refused.
+    meter:
+      enabled: false
+      tokenProperty: ""
+      namespace: ""
+      matchLabels: {}
   # `ui.showDescriptions`.
   showDescriptions: true
   # Opening a thread from its history (ADR 0059, docs/api/history.md): the web asks for the newest turns and the older ones as the

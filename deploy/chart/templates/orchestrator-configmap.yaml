@@ -52,6 +52,9 @@ data:
           {{ $agent }}: { file: {{ printf "/run/secrets/orchestrator/internal-agent-%s-token" (toString $agent) | quote }} }
           {{- end }}
         {{- end }}
+        {{- if .Values.orchestrator.internal.meter.enabled }}
+        meter: { file: /run/secrets/orchestrator/internal-meter-token }
+        {{- end }}
       {{- end }}
     log:
       format: json

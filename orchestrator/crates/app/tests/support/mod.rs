@@ -28,6 +28,17 @@ pub fn alice() -> UserId {
     UserId::new("alice@example.com")
 }
 
+/// Alice as a deployment that reads the identity provider's `sub` has her: the only kind of
+/// person a lease is answered an account for (ADR 0108).
+pub fn alice_sub() -> UserId {
+    UserId::new("3b1d7e52-6a40-4c18-9f0e-a1c2d3e4f501")
+}
+
+/// Bob, likewise.
+pub fn bob_sub() -> UserId {
+    UserId::new("8e2c4f90-1b3a-4d67-8c5d-b2d3e4f5a602")
+}
+
 pub fn bob() -> UserId {
     UserId::new("bob@example.com")
 }

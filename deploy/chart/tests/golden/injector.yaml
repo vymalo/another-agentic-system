@@ -68,7 +68,8 @@ spec:
 # Spike result (ANR-662, 2026-11-24): it works. An ok_response header from Authorino reaches the WireMock gateway
 # through Agent Router, so the injector stays these objects and needs no service of our own behind the port.
 #
-# `x-account-id` is the lease's `accountId`: the run's person, the `UserId` the usage ledger is keyed by (ADR 0065),
+# `x-account-id` is the lease's `accountId`: the person's `sub`, an `AccountId` of the closed alphabet
+# `[A-Za-z0-9._:/-]{1,128}` (ADR 0108; the orchestrator's `UserId`, trimmed and lower-cased, never an e-mail address),
 # never a provider account and never the client's own claim. Like the token it is a selector, so the client cannot
 # choose it.
 #

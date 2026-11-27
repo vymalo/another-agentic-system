@@ -113,11 +113,11 @@ pub use auth::{
 pub use bundle::{NoUserTools, PortSet, Ports, UserToolPorts, UserTools, UserToolsMode};
 pub use clock::{Clock, IdGen, SystemClock, UuidV7Ids};
 pub use credentials::{
-    CredentialBroker, CredentialError, CredentialLease, CredentialRef, KeepsCredentials,
-    MAX_CREDENTIAL_REF_BYTES, MAX_OAUTH_STATE_BYTES, MIN_OAUTH_STATE_BYTES, ModelCredentials,
-    NoBroker, NoRunBindings, OAuthStart, OAuthState, OAuthStateError, RedirectUri,
-    RedirectUriError, RunBinding, RunBindingError, RunBindingStore, RunBindings, RunCaller, RunId,
-    RunLease, RunLeaseError, RunLeases,
+    ACCOUNT_TOMBSTONE, CredentialBroker, CredentialError, CredentialLease, CredentialRef,
+    KeepsCredentials, MAX_CREDENTIAL_REF_BYTES, MAX_OAUTH_STATE_BYTES, MIN_OAUTH_STATE_BYTES,
+    ModelCredentials, NoBroker, NoRunBindings, OAuthStart, OAuthState, OAuthStateError,
+    RedirectUri, RedirectUriError, RunBinding, RunBindingError, RunBindingStore, RunBindings,
+    RunCaller, RunId, RunLease, RunLeaseError, RunLeases, account_of,
 };
 pub use egress::{
     AddressClass, CheckedAddrs, EgressHost, EgressPolicy, EgressRefusal, EgressTarget, HostPattern,

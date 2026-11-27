@@ -10,7 +10,7 @@ sidebarTitle: "0084 · The run lease"
   recommendations; the code follows them. It fixes the contract of sys#334's slice **B1** (the broker's first
   part) that S9's injector consumes. The requirements are the epic's own (*Key Assumptions* 3, 14 and 15, and
   the constraint that the lease route is not at the edge). **Amended 2026-11-26** by ADR 0101 (accepted 2026-11-26): the lease
-  answers only a binding whose path is `injected`, the custom-case injector's; see the status note of that date.
+  answers only a binding whose path is `injected`, the custom-case injector's; see the status note of that date. **Amended 2026-11-27** by ADR 0108 (account = the `sub`; the tombstone): see the status note of that date.
 
 ## Context
 
@@ -170,3 +170,17 @@ use-cases."* ADR 0101 (accepted 2026-11-26) changes what this record's lease is 
    agent, naming the binding's person; the meter's account route is unchanged.
 3. **The injector is kept as built**, off by default, for completely custom deployments; no cloud run of ours uses it.
    Decisions 3 to 7 hold for it as written.
+
+### Status note, 2026-11-27: the account is the `sub`, and a run that ended keeps a tombstone ([ADR 0108](0108-a-run-is-charged-to-the-identity-providers-sub-and-an-ended-run-is-still-answered-to-the-meter.md))
+
+**The owner, ANR-1099, 2026-11-27.** Two things this record said change, and the rest holds:
+
+1. **`accountId` is the identity provider's `sub`, an `AccountId`** (`[A-Za-z0-9._:/-]{1,128}`, the platform's closed alphabet),
+   in the lease and in the meter's answer alike. The notes of 2026-11-24 called it "a `UserId`" and "the claim the deployment maps
+   a principal from (`email` or `sub`)": that is withdrawn. A person whose id is not one (an e-mail address) is refused
+   `422 account_not_opaque` and the meter is refused by the configuration under `userClaim: email`.
+2. **Decision 6 is amended for the account route only.** A finished or canceled run's binding is no longer deleted: it is marked
+   ended and kept for 24 hours as a tombstone that **only** `GET /internal/runs/{run}/account` reads, so the meter can still
+   attribute the last minutes of a run pod (idle up to 900 s, backfilled up to 24 hours). The **lease stays revoked at the end**:
+   no credential outlives the job. The meter sends the pod's annotation `adam.vymalo.com/run-id` (the label is a hash the broker
+   does not know).

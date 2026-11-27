@@ -58,6 +58,10 @@ render instead of producing a route that forwards the client's own Authorization
 {{- fail (printf "injector.enabled must be true or false, got %v" .Values.injector.enabled) -}}
 {{- end -}}
 {{- if .Values.injector.enabled -}}
+{{- /* ADR 0108: the lease's account is the person's `sub`; with any other claim every lease is 422 account_not_opaque. */ -}}
+{{- if ne (toString .Values.auth.userClaim) "sub" -}}
+{{- fail (printf "injector.enabled needs auth.userClaim: sub, got %q: the lease names the person's sub as the account, and an e-mail address is refused (422 account_not_opaque) on every call (ADR 0108)" (toString .Values.auth.userClaim)) -}}
+{{- end -}}
 {{- if not (and (kindIs "string" .Values.injector.gatewayClassName) .Values.injector.gatewayClassName) -}}
 {{- fail "injector.gatewayClassName is required when the injector is on: the GatewayClass of the Envoy Gateway installation" -}}
 {{- end -}}
@@ -205,9 +209,39 @@ policy that never admits the whole namespace by accident. */ -}}
 {{- end -}}
 {{- $seen = append $seen (toString $property) -}}
 {{- end -}}
+{{- /* The operator's meter (ADR 0108): answered the person's `sub`, so only a deployment that reads `sub` may run it. */ -}}
+{{- if not (kindIs "bool" .Values.orchestrator.internal.meter.enabled) -}}
+{{- fail (printf "orchestrator.internal.meter.enabled must be true or false, got %v" .Values.orchestrator.internal.meter.enabled) -}}
+{{- end -}}
+{{- if .Values.orchestrator.internal.meter.enabled -}}
+{{- if ne (toString .Values.auth.userClaim) "sub" -}}
+{{- fail (printf "orchestrator.internal.meter.enabled needs auth.userClaim: sub, got %q: the meter is answered the identity provider's sub, never an e-mail address (ADR 0108)" (toString .Values.auth.userClaim)) -}}
+{{- end -}}
+{{- if not (and (kindIs "string" .Values.orchestrator.internal.meter.tokenProperty) .Values.orchestrator.internal.meter.tokenProperty) -}}
+{{- fail "orchestrator.internal.meter.tokenProperty is required when the meter may ask: the AWS property of its token" -}}
+{{- end -}}
+{{- if has (toString .Values.orchestrator.internal.meter.tokenProperty) $seen -}}
+{{- fail "orchestrator.internal.meter.tokenProperty names a token another caller of the run routes already has: each caller has its own" -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$" (toString .Values.orchestrator.internal.meter.namespace)) -}}
+{{- fail "orchestrator.internal.meter.namespace is required when the meter may reach the run routes, and is a namespace name" -}}
+{{- end -}}
+{{- if not (kindIs "map" .Values.orchestrator.internal.meter.matchLabels) -}}
+{{- fail "orchestrator.internal.meter.matchLabels must be a map of labels" -}}
+{{- end -}}
+{{- if not .Values.orchestrator.internal.meter.matchLabels -}}
+{{- fail "orchestrator.internal.meter.matchLabels is required when the meter may reach the run routes: an empty selector admits every pod of the namespace" -}}
+{{- end -}}
+{{- end -}}
 {{- if .Values.orchestrator.internal.injector.enabled -}}
+{{- if ne (toString .Values.auth.userClaim) "sub" -}}
+{{- fail (printf "orchestrator.internal.injector.enabled needs auth.userClaim: sub, got %q: the lease names the person's sub as the account, and an e-mail address is refused (422 account_not_opaque) on every call (ADR 0108)" (toString .Values.auth.userClaim)) -}}
+{{- end -}}
 {{- if not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$" (toString .Values.orchestrator.internal.injector.namespace)) -}}
 {{- fail "orchestrator.internal.injector.namespace is required when the injector may reach the run routes, and is a namespace name" -}}
+{{- end -}}
+{{- if not (kindIs "map" .Values.orchestrator.internal.injector.matchLabels) -}}
+{{- fail "orchestrator.internal.injector.matchLabels must be a map of labels" -}}
 {{- end -}}
 {{- if not .Values.orchestrator.internal.injector.matchLabels -}}
 {{- fail "orchestrator.internal.injector.matchLabels is required when the injector may reach the run routes: an empty selector admits every pod of the namespace" -}}
@@ -215,6 +249,8 @@ policy that never admits the whole namespace by accident. */ -}}
 {{- end -}}
 {{- else if .Values.orchestrator.internal.injector.enabled -}}
 {{- fail "orchestrator.internal.injector.enabled needs orchestrator.internal.enabled" -}}
+{{- else if .Values.orchestrator.internal.meter.enabled -}}
+{{- fail "orchestrator.internal.meter.enabled needs orchestrator.internal.enabled" -}}
 {{- end -}}
 {{- /* The deployment's own values: no defaults, so a forgotten one is an error. */ -}}
 {{- if not .Values.host -}}

@@ -71,6 +71,7 @@ fn migrator() -> Result<Migrator, StoreError> {
         "0032_user_team_presets.sql",
         "0033_user_tool_server_last4.sql",
         "0034_outbox_refunded.sql",
+        "0035_run_leases_tombstone.sql",
     )
     .map_err(migrate_err)?;
     Migrator::new(MIGRATIONS_TABLE, migrations).map_err(migrate_err)
@@ -2872,6 +2873,6 @@ mod tests {
             .unwrap();
         let first = &migrator.migrations()[0];
         assert_eq!((first.version(), first.description()), (1, "init"));
-        assert_eq!(migrator.migrations().len(), 34);
+        assert_eq!(migrator.migrations().len(), 35);
     }
 }

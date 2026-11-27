@@ -25,6 +25,11 @@ const METER: &str = "meter-token";
 const CODER: &str = "coder-token";
 const CHAT: &str = "chat-token";
 const MODEL: &str = "model-x";
+/// The person: an identity provider's `sub`, the only kind of person the routes answer an account for
+/// (ADR 0108).
+const PERSON: &str = "4f2a9c1e-0b7d-4c55-9e1a-6d3f8a2b7c10";
+/// A person that is an e-mail address, as under `userClaim: email`.
+const EMAIL: &str = "person@example.com";
 
 fn tokens() -> SharedTokens {
     SharedTokens::new(
@@ -65,7 +70,7 @@ fn bind_body(run: &str, agent: &str, expires_at: &str) -> String {
     json!({
         "run": run,
         "agent": agent,
-        "person": "person@example.com",
+        "person": PERSON,
         "model": MODEL,
         "expiresAt": expires_at,
     })
@@ -111,7 +116,7 @@ async fn bind_model(
     let body = json!({
         "run": run,
         "agent": agent,
-        "person": "person@example.com",
+        "person": PERSON,
         "model": model,
         "expiresAt": expires_at,
     })
@@ -153,7 +158,7 @@ async fn the_meter_gets_the_account_of_a_bound_run_and_no_store() {
         Some("no-store")
     );
     let body: Value = serde_json::from_str(&body).expect("JSON");
-    assert_eq!(body, json!({"accountId": "person@example.com"}));
+    assert_eq!(body, json!({"accountId": PERSON}));
 }
 
 #[tokio::test]
@@ -179,7 +184,7 @@ async fn the_orchestrator_the_injector_and_every_agent_are_refused_the_account()
     ] {
         let (status, _, body) = account(&app, "run-m2", Some(token)).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{who}");
-        assert!(!body.contains("person@example.com"), "{who}: {body}");
+        assert!(!body.contains(PERSON), "{who}: {body}");
         assert_eq!(
             serde_json::from_str::<Value>(&body).expect("JSON"),
             json!({"code": "run_not_bound"}),
@@ -196,7 +201,7 @@ async fn no_identity_and_a_wrong_token_are_unauthenticated_for_the_account() {
         let (status, _, body) = account(&app, "run-m3", token).await;
         // A wrong token is no caller at all, as for the lease route.
         assert_eq!(status, StatusCode::UNAUTHORIZED);
-        assert!(!body.contains("person@example.com"), "{body}");
+        assert!(!body.contains(PERSON), "{body}");
     }
 }
 
@@ -271,10 +276,7 @@ async fn the_injector_gets_the_lease_and_no_store() {
     );
     let body: Value = serde_json::from_str(&body).expect("JSON");
     assert_eq!(body["token"], "model-bearer");
-    assert_eq!(
-        body["accountId"], "person@example.com",
-        "the lease names the account"
-    );
+    assert_eq!(body["accountId"], PERSON, "the lease names the account");
     assert!(body["expiresAt"].is_string());
 }
 
@@ -285,10 +287,7 @@ async fn the_account_id_is_in_the_lease_and_in_no_refusal() {
     // Every refusal of the route is the slug and nothing else: no account id in it.
     for (token, run) in [(CODER, "run-acct"), (INJECTOR, "run-unknown")] {
         let (_, _, body) = lease(&app, run, Some(token)).await;
-        assert!(
-            !body.contains("person@example.com"),
-            "refusal holds the account: {body}"
-        );
+        assert!(!body.contains(PERSON), "refusal holds the account: {body}");
     }
     // And the lease's Debug, which is what a log line or an error would use, holds neither.
     let broker = broker();
@@ -422,7 +421,7 @@ async fn a_deleted_binding_is_run_not_bound_and_an_expired_one_is_lease_expired(
         .bind(orch_ports::RunBinding {
             run: RunId::new("run-6"),
             agent: AgentId("coder".to_owned()),
-            person: orch_core::UserId::new("person@example.com"),
+            person: orch_core::UserId::new(PERSON),
             model: Some(MODEL.to_owned()),
             expires_at: Timestamp::now() - Duration::from_secs(5),
         })
@@ -508,7 +507,7 @@ async fn a_run_bound_to_one_endpoint_is_not_re_pointed_to_another() {
                 json!({
                     "run": "run-12",
                     "agent": "coder",
-                    "person": "person@example.com",
+                    "person": PERSON,
                     "model": "model-y",
                     "expiresAt": expires_at,
                 })
@@ -642,4 +641,99 @@ fn the_readme_lists_the_four_routes() {
     ] {
         assert!(readme.contains(route), "the README does not list {route}");
     }
+}
+
+/// Binds `run` to `person` through the route, as the orchestrator does.
+async fn bind_person(app: &Router, run: &str, person: &str) -> StatusCode {
+    let body = json!({
+        "run": run,
+        "agent": "coder",
+        "person": person,
+        "model": MODEL,
+        "expiresAt": at(Duration::from_secs(60)),
+    })
+    .to_string();
+    call(
+        app,
+        request("POST", "/internal/runs", Some(ORCHESTRATOR), Some(body)),
+    )
+    .await
+    .0
+}
+
+#[tokio::test]
+async fn an_email_person_is_never_answered_as_an_account() {
+    let (app, _) = app();
+    assert_eq!(
+        bind_person(&app, "run-e1", EMAIL).await,
+        StatusCode::NO_CONTENT
+    );
+    for (who, (status, _, body)) in [
+        ("the meter", account(&app, "run-e1", Some(METER)).await),
+        ("the injector", lease(&app, "run-e1", Some(INJECTOR)).await),
+        (
+            "the orchestrator",
+            lease(&app, "run-e1", Some(ORCHESTRATOR)).await,
+        ),
+    ] {
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{who}: {body}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).expect("JSON"),
+            json!({"code": "account_not_opaque"}),
+            "{who}"
+        );
+        assert!(
+            !body.contains('@') && !body.contains("example"),
+            "{who}: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_run_that_ended_is_answered_to_the_meter_and_never_leased() {
+    let (app, _) = app();
+    assert_eq!(
+        bind_person(&app, "run-t1", PERSON).await,
+        StatusCode::NO_CONTENT
+    );
+    let (status, _, _) = call(
+        &app,
+        request("DELETE", "/internal/runs/run-t1", Some(ORCHESTRATOR), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, body) = account(&app, "run-t1", Some(METER)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).expect("JSON"),
+        json!({"accountId": PERSON}),
+        "the tombstone answers the same id"
+    );
+    assert_eq!(
+        lease(&app, "run-t1", Some(INJECTOR)).await.0,
+        StatusCode::NOT_FOUND,
+        "no credential outlives the job"
+    );
+}
+
+#[tokio::test]
+async fn a_run_ended_past_the_bound_is_run_not_bound() {
+    let credentials = MemoryModelCredentials::new(BTreeMap::new());
+    let leases = Arc::new(
+        RunLeaseBroker::new(MemoryRunBindingStore::default(), credentials)
+            .with_tombstone_retention(Duration::ZERO),
+    );
+    let app = router(leases, Arc::new(tokens()));
+    assert_eq!(
+        bind_person(&app, "run-t2", PERSON).await,
+        StatusCode::NO_CONTENT
+    );
+    let (status, _, _) = call(
+        &app,
+        request("DELETE", "/internal/runs/run-t2", Some(ORCHESTRATOR), None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, body) = account(&app, "run-t2", Some(METER)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
 }

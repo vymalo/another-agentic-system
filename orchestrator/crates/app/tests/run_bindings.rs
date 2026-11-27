@@ -20,6 +20,9 @@ use orch_ports::{
 };
 use serde_json::json;
 use support::*;
+// Alice by her identity-provider `sub`: the broker answers a lease an account only for one
+// (ADR 0108), and the runs here are leased. The explicit import wins over the glob's `alice`.
+use support::alice_sub as alice;
 use tokio_util::sync::CancellationToken;
 
 /// The broker, as the test sees it: the `RunBindings` port the dispatcher holds, over the broker's
@@ -290,8 +293,8 @@ async fn a_call_that_beats_the_bind_parks_and_then_succeeds() {
     assert_eq!(lease.token().expose(), "key-frontier");
     assert!(lease.expires_at() > SystemClock.now(), "the lease is spent");
     assert_eq!(
-        lease.account(),
-        &alice(),
+        lease.account().as_str(),
+        alice().as_str(),
         "the lease names the run's person, the ledger's account"
     );
     let binding = broker.leases.binding(&run_id).unwrap();

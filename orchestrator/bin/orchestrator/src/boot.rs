@@ -662,19 +662,44 @@ async fn run_routes(
     tracing::info!(
         addr = %listener.local_addr().context("internal listener address")?,
         agents = settings.agent_tokens.len(),
+        meter = settings.meter_token.is_some(),
         "the run routes listen"
     );
+    let tokens = run_route_tokens(settings);
+    let leases = RunLeaseBroker::new(
+        PgRunBindings::from_pool(store.pool().clone()),
+        ConfiguredCredentials::build(&cfg.models),
+    )
+    .with_tombstone_retention(tombstone_retention(settings));
+    let router = orch_credential_broker::router(Arc::new(leases), Arc::new(tokens));
+    Ok(Some((listener, router)))
+}
+
+/// Who may call the run routes: the orchestrator, each agent and, when the deployment runs the
+/// operator's meter, the meter (ADR 0108; the configuration only reads its token under
+/// `auth.jwt.userClaim: sub`). The injector's token has no key in the configuration yet, so no
+/// caller presents as `RunCaller::Injector` today: the lease is the orchestrator's until it has.
+fn run_route_tokens(settings: &crate::config::InternalSettings) -> SharedTokens {
     let agents = settings
         .agent_tokens
         .iter()
         .map(|(agent, token)| (token.expose_secret().to_owned(), agent.clone()));
     let tokens = SharedTokens::new(settings.orchestrator_token.expose_secret(), agents);
-    let leases = RunLeaseBroker::new(
-        PgRunBindings::from_pool(store.pool().clone()),
-        ConfiguredCredentials::build(&cfg.models),
-    );
-    let router = orch_credential_broker::router(Arc::new(leases), Arc::new(tokens));
-    Ok(Some((listener, router)))
+    match &settings.meter_token {
+        Some(meter) => tokens.with_meter(meter.expose_secret()),
+        None => tokens,
+    }
+}
+
+/// How long an ended run's person is kept for the meter (ADR 0108 decision 6): the default bound when
+/// the deployment runs a meter, and **nothing** otherwise, so that where no caller can read it no
+/// person's id outlives the run.
+fn tombstone_retention(settings: &crate::config::InternalSettings) -> Duration {
+    if settings.meter_token.is_some() {
+        orch_ports::ACCOUNT_TOMBSTONE
+    } else {
+        Duration::ZERO
+    }
 }
 
 /// The control plane's router over `app`: health, the resource API and the configured surfaces.
@@ -985,4 +1010,78 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
     store.pool().close().await;
     tracing::info!("stopped");
     outcome.map_err(Into::into)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use axum::http::{HeaderMap, HeaderValue, header};
+    use orch_core::AgentId;
+    use orch_credential_broker::RunCallerAuth as _;
+    use orch_ports::RunCaller;
+    use secrecy::SecretString;
+
+    use super::{run_route_tokens, tombstone_retention};
+    use crate::config::InternalSettings;
+
+    fn settings(meter: Option<&str>) -> InternalSettings {
+        InternalSettings {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            orchestrator_token: SecretString::from("orchestrator-token".to_owned()),
+            agent_tokens: BTreeMap::from([(
+                AgentId::new("coder"),
+                SecretString::from("coder-token".to_owned()),
+            )]),
+            meter_token: meter.map(|token| SecretString::from(token.to_owned())),
+        }
+    }
+
+    fn bearer(token: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+        headers
+    }
+
+    #[test]
+    fn the_configured_meter_token_is_the_meter_and_nobody_else() {
+        let tokens = run_route_tokens(&settings(Some("meter-token")));
+        assert_eq!(
+            tokens.caller(&bearer("meter-token")),
+            Some(RunCaller::Meter)
+        );
+        assert_eq!(
+            tokens.caller(&bearer("orchestrator-token")),
+            Some(RunCaller::Orchestrator)
+        );
+        assert_eq!(
+            tokens.caller(&bearer("coder-token")),
+            Some(RunCaller::Agent(AgentId::new("coder")))
+        );
+        assert_eq!(tokens.caller(&bearer("other")), None);
+    }
+
+    #[test]
+    fn without_a_meter_token_nobody_is_the_meter() {
+        let tokens = run_route_tokens(&settings(None));
+        assert_eq!(tokens.caller(&bearer("meter-token")), None);
+    }
+
+    #[test]
+    fn a_tombstone_is_kept_only_where_a_meter_can_read_it() {
+        assert_eq!(
+            tombstone_retention(&settings(Some("meter-token"))),
+            orch_ports::ACCOUNT_TOMBSTONE,
+            "with a meter: the default bound"
+        );
+        assert_eq!(
+            tombstone_retention(&settings(None)),
+            std::time::Duration::ZERO,
+            "with no meter: nothing is kept, as before ADR 0108"
+        );
+    }
 }

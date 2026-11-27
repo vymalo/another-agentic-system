@@ -110,7 +110,10 @@ pub use gate::{
     cap_findings, is_answer, is_branch_name, is_commit_hash, parse_verdict, pull_request_url,
     recognise_artifact, repo_key, verifier_context,
 };
-pub use ids::{AgentId, MAX_AGENT_ID_LEN, ThreadId, UserId, is_valid_agent_id};
+pub use ids::{
+    AccountId, AccountIdError, AgentId, MAX_ACCOUNT_ID_LEN, MAX_AGENT_ID_LEN, ThreadId, UserId,
+    is_valid_agent_id,
+};
 pub use language::{
     INSTRUCTION_UNKNOWN, Lang, Script, ScriptMismatch, detect, instruction_unknown_for,
     script_mismatch, script_mismatch_fixed, scripts_of,
