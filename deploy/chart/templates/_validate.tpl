@@ -730,13 +730,18 @@ missing identity must fail the render rather than silently serve a link another 
 {{- fail (printf "oauth2Proxy.redis.maxMemory must be a number of bytes or one with kb, mb or gb (for example 64mb), got %q" (toString .Values.oauth2Proxy.redis.maxMemory)) -}}
 {{- end -}}
 {{- end -}}
-{{- /* Images: first-party by an explicit commit tag, third-party by tag and digest. Never latest. */ -}}
+{{- /* Images: first-party by an explicit commit tag, or by a release version and its digest (the packaged chart of a
+       release, ADR 0106: release-pin.sh sets both); third-party by tag and digest. Never latest, never a moving X.Y. */ -}}
 {{- $firstParty := list "orchestrator" "web" -}}
 {{- if .Values.webSearch.enabled -}}{{- $firstParty = append $firstParty "webSearch" -}}{{- end -}}
 {{- range $c := $firstParty -}}
 {{- $img := (get $.Values $c).image -}}
-{{- if not (regexMatch "^sha-[0-9a-f]{7}$" (toString $img.tag)) -}}
-{{- fail (printf "%s.image.tag must be sha-<7 hex digits> (the commit that built it), got %q" $c (toString $img.tag)) -}}
+{{- if regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+$" (toString $img.tag) -}}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" (toString $img.digest)) -}}
+{{- fail (printf "%s.image.tag %q is a release version, which needs %s.image.digest (sha256:<64 hex digits>): a release is pinned by version and digest" $c (toString $img.tag) $c) -}}
+{{- end -}}
+{{- else if not (regexMatch "^sha-[0-9a-f]{7}$" (toString $img.tag)) -}}
+{{- fail (printf "%s.image.tag must be sha-<7 hex digits> (the commit that built it) or a release version X.Y.Z with its digest, got %q" $c (toString $img.tag)) -}}
 {{- end -}}
 {{- end -}}
 {{- $pinned := list (dict "n" "oauth2Proxy" "i" .Values.oauth2Proxy.image) (dict "n" "edge" "i" .Values.edge.image) -}}
