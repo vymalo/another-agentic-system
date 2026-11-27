@@ -130,3 +130,8 @@ mapped into sections and groups and not moved; a page moves only when the struct
 fixed; a draft stays in the repository and leaves the site through `srcExclude`; Mermaid renders and local search is on;
 the build fails on a dead link, and only links to source files outside `docs/` (which `tools/docs-check` checks) are let
 through by pattern; the base path is `/<repository>/` (`DOCS_BASE` overrides it).
+
+Headings use GitHub's slugger, so a link works on the site and on GitHub: `config.ts` sets `markdown.anchor.slugify`
+(and `headers`, `toc`) to the `slug()` of `github-slugger`, pinned in `package.json`. `"The dispatcher's ask"` is
+`#the-dispatchers-ask`, `7. The orchestrator` is `#7-the-orchestrator`, `ask_agent` keeps its underscore, and a repeat
+gets `-1`, `-2`. `tools/docs-check` fails on a `#fragment` that names no heading or `id` of its target.

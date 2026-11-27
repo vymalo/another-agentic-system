@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { slug as githubSlug } from "github-slugger";
 import { defineMd3Config } from "@vaam-apps/vitepress-md3/config";
 import { useSidebar } from "vitepress-openapi";
 import llmstxt from "vitepress-plugin-llms";
@@ -168,7 +169,8 @@ export default defineMd3Config({
     search: { provider: "local" },
     socialLinks: [{ icon: "github", link: "https://github.com/vymalo/another-agentic-system" }],
   },
-  markdown: { config: (md) => { md.use(inDepth); escapeUnknownTags(md); md.use(groupIconMdPlugin); }, attrs: { disable: true } },
+  // Heading ids are GitHub's (github-slugger), so a link to #a-heading works on the site and on github.com (STRUCTURE.md). markdown-it-anchor adds -1, -2 to a repeat, as GitHub does.
+  markdown: { anchor: { slugify: githubSlug }, headers: { slugify: githubSlug }, toc: { slugify: githubSlug }, config: (md) => { md.use(inDepth); escapeUnknownTags(md); md.use(groupIconMdPlugin); }, attrs: { disable: true } },
   // llms.txt, llms-full.txt and a .md per page, for agents that read the docs (ANR-1088, STRUCTURE.md).
   vite: {
     plugins: [

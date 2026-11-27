@@ -185,7 +185,7 @@ Its flags, report and exit codes are in [`bin/orchestrator`](../../orchestrator/
 
 **Now** is built (S9; the `artifacts` keys by S10 and S11, the `auth` keys by S14 and S15, the `models`, `tasks` and `ui` keys by S18); **reserved** names the PR and the ADR that bring it. "Replaces" is the environment variable
 (and flag) of today; during the transition release it still works and wins over the file, with a warning naming the
-variable and the key ([ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md#migration)). A
+variable and the key ([ADR 0034](../decisions/0034-one-yaml-configuration-secrets-by-reference.md#4-migration-the-environment-over-the-file-for-one-release)). A
 secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` set means
 `models.endpoints.default.apiKey: { env: ORCH_MODEL_API_KEY }`.
 

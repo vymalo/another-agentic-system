@@ -4,7 +4,9 @@
 //   3. every relative src="..." and srcset="..." of an HTML tag in the Markdown (an <img>, or the
 //      <source> of a <picture>) does too, and
 //   4. every `::: in-depth` block of the site (docs/.vitepress/theme/in-depth.ts) is closed, and
-//   5. every Rust crate (a directory with a Cargo.toml under orchestrator/crates/ or
+//   5. every `#fragment` of such a link, from a README.md or a file under docs/, to a Markdown file
+//      names a heading (slugged as GitHub and the docs site do, github-slugger, -1, -2 for repeats) or an `id="..."` of an HTML tag of that file, and
+//   6. every Rust crate (a directory with a Cargo.toml under orchestrator/crates/ or
 //      orchestrator/bin/) has a README.md next to it.
 // Usage (from the repo root):  npm --prefix tools/docs-check ci && node tools/docs-check/check-docs.mjs
 // Exits 1 on any failure, listing file:line for each.
@@ -38,7 +40,7 @@ const { default: mermaid } = await import('mermaid');
 mermaid.initialize({ startOnLoad: false });
 
 const lineOf = (src, index) => src.slice(0, index).split('\n').length;
-let diagrams = 0, links = 0, images = 0;
+let diagrams = 0, links = 0, images = 0, anchors = 0;
 
 // `::: name` opens a container and a bare `:::` closes the innermost one; a fenced block is code (the same
 // character, at least as long, nothing after it closes it). Returns the line of each `::: in-depth` left open.
@@ -63,6 +65,58 @@ function unclosedInDepth(src) {
 }
 const failures = [];
 
+// GitHub's slug of a heading, which is also the docs site's (docs/.vitepress/config.ts sets markdown.anchor.slugify to
+// github-slugger), so one link works on both: lowercase, punctuation dropped (not turned into a hyphen: "dispatcher's"
+// is "dispatchers", "ask_agent" keeps its underscore), spaces to hyphens, -1, -2 on a repeat.
+const githubSlug = (str) => str.toLowerCase().replace(/[^\p{L}\p{M}\p{N}_\- ]/gu, '').replace(/ /g, '-');
+
+// The text markdown-it-anchor slugs: the text and code of the heading, no markup, no image, no HTML tag.
+const headingText = (raw) => raw
+  .replace(/\s+#+\s*$/, '')
+  .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+  .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+  .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')
+  .replace(/<[^>]*>/g, '')
+  .replace(/`([^`]*)`/g, '$1')
+  .replace(/(\*\*|__|\*|~~)/g, '')
+  .replace(/(^|\W)_|_(?=\W|$)/g, '$1')
+  .trim();
+
+// The anchors of a Markdown file: its headings (ATX or Setext, outside fenced code) and the id="" of its HTML tags.
+const anchorCache = new Map();
+function anchorsOf(file) {
+  const key = file;
+  if (anchorCache.has(key)) return anchorCache.get(key);
+  const slug = githubSlug;
+  const ids = new Set();
+  const used = new Map();
+  const add = (title) => {
+    const base = slug(title);
+    let id = base;
+    for (let n = used.get(base) ?? 1; used.has(id) || ids.has(id); n++) { id = `${base}-${n}`; used.set(base, n + 1); }
+    used.set(id, 1);
+    ids.add(id);
+  };
+  let fence = null;
+  const lines = fs.readFileSync(file, 'utf8').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const f = /^\s{0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      if (f && f[1][0] === fence.ch && f[1].length >= fence.len && f[2].trim() === '') fence = null;
+      continue;
+    }
+    if (f && !(f[1][0] === '`' && f[2].includes('`'))) { fence = { ch: f[1][0], len: f[1].length }; continue; }
+    const h = /^ {0,3}#{1,6}(?:[ \t]+(.*?))?[ \t]*$/.exec(line);
+    if (h) { add(headingText(h[1] ?? '')); continue; }
+    if (/^ {0,3}(=+|-+)[ \t]*$/.test(line) && i > 0 && /^ {0,3}\S/.test(lines[i - 1]) && !/^\s*([-*+]|\d+[.)]|>|#|\||<)/.test(lines[i - 1])) add(headingText(lines[i - 1].trim()));
+    for (const m of line.replace(/`[^`]*`/g, '').matchAll(/<[a-z][^>]*?\sid\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) ids.add(m[1] ?? m[2]);
+  }
+  anchorCache.set(key, ids);
+  return ids;
+}
+const checksAnchors = (rel) => path.basename(rel) === 'README.md' || rel.startsWith('docs' + path.sep);
+
 for (const file of markdownFiles(root)) {
   const rel = path.relative(root, file);
   const src = fs.readFileSync(file, 'utf8');
@@ -82,11 +136,24 @@ for (const file of markdownFiles(root)) {
     .replace(/```[\s\S]*?```/g, blank)
     .replace(/`[^`\n]+`/g, blank);
   for (const m of prose.matchAll(/\]\(([^)\s]+)\)/g)) {
-    const target = m[1].split('#')[0];
-    if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target)) continue; // anchors, http(s):, mailto:
-    links++;
-    if (!fs.existsSync(path.resolve(path.dirname(file), decodeURI(target)))) {
-      failures.push(`${rel}:${lineOf(src, m.index)} broken link: ${m[1]}`);
+    const [target, ...frag] = m[1].split('#');
+    const fragment = frag.join('#');
+    if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue; // http(s):, mailto:
+    let resolved = file; // a bare #fragment is this file's own
+    if (target) {
+      links++;
+      resolved = path.resolve(path.dirname(file), decodeURI(target));
+      if (!fs.existsSync(resolved)) {
+        failures.push(`${rel}:${lineOf(src, m.index)} broken link: ${m[1]}`);
+        continue;
+      }
+    }
+    if (fragment && checksAnchors(rel) && resolved.endsWith('.md') && fs.statSync(resolved).isFile()) {
+      anchors++;
+      const want = decodeURIComponent(fragment);
+      if (!anchorsOf(resolved).has(want)) {
+        failures.push(`${rel}:${lineOf(src, m.index)} dead anchor: #${fragment} is no heading or id of ${path.relative(root, resolved)}`);
+      }
     }
   }
 
@@ -128,7 +195,7 @@ for (const crateRoot of crateRoots) {
   }
 }
 
-console.log(`${diagrams} diagrams, ${links} relative links, ${images} image paths, ${crates} crate READMEs checked`);
+console.log(`${diagrams} diagrams, ${links} relative links, ${anchors} anchors, ${images} image paths, ${crates} crate READMEs checked`);
 if (failures.length) {
   console.error(failures.join('\n'));
   console.error(`${failures.length} problem(s)`);

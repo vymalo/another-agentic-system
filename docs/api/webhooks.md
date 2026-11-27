@@ -104,7 +104,7 @@ to the agent with the report's `name`, `conclusion`, `url` and `summary` as find
 attempts are spent. Which reports are counted is the gate's `ci.required`: only those names count, and all must pass
 (a gate that requires `ci` names at least one, see above). Every report gets a card in the chat, one of its own
 (the card's id is made of the provider, the commit, the name and the report's place in the log, and it never
-replaces another: [`agui.md`](agui.md#ci-results-vymalo-ci)); the verdict of the gate is the `vymalo.check` card of
+replaces another: [`agui.md`](agui.md#ci-results-vymaloci)); the verdict of the gate is the `vymalo.check` card of
 source `ci`.
 
 ### Response codes

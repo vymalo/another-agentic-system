@@ -7,7 +7,7 @@ sidebarTitle: "0017 · CI results by webhook"
 - **Status:** accepted (2026-09-30). **Built (2026-09-30):** MVP slice 6 (the generic route,
   `SurfaceRoutes::machine`, the CI source in the gate), slice 7 (the AG-UI card), slice 8 (the web's card, 2026-09-30) and slice 9 (the GitHub adapter);
   see [Built (slice 6)](#built-slice-6), [Built (slice 7)](#built-slice-7) and [Built (slice 9)](#built-slice-9).
-  The web draws the card as [`web/README.md`](../../web/README.md#ci-results-vymalo-ci) says
+  The web draws the card as [`web/README.md`](../../web/README.md#ci-results-vymaloci) says
   ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
   Uses the inbox of [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md); feeds the gate of
   [ADR 0018](0018-verification-gate-and-rework-loop.md). The wire contract is
@@ -193,7 +193,7 @@ GitHub route is slice 9 ([below](#built-slice-9)). Where the build differs from,
 ## Built (slice 7)
 
 *2026-09-30.* Every `ci_result` event is the AG-UI activity `vymalo.ci`
-(`orch-agui-projection`, [`api/agui.md`](../api/agui.md#ci-results-vymalo-ci)); the TODO of slice 3 is gone.
+(`orch-agui-projection`, [`api/agui.md`](../api/agui.md#ci-results-vymaloci)); the TODO of slice 3 is gone.
 
 - **The id is `ci-<sha>-<name>`, not per attempt.** The text above leaves the id to the slice. A report is about a commit
   and a check, so its id depends on those and on nothing the projector has folded: the same log gives the same ids to
