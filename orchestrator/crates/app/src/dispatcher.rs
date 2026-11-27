@@ -93,9 +93,10 @@ pub struct DispatcherConfig {
     /// to `pending` with [`own_agent_wait_delay`](Self::own_agent_wait_delay) and the claim is
     /// refunded, so a slot is never held for the whole wait-ready bound (`readyTimeoutSecs` plus
     /// `OUTER_SLACK`), and the rows that wait for a slow agent cannot take every slot from the
-    /// rest. The port promises that a cut call strands nothing (`AgentProvisioner::ensure_ready`):
-    /// the agent goes on coming up and the next claim finds it. 2 s by default: a ready or a
-    /// quickly resumed agent still answers inside the one claim.
+    /// rest. Only this wait is cut: the wake itself runs in a flight of `Provisioning` (one task
+    /// per person and kind, joined by every row), so a platform slower than the probe still
+    /// finishes it and the next claim finds the agent. 2 s by default: a ready or a quickly
+    /// resumed agent still answers inside the one claim.
     pub own_agent_probe: Duration,
     /// How long a row whose person's own agent is not ready yet (a cut probe, or a platform that
     /// answered `NotReady`) waits before it is looked at again. Fixed, not a backoff: the row
@@ -663,7 +664,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// The waits a row may spend on the person's own agent waking: the cycles (a probe and the
     /// wait that follows it) that fit in the wake bound, `readyTimeoutSecs` plus `OUTER_SLACK`.
     /// Every wait of a delegation row is one of these (a stop's own wait is another row's), so the
-    /// row's refunded claims are the count. None when provisioning is off.
+    /// row's refunded claims are the count. 0 when provisioning is off.
     fn wake_waits(&self) -> u32 {
         let Some(bound) = self.app.own_agent_wake_bound() else {
             return 0;
@@ -864,8 +865,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         if wakes {
             // The wake is a probe (ANR-1078): one claim waits for it `own_agent_probe` and no more,
             // so that a row waiting for a slow agent does not hold a slot for the whole bound.
-            // Dropping the call at the bound is safe: the port promises that a dropped
-            // `ensure_ready` leaves the agent coming up.
+            // Dropping the wait is safe: the wake is a flight of `Provisioning`, which goes on.
             let probed = tokio::time::timeout(
                 self.cfg.own_agent_probe,
                 self.app.ensure_own_agent(&thread.owner, &binding.agent_id),
