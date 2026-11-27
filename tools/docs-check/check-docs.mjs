@@ -3,7 +3,8 @@
 //   2. every relative Markdown link points at a file or directory that exists,
 //   3. every relative src="..." and srcset="..." of an HTML tag in the Markdown (an <img>, or the
 //      <source> of a <picture>) does too, and
-//   4. every Rust crate (a directory with a Cargo.toml under orchestrator/crates/ or
+//   4. every `::: in-depth` block of the site (docs/.vitepress/theme/in-depth.ts) is closed, and
+//   5. every Rust crate (a directory with a Cargo.toml under orchestrator/crates/ or
 //      orchestrator/bin/) has a README.md next to it.
 // Usage (from the repo root):  npm --prefix tools/docs-check ci && node tools/docs-check/check-docs.mjs
 // Exits 1 on any failure, listing file:line for each.
@@ -36,6 +37,28 @@ mermaid.initialize({ startOnLoad: false });
 
 const lineOf = (src, index) => src.slice(0, index).split('\n').length;
 let diagrams = 0, links = 0, images = 0;
+
+// `::: name` opens a container and a bare `:::` closes the innermost one; a fenced block is code (the same
+// character, at least as long, nothing after it closes it). Returns the line of each `::: in-depth` left open.
+function unclosedInDepth(src) {
+  const open = [];
+  let fence = null;
+  const lines = src.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trimStart();
+    const f = /^(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      if (f && f[1][0] === fence.ch && f[1].length >= fence.len && f[2].trim() === '') fence = null;
+      continue;
+    }
+    if (f && !(f[1][0] === '`' && f[2].includes('`'))) { fence = { ch: f[1][0], len: f[1].length }; continue; }
+    const m = /^:{3,}\s*(.*?)\s*$/.exec(line);
+    if (!m) continue;
+    if (m[1] === '') open.pop();
+    else open.push({ name: m[1].split(/\s/)[0], line: i + 1 });
+  }
+  return open.filter((o) => o.name === 'in-depth').map((o) => o.line);
+}
 const failures = [];
 
 for (const file of markdownFiles(root)) {
@@ -47,6 +70,8 @@ for (const file of markdownFiles(root)) {
     try { await mermaid.parse(m[1]); }
     catch (e) { failures.push(`${rel}:${lineOf(src, m.index)} mermaid: ${String(e.message).split('\n')[0]}`); }
   }
+
+  for (const line of unclosedInDepth(src)) failures.push(`${rel}:${line} unclosed ::: in-depth`);
 
   // Blank out fenced blocks and inline code spans (keeping line numbers) so
   // example links inside code are not checked.

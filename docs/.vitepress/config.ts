@@ -6,6 +6,7 @@ import { withMermaid } from "vitepress-plugin-mermaid";
 import { useSidebar } from "vitepress-openapi";
 import { DEFAULT_BASE, DEFAULT_TAG } from "./openapi/shared";
 import { loadSpec } from "./openapi/spec";
+import { inDepth } from "./theme/in-depth";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -148,7 +149,7 @@ export default withMermaid(
       search: { provider: "local" },
       socialLinks: [{ icon: "github", link: "https://github.com/vymalo/another-agentic-system" }],
     },
-    markdown: { config: escapeUnknownTags, attrs: { disable: true } },
+    markdown: { config: (md) => { md.use(inDepth); escapeUnknownTags(md); }, attrs: { disable: true } },
     mermaid: {},
   }),
 );

@@ -1,4 +1,4 @@
-# The shared structure of the documentation sites (v2)
+# The shared structure of the documentation sites (v3)
 
 another-agentic-system, another-agentic-platform and another-adam-rs publish one VitePress site each, built from the
 repository's own `docs/` with `@vaam-apps/vitepress-md3`, so a pull request updates its docs in the same change. All use
@@ -30,6 +30,53 @@ A group with no page is not drawn. It appears when its first page does, and its 
 
 **Architecture** opens with a **Concepts** page: the words the documentation uses, each in a line or two with a link to
 the page that says the rest.
+
+## Writing pages
+
+A page is read in layers, so it is progressive: the reader stops when they have enough.
+
+- **Lead with what a reader needs, in a few lines.** The first screen says what the thing is and what to do. Nothing else
+  is needed to use it.
+- **Put the rest in `::: in-depth`.** The detail, the history, the edge cases and the long tables go in a block that is
+  closed until opened. Give it a plain-text title (no Markdown, no HTML) that says what is inside (`::: in-depth Why a row that dies is never lost`);
+  with no title it is "In depth". Blocks nest (`::: in-depth` inside `::: in-depth`, each closed by its own `:::`),
+  and a code fence inside is left alone. Inside VitePress's own `::: tip` or `::: details`, write that outer marker longer (`:::: tip` … `::::`), or the tip closes at the block's `:::`. It is a native `<details>`, so the keyboard and a screen reader work with no
+  script. A block cannot sit inside a table cell: use a list or headings, a line each, then the block. Like `::: tip`,
+  `::: in-depth` shows as literal text when the file is read on GitHub.
+- **Status tables use the legend below.** The icon always comes with its word in the cell (`✅ built`), because an icon
+  alone says nothing to a screen reader or to a reader who does not know it. The cell keeps its facts after the word.
+
+| Icon | Word | Means |
+|---|---|---|
+| ✅ | built | fully supported or built |
+| ⚠️ | partial | partially: the cell says what is missing |
+| ❌ | not supported | not supported |
+| 🚧 | planned | in progress or planned |
+| 🧪 | experimental | works, and may change or be removed |
+| ➖ | n/a · retired | not applicable, or retired |
+| 🔒 | needs a role | needs a permission or a role |
+
+The legend is also on the site's reference index, under "Status icons", with the same text. The icons are literal emoji in the
+Markdown, not shortcodes, so they read the same on GitHub.
+
+### The pieces to copy
+
+Two files, in `docs/.vitepress/theme/`, and two lines:
+
+- `in-depth.ts`: the container, a small markdown-it block rule with no dependency. In `config.ts`, import it and call it
+  beside any other markdown hook, so that your own hooks stay only what they are:
+  `markdown: { config: (md) => { md.use(inDepth); yourOwnHook(md); } }`. An unclosed block logs a build warning naming
+  the file and line.
+- `extras.css`: the sidebar width and the block's style (both colour schemes, from the md3 tokens). In `theme/index.ts`,
+  `import "./extras.css"`.
+
+Optional, and worth copying with them: `in-depth.test.mjs` (`node --test`, run by CI) and the check in
+`tools/docs-check/check-docs.mjs` that fails on an unclosed `::: in-depth`.
+
+**The sidebar** is 320px wide from 960px up and 360px from 1440px up, where the layout is capped (`--vp-sidebar-width`,
+272px by default): VitePress derives the content's offset, the local nav and the fixed sidebar of wide screens from that
+one variable, so they move together. Under 960px the sidebar is a drawer and is not changed. At 1280px and 1303px the
+content column and the outline sit side by side, the outline ending inside the viewport.
 
 ## Sites
 
