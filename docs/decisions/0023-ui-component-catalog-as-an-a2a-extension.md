@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0023 · UI component catalog"
+---
+
 # ADR 0023 — A UI component catalog, sent at conversation start, with a refetch seam
 
 - **Status:** accepted (2026-10-01), on the owner's delegation: the extension's URI and open question 36 are

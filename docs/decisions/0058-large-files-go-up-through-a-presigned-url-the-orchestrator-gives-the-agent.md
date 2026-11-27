@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0058 · Large files by presigned URL"
+---
+
 # ADR 0058 — Large files go up through a presigned URL the orchestrator gives the agent
 
 - **Status:** **accepted (2026-10-11)**, on the owner's words of that day (the quote in the amendment at the end). Proposed

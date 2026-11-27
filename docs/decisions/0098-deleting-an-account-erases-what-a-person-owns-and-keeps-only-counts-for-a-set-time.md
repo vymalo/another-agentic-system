@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0098 · Deleting an account keeps counts"
+---
+
 # ADR 0098 — Deleting an account erases what a person owns and keeps only counts, for a set time
 
 - **Status:** **Proposed (2026-11-25).** Task ANR-768, the first slice of [issue 294](https://github.com/vymalo/another-agentic-system/issues/294)

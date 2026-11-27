@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0013 · A2UI for generative UI"
+---
+
 # ADR 0013 — A2UI for generative UI
 
 - **Status:** accepted (2026-09-29). **Amended (2026-11-19, [ADR 0075](0075-a2ui-v1-0-cutover.md)):** the system moves to

@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0096 · A held stream is a projection"
+---
+
 # ADR 0096 — A held stream is a projection of the log, so an agent sleeping is invisible to it; the activator is what a wake costs
 
 - **Status:** **Proposed (2026-11-25).** Third gap of the live-connections epic ([#403](https://github.com/vymalo/another-agentic-system/issues/403)). It **consumes** the platform's plan for sleep when idle (AD-058, [plat#83](https://github.com/vymalo/another-agentic-platform/pull/83), ANR-255) and changes none of its decisions. Nothing is built.

@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0094 · An inspector; replay is a fork"
+---
+
 # ADR 0094 — An inspector reads a run, and "replay from a step" is a fork of the journal into a new run
 
 - **Status:** **proposed (2026-11-24)** (task ANR-261, issue [#404](https://github.com/vymalo/another-agentic-system/issues/404),

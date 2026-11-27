@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0085 · Interface language as a hint"
+---
+
 # ADR 0085 — The interface's language travels with the message, as a hint
 
 - **Status:** **proposed 2026-11-22**, at the owner's decisions of that day (the owner). The orchestrator's side is built (the tag and its checks, the card

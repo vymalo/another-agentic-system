@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0037 · MVP complete against build order"
+---
+
 # ADR 0037 — The MVP is complete against its build order
 
 - **Status:** proposed (2026-10-03). It records what the planner means by "complete" and where the MVP stops; it becomes

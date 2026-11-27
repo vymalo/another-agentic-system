@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0043 · Deleting a thread erases it"
+---
+
 # ADR 0043 — Deleting a thread erases it
 
 - **Status:** proposed (2026-10-03), on the owner's words of the same day: "it should be possible of archiving or deleting

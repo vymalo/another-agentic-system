@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0061 · An access tier for each message"
+---
+
 # ADR 0061 — The person picks an access tier for each message; the agent keeps to it, and nothing is passed down
 
 - **Status:** proposed (2026-10-11), at the owner's request (the quote in *Context*). **The owner's own, 2026-10-11:**

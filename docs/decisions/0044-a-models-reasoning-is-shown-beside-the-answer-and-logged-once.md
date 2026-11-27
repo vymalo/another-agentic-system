@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0044 · Reasoning beside the answer"
+---
+
 # ADR 0044 — A model's reasoning is shown beside the answer and logged once
 
 - **Status:** accepted (2026-10-05), decided on the owner's delegation ("the owner sees no reasoning ("thinking") in the

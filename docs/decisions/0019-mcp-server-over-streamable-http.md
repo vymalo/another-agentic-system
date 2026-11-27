@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0019 · MCP server over streamable HTTP"
+---
+
 # ADR 0019 — MCP server over streamable HTTP: bearer first, OIDC later
 
 - **Status:** accepted (2026-09-30). **Built (2026-09-30):** MVP slices 11 (tools and bearer

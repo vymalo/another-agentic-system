@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0050 · The chat agent has sub-agents"
+---
+
 # ADR 0050 — The chat agent has sub-agents: a researcher, a writer and a planner
 
 - **Status:** accepted (2026-10-06), on the owner's decision of that day: *"We also need a way to have sub-agents without the acp.

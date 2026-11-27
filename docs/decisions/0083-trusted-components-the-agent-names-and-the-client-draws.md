@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0083 · Trusted components"
+---
+
 # ADR 0083 — Trusted components: the agent names one, the client draws it, and a secret never enters the data model
 
 - **Status:** **proposed (2026-11-21)**, and nothing is built. The owner asked for it on 2026-11-21, in his own words:

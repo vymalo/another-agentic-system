@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0030 · Step I/O, bounded and redacted"
+---
+
 # ADR 0030 — A step carries its input and output, bounded and redacted
 
 - **Status:** accepted (2026-10-02), on the owner's answer of the same day (question 5 of the feedback of

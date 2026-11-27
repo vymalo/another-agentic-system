@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0078 · Read aloud and keyboard help"
+---
+
 # ADR 0078 — Read aloud with the device's voice, and the keyboard help
 
 - **Status:** accepted (2026-11-19), the owner's decision, relayed on the coordination channel

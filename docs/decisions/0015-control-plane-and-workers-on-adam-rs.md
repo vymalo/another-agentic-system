@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0015 · Control plane, workers on adam-rs"
+---
+
 # ADR 0015 — Control plane and workers on adam-rs, with in-process agents
 
 - **Status:** accepted (2026-09-29). Amends [ADR 0001](0001-rust-state-machine-on-postgres.md)

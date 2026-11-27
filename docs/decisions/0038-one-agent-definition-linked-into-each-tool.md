@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0038 · One agent definition"
+---
+
 # ADR 0038 — One agent definition, linked into each tool
 
 - **Status:** accepted (2026-10-03, the owner's request: "Setup -system with the skills from adam-rs and create custom agents and

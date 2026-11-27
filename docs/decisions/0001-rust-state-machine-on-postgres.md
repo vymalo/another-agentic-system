@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0001 · Rust state machine on Postgres"
+---
+
 # ADR 0001 — Orchestrator: a Rust state machine on Postgres
 
 - **Status:** accepted (2026-09-28). *Amended (2026-11-19) by

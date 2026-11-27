@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0073 · App Factory board, containers"
+---
+
 # ADR 0073 — App Factory board outside the orchestrator, model selection by pinned agent containers, and container-only MVP runtime
 
 - **Status:** proposed (2026-11-18). **Amended (2026-11-26):** decisions 2, 3 and 4 are replaced, decision 1 stands (the board is a component of this repository) and decision 5 stands; built now, no person invited until the safe cloud coder and gVisor run on a real node; see *Amended (2026-11-26)* at the end. Decides the orchestration boundary and container-only runtime for the mobile-app and cloud-backend factory ([app-factory plan](../plans/app-factory-mvp-2026-12.md)). Does not amend invariants 1 or 3 of [`CLAUDE.md`](../../CLAUDE.md); keeps [`ADR 0063`](0063-an-openai-compatible-model-endpoint-per-thread-on-the-orchestrator.md), Kubernetes operator integration ([`another-agentic-platform`](https://github.com/vymalo/another-agentic-platform)), and `another-adam-rs` [`ADR 0045`](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md) slices 3–8 deferred until after the initial release.

@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0071 · Vector search on pgvector"
+---
+
 # ADR 0071 — Embeddings and vector search use pgvector, behind a port
 
 - **Status:** **accepted (2026-11-16)** for the choice of the store, an owner decision (*"I propose to use pgvector for embedding and

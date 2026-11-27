@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0018 · Verification gate, rework loop"
+---
+
 # ADR 0018 — Configurable verification gate and a bounded rework loop
 
 - **Status:** accepted (2026-09-30). **Built:** MVP slice 2 (the core), slice 3 (configuration and

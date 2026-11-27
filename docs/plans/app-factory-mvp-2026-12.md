@@ -1,3 +1,7 @@
+---
+sidebarTitle: "App Factory plan (2026-12)"
+---
+
 # App Factory Technical Plan (2026-12): Maintainable Mobile Apps & Cloud Containers
 
 > **Status:** Superseded in part by the [Amended (2026-11-26)](../decisions/0073-app-factory-board-and-model-selection.md#amended-2026-11-26) note of ADR 0073 (the board a component of this repository outside the core, one SQLite container per app run by a platform app kind and built in the person's own GitHub, model pick by ADR 0086, specialists as child sessions; no Compose stack). Was: Proposed for review (`@stephane-segning`) — revised 2026-11-18 for container-only MVP (see [ADR 0073](../decisions/0073-app-factory-board-and-model-selection.md))  

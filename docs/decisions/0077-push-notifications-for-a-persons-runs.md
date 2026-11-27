@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0077 · Push notifications for runs"
+---
+
 # ADR 0077 — Push notifications for a person's runs, delivered by the deployment's own services
 
 - **Status:** **Accepted (2026-11-19).** The owner's decision of 2026-11-19: push notifications are **in R1**, with

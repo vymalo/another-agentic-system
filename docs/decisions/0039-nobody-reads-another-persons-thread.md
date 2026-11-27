@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0039 · Nobody reads another's thread"
+---
+
 # ADR 0039 — Nobody reads another person's thread
 
 - **Status:** accepted (2026-10-03), on the owner's decision of the same day: "Admins shouldn't read every thread, it's

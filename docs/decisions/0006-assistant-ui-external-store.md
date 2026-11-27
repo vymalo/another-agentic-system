@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0006 · Chat on Next.js + assistant-ui"
+---
+
 # ADR 0006 — Chat surface: Next.js + assistant-ui with an external store
 
 - **Status:** accepted (2026-09-28). Amended (2026-09-29): the UI is built with shadcn/ui and

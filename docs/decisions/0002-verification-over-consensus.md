@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0002 · Verification over consensus"
+---
+
 # ADR 0002 — Verification over consensus
 
 - **Status:** accepted (2026-09-28). Status note (2026-09-30): [ADR 0018](0018-verification-gate-and-rework-loop.md)

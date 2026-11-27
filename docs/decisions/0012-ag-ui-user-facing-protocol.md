@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0012 · AG-UI as the user-facing protocol"
+---
+
 # ADR 0012 — AG-UI as the user-facing protocol
 
 - **Status:** accepted (2026-09-29). Amended (2026-10-02): the bullet "Authentication stays at the edge" (ADR 0033). Status note (2026-09-29): the run route is built. The "inbox

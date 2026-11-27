@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0009 · Swappable implementations"
+---
+
 # ADR 0009 — Swappable implementations, selected at build time
 
 - **Status:** accepted (2026-09-28). Amends ADR 0004. Status note (2026-09-29): the decision

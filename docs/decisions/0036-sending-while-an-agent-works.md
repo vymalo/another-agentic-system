@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0036 · Sending while an agent works"
+---
+
 # ADR 0036 — Sending while an agent works: steer, or stop and send
 
 - **Status:** accepted (2026-10-02), on the owner's request of 2026-10-01 ("while an agent is working, it should also

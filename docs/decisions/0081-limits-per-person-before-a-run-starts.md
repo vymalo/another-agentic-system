@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0081 · Limits before a run starts"
+---
+
 # ADR 0081 — Limits per person before a run starts: the role's allowance, checked before dispatch
 
 - **Status:** **accepted (2026-11-24).** The owner accepted this record as it stands on 2026-11-24, with one answer to

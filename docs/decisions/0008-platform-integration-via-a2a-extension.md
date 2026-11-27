@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0008 · Platform via an A2A extension"
+---
+
 # ADR 0008 — Optional another-agentic-platform integration via an A2A extension
 
 - **Status:** accepted (2026-09-28)

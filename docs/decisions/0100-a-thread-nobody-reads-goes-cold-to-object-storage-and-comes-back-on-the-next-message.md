@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0100 · A cold thread goes to storage"
+---
+
 # ADR 0100 — A thread nobody reads goes cold to object storage and comes back on the next message
 
 - **Status:** **Accepted (2026-11-26): by the owner, by merging.** Task ANR-819. Nothing is built. The owner's direction of 2026-11-25: *"We need

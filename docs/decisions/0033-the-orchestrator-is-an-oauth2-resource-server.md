@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0033 · OAuth2 resource server"
+---
+
 # ADR 0033 — The orchestrator is an OAuth2 resource server; roles map to permissions
 
 - **Status:** accepted (2026-10-02), on the owner's request of 2026-10-02; the details are the planner's (plan 10,

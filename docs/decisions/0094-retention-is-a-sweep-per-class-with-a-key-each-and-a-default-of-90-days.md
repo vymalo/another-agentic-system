@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0094 · Retention: one sweep per class"
+---
+
 # ADR 0094 — Retention is one sweep per class, one key each, and a default of 90 days
 
 - **Status:** **Proposed (2026-11-24).** Mechanism for open questions 28, 29 and 46 (issue

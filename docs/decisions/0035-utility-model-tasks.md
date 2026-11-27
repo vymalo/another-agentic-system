@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0035 · Utility model tasks"
+---
+
 # ADR 0035 — Utility model tasks: title and description, each with its endpoint, model, prompt and language rule
 
 - **Status:** accepted (2026-10-02), on the owner's request of 2026-10-02; the details are the planner's (plan 10,

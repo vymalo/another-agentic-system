@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0049 · Coder shown as Adam"
+---
+
 # ADR 0049 — The coder is shown as Adam, an agent may have aliases, and a step may carry the OpenCode icon
 
 - **Status:** accepted (2026-10-06), on the owner's decision of that day: *"It's coder, but just because it can code."* The

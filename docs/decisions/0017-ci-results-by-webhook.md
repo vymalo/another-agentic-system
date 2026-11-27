@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0017 · CI results by webhook"
+---
+
 # ADR 0017 — CI results by webhook: GitHub and a generic signed shape
 
 - **Status:** accepted (2026-09-30). **Built (2026-09-30):** MVP slice 6 (the generic route,

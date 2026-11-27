@@ -1,3 +1,7 @@
+---
+sidebarTitle: "Attachments (v1)"
+---
+
 # Attachments (v1): a person's file, from the browser
 
 - **Status:** **the server half is built** (2026-11-24): the route, its checks and its tests. The web has no control

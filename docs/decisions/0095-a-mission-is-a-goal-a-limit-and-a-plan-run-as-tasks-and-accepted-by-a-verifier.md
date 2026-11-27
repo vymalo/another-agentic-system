@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0095 · A mission: goal, limit and plan"
+---
+
 # ADR 0095 — A mission: a goal, a limit and a plan the person approves, run as tasks on branches and accepted by a verifier that did not write them
 
 - **Status:** **Proposed (2026-11-24).** Slice 2 of the missions epic ([#342](https://github.com/vymalo/another-agentic-system/issues/342)).

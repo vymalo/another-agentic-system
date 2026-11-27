@@ -12,21 +12,32 @@ import { inDepth } from "./theme/in-depth";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-// The sidebar of a folder: every page in it, titled by its first heading.
+// The label of a page in the sidebar: `sidebarTitle` of its front matter if it has one, else its first heading,
+// else the fallback. VitePress 1.6.4 has no key for it (verified 2026-11-27 in vitepress/dist/client/theme-default/
+// support/sidebar.js: a sidebar item is the `text` the config gives), and `title` would change the page's <title>.
+// The heading and the <title> stay as written; STRUCTURE.md "Writing pages" says the rule and the limit.
+const LABEL_MAX = 40;
+const labelled: { file: string; text: string }[] = [];
+function label(file: string, fallback: string, override?: string) {
+  const src = readFileSync(file, "utf8");
+  const fm = src.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1];
+  const own = fm?.match(/^sidebarTitle:\s*(?:"([^"]*)"|'([^']*)'|(.+?))\s*$/m);
+  const text = (override ?? own?.[1] ?? own?.[2] ?? own?.[3] ?? src.replace(/^---[\s\S]*?\n---/, "").match(/^# (.+)$/m)?.[1] ?? fallback).replace(/`/g, "");
+  labelled.push({ file, text });
+  return text;
+}
+
+// The sidebar of a folder: every page in it, labelled by its sidebarTitle or its first heading.
 function pages(dir: string, skip: string[] = []) {
   return readdirSync(join(root, dir))
     .filter((f) => f.endsWith(".md") && f !== "README.md" && !skip.includes(f))
     .sort()
-    .map((f) => {
-      const text = readFileSync(join(root, dir, f), "utf8").match(/^# (.+)$/m)?.[1];
-      return { text: (text ?? f.replace(/\.md$/, "")).replace(/`/g, ""), link: `/${dir}/${f.replace(/\.md$/, "")}` };
-    });
+    .map((f) => ({ text: label(join(root, dir, f), f.replace(/\.md$/, "")), link: `/${dir}/${f.replace(/\.md$/, "")}` }));
 }
 
-// A page of docs/ by its path without the extension, titled by its first heading.
+// A page of docs/ by its path without the extension, labelled by its sidebarTitle or its first heading.
 function page(path: string, text?: string) {
-  const title = readFileSync(join(root, `${path}.md`), "utf8").match(/^# (.+)$/m)?.[1];
-  return { text: text ?? (title ?? path).replace(/`/g, ""), link: `/${path}` };
+  return { text: label(join(root, `${path}.md`), path, text), link: `/${path}` };
 }
 
 // A group of pages, shown only when it holds one: an empty group is not drawn.
@@ -96,6 +107,13 @@ const sidebar = [
   { text: "Decisions", collapsed: true, items: [{ text: "ADR index", link: "/decisions/" }, ...pages("decisions", ["index.md"])] },
   { text: "Contributing", items: [{ text: "How to contribute", link: "/contributing" }] },
 ].filter((s) => s.items.length > 0);
+
+// No label of a page is longer than LABEL_MAX: a longer one wraps in the sidebar. Give the page a `sidebarTitle`.
+// The operations of the chat API are not files: their titles are the spec's summaries (ANR-1083), so they are not read here.
+{
+  const long = labelled.filter((l) => l.text.length > LABEL_MAX);
+  if (long.length) throw new Error(`sidebar labels over ${LABEL_MAX} characters; add a \`sidebarTitle\` to the front matter: ${long.map((l) => `${l.file.replace(root + "/", "")} (${l.text.length})`).join(", ")}`);
+}
 
 // Prose writes <agent> or <ThreadShare> meaning a placeholder; Vue would read it as a component and fail the build.
 // Only real HTML elements pass through, everything else is shown as the text it is.

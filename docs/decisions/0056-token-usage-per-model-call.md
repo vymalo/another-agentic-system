@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0056 · Token usage per model call"
+---
+
 # ADR 0056 — Token usage per model call: logged once, projected to AG-UI, drawn as a ring beside the composer
 
 - **Status:** accepted (2026-10-08), at the owner's request: "a token gauge (LibreChat-like ring): usage per model call from

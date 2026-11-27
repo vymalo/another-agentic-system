@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0053 · A thread export names its builds"
+---
+
 # ADR 0053 — A thread export says which builds made it
 
 - **Status:** accepted (2026-10-07), on the owner's request of the same day, reading the production exports of

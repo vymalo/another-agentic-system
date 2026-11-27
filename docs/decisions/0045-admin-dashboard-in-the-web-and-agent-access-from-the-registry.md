@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0045 · Admin, Keycloak roles, registry"
+---
+
 # ADR 0045 — The admin dashboard is an area of the web; permissions are Keycloak roles; who may use a platform agent comes from its registry entry
 
 - **Status:** accepted (2026-10-05); *Amended 2026-10-06* (decision 3 below, see the note at the end), on the owner's request of that day (*"The MVP worked and now we need a dashboard for

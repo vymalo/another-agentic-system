@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0032 · Agent files in an artifact store"
+---
+
 # ADR 0032 — Files from agents live in an artifact store; the log keeps references
 
 - **Status:** accepted (2026-10-02), on the owner's question of the same day, "Do we need an object storage

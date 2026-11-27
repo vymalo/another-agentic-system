@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0029 · Forking a thread copies its log"
+---
+
 # ADR 0029 — Forking a thread copies its log
 
 - **Status:** accepted (2026-10-01), on the owner's request of the same day ("chat forking and

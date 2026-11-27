@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0046 · People add their own MCP servers"
+---
+
 # ADR 0046 — People add their own MCP servers from the UI; their secrets live in a credential broker, never here
 
 - **Status:** **accepted (2026-10-11)**, on the owner's words of that day: "ADR 0046 should be accepted and built." Every name, default and

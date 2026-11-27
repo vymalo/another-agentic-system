@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0047 · One UI for web, desktop, mobile"
+---
+
 # ADR 0047 — One UI for web, desktop and mobile; each signs in as a public OAuth client
 
 - **Status:** proposed (2026-10-06). **Accepted** on the owner's direction of 2026-10-06 (*"we're packing the UI into tauri for

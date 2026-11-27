@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0028 · devcontainer.json contract"
+---
+
 # ADR 0028 — devcontainer.json is the workspace environment contract
 
 - **Status:** accepted (2026-10-01), an owner decision. **Built** (2026-10-02, MVP slice 7b): adam-rs builds the

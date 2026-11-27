@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0063 · A model endpoint per thread"
+---
+
 # ADR 0063 — An OpenAI-compatible model endpoint per thread on the orchestrator: the agent asks for its model, and no model key travels in A2A
 
 - **Status:** proposed (2026-10-11), at the owner's request (the quote in *Context*). **The owner's own, 2026-10-11:** the direction and its shape (the card declares the extension, the message

@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0066 · A fair share of the dispatcher"
+---
+
 # ADR 0066 — A fair share of the dispatcher: a claim orders the due rows by each person's load
 
 - **Status:** **proposed (2026-10-28).** The design is the comment on

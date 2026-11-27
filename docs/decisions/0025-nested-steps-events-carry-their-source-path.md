@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0025 · Nested steps with source path"
+---
+
 # ADR 0025 — Nested steps: events carry their source path
 
 - **Status:** accepted (2026-10-01), on the owner's delegation: the extension's URI is decided in the

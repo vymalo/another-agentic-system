@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0091 · Memory off until they turn it on"
+---
+
 # ADR 0091 — A person's memory is off until they turn it on, one switch per agent, and a saved note is stored at once
 
 - **Status:** **Accepted (2026-11-24)**, on the owner's answer to the memory epic's questions 1 and 2. It amends

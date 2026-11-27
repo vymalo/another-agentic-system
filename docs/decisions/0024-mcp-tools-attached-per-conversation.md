@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0024 · MCP tools per conversation"
+---
+
 # ADR 0024 — MCP tools attached per conversation, from the UI
 
 - **Status:** accepted (2026-10-01), on the owner's delegation: open question 35 is decided for the relay, which

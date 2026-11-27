@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0084 · The run lease"
+---
+
 # ADR 0084 — The run lease: the broker binds a run and lends its model credential to the injector
 
 - **Status:** **proposed (2026-11-21); decided 2026-11-22.** The owner answered the two open questions on

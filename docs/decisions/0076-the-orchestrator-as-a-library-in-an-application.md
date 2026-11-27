@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0076 · The orchestrator as a library"
+---
+
 # ADR 0076 — The orchestrator as a library in an application
 
 - **Status:** **Accepted (2026-11-19).** The owner's decision of 2026-11-19: an application that runs agents on the

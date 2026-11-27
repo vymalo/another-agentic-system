@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0054 · The web holds its own tokens"
+---
+
 # ADR 0054 — The web holds its own tokens: a public client, DPoP-bound, an offline refresh token in IndexedDB
 
 - **Status:** accepted (2026-10-07), on the owner's words of 2026-10-07: "the frontend should use something to save the

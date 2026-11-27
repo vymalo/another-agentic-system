@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0097 · A thread has one home region"
+---
+
 # ADR 0097 — A thread has one home region; a deployment in several regions shares no log
 
 - **Status:** **Proposed (2026-11-25).** Fifth gap of the roadmap epic on several regions ([#407](https://github.com/vymalo/another-agentic-system/issues/407)). Nothing is built. Spend and law are the operator's, and this ADR stops where either begins.
