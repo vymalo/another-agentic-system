@@ -23,6 +23,7 @@ use orch_ports::{
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
+use tokio::time::Instant;
 
 use crate::error::AppError;
 
@@ -57,28 +58,12 @@ impl<T: AgentProvisioner> ErasedProvisioner for T {
 }
 
 /// How a wake ended, kept so that every waiter of the flight gets it (the port's error is not
-/// `Clone`).
+/// `Clone`: each waiter gets [`ProvisionError::duplicate`], its cause chain kept).
 enum Outcome {
     Ready(ProvisionedAgent),
     /// Not ready in time: the adapter's `NotReady`, or the backstop (`None`).
     NotReady(Option<AgentState>),
     Failed(ProvisionError),
-}
-
-impl Outcome {
-    /// A copy of a failure for one more waiter. The platform's own error text is kept as a string.
-    fn failure(error: &ProvisionError) -> ProvisionError {
-        match error {
-            ProvisionError::Unavailable { source } => {
-                ProvisionError::unavailable(source.to_string())
-            }
-            ProvisionError::Refused => ProvisionError::Refused,
-            ProvisionError::Deleting => ProvisionError::Deleting,
-            ProvisionError::NotReady { last } => ProvisionError::NotReady { last: *last },
-            // `Invalid` and any kind added later: the form is refused, a retry cannot help
-            _ => ProvisionError::Invalid,
-        }
-    }
 }
 
 type Flight = watch::Receiver<Option<Arc<Outcome>>>;
@@ -207,42 +192,64 @@ impl Provisioning {
             return Ok(None);
         };
         let owner = Self::owner_of(user);
-        let outcome = self.fly(owner, kind).await;
-        match &*outcome {
-            Outcome::Ready(agent) => Ok(Some(AgentId::new(agent.name.clone()))),
-            Outcome::NotReady(last) => Err(AppError::AgentNotReady {
-                kind: kind.prefix(),
-                waited: self.ready_timeout,
-                last: *last,
-            }),
-            Outcome::Failed(error) => Err(AppError::Provisioning {
-                kind: kind.prefix(),
-                source: Outcome::failure(error),
-            }),
+        // This caller's own deadline, whatever flight it joins.
+        let began = Instant::now();
+        let deadline = began + self.ready_timeout.saturating_add(OUTER_SLACK);
+        loop {
+            let (outcome, started) = self.fly(owner.clone(), kind).await;
+            match &*outcome {
+                Outcome::Ready(agent) => return Ok(Some(AgentId::new(agent.name.clone()))),
+                // A flight this caller joined may have been started long before it came, and ended
+                // `NotReady` on its own bound. This caller still has time: it joins the next
+                // flight, or starts one. A flight it started itself is final. (The dispatcher's
+                // probe cuts this whole call at the probe, whichever way it goes.)
+                Outcome::NotReady(_) if !started && Instant::now() < deadline => {}
+                Outcome::NotReady(last) => {
+                    return Err(AppError::AgentNotReady {
+                        kind: kind.prefix(),
+                        // the bound that ran out for a flight of its own; the time this caller
+                        // actually waited for one it joined
+                        waited: if started {
+                            self.ready_timeout
+                        } else {
+                            began.elapsed()
+                        },
+                        last: *last,
+                    });
+                }
+                Outcome::Failed(error) => {
+                    return Err(AppError::Provisioning {
+                        kind: kind.prefix(),
+                        source: error.duplicate(),
+                    });
+                }
+            }
         }
     }
 
     /// Joins the flight of `owner`'s agent of `kind`, starting it when there is none, and waits for
-    /// its end. Dropping this future leaves the flight running. No lock is held across an await.
-    async fn fly(&self, owner: AgentOwner, kind: AgentKind) -> Arc<Outcome> {
+    /// its end; the flag says that this call started it. Dropping this future leaves the flight
+    /// running. No lock is held across an await, nor across the spawn.
+    async fn fly(&self, owner: AgentOwner, kind: AgentKind) -> (Arc<Outcome>, bool) {
         let key = (owner, kind);
-        let mut flight = {
+        let (mut flight, task) = {
             let mut flights = self.flights.lock().unwrap_or_else(PoisonError::into_inner);
             let existing = flights.get(&key).cloned();
             match existing {
-                Some(flight) => flight,
+                Some(flight) => (flight, None),
                 None => {
                     let (tx, rx) = watch::channel(None);
                     flights.insert(key.clone(), rx.clone());
                     let inner = Arc::clone(&self.inner);
+                    // made here, not in the task: a task dropped before its first poll (a
+                    // runtime that is shutting down) still removes its entry
                     let end = FlightEnd {
                         flights: Arc::clone(&self.flights),
-                        key,
+                        key: key.clone(),
                     };
                     let bound = self.ready_timeout.saturating_add(OUTER_SLACK);
-                    tokio::spawn(async move {
-                        let (owner, _) = &end.key;
-                        let owner = owner.clone();
+                    let owner = key.0.clone();
+                    let task = async move {
                         let result =
                             tokio::time::timeout(bound, inner.ensure_ready(&owner, kind)).await;
                         let outcome = match result {
@@ -256,17 +263,25 @@ impl Provisioning {
                         // out of the map first: a call that comes now starts a flight of its own
                         drop(end);
                         let _ = tx.send(Some(Arc::new(outcome)));
-                    });
-                    rx
+                    };
+                    (rx, Some(task))
                 }
             }
         };
-        match flight.wait_for(Option::is_some).await {
-            Ok(done) => done
-                .clone()
-                .unwrap_or_else(|| Arc::new(Outcome::NotReady(None))),
-            // the task ended without an answer (a panic): not ready
-            Err(_) => Arc::new(Outcome::NotReady(None)),
+        // the lock is released: a spawn on a runtime that is shutting down drops the task at once,
+        // and its `FlightEnd` takes the lock
+        let started = task.is_some();
+        if let Some(task) = task {
+            tokio::spawn(task);
         }
+        let outcome = match flight.wait_for(Option::is_some).await {
+            Ok(done) => match &*done {
+                Some(outcome) => Arc::clone(outcome),
+                None => unreachable!("wait_for returned for a value that is set"),
+            },
+            // the task ended without an answer (it panicked): not ready
+            Err(_) => Arc::new(Outcome::NotReady(None)),
+        };
+        (outcome, started)
     }
 }
