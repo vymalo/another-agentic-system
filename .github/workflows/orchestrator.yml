@@ -504,7 +504,7 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     concurrency:
-      group: deploy-bump
+      group: deploy-bump-orchestrator
       cancel-in-progress: false
     permissions:
       contents: write
@@ -526,8 +526,9 @@ jobs:
             git reset --hard origin/main
             # A newer commit that changes what this workflow builds makes its own image and bumps for itself; do not put the tag
             # back to this older one (image jobs can finish out of order). Commits elsewhere (the chart, the web image) do not count.
-            newer="$(git log --format=%s "$SHA..origin/main" -- orchestrator docs/api/chat-api.yaml docs/api/examples web/src/features/chat/lib/a2ui/catalog docs/api/config.md docs/api/config.schema.json dev/orchestrator.yaml dev/orchestrator.live.yaml dev/agents.yaml dev/agents.live.yaml dev/mcp-tokens.yaml .github/workflows/orchestrator.yml | grep -v '^chore(deploy): bump ' || true)"
-            if [ -n "$newer" ]; then
+            # The paths are read from this workflow's own on.push.paths (tools/release-source.sh), so the list cannot drift.
+            newest="$(sh tools/release-source.sh .github/workflows/orchestrator.yml origin/main)"
+            if [ "$newest" != "$SHA" ] && git merge-base --is-ancestor "$SHA" "$newest"; then
               echo "main has moved on since $SHA; the newer build will bump"
               exit 0
             fi

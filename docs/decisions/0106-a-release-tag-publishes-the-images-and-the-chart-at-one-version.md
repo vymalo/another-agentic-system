@@ -6,7 +6,8 @@ sidebarTitle: "0106 · Release images and chart by tag"
 
 - **Status:** **Accepted (2026-11-27)** by the owner: *"Cheat how I'm doing [here](https://github.com/vaam-apps/vpay/pull/417) to have
   automatic commits collections for building versions ... a similar flow for all of them. In prod we'll deploy only fixed versions
-  like that."* The platform's twin is its AD-070 (vymalo/another-agentic-platform#129).
+  like that."* The platform's twin is its AD-070 (vymalo/another-agentic-platform#129). *Amended (2026-11-27)* below: a push to
+  `main` is never cancelled, and the bump jobs have a group each.
 
 ## Context
 
@@ -97,5 +98,13 @@ one of the newest commit that changed those paths (`tools/release-source.sh`), w
   the newest.
 - The gate in `release.yml` already reads the registry, not the run's conclusion, so a run whose image job passed is accepted
   whatever a later job did; a comment now says so. It was not changed otherwise.
+- The two bump jobs had one shared group (`deploy-bump`), which holds one pending run: with parallel builds, a pending web bump
+  could be replaced by an orchestrator bump and leave `web.image.tag` stale. Each has its own group now
+  (`deploy-bump-orchestrator`, `deploy-bump-web`); the fetch, reset and retry loop already handles a push that races. The bump's
+  "has a newer commit built this?" test reads the workflow's own `on.push.paths` through `tools/release-source.sh` instead of a
+  copied list that had dropped two paths.
+- *Verified 2026-11-27* ([GitHub's concurrency documentation](https://docs.github.com/en/actions/using-jobs/using-concurrency)):
+  a concurrency group holds at most one running and one pending run, and a newer pending run replaces the older pending one even
+  with `cancel-in-progress: false`.
 - *Unverified until a burst of merges runs it:* that no run of `main` is cancelled.
 

@@ -15,7 +15,7 @@ name: Release
 # `sha-<7>`, checks that its `org.opencontainers.image.revision` label is that commit (for the web also that its export inlines that
 # commit and the edge's sign-in path, `/oauth2/start`, the one production value the chart needs), and copies it by digest
 # (`imagetools create --prefer-index=false`: a carbon copy, the digest unchanged). If that commit's run did not push (a red check, or
-# a run cancelled by a newer push to main), nothing is published: re-run its failed jobs, then run this workflow again with
+# a run that was cancelled by hand or lost to an outage: a push to main no longer cancels one, ADR 0106 amended 2026-11-27), nothing is published: re-run its failed jobs, then run this workflow again with
 # `workflow_dispatch` and the tag. There is no fallback build: a release is an image that passed CI on main.
 #
 # Because the images are copied and not built here, BuildKit's provenance and SBOM cannot be attached at build time. Instead each
