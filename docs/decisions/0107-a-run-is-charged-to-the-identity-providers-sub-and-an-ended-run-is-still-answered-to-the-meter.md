@@ -7,7 +7,9 @@ sidebarTitle: "0107 · A run is charged to the sub"
 - **Status:** **Accepted (2026-11-27)** by the owner (card ANR-1099, security): *the account id is the identity provider's
   `sub`, enforced; the lease carries the same id; the e-mail shape gets no meter; a run that ended is still answered for 24
   hours; the run id the meter sends is the annotation, not the hash.* Amends [ADR 0084](0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md)
-  (decision 6 and the two status notes of 2026-11-24 on `accountId`).
+  (decision 6 and the two status notes of 2026-11-24 on `accountId`). **Open: ANR-Q139** (the owner's, on the board): whether the account
+  is to be the `sub` exactly as the provider issues it rather than the orchestrator's trimmed, lower-cased `UserId`; this record
+  states what holds today.
 - **Numbering (2026-11-27):** written as 0106 and renumbered to 0107 the same day, because an open pull request (#616) already took 0106.
 
 ## Context
@@ -27,14 +29,16 @@ idle after it and the meter backfills up to 24 hours, so the pod's last minutes 
 
 ## Decision
 
-1. **The account id is the identity provider's `sub`, enforced.** The route
-   `GET /internal/runs/{run}/account` answers `{accountId}` = the person's `UserId` **only when the deployment reads
+1. **The account id is the person's `UserId` under the identity provider's `sub`, enforced.** The route
+   `GET /internal/runs/{run}/account` answers `{accountId}` = the person's `UserId` (the `sub` claim, **trimmed and lower-cased** by
+   `UserId::new`, as every owner key is) **only when the deployment reads
    `auth.jwt.userClaim: sub`**. The orchestrator refuses the configuration otherwise: a meter token (`server.internal.meter`) with
    any other claim, with no `auth.jwt`, or with a mode that also reads the identity header, is exit 78 naming
    `server.internal.meter`. The chart refuses the same render (`orchestrator.internal.meter.enabled` with `auth.userClaim` other
    than `sub`).
 2. **The output is held to the platform's alphabet by construction.** `orch_core::AccountId` can only be built by
-   `AccountId::parse`, which accepts `[A-Za-z0-9._:/-]{1,128}` and nothing else, exactly as written (no trimming, no case change).
+   `AccountId::parse`, which accepts `[A-Za-z0-9._:/-]{1,128}` and nothing else and changes nothing: the account is the person's
+   `UserId`, which is `lower(trim(sub))` (`AccountId::of_user`), not the `sub` as the provider wrote it.
    `RunLease::account` and `RunLeases::account` return an `AccountId`, so a value outside the alphabet cannot leave an adapter.
    A run whose person is not one is refused `RunLeaseError::AccountNotOpaque`, `422 account_not_opaque`, with no part of the
    person in the answer, the error or the log. The check is on the **answer**: a binding with an e-mail person is still accepted,
@@ -54,14 +58,21 @@ idle after it and the meter backfills up to 24 hours, so the pod's last minutes 
    `RUN_LABEL`, `RUN_ID_ANNOTATION`; *verified 2026-11-27* in the checkout). The platform's meter must read
    **`metadata.annotations["adam.vymalo.com/run-id"]` → `GET /internal/runs/{run}/account` → `{"accountId"}`**. The broker does
    **not** accept the hash: it cannot be turned back into a run, and a second keying would be a second place to be wrong. The
-   platform-side change is the platform's and is filed separately.
+   platform-side change is the platform's (card ANR-1160 on the board; there is no GitHub issue).
 6. **A run that ends leaves a tombstone, for the account route alone.** `end_run` no longer deletes the binding: it marks it
    ended (`run_leases.ended_at`, Postgres migration `0035`). The row keeps (run, person, `ended_at`) for **24 hours**
    (`orch_ports::ACCOUNT_TOMBSTONE`; `RunLeaseBroker::with_tombstone_retention` bounds it otherwise, with no configuration key), and the account
    route answers it; after that it is `404 run_not_bound`. Every `end` also deletes the tombstones older than the bound, so the
    table does not grow past it with no sweeper to run. **Leases stay revoked at job end**: `RunBindingStore::get` returns live
    bindings only, so no credential outlives the job (ADR 0084 decision 6 stands for the lease). Ending twice keeps the first
-   end's time; a run never bound leaves nothing; binding the run again makes it live and replaces the tombstone.
+   end's time; a run never bound leaves nothing.
+   **A tombstone is never handed to someone else.** The run id is chosen by the agent, so a bind of an ended run id is admitted
+   only for the same agent, person and model as the live rule requires (the binding is then live again). Any other bind of an ended
+   run id **drops the tombstone and is refused `409 run_already_bound`**: the run is then unattributed to the meter (`404`), never
+   attributed to the wrong person, and the new binding fails closed.
+   **A tombstone is kept only where a meter can read it.** `RunLeaseBroker::with_tombstone_retention` is the bound; the binary
+   sets it to 24 hours when `server.internal.meter` is configured and to **zero** when it is not, and a zero bound deletes the run
+   at its end, as before this record, so no person's id outlives a run where nothing reads it.
 
 ```mermaid
 sequenceDiagram
@@ -84,8 +95,9 @@ stateDiagram-v2
     Live --> Live: bind again (same binding)
     Live --> Ended: unbind (ended_at = now)
     Ended --> Ended: unbind again (first end stands)
-    Ended --> Live: bind again
-    Ended --> [*]: the next end after 24 h sweeps it
+    Ended --> Live: bind again, the same agent, person and model
+    Ended --> [*]: bind by another agent or person (refused, the tombstone is dropped)
+    Ended --> [*]: the next end after 24 h sweeps it (at once when no meter is configured)
     note right of Live: lease and account answer
     note right of Ended: only the account answers
 ```
@@ -96,8 +108,19 @@ stateDiagram-v2
   the testkit proves it for every implementation, and the configuration refuses the meter where it could never be answered.
 - A deployment on `userClaim: email` loses the injected lease (it is refused `account_not_opaque`) and has no meter until it moves
   to `sub`. Cloud runs of ours are signed and have no lease (ADR 0101), so this reaches only the custom injector.
-- The binding table keeps ended rows up to 24 hours: one row per run, no secret (a person's `sub` and ids). Erasing an account
-  does not reach it: an ended run's row holds the person's `sub` for at most the bound, and then the next `end` sweeps it.
+- With a meter configured, the binding table keeps ended rows up to 24 hours: one row per run, no secret (a person's `sub` and ids).
+  Erasing an account does not reach it: an ended run's row holds the person's `sub` for at most the bound. **The sweep runs on
+  `end`**, so the row is physically removed only while runs keep ending (a quiet deployment keeps its last rows longer); the
+  account route filters by the bound on every read, so a row older than the bound is never answered either way.
+- **Only an identity provider whose `sub` is lower-case ASCII of the alphabet is supported** for the meter and the injector's account.
+  *Verified 2026-11-27:* another-idp issues lower-case CUID2 ids (cuid2 0.1.6 `to_str_radix(36)`, another-idp `email.rs:670`), so for it
+  the account is the `sub` itself; Keycloak's UUIDs are lower-case too. An identity provider that issues case-sensitive mixed-case
+  subjects (Okta, Entra) gets an account that is the lower-cased form and will not join records keyed by its raw `sub`; a `sub` with `|`
+  (Auth0's `auth0|…`) passes the configuration check and is refused `422 account_not_opaque` on every call, so it gets no meter and no
+  injected lease. Whether the account should be the raw `sub` instead is **open, ANR-Q139**.
+- **Known gap, the MCP surface:** under `jwt` + `sub`, `bin/orchestrator/src/config.rs` still requires an MCP token's user to contain
+  `@`, so a job started over `/mcp` is bound to an e-mail person and can never be leased or metered. Nothing leaks (it gets a `422`);
+  it is simply not metered. Not changed here; a card is filed.
 - An older build ignores `ended_at`, but its `DELETE` removes the binding with no tombstone: roll the build out on every replica
   before the meter is turned on.
 - **Open (not decided here):** the injector's own token has no key in the configuration (`SharedTokens::with_injector` is never

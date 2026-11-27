@@ -10,7 +10,7 @@ sidebarTitle: "0084 · The run lease"
   recommendations; the code follows them. It fixes the contract of sys#334's slice **B1** (the broker's first
   part) that S9's injector consumes. The requirements are the epic's own (*Key Assumptions* 3, 14 and 15, and
   the constraint that the lease route is not at the edge). **Amended 2026-11-26** by ADR 0101 (accepted 2026-11-26): the lease
-  answers only a binding whose path is `injected`, the custom-case injector's; see the status note of that date.
+  answers only a binding whose path is `injected`, the custom-case injector's; see the status note of that date. **Amended 2026-11-27** by ADR 0107 (account = the `sub`; the tombstone): see the status note of that date.
 
 ## Context
 
