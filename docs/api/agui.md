@@ -1622,6 +1622,8 @@ of a user message, and the version gate is [client-version.md](client-version.md
 | **Limit reached (402)** | Before new work starts the application may refuse it because the person has used what they may use. It is one `CUSTOM` event named `vymalo.limit_reached`, value `{status: 402, code, message}`: `code` is stable and machine-readable, `message` is what the person is told. It is not part of the message sequence; a client that does not know it loses nothing else. Embedded: `EmbedError::LimitReached(Limit)`, `Limit::event()`; the application's rule is an `Admission` it supplies, and with none nothing is refused. |
 | **Update required (426)** | With a minimum set (`EmbedPorts::min_client_version`), an operation by a client that states a lower version, an unreadable one or none is refused with the problem of [client-version.md](client-version.md) (`code: client_update_required`, `minClientVersion`). Embedded: `EmbedError::ClientUpdateRequired { min }`, `Embedded::with_client_version`. No minimum: no client is refused. |
 
+The executable form of this contract is `orch-chat-kit` (`chat_conformance!`): four cases — replay from a sequence, the client message id, the 402 limit event and the 426 version gate — run against an HTTP home and the embed home.
+
 ## Run binding
 
 `POST /agui/agents/{agentId}` with `Content-Type: application/json`, `Accept: text/event-stream`

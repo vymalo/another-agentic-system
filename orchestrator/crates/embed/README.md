@@ -96,7 +96,9 @@ the tree rather than on a planted crate.
 message), `EmbedPorts::admission` (an `Admission` that answers `Limit`, the 402, one `CUSTOM` event
 `vymalo.limit_reached`) and `EmbedPorts::min_client_version` with `with_client_version` (the 426
 gate). The contract is in [`docs/api/agui.md`](../../../docs/api/agui.md) "Chat contract of an
-application client"; `tests/chat_contract.rs` proves each piece. `ClientVersion` lives in `orch-core`
+application client"; `tests/chat_contract.rs` proves each piece. `tests/chat_kit.rs` runs the same
+contract through `orch-chat-kit`'s `chat_conformance!`, the executable form of that section.
+`ClientVersion` lives in `orch-core`
 and `orch-api` re-exports it.
 
 ## What it does not build yet

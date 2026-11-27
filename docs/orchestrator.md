@@ -138,6 +138,7 @@ flowchart TB
   end
   subgraph G_TEST["Test support: publish = false"]
     ts["<b>orch-testsupport</b><br/>fake A2A agent, test instance, clients"]
+    chatkit["<b>orch-chat-kit</b><br/>ChatHome conformance: replay, message id,<br/>402 limit event, 426 version gate"]
     e2e["<b>orch-e2e</b><br/>end-to-end tests, memory and Postgres"]
   end
 
@@ -210,6 +211,9 @@ flowchart TB
   e2e -.-> adam
   e2e -.-> api
   a2a -.-> ts
+  chatkit --> proto
+  embed -.-> chatkit
+  api -.-> chatkit
 
   classDef planned stroke-dasharray: 5 5,fill:none
 ```
@@ -330,6 +334,7 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-config` (`crates/config`) | The configuration file of the binary ([ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md), keys in [`api/config.md`](api/config.md)): the typed keys (`version: 1`, closed), the JSON Schema generated from them and committed at [`api/config.schema.json`](api/config.schema.json) (a test fails on drift), the three passes (syntax, shape, rules) that list every error naming a key path and never a value, reserved keys named by the change that brings them, and secrets only as `{ env }` or `{ file }` references resolved through a `Resolve` the caller passes; pure, no file, no environment. Configuration is the composition root's input, not a port: no trait, no testkit. **ADR 0046, slice 4a:** the `userToolServers` section (`enabled`, `egress.allow`, `egress.deny`, `egress.allowHttp`, `oauth.clientName`, `oauth.clientMetadataUrl`; absent is off, `allowHttp` is refused in production, and with the feature on a `toolServers[].id` may not start with `u-`) and the permission `tools.user.add`; **slice 4c:** `oauth.callbackUrl` (an `https` address, or `http` on a loopback IP literal outside production; by default `server.publicUrl` and the callback's path; required when the sealed store is kept), and the rule that `clientMetadataUrl` is on the callback's origin and under none of the reserved paths | **Built** (S9) |
 | `orch-surface-thread-tools` (`crates/surface-thread-tools`) | The per-thread MCP endpoint `/thread-tools/{threadId}/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind that token and a check that the thread is the token's): the built-in `get_ui_catalog` and `turn_output` (an agent announces its answer: `App::record_answer`, [ADR 0031](decisions/0031-working-text-and-the-turns-answer.md)), and the `ThreadToolProvider` seam later slices add their tools through, with its first provider, the **relay** `RelayTools` (the tools of the MCP servers attached to the thread, `<server>__<tool>`, each call one step with the server's icon, through the `ToolServerClient` port: [architecture](architecture.md#the-relay-of-an-attached-mcp-servers-tools); **ADR 0046, slice 5a (built 2026-10-15):** also the thread owner's own `u-` servers, `RelayTools::with_user_servers`, a fresh `CredentialBroker::lease` for every list and every call, through the guarded client, a server whose credential cannot be had left out and failing a call as a step, a 401 or 403 marking the definition `needs_reauth`); the tool `request_upload` as a provider (`UploadTools`, [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)); feature `surface-thread-tools`, on by default | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md), [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
 | Slack adapters | The Slack rows of the table above | **Planned**, not designed |
+| `orch-chat-kit` (`crates/chat-kit`) | **ANR-758:** the executable form of the chat contract of an application client ([`api/agui.md`](api/agui.md)): the `ChatHome` trait (`send`, `replay`, `user_messages`, `limit_rule`), four cases (replay from a seq, the client message id, the 402 limit event, the 426 version gate) and `chat_conformance!`, which writes one `#[tokio::test]` per case. Run against an HTTP home and the embed home; `double::RepeatedReplay` and `double::GappedReplay` prove a broken replay fails it. `publish = false`, no transport dependency | **Built** |
 | `orch-testsupport`, `orch-e2e` (`crates/testsupport`, `crates/e2e`) | Test-only | **Built** |
 | `orchestrator` (`bin/orchestrator`) | The composition root: reads the configuration file (`ORCH_CONFIG_FILE`) and the variables over it, `--print-config`; and one command, `artifacts migrate` ([below](#moving-the-directory-store-into-the-bucket)), which reads the store of the file and nothing else. **ADR 0046, slice 4a:** `src/user_tools.rs` composes people's own MCP servers when `userToolServers.enabled`: the definitions in Postgres, the sealed secret store in a pool of its own and the credential broker over both (or, with no `secrets` section, a broker and a store that refuse every call, so only servers that need no authentication can be added), the refusing bundle and nothing opened when it is off; **slice 4c:** the pending-authorization store (Postgres, in the thread store's pool), the callback address and the Client ID Metadata Document handed to the router | **Built** (the command: ADR 0058 step 6d) |
 
