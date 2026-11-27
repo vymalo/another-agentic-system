@@ -204,10 +204,11 @@ pub struct AppConfig {
     /// A person's own agents (ANR-806): when set, a message to an agent of a provisioned kind makes
     /// or resumes the person's agent and waits for it to be ready **before** the request that
     /// starts the agent's work is written (a message, a Stop & send, an action on a card, a first
-    /// message, a fork's message, a helper session's start). Sends the dispatcher makes on its own
-    /// (re-delegation, redelivery, an `@mention` or `ask_agent`) do not provision. The message
-    /// still goes to the deployment's configured agent, not to the person's own. `None` (the
-    /// default) provisions nothing.
+    /// message, a fork's message, a helper session's start). The agent's id is recorded with the
+    /// thread as its route (`Job.route`, ANR-1061), and the dispatcher sends every row of a routed
+    /// thread to it, waking it first (a stop and a follow never wake it); the thread's target stays
+    /// the deployment's configured agent. An `@mention` or `ask_agent` does not provision. `None`
+    /// (the default) provisions nothing.
     pub provisioning: Option<Provisioning>,
 }
 
@@ -676,17 +677,55 @@ impl<P: Ports> App<P> {
         &self,
         user: &UserId,
         agent: &AgentId,
-    ) -> Result<(), AppError> {
+    ) -> Result<Option<AgentId>, AppError> {
         match &self.cfg.provisioning {
-            Some(provisioning) => {
-                // the agent the deployment calls `coder` may be configured as `adam` with the
-                // alias `coder` (ADR 0049): any of its names says the kind
-                let mut names = vec![agent.clone()];
-                names.extend(self.agents.aliases_of(agent));
-                provisioning.ensure(user, &names).await
-            }
-            None => Ok(()),
+            Some(provisioning) => provisioning.ensure(user, &self.agent_names(agent)).await,
+            None => Ok(None),
         }
+    }
+
+    /// The names an agent answers to: its id and its aliases (ADR 0049). The agent the deployment
+    /// calls `coder` may be configured as `adam` with the alias `coder`: any of them says the kind.
+    fn agent_names(&self, agent: &AgentId) -> Vec<AgentId> {
+        let mut names = vec![agent.clone()];
+        names.extend(self.agents.aliases_of(agent));
+        names
+    }
+
+    /// Makes or resumes the agent a thread is routed to, when it is routed (ANR-1061): a thread
+    /// with no recorded route (it began before provisioning, or the kind is not provisioned) asks
+    /// the platform nothing and stays where it is.
+    pub(crate) async fn ensure_route(
+        &self,
+        user: &UserId,
+        thread: &orch_core::ThreadRecord,
+    ) -> Result<(), AppError> {
+        if thread.job.route.is_some() {
+            self.ensure_own_agent(user, &thread.target.agent_id).await?;
+        }
+        Ok(())
+    }
+
+    /// How long a person's own agent may take to wake for a row (ANR-1061): the wait-ready bound
+    /// plus the backstop of [`ensure_own_agent`](Self::ensure_own_agent). `None` when provisioning
+    /// is off.
+    pub(crate) fn own_agent_wake_bound(&self) -> Option<std::time::Duration> {
+        let provisioning = self.cfg.provisioning.as_ref()?;
+        Some(
+            provisioning
+                .ready_timeout()
+                .saturating_add(crate::provisioning::OUTER_SLACK),
+        )
+    }
+
+    /// The id under which `user`'s own agent for a thread bound to `agent` would be listed, when the
+    /// deployment provisions that kind (ANR-1061). Nothing is asked of the platform: a fork that
+    /// has no `ensure_own_agent` answer (it carries no message) records this as its route; one that
+    /// has records the answer's name instead. `None` when provisioning is off or the agent's names
+    /// (its id and aliases) say no provisioned kind.
+    pub(crate) fn own_agent_id(&self, user: &UserId, agent: &AgentId) -> Option<AgentId> {
+        let provisioning = self.cfg.provisioning.as_ref()?;
+        provisioning.own_agent_id(user, &self.agent_names(agent))
     }
 
     /// The ports this service runs on.
@@ -1251,7 +1290,7 @@ impl<P: Ports> App<P> {
             Ok(None) => {}
             Err(e) => return Err(e.into()),
         }
-        self.ensure_own_agent(user, &req.target.agent_id).await?;
+        let route = self.ensure_own_agent(user, &req.target.agent_id).await?;
         // the wait may have taken seconds: the message is stamped when it is written, after it
         let now = self.ports.clock().now();
         let (mut next, mut cmds) = start_thread(
@@ -1270,6 +1309,8 @@ impl<P: Ports> App<P> {
                 pick,
             },
         )?;
+        // the route is recorded with the thread: where every message of it is sent from now on
+        next.job.route = route;
         // The servers are attached in the commit that holds the first message, after it, so that
         // the first delegation (read from the job when it is sent) already has them.
         if !tools.is_empty() {
@@ -1894,7 +1935,16 @@ impl<P: Ports> App<P> {
         // is written (ADR 0081, decision 4).
         if has_message {
             self.check_message_limit(&access, now).await?;
-            self.ensure_own_agent(user, &target.agent_id).await?;
+        }
+        // the fork's own agent (the forker's, a parent's recorded route is its owner's): recorded
+        // with the fork, which has a binding of its own and no context at either agent yet
+        let mut route = self.own_agent_id(user, &target.agent_id);
+        if has_message
+            && route.is_some()
+            && let Some(own) = self.ensure_own_agent(user, &target.agent_id).await?
+        {
+            // the name the platform answered with is the route, as for a first message
+            route = Some(own);
         }
         // the wait may have taken seconds: the fork's message is stamped when it is written
         let now = if has_message {
@@ -1928,6 +1978,7 @@ impl<P: Ports> App<P> {
                 next = after;
                 cmds.extend(detach);
             }
+            next.job.route = route;
             (next, cmds)
         };
         let job = (next.job != Job::default()).then_some(next.job);
@@ -2697,8 +2748,7 @@ impl<P: Ports> App<P> {
             Input::UserMessage { .. } | Input::StopAndSend { .. } | Input::UiAction { .. }
         ) && !self.is_replay_of_key(id, key.as_deref()).await?
         {
-            self.ensure_own_agent(who.user(), &thread.target.agent_id)
-                .await?;
+            self.ensure_route(who.user(), &thread).await?;
         }
         // What starts or continues the agent's work for the person is the owner's act: the servers
         // of their own they may no longer use are taken off the thread with it.

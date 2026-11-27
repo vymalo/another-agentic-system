@@ -299,9 +299,8 @@ async fn an_agent_that_is_never_ready_ends_the_wait_at_the_wait_ready_bound() {
 async fn a_not_ready_answer_is_a_timeout_that_names_the_bound_and_writes_nothing() {
     let w = World::new();
     let app = app_with(&w, NeverReady, &[AgentKind::Coder]);
-    // a thread of their own to message (made under no provisioner, as before the deployment
-    // turned it on)
-    let plain = w.app();
+    // a thread of their own to message, routed to their own agent
+    let plain = app_over_own_agents(&w, true);
     let thread = create(&plain, &alice(), "coder", "hello").await;
     let before = events(&plain, &alice(), thread.id).await.len();
 
@@ -472,10 +471,10 @@ fn thread_n(n: u128) -> ThreadId {
     ))
 }
 
-/// A thread of `coder` that has answered, made with no provisioner (as before the deployment
-/// turned it on), the dispatcher stopped.
+/// A thread of `coder` that has answered, routed to the person's own agent (listed in the
+/// registry), the dispatcher stopped.
 async fn answered_coder(w: &World) -> orch_core::ThreadRecord {
-    let plain = w.app();
+    let plain = app_over_own_agents(w, true);
     let run = spawn_dispatcher(&plain, fast(), "d0");
     let thread = create(&plain, &alice(), "coder", "echo hi").await;
     wait_state(&plain, &alice(), thread.id, ThreadState::Done).await;
@@ -778,4 +777,804 @@ async fn a_fork_message_is_stamped_when_the_agent_is_ready_and_not_before_the_wa
         .find(|e| e.kind() == EventKind::UserMessage && e.at >= made.thread.created_at)
         .expect("the fork's own message");
     assert!(message.at >= ready, "stamped before the agent was ready");
+}
+
+// --- the message goes to the person's own agent (ANR-1061) ------------------------------------
+
+use orch_core::AgentId;
+use orch_ports::memory::Call;
+
+/// The deployment's `coder` and `plain`, and the platform's agents of alice and bob, listed in the
+/// registry under the names the provisioner gives them.
+fn directory_with_own_agents() -> orch_app::AgentDirectory {
+    let entry = |id: &str| orch_app::AgentEntry {
+        endpoint: orch_ports::AgentEndpoint::a2a(
+            AgentId::new(id),
+            format!("https://{id}.example.com/.well-known/agent-card.json"),
+            None,
+        ),
+        name: id.to_owned(),
+    };
+    let own = |user: &orch_core::UserId| AgentKind::Coder.agent_name(&owner(user));
+    orch_app::AgentDirectory::new(vec![
+        entry("coder"),
+        entry("plain"),
+        entry(&own(&alice())),
+        entry(&own(&bob())),
+    ])
+}
+
+fn app_over_own_agents(w: &World, provisioned: bool) -> std::sync::Arc<TestApp> {
+    w.app_with_directory(
+        AppConfig {
+            stream_poll: Duration::from_millis(100),
+            provisioning: provisioned
+                .then(|| Provisioning::new(MemoryProvisioner::new(), [AgentKind::Coder], BOUND)),
+            ..AppConfig::default()
+        },
+        directory_with_own_agents(),
+    )
+}
+
+fn sent_to(w: &World) -> Vec<String> {
+    w.agent
+        .sends()
+        .into_iter()
+        .map(|c| match c {
+            Call::Send(call) => call.agent.to_string(),
+            other => panic!("{other:?}"),
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_message_to_a_provisioned_coder_goes_to_the_persons_own_agent_every_time() {
+    let w = World::new();
+    let app = app_over_own_agents(&w, true);
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let mine = AgentKind::Coder.agent_name(&owner(&alice()));
+
+    let t = create(&app, &alice(), "coder", "echo hi").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    app.post_message(&alice(), t.id, "echo again".to_owned())
+        .await
+        .unwrap();
+    eventually("the second turn to finish", || async {
+        (w.agent.sends().len() == 2).then_some(())
+    })
+    .await;
+
+    assert_eq!(
+        sent_to(&w),
+        [mine.clone(), mine],
+        "both messages reach the person's agent, never the configured `coder`"
+    );
+    // the thread is still the coder's as far as the person and the gates are concerned
+    let thread = w.store.get_thread(None, t.id).await.unwrap().unwrap();
+    assert_eq!(thread.target.agent_id, AgentId::new("coder"));
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn two_people_reach_two_agents_and_a_fork_keeps_the_agent() {
+    let w = World::new();
+    let app = app_over_own_agents(&w, true);
+    let run = spawn_dispatcher(&app, fast(), "d1");
+
+    let a = create(&app, &alice(), "coder", "echo a").await;
+    wait_state(&app, &alice(), a.id, ThreadState::Done).await;
+    let b = create(&app, &bob(), "coder", "echo b").await;
+    wait_state(&app, &bob(), b.id, ThreadState::Done).await;
+    let fork = app
+        .fork_and_send(
+            &alice(),
+            a.id,
+            thread_n(61),
+            1,
+            None,
+            FirstMessage {
+                text: "echo forked".to_owned(),
+                message_id: Some("m-fork".to_owned()),
+                run_id: Some("run-fork".to_owned()),
+                origin: Origin::Agui,
+                ui_catalog: None,
+                mentions: Vec::new(),
+                tier: None,
+                locale: None,
+                pick: None,
+            },
+        )
+        .await
+        .unwrap();
+    eventually("the fork's turn", || async {
+        (w.agent.sends().len() == 3).then_some(())
+    })
+    .await;
+    let _ = fork;
+    let recorded = w
+        .store
+        .get_thread(None, thread_n(61))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        recorded.job.route,
+        Some(AgentId::new(AgentKind::Coder.agent_name(&owner(&alice())))),
+        "the fork records the route of its owner's own agent"
+    );
+
+    let alice_agent = AgentKind::Coder.agent_name(&owner(&alice()));
+    let bob_agent = AgentKind::Coder.agent_name(&owner(&bob()));
+    assert_ne!(alice_agent, bob_agent);
+    assert_eq!(sent_to(&w), [alice_agent.clone(), bob_agent, alice_agent]);
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn without_provisioning_the_message_still_goes_to_the_configured_agent() {
+    let w = World::new();
+    let app = app_over_own_agents(&w, false);
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "coder", "echo hi").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    assert_eq!(sent_to(&w), ["coder"]);
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_agent_the_deployment_does_not_provision_is_not_redirected() {
+    let w = World::new();
+    let app = app_over_own_agents(&w, true);
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "plain", "echo hi").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    assert_eq!(sent_to(&w), ["plain"]);
+    run.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_own_agent_the_registry_never_lists_ends_the_delegation_after_its_retries() {
+    let w = World::new();
+    // the registry lists `coder` only: the person's agent is made but never appears
+    let app = w.app_with(AppConfig {
+        stream_poll: Duration::from_millis(100),
+        provisioning: Some(Provisioning::new(
+            MemoryProvisioner::new(),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+        ..AppConfig::default()
+    });
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "coder", "echo hi").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Failed).await;
+    assert!(
+        w.agent.sends().is_empty(),
+        "nothing reached the shared agent in its place"
+    );
+    run.shutdown().await;
+}
+
+// --- the route is recorded with the thread (ANR-1061, round two) --------------------------------
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use orch_app::{App, Dispatcher};
+use orch_core::AgentSource;
+use orch_ports::memory::{
+    MemoryRegistry, MemoryStore, MemoryWakeup, ScriptedAgent, ScriptedModel, SeqIds,
+};
+use orch_ports::{
+    AgentAudience, AgentEndpoint, CompositeRegistry, FixedRegistry, PortSet, RegistryEntry,
+    SystemClock,
+};
+
+type RegistryApp = App<
+    PortSet<
+        MemoryStore,
+        MemoryWakeup,
+        ScriptedAgent,
+        SystemClock,
+        SeqIds,
+        ScriptedModel,
+        CompositeRegistry<FixedRegistry, MemoryRegistry>,
+    >,
+>;
+
+fn own_entry(id: &str) -> RegistryEntry {
+    RegistryEntry {
+        endpoint: AgentEndpoint::a2a(
+            AgentId::new(id),
+            format!("https://{id}.agents.example.com/.well-known/agent-card.json"),
+            None,
+        ),
+        name: id.to_owned(),
+        tags: Vec::new(),
+        origin: AgentSource::Registry,
+        audience: AgentAudience::Everyone,
+    }
+}
+
+/// A provisioner that lists the agent in the platform's registry once it has been asked
+/// `list_from` times, as a platform whose registry lags the agent being ready does.
+#[derive(Clone)]
+struct Listing {
+    inner: MemoryProvisioner,
+    registry: MemoryRegistry,
+    calls: Arc<AtomicUsize>,
+    list_from: usize,
+}
+
+impl AgentProvisioner for Listing {
+    async fn ensure_ready(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+    ) -> Result<ProvisionedAgent, ProvisionError> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let agent = self.inner.ensure_ready(owner, kind).await?;
+        if n >= self.list_from {
+            self.registry.add(own_entry(&agent.name));
+        }
+        Ok(agent)
+    }
+    async fn state(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+    ) -> Result<Option<AgentState>, ProvisionError> {
+        self.inner.state(owner, kind).await
+    }
+    async fn suspend(&self, owner: &AgentOwner, kind: AgentKind) -> Result<(), ProvisionError> {
+        self.inner.suspend(owner, kind).await
+    }
+    async fn delete(&self, owner: &AgentOwner, kind: AgentKind) -> Result<(), ProvisionError> {
+        self.inner.delete(owner, kind).await
+    }
+}
+
+fn listing(registry: &MemoryRegistry, list_from: usize) -> Listing {
+    Listing {
+        inner: MemoryProvisioner::new(),
+        registry: registry.clone(),
+        calls: Arc::new(AtomicUsize::new(0)),
+        list_from,
+    }
+}
+
+fn app_over(
+    w: &World,
+    registry: &MemoryRegistry,
+    provisioning: Option<Provisioning>,
+) -> Arc<RegistryApp> {
+    let directory = directory();
+    Arc::new(
+        App::new(
+            PortSet {
+                artifacts: orch_ports::NoArtifacts,
+                store: w.store.clone(),
+                wakeup: w.wakeup.clone(),
+                agents: w.agent.clone(),
+                clock: SystemClock,
+                ids: w.ids.clone(),
+                model: w.model.clone(),
+                auth: orch_ports::RefuseAll,
+                registry: CompositeRegistry::new(directory.fixed_registry(), registry.clone()),
+                user_tools: orch_ports::NoUserTools::off(),
+            },
+            directory,
+            AppConfig {
+                stream_poll: Duration::from_millis(100),
+                provisioning,
+                ..AppConfig::default()
+            },
+        )
+        .expect("a valid gate"),
+    )
+}
+
+fn spawn_over(
+    app: &Arc<RegistryApp>,
+) -> (
+    tokio::task::JoinHandle<()>,
+    tokio_util::sync::CancellationToken,
+) {
+    let token = tokio_util::sync::CancellationToken::new();
+    let dispatcher = Dispatcher::new(Arc::clone(app), fast(), "d1");
+    (tokio::spawn(dispatcher.run(token.clone())), token)
+}
+
+async fn new_coder_thread(app: &RegistryApp, text: &str) -> ThreadId {
+    let id = ThreadId(uuid::Uuid::now_v7());
+    app.create_thread_as(
+        &alice(),
+        id,
+        NewThread {
+            title: None,
+            target: target("coder"),
+            text: text.to_owned(),
+        },
+        Inbound::default(),
+    )
+    .await
+    .unwrap();
+    id
+}
+
+async fn wait_in(w: &World, id: ThreadId, want: ThreadState) {
+    eventually(&format!("state {want:?}"), || async {
+        (w.store.get_thread(None, id).await.unwrap().unwrap().state == want).then_some(())
+    })
+    .await;
+}
+
+fn mine() -> String {
+    AgentKind::Coder.agent_name(&owner(&alice()))
+}
+
+fn sends_to(w: &World, agent: &str) -> usize {
+    w.agent
+        .sends()
+        .into_iter()
+        .filter(|c| matches!(c, Call::Send(call) if call.agent.as_str() == agent))
+        .count()
+}
+
+#[tokio::test]
+async fn the_route_is_recorded_with_the_thread_and_kept_by_the_next_job() {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let app = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            listing(&registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let (task, token) = spawn_over(&app);
+    let id = new_coder_thread(&app, "echo hi").await;
+    wait_in(&w, id, ThreadState::Done).await;
+    let thread = w.store.get_thread(None, id).await.unwrap().unwrap();
+    assert_eq!(thread.job.route, Some(AgentId::new(mine())));
+    assert_eq!(thread.target.agent_id, AgentId::new("coder"));
+    app.post_message(&alice(), id, "echo again".to_owned())
+        .await
+        .unwrap();
+    eventually("the second job", || async {
+        (sends_to(&w, &mine()) == 2).then_some(())
+    })
+    .await;
+    let thread = w.store.get_thread(None, id).await.unwrap().unwrap();
+    assert_eq!(
+        thread.job.route,
+        Some(AgentId::new(mine())),
+        "a new job keeps the route"
+    );
+    token.cancel();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn a_thread_begun_before_provisioning_stays_on_the_shared_agent_and_its_context() {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    // provisioning off: the thread begins at `coder` and takes its context
+    let off = app_over(&w, &registry, None);
+    let (task, token) = spawn_over(&off);
+    let id = new_coder_thread(&off, "echo hi").await;
+    wait_in(&w, id, ThreadState::Done).await;
+    token.cancel();
+    let _ = task.await;
+    assert_eq!(sends_to(&w, "coder"), 1);
+
+    // provisioning on: the next message keeps the thread where it is, in the same context
+    let memory = MemoryProvisioner::new();
+    let on = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(memory.clone(), [AgentKind::Coder], BOUND)),
+    );
+    let (task, token) = spawn_over(&on);
+    on.post_message(&alice(), id, "echo again".to_owned())
+        .await
+        .unwrap();
+    eventually("the second message", || async {
+        (sends_to(&w, "coder") == 2).then_some(())
+    })
+    .await;
+    assert_eq!(
+        sends_to(&w, &mine()),
+        0,
+        "nothing reaches an agent that never had the context"
+    );
+    assert_eq!(
+        memory.created(),
+        0,
+        "an agent nobody uses is not made for it"
+    );
+    let contexts: Vec<Option<String>> = w
+        .agent
+        .sends()
+        .into_iter()
+        .map(|c| match c {
+            Call::Send(call) => call.context_id,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(contexts, [None, Some("ctx-1".to_owned())]);
+    token.cancel();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn the_dispatcher_wakes_the_routed_agent_and_waits_for_the_registry_to_list_it() {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    // the platform lists the agent only when it is asked the second time: the first is the
+    // person's request, the second the dispatcher's
+    let provisioner = listing(&registry, 2);
+    let calls = Arc::clone(&provisioner.calls);
+    let app = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(provisioner, [AgentKind::Coder], BOUND)),
+    );
+    let (task, token) = spawn_over(&app);
+    let id = new_coder_thread(&app, "echo hi").await;
+    wait_in(&w, id, ThreadState::Done).await;
+    assert_eq!(sends_to(&w, &mine()), 1);
+    assert!(
+        calls.load(Ordering::SeqCst) >= 2,
+        "the dispatcher asked the platform too"
+    );
+    token.cancel();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn a_stop_for_a_task_at_an_unlisted_own_agent_cancels_locally_after_the_listing_attempts() {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let provisioner = listing(&registry, 1);
+    let memory = provisioner.inner.clone();
+    let app = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(provisioner, [AgentKind::Coder], BOUND)),
+    );
+    w.agent
+        .set_extensions(&mine(), &[orch_core::KnownExtension::Steer]);
+    let (task, token) = spawn_over(&app);
+    let id = new_coder_thread(&app, "gate refactor the parser").await;
+    wait_in(&w, id, ThreadState::Working).await;
+    // the platform suspends the agent and stops listing it
+    memory
+        .suspend(&owner(&alice()), AgentKind::Coder)
+        .await
+        .unwrap();
+    registry.remove(&AgentId::new(mine()));
+
+    app.cancel(&alice(), id).await.unwrap();
+    let stop = eventually("the stop's row", || async {
+        w.store
+            .list_open_outbox(id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.kind == orch_ports::OutboxKind::Cancel)
+            .map(|r| r.id)
+    })
+    .await;
+    wait_in(&w, id, ThreadState::Cancelled).await;
+    assert_eq!(
+        memory
+            .state(&owner(&alice()), AgentKind::Coder)
+            .await
+            .unwrap(),
+        Some(AgentState::Suspended),
+        "a stop does not wake the agent"
+    );
+    assert!(
+        !w.agent
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::Cancel { .. })),
+        "the unlisted agent was not asked to cancel"
+    );
+    let row = w.store.get_outbox(stop).await.unwrap().unwrap();
+    assert_eq!(
+        row.attempts,
+        fast().own_agent_listing_attempts,
+        "the stop waited for the listing, once per attempt, and then cancelled locally"
+    );
+    token.cancel();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn a_helper_of_a_routed_thread_is_routed_to_the_same_own_agent() {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let app = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            listing(&registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let (task, token) = spawn_over(&app);
+    // the parent's agent says it has a session (kept open), whose round is the child thread's
+    let id = new_coder_thread(&app, "sessions planner keep").await;
+    wait_in(&w, id, ThreadState::Done).await;
+    let kid = eventually("the child thread", || async {
+        w.store
+            .child_threads(&alice(), id)
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+    })
+    .await;
+    wait_in(&w, kid.id, ThreadState::Done).await;
+    let kid = w.store.get_thread(None, kid.id).await.unwrap().unwrap();
+    assert_eq!(
+        kid.job.route,
+        Some(AgentId::new(mine())),
+        "the helper keeps its parent's route"
+    );
+    // what the person says in the helper's thread goes to their agent, never to the shared one
+    app.post_message(&alice(), kid.id, "echo again".to_owned())
+        .await
+        .unwrap();
+    eventually("the helper's message", || async {
+        (sends_to(&w, &mine()) == 2).then_some(())
+    })
+    .await;
+    assert_eq!(
+        sends_to(&w, "coder"),
+        0,
+        "nothing of the helper reaches the shared agent"
+    );
+    token.cancel();
+    let _ = task.await;
+}
+
+/// A provisioner that holds every `ensure_ready` until the test opens the gate.
+#[derive(Clone)]
+struct Gated {
+    inner: MemoryProvisioner,
+    open: tokio::sync::watch::Receiver<bool>,
+    /// How many calls reached the gate.
+    entered: Arc<AtomicUsize>,
+}
+
+impl AgentProvisioner for Gated {
+    async fn ensure_ready(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+    ) -> Result<ProvisionedAgent, ProvisionError> {
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        let mut open = self.open.clone();
+        let _ = open.wait_for(|v| *v).await;
+        self.inner.ensure_ready(owner, kind).await
+    }
+    async fn state(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+    ) -> Result<Option<AgentState>, ProvisionError> {
+        self.inner.state(owner, kind).await
+    }
+    async fn suspend(&self, owner: &AgentOwner, kind: AgentKind) -> Result<(), ProvisionError> {
+        self.inner.suspend(owner, kind).await
+    }
+    async fn delete(&self, owner: &AgentOwner, kind: AgentKind) -> Result<(), ProvisionError> {
+        self.inner.delete(owner, kind).await
+    }
+}
+
+/// A stop pressed while a delegation waits for the person's agent to wake is not answered behind
+/// the delegation's back and is not given up: it is tried again (`max_cancel_attempts` of the
+/// dispatcher, plus what fits in the wake bound for a routed thread) until the delegation has
+/// been sent, and then stops the task it started. `min_attempts` is how many claims the stop must
+/// have had while the delegation still waited.
+async fn a_stop_waits_for_a_waking_delegation(max_cancel_attempts: u32, min_attempts: u32) {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    // the request path (one application) makes the thread and lists the agent at once; the
+    // dispatcher (another) wakes the agent through a provisioner that holds it
+    let requests = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            listing(&registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let (open_tx, open_rx) = tokio::sync::watch::channel(false);
+    let entered = Arc::new(AtomicUsize::new(0));
+    let dispatching = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            Gated {
+                inner: MemoryProvisioner::new(),
+                open: open_rx,
+                entered: Arc::clone(&entered),
+            },
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    w.agent
+        .set_extensions(&mine(), &[orch_core::KnownExtension::Steer]);
+    let token = tokio_util::sync::CancellationToken::new();
+    let task = tokio::spawn(
+        Dispatcher::new(
+            Arc::clone(&dispatching),
+            orch_app::DispatcherConfig {
+                max_cancel_attempts,
+                ..fast()
+            },
+            "d1",
+        )
+        .run(token.clone()),
+    );
+    let id = new_coder_thread(&requests, "gate refactor the parser").await;
+    // the delegation is claimed and waits in `ensure_ready`; the agent then goes unlisted
+    eventually("the delegation at the gate", || async {
+        (entered.load(Ordering::SeqCst) >= 1).then_some(())
+    })
+    .await;
+    registry.remove(&AgentId::new(mine()));
+    requests.cancel(&alice(), id).await.unwrap();
+    // the stop has been claimed again and again, the delegation is still in flight
+    eventually("the stop retried behind the delegation", || async {
+        let rows = w.store.list_open_outbox(id).await.unwrap();
+        let stop_attempts = rows
+            .iter()
+            .find(|r| r.kind == orch_ports::OutboxKind::Cancel)
+            .map(|r| r.attempts)?;
+        let delegating = rows
+            .iter()
+            .any(|r| r.kind == orch_ports::OutboxKind::Delegate);
+        (delegating && stop_attempts >= min_attempts).then_some(())
+    })
+    .await;
+    let thread = w.store.get_thread(None, id).await.unwrap().unwrap();
+    assert_ne!(
+        thread.state,
+        ThreadState::Cancelled,
+        "a delegation that is waiting to be sent is not cancelled behind its back"
+    );
+    assert_eq!(sends_to(&w, &mine()), 0);
+
+    // the agent is listed and awake: the delegation is sent, and the stop reaches its task
+    registry.add(own_entry(&mine()));
+    open_tx.send(true).unwrap();
+    wait_in(&w, id, ThreadState::Cancelled).await;
+    assert!(
+        w.agent
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::Cancel { .. })),
+        "the task the delegation started was cancelled at the agent"
+    );
+    token.cancel();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn a_stop_does_not_cancel_a_thread_whose_delegation_waits_for_the_agent_to_wake() {
+    a_stop_waits_for_a_waking_delegation(10_000, 2).await;
+}
+
+#[tokio::test]
+async fn a_stop_outlasts_max_cancel_attempts_while_a_routed_delegation_waits_for_the_agent() {
+    // two attempts would end the stop; the wake bound (30 s plus the backstop) is what it may wait
+    a_stop_waits_for_a_waking_delegation(2, 5).await;
+}
+
+#[tokio::test]
+async fn a_message_steered_into_a_suspended_own_agent_wakes_it_first() {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let provisioner = listing(&registry, 1);
+    let memory = provisioner.inner.clone();
+    let app = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(provisioner, [AgentKind::Coder], BOUND)),
+    );
+    w.agent
+        .set_extensions(&mine(), &[orch_core::KnownExtension::Steer]);
+    let (task, token) = spawn_over(&app);
+    let id = new_coder_thread(&app, "gate refactor the parser").await;
+    wait_in(&w, id, ThreadState::Working).await;
+    memory
+        .suspend(&owner(&alice()), AgentKind::Coder)
+        .await
+        .unwrap();
+    registry.remove(&AgentId::new(mine()));
+
+    app.post_message(&alice(), id, "you were wrong since line 1".to_owned())
+        .await
+        .unwrap();
+    eventually("the steer reached the own agent", || async {
+        w.agent
+            .sends()
+            .into_iter()
+            .any(|c| matches!(&c, Call::Send(call) if call.steer && call.agent.as_str() == mine()))
+            .then_some(())
+    })
+    .await;
+    assert_eq!(
+        memory
+            .state(&owner(&alice()), AgentKind::Coder)
+            .await
+            .unwrap(),
+        Some(AgentState::Ready)
+    );
+    assert_eq!(sends_to(&w, "coder"), 0);
+    token.cancel();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn an_own_agent_that_lists_a_tier_gets_the_message_under_it() {
+    use orch_core::{AccessTier, TierOffer};
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let offer =
+        TierOffer::from_params(&json!({"tiers": ["plan", "edits", "auto"], "default": "plan"}))
+            .unwrap();
+    // the request checks the tier against the thread's agent, the send against the own agent's card
+    w.agent.set_access_tier("coder", Some(offer.clone()));
+    w.agent.set_access_tier(&mine(), Some(offer));
+    let app = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            listing(&registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let (task, token) = spawn_over(&app);
+    let id = ThreadId(uuid::Uuid::now_v7());
+    app.create_thread_as(
+        &alice(),
+        id,
+        NewThread {
+            title: None,
+            target: target("coder"),
+            text: "echo hi".to_owned(),
+        },
+        Inbound {
+            tier: Some(AccessTier::Edits),
+            ..Inbound::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_in(&w, id, ThreadState::Done).await;
+    let tiers: Vec<_> = w
+        .agent
+        .sends()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::Send(call) if call.agent.as_str() == mine() => Some(call.tier),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tiers, [Some(AccessTier::Edits)]);
+    token.cancel();
+    let _ = task.await;
 }

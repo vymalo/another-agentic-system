@@ -467,6 +467,14 @@ pub struct Job {
     /// other. Belongs to the conversation: [`Job::next`] keeps it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub child: Option<ChildLedger>,
+    /// The agent the thread's messages are **sent to**, when it is not the agent the thread is
+    /// aimed at: the person's own agent the platform made for them (ANR-1061, ADR 0103), recorded
+    /// when the thread's first message provisioned it. `None` is the thread's own agent, so a
+    /// thread that began before provisioning was on keeps the agent (and the A2A context) it has.
+    /// Belongs to the conversation: [`Job::next`] keeps it. A ledger stored before the field
+    /// existed has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route: Option<AgentId>,
     /// The round of its session that this job follows without having sent it (ADR 0072). Belongs
     /// to the job: [`Job::next`] forgets it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -518,6 +526,7 @@ impl Default for Job {
             sessions: SessionLedger::default(),
             session_starts: Vec::new(),
             child: None,
+            route: None,
             observed: None,
         }
     }
@@ -579,6 +588,7 @@ impl Job {
             sessions: self.sessions.clone(),
             session_starts: self.session_starts.clone(),
             child: self.child.clone(),
+            route: self.route.clone(),
             ..Job::default()
         }
     }

@@ -399,7 +399,11 @@ impl<P: Ports> App<P> {
         report: &SessionReport,
         prompt: Option<PersonPrompt>,
     ) -> Result<Option<(ThreadRecord, bool)>, AppError> {
-        let (snapshot, cmds) = start_child_for(report, prompt);
+        let (mut snapshot, cmds) = start_child_for(report, prompt);
+        // the helper belongs to the same agent as its parent: the person's own agent's context is
+        // the one the helper's session lives in, so what is sent for it goes there (ANR-1061); set
+        // here, the core's `start_child_for` stays a pure function of the report
+        snapshot.job.route = parent.job.route.clone();
         let now = self.ports.clock().now();
         let target = AgentTarget {
             agent_id: parent.target.agent_id.clone(),

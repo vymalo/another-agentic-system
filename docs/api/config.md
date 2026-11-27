@@ -435,7 +435,7 @@ A person's own agents on the platform (the `AgentProvisioner` port). **Absent is
 `workspace` (its id or one of its aliases, and a kind listed in `kinds`) first asks the platform for **the person's own
 agent** of that kind, `<kind>-<owner>`, where `<owner>` is 24 hex digits of the SHA-256 of the person's user id. The agent
 is made when there is none (a first message), resumed when it is suspended, and waited for until it is `ready`; only then is
-the message written and sent. Two messages at once make one agent. The wait ends at `readyTimeoutSecs`: the person gets a
+the message written and **sent to that agent** (the registry lists it under `<kind>-<owner>`; the thread's target stays the configured agent). Two messages at once make one agent. The wait ends at `readyTimeoutSecs`: the person gets a
 **503** `code: agent_not_ready`, "your coder agent is not ready after 120s", with `Retry-After`, and **nothing is written**
 (they send the message again; the agent keeps getting ready meanwhile). A platform that is down is a 503 "your coder agent
 could not be made ready"; one that refuses the orchestrator's token or the form is a 500 (the deployment's fault, never the

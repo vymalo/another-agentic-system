@@ -125,21 +125,35 @@ impl Provisioning {
         })
     }
 
+    /// The id the person's own agent is listed under (`<kind>-<owner>`, the name
+    /// [`ProvisionedAgent::name`] carries), for a thread aimed at the agent known by `names`; none
+    /// for an agent the deployment does not provision. A pure function of the person and the
+    /// kind: the route of a fork that ran no `ensure` (ANR-1061, ADR 0103); a thread's route is
+    /// otherwise the `name` the platform answered with, recorded in `Job.route`.
+    pub(crate) fn own_agent_id(&self, user: &UserId, names: &[AgentId]) -> Option<AgentId> {
+        let kind = self.kind_of(names)?;
+        Some(AgentId::new(kind.agent_name(&Self::owner_of(user))))
+    }
+
     /// Makes or resumes the person's agent for a message to the agent known by `names` and waits
-    /// until it is ready. Nothing to do (and `Ok`) for an agent the deployment does not provision.
+    /// until it is ready. The agent's id, and `None` (nothing done) for an agent the deployment does not provision.
     ///
     /// # Errors
     /// [`AppError::AgentNotReady`] when it is not ready within the wait-ready bound,
     /// [`AppError::Provisioning`] for any other refusal of the platform.
-    pub(crate) async fn ensure(&self, user: &UserId, names: &[AgentId]) -> Result<(), AppError> {
+    pub(crate) async fn ensure(
+        &self,
+        user: &UserId,
+        names: &[AgentId],
+    ) -> Result<Option<AgentId>, AppError> {
         let Some(kind) = self.kind_of(names) else {
-            return Ok(());
+            return Ok(None);
         };
         let owner = Self::owner_of(user);
         let bound = self.ready_timeout.saturating_add(OUTER_SLACK);
         let result = tokio::time::timeout(bound, self.inner.ensure_ready(&owner, kind)).await;
         match result {
-            Ok(Ok(_)) => Ok(()),
+            Ok(Ok(agent)) => Ok(Some(AgentId::new(agent.name))),
             Ok(Err(ProvisionError::NotReady { last })) => Err(AppError::AgentNotReady {
                 kind: kind.prefix(),
                 waited: self.ready_timeout,
