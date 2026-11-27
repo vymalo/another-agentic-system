@@ -1379,10 +1379,14 @@ impl AgentProvisioner for Gated {
     }
 }
 
-/// A stop pressed while a delegation waits for the person's agent to wake is not answered behind
-/// the delegation's back and is not given up: it is tried again (`max_cancel_attempts` of the
-/// dispatcher, plus what fits in the wake bound for a routed thread) until the delegation has
-/// been sent, and then stops the task it started. `min_attempts` is how many claims the stop must
+/// A stop pressed while a delegation is **in flight** (a claim holds it, at the wake or at the send)
+/// is not answered behind the delegation's back and is not given up: it is tried again
+/// (`max_cancel_attempts` of the dispatcher, plus what fits in the wake bound for a routed thread)
+/// until the delegation has been sent, and then stops the task it started. The probe is longer than
+/// any wait of this test (`own_agent_probe` 60 s), so the claim that holds the delegation holds it at
+/// the gate, as it did before the probe (ANR-1078 PR 2): a delegation between two probes is
+/// `pending` and unsent, and a stop skips it (see
+/// `a_stop_between_two_probes_cancels_a_routed_delegation_before_it_starts`). `min_attempts` is how many claims the stop must
 /// have had while the delegation still waited. `transient_cancels` is how many times the agent
 /// then fails the stop's `CancelTask` with an error that passes (ANR-1078, gap A of ADR 0103: the
 /// waits are refunded, so the stop is still given its own `max_cancel_attempts` for the cancel).
@@ -1430,6 +1434,7 @@ async fn a_stop_waits_for_a_waking_delegation(
             Arc::clone(&dispatching),
             orch_app::DispatcherConfig {
                 max_cancel_attempts,
+                own_agent_probe: Duration::from_secs(60),
                 ..fast()
             },
             "d1",
@@ -1490,15 +1495,122 @@ async fn a_stop_waits_for_a_waking_delegation(
     let _ = task.await;
 }
 
-#[tokio::test]
-async fn a_stop_does_not_cancel_a_thread_whose_delegation_waits_for_the_agent_to_wake() {
-    a_stop_waits_for_a_waking_delegation(10_000, 2, 0).await;
+/// A routed delegation whose agent is slow to wake is cut at the probe and waits, `pending`, unsent
+/// and with its claim refunded (ANR-1078 PR 2). A stop pressed then finds nothing sent: it ends the
+/// thread `CancelledBeforeStart` at its first claim and sends nothing, as for any delegation that
+/// has not begun (ADR 0103, amended 2026-11-27). The stop's wait for a delegation in flight is
+/// reached only by a delegation a claim holds: at its probe, or at the send.
+async fn a_stop_between_two_probes_ends_the_thread_before_it_starts(max_cancel_attempts: u32) {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let requests = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            listing(&registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let (open_tx, open_rx) = tokio::sync::watch::channel(false);
+    let entered = Arc::new(AtomicUsize::new(0));
+    let dispatching = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            Gated {
+                inner: MemoryProvisioner::new(),
+                open: open_rx,
+                entered: Arc::clone(&entered),
+            },
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let token = tokio_util::sync::CancellationToken::new();
+    let task = tokio::spawn(
+        Dispatcher::new(
+            Arc::clone(&dispatching),
+            orch_app::DispatcherConfig {
+                max_cancel_attempts,
+                own_agent_probe: Duration::from_millis(100),
+                // one probe, then a wait far longer than the test: the row stays between probes
+                own_agent_wait_delay: Duration::from_secs(30),
+                ..fast()
+            },
+            "d1",
+        )
+        .run(token.clone()),
+    );
+    let id = new_coder_thread(&requests, "echo stopped before the agent woke").await;
+    let waiting = eventually("the delegation waits for the agent", || async {
+        w.store
+            .list_open_outbox(id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| {
+                r.kind == orch_ports::OutboxKind::Delegate
+                    && r.status == orch_ports::OutboxStatus::Pending
+                    && r.refunded >= 1
+            })
+    })
+    .await;
+    assert!(
+        entered.load(Ordering::SeqCst) >= 1,
+        "the probe reached the gate"
+    );
+    assert_eq!(waiting.sent_at, None, "nothing was sent");
+    assert_eq!(
+        waiting.counted_attempts(),
+        0,
+        "the probe was refunded: {waiting:?}"
+    );
+
+    requests.cancel(&alice(), id).await.unwrap();
+    wait_in(&w, id, ThreadState::Cancelled).await;
+    assert_eq!(
+        sends_to(&w, &mine()),
+        0,
+        "nothing was sent to the person's agent"
+    );
+    assert!(
+        w.agent.sends().is_empty(),
+        "nothing was sent to any agent: {:?}",
+        w.agent.sends()
+    );
+    assert!(
+        !w.agent
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::Cancel { .. })),
+        "no task existed to cancel at the agent"
+    );
+    // the delegation was skipped by the stop, and the stop is over: nothing is left open
+    eventually("no row is left open", || async {
+        w.store
+            .list_open_outbox(id)
+            .await
+            .unwrap()
+            .is_empty()
+            .then_some(())
+    })
+    .await;
+    open_tx.send(true).unwrap();
+    token.cancel();
+    let _ = task.await;
 }
 
 #[tokio::test]
-async fn a_stop_outlasts_max_cancel_attempts_while_a_routed_delegation_waits_for_the_agent() {
-    // two attempts would end the stop; the wake bound (30 s plus the backstop) is what it may wait
-    a_stop_waits_for_a_waking_delegation(2, 5, 0).await;
+async fn a_stop_between_two_probes_cancels_a_routed_delegation_before_it_starts_and_sends_nothing()
+{
+    a_stop_between_two_probes_ends_the_thread_before_it_starts(10_000).await;
+}
+
+#[tokio::test]
+async fn a_stop_needs_no_retries_to_cancel_a_routed_delegation_that_waits_between_probes() {
+    // one attempt is all the stop is given, and all it needs: nothing is in flight to wait for
+    a_stop_between_two_probes_ends_the_thread_before_it_starts(1).await;
 }
 
 #[tokio::test]
@@ -1560,6 +1672,7 @@ async fn a_stop_that_waited_still_gets_its_listing_attempts_before_it_cancels_lo
             Arc::clone(&dispatching),
             orch_app::DispatcherConfig {
                 own_agent_listing_attempts: LISTING,
+                own_agent_probe: Duration::from_secs(60),
                 ..fast()
             },
             "d1",
@@ -1605,6 +1718,159 @@ async fn a_stop_that_waited_still_gets_its_listing_attempts_before_it_cancels_lo
     );
     token.cancel();
     let _ = task.await;
+}
+
+/// ANR-1078 PR 2, the card's "Done when": rows routed to a person's agent that is slow to wake do
+/// not hold a dispatcher slot for the whole wait-ready bound, and the rows of others are still
+/// served meanwhile. The provisioner is gated (never opened until the end), `concurrency` is 2 and
+/// `routed` coder threads of alice wait for it; then a thread to `plain`, an agent nobody
+/// provisions, must reach `Done` within `eventually`'s 10 s.
+///
+/// On the commit before the probe (0e6d34f0) each routed row held its slot for the whole wait,
+/// `BOUND` plus `OUTER_SLACK`, 40 s, so the first `concurrency` rows held every slot and the
+/// unrelated row was never claimed in 10 s.
+///
+/// What else is asserted: the routed rows stay open and unsent (never dead, nothing sent to the
+/// person's agent), each is cut at the probe more than once and its claims are refunded (a counted
+/// attempt is at most the one claim that holds it), and when the gate opens they all finish with
+/// exactly one counted attempt, the one that sent.
+async fn routed_rows_that_wait_for_a_slow_agent_leave_the_slots_to_the_rest(
+    routed: usize,
+    unrelated_person: orch_core::UserId,
+) {
+    const SLOTS: usize = 2;
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let requests = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            listing(&registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let (open_tx, open_rx) = tokio::sync::watch::channel(false);
+    let entered = Arc::new(AtomicUsize::new(0));
+    let dispatching = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            Gated {
+                inner: MemoryProvisioner::new(),
+                open: open_rx,
+                entered: Arc::clone(&entered),
+            },
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let token = tokio_util::sync::CancellationToken::new();
+    let task = tokio::spawn(
+        Dispatcher::new(
+            Arc::clone(&dispatching),
+            orch_app::DispatcherConfig {
+                concurrency: SLOTS,
+                own_agent_wait_delay: Duration::from_millis(500),
+                ..fast()
+            },
+            "d1",
+        )
+        .run(token.clone()),
+    );
+    let mut coders = Vec::new();
+    for n in 0..routed {
+        coders.push(new_coder_thread(&requests, &format!("echo routed {n}")).await);
+    }
+    // every slot is at the gate
+    eventually("the slots at the gate", || async {
+        (entered.load(Ordering::SeqCst) >= SLOTS).then_some(())
+    })
+    .await;
+
+    // an agent nobody provisions, asked by someone else's thread or alice's own
+    let plain = ThreadId(uuid::Uuid::now_v7());
+    requests
+        .create_thread_as(
+            &unrelated_person,
+            plain,
+            NewThread {
+                title: None,
+                target: target("plain"),
+                text: "echo not routed".to_owned(),
+            },
+            Inbound::default(),
+        )
+        .await
+        .unwrap();
+    wait_in(&w, plain, ThreadState::Done).await;
+    assert_eq!(
+        sends_to(&w, "plain"),
+        1,
+        "the unrelated thread was served while the routed rows waited"
+    );
+
+    // the routed rows are still waiting, not dead, and nothing of theirs was sent
+    let mut rows = Vec::new();
+    for id in &coders {
+        let row = eventually("a routed row cut at the probe", || async {
+            w.store
+                .list_open_outbox(*id)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|r| r.kind == orch_ports::OutboxKind::Delegate && r.refunded >= 1)
+        })
+        .await;
+        assert_eq!(row.sent_at, None, "{row:?}");
+        assert!(
+            row.counted_attempts() <= 1,
+            "a probe is refunded, so the cap sees at most the claim that holds the row: {row:?}"
+        );
+        let thread = w.store.get_thread(None, *id).await.unwrap().unwrap();
+        assert!(!thread.state.is_terminal(), "{:?}", thread.state);
+        rows.push(row.id);
+    }
+    assert_eq!(
+        sends_to(&w, &mine()),
+        0,
+        "nothing reached the person's agent"
+    );
+
+    // the agent wakes: every routed row sends once and ends
+    open_tx.send(true).unwrap();
+    for id in &coders {
+        wait_in(&w, *id, ThreadState::Done).await;
+    }
+    assert_eq!(sends_to(&w, &mine()), routed);
+    for id in rows {
+        let row = eventually("a routed row delivered", || async {
+            let row = w.store.get_outbox(id).await.unwrap().unwrap();
+            (row.status == orch_ports::OutboxStatus::Delivered).then_some(row)
+        })
+        .await;
+        assert_eq!(
+            row.counted_attempts(),
+            1,
+            "only the claim that sent counts: {row:?}"
+        );
+        assert!(row.refunded >= 1, "{row:?}");
+    }
+    token.cancel();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn routed_rows_waiting_for_a_slow_agent_leave_the_slots_to_the_next_row() {
+    // as many routed rows as slots: between two probes every slot is free
+    routed_rows_that_wait_for_a_slow_agent_leave_the_slots_to_the_rest(2, alice()).await;
+}
+
+#[tokio::test]
+async fn routed_rows_at_twice_the_slots_waiting_for_a_slow_agent_leave_slots_to_another_person() {
+    // twice as many as slots: the claim order is fair between people and oldest first within one
+    // person, so the unrelated thread is another person's (see ADR 0103, amended 2026-11-27)
+    routed_rows_that_wait_for_a_slow_agent_leave_the_slots_to_the_rest(4, bob()).await;
 }
 
 #[tokio::test]
