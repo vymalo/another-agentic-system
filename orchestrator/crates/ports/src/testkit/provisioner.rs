@@ -162,3 +162,37 @@ pub async fn a_deleted_agent_is_made_again<F: ProvisionerFixture>(f: F) {
         Err(e) => panic!("unexpected: {e}"),
     }
 }
+
+/// A call that is dropped while the agent comes up leaves it coming up: it is not lost, not made
+/// twice and not stuck, and the next call finds it and returns it ready (ANR-1078: the dispatcher
+/// cuts a wait on purpose, to free its slot, and asks again).
+pub async fn a_dropped_call_leaves_the_agent_coming_up_and_the_next_call_finds_it<
+    F: ProvisionerFixture,
+>(
+    f: F,
+) {
+    let p = f.provisioner();
+    let o = owner("kate");
+    f.set_ready_delay(Duration::from_millis(600));
+    let cut = tokio::time::timeout(
+        Duration::from_millis(150),
+        p.ensure_ready(&o, AgentKind::Coder),
+    )
+    .await;
+    assert!(cut.is_err(), "the call returned before the agent was ready");
+    assert_eq!(
+        p.state(&o, AgentKind::Coder).await.unwrap(),
+        Some(AgentState::Saving),
+        "the agent the dropped call was making is coming up"
+    );
+    assert_eq!(f.agent_count(), 1);
+
+    let agent = p.ensure_ready(&o, AgentKind::Coder).await.unwrap();
+    assert_eq!(agent.state, AgentState::Ready);
+    assert_eq!(
+        p.state(&o, AgentKind::Coder).await.unwrap(),
+        Some(AgentState::Ready),
+        "the call that returned the agent ready left it ready"
+    );
+    assert_eq!(f.agent_count(), 1, "the next call made no second agent");
+}

@@ -164,6 +164,12 @@ pub trait AgentProvisioner: Send + Sync + 'static {
     /// when it is suspended, and **waits until it is [`AgentState::Ready`]** (or gives up with
     /// [`ProvisionError::NotReady`]). Two calls at once for the same owner and kind make **one**
     /// agent and both get it.
+    ///
+    /// **A call that is dropped (cut by a timeout) strands nothing** (ANR-1078): the agent it was
+    /// making or resuming goes on coming up by itself, and the next call finds it ready or still
+    /// coming up and waits for it, never making a second one. Nothing the caller does after a
+    /// point it is not at (a sleep, a second request) is what turns a state into `Ready`: the
+    /// caller is cut at any `.await`, and the dispatcher cuts it on purpose to free its slot.
     fn ensure_ready(
         &self,
         owner: &AgentOwner,
