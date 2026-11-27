@@ -245,3 +245,43 @@ stateDiagram-v2
 | S4 | the orchestrator picks the path per agent and refuses a run with none | this repository, dispatcher |
 | S5 | adam's run-certificate adapter; the signing sidecar | adam-rs |
 | S6 | the operator renders the sidecar, the token and the registry attributes | the platform |
+
+### Amended (2026-11-27): the run-certificate contract v1, its names, and who holds the run's key
+
+The owner's rulings of 2026-11-27 on the ANR-868 design (option A) settle what section 3 left *proposed*, and correct
+one sentence of section 4.
+
+1. **The issuer is behind a port on adam's side.** adam makes the Ed25519 key **and the CSR inside the run**; the issuer
+   only takes a CSR and answers a chain. The deployment picks the issuer by configuration: **the broker over HTTP first**,
+   and an **OpenBao adapter** as well. The broker never sees a private key, and the key never leaves the run's memory.
+2. **The contract is versioned in the body, and it is v1.** `POST /internal/runs/{run}/certificate` takes
+   `{"v": 1, "csr": "<base64 DER>"}` and answers `{"v": 1, "chain": ["<base64 DER>", …]}` — the leaf first, then its
+   intermediates, roots omitted. The route is section 3's; the shapes of section 3 (`{csr}`, `{chain, kid, notAfter}`) are
+   **superseded**: a version in the body lets a later shape be added without a second route, and `kid` and `notAfter` are
+   read from the leaf, which the caller already has. Wire fixtures for the request, the answer and each refusal are in
+   [`docs/api/fixtures/run-certificate-v1/`](../api/fixtures/run-certificate-v1/README.md), for adam's tests and the
+   broker's to share.
+3. **The names**, which AD-063's two proposed ones extend:
+   `RUN_CERT_ISSUER` (`broker` or `openbao`), `RUN_CERT_ISSUER_URL`, `RUN_CERT_TOKEN_FILE`, `RUN_CERT_CA_FILE`,
+   `RUN_CERT_RENEW_FRACTION`.
+4. **The run's leaf signs model requests only.** Run *history* keeps adam's process turn key (ADR 0068): a leaf names one
+   run, and the history outlives it.
+5. **Renewal:** at **2/3 of the leaf's life**, with a **new key each time**; the old leaf is kept until the new one
+   arrives, so a renewal that fails leaves a working identity in place. `RUN_CERT_RENEW_FRACTION` is that 2/3, a number
+   in `(0, 1)`.
+6. **The run-signer sidecar** forwards plain HTTP from loopback to `RUN_SIGNER_UPSTREAM`, and trusts
+   `RUN_CERT_CA_FILE` for **both** the issuer and the model gateway.
+7. **Correction to section 4.** That section's table and the S5 slice say adam gains "a run-certificate `TurnKeys`
+   adapter". adam's `TurnKeys` is **per process** (`crates/adam-core/src/turn/mod.rs` takes no run), so a key that belongs
+   to one run cannot be one: the run key gets **a port of its own** in adam, beside `TurnKeys` and not inside it. The
+   rest of section 4 stands.
+
+**The refusals of v1**, each with the status the fixtures pin: `401` `unauthenticated`; `403` `run_not_bound`,
+`lease_expired` and `not_signed` (the three of section 3 that say nothing of whether a run exists); `400` `bad_csr`; `503`
+`unavailable`. They are `application/problem+json`, as everywhere else, with the `code` member naming the refusal.
+
+- *Verified 2026-11-27:* the owner's rulings are recorded here as he gave them; the fixture files parse as JSON and their
+  `v` is `1`; the base64 in them decodes to DER.
+- *Unverified:* no broker, adam or platform implements v1 yet, so the fixtures have not been read by a real issuer or a
+  real signer. The statuses above are this amendment's proposal; a later slice that disagrees changes them **and** the
+  fixtures in one change.
