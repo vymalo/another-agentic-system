@@ -486,6 +486,16 @@ refused "a first-party image tag that is latest" --set orchestrator.image.tag=la
 refused "a first-party image tag that is not a commit" --set web.image.tag=v1.2.3
 refused "a third-party image without a digest" --set edge.image.digest=
 refused "a third-party image with a short digest" --set oauth2Proxy.image.digest=sha256:abc
+# A release (ADR 0106): the packaged chart names X.Y.Z and its digest (release-pin.sh); a version without a digest, or a moving X.Y, is refused.
+rel_digest=sha256:3333333333333333333333333333333333333333333333333333333333333333
+refused "a first-party release version without its digest" --set orchestrator.image.tag=1.2.3
+refused "a first-party release version with a short digest" --set web.image.tag=1.2.3 --set web.image.digest=sha256:abc
+refused "a first-party image on a moving X.Y, even with a digest" --set web.image.tag=1.2 --set "web.image.digest=$rel_digest"
+check "a first-party release version with its digest renders as repository:X.Y.Z@digest" sh -c "
+  helm template x '$chart' -n a -f '$base' --set orchestrator.image.tag=1.2.3 --set 'orchestrator.image.digest=$rel_digest' \
+    --set web.image.tag=1.2.3 --set 'web.image.digest=$rel_digest' > '$sec2' &&
+  grep -Fqx '          image: \"ghcr.io/vymalo/another-agentic-system/orchestrator:1.2.3@$rel_digest\"' '$sec2' &&
+  grep -Fqx '          image: \"ghcr.io/vymalo/another-agentic-system/web:1.2.3@$rel_digest\"' '$sec2'"
 refused "the chat agent without a model name" --set chat.model=
 refused "the chat agent without a model endpoint" --set model.baseUrl=
 refused "the address both written and kept in the AWS secret" --set model.baseUrlFromSecret=true
