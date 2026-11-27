@@ -1,0 +1,173 @@
+name: Update screens
+
+# Re-baselines the committed screenshots (web/e2e/__screens__) from the image that draws them, on demand.
+#
+# The set is only ever written by the `screens` target of web/Dockerfile (web/README.md, "screens-docker.sh"), and the
+# `screens` job of Web fails when the committed set differs from what that image draws by more than the bound (at most 0.05 % of a
+# still's pixels beyond 8/255, web/README.md). When the difference is a
+# deliberate visual change, or a new base image (a Chromium, a font), this workflow draws the set in the same image and
+# opens one pull request with it: never commit screenshots drawn on a host, whose fonts and browser build differ.
+#
+# Run it from the branch you want it to start from (Actions → Update screens → Run workflow). It commits nothing itself:
+# it opens a pull request whose head is `screens/update-<run id>`, and a person looks at a sample of the images there
+# before merging.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: update-screens-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Draw the screens in the image
+        # `write` is the only mode that writes the set, and it writes it from the image's own Chromium and fonts
+        run: sh web/scripts/screens-docker.sh write
+      - name: Open a pull request with the set, when it changed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: screens/update-${{ github.run_id }}
+        run: |
+          set -eu
+          if [ -z "$(git status --porcelain -- web/e2e/__screens__)" ]; then
+            echo "the committed set is what the image draws: nothing to update"
+            exit 0
+          fi
+          changed=$(git status --porcelain -- web/e2e/__screens__ | wc -l | tr -d ' ')
+          echo "$changed files changed"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add -- web/e2e/__screens__
+          git commit -m "chore(web): re-baseline the screens from CI's own image"
+          git push -u origin "$BRANCH"
+          cat > /tmp/body.md <<EOF
+          ## 1. Summary
+
+          This PR changes:
+
+          - \`web/e2e/__screens__\`: $changed image(s), drawn by \`web/scripts/screens-docker.sh write\` in the \`screens\` target of \`web/Dockerfile\`.
+
+          It solves:
+
+          - Source of truth: https://github.com/vymalo/another-agentic-system/blob/main/web/README.md ("screens-docker.sh": the committed set is generated in the image and nowhere else)
+
+          ---
+
+          ## 2. Intent
+
+          The intent of this PR is:
+
+          > Put the committed screenshots back in step with what the image draws, so the \`screens\` job of Web can be green on \`main\`. The set was drawn by this workflow run, not on anyone's host.
+
+          ---
+
+          ## 3. Scope
+
+          ### In Scope
+
+          - The committed screenshots only.
+
+          ### Out of Scope
+
+          - Any change to a page, a test or the comparison: this is a re-baseline of the stills.
+
+          ---
+
+          ## 4. Verification
+
+          I verified this change by:
+
+          - [x] Running automated tests
+
+          Commands run:
+
+          \`\`\`bash
+          sh web/scripts/screens-docker.sh write   # in this workflow, in the image
+          \`\`\`
+
+          Results:
+
+          \`\`\`text
+          $changed file(s) written by the image; the \`screens\` job of this pull request compares them and is the proof.
+          \`\`\`
+
+          ---
+
+          ## 5. Screenshots / Evidence
+
+          The images in \`web/e2e/__screens__\` are the evidence; look at a sample of the \`-light-\`/\`-dark-\` pairs in the diff.
+
+          ---
+
+          ## 6. Risk Assessment
+
+          Risk level:
+
+          * [x] Low
+          * [ ] Medium
+          * [ ] High
+
+          Potential risks:
+
+          * A still that changed for a reason nobody wanted is baked in; the diff shows every image.
+
+          Does this cutover raise the minimum client version (\`server.minClientVersion\`, \`docs/api/client-version.md\`)?
+
+          * [x] No
+          * [ ] Yes, and the release raises it in the same change
+
+          Mitigation:
+
+          * The \`screens\` job of this pull request re-draws the set in the same image and fails on any difference, so a still drawn elsewhere cannot land.
+
+          ---
+
+          ## 7. AI Usage Declaration
+
+          AI was used for:
+
+          * [ ] Understanding existing code
+          * [ ] Generating code
+          * [ ] Refactoring
+          * [ ] Generating tests
+          * [ ] Drafting documentation
+          * [ ] Reviewing the diff
+          * [x] Not used
+
+          Human verification:
+
+          * [ ] I understand every meaningful change in this PR
+          * [ ] I checked generated code manually
+          * [ ] I checked generated tests manually
+          * [ ] I removed unsupported AI assumptions
+          * [ ] I accept responsibility for this PR
+
+          Human verification has **not** been performed: those five boxes are left for the owner, as the repository's rules require.
+
+          ---
+
+          ## 8. Reviewer Focus
+
+          Please focus your review on:
+
+          * [x] Correctness
+          * [ ] Architecture
+          * [ ] Security
+          * [ ] Performance
+          * [ ] Tests
+          * [ ] Maintainability
+          * [x] Product intent
+          * [x] Edge cases
+          EOF
+          gh pr create --base "${{ github.ref_name }}" --head "$BRANCH" \
+            --title "chore(web): re-baseline the screens from CI's own image" \
+            --body-file /tmp/body.md
