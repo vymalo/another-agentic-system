@@ -240,6 +240,19 @@ impl PgStore {
         self.insert_thread(new, None, first, true).await
     }
 
+    /// Begins the transaction of a commit, and of an admission with its commit: `READ COMMITTED`,
+    /// whatever the database or the role defaults to. Both wait for a lock (the person's in
+    /// `orch_admit`, the thread's row in `orch_commit_open`) and then read what its holder
+    /// committed. Under `REPEATABLE READ` the snapshot would be taken before the wait: the count
+    /// would miss that holder's job, and a lock on a row it changed would fail with `40001` where the
+    /// answer is a version conflict.
+    async fn begin_commit(&self) -> Result<Tx, StoreError> {
+        self.pool
+            .begin_with("BEGIN ISOLATION LEVEL READ COMMITTED")
+            .await
+            .map_err(store_err)
+    }
+
     /// The one transaction behind [`create`](Self::create) and [`open_child`](Self::open_child).
     async fn insert_thread(
         &self,
@@ -1661,10 +1674,10 @@ async fn commit_in(
     // `orch_commit_open` takes the locks (the thread, then the claimed outbox row, then the
     // claimed inbox row) and says whether the commit may go on, before anything is written. The
     // thread's row lock serialises every writer of the thread, so the append below leaves seq
-    // without gaps and duplicates (READ COMMITTED is enough). A claimed inbox row is locked
-    // while a stale `park_inbox` holding a watch key may wait for it and this commit, holding
-    // the row, wants that key later: PostgreSQL detects the cycle (`40P01`), aborts one side,
-    // and the store maps that to a transient error.
+    // without gaps and duplicates (READ COMMITTED, which `begin_commit` pins, is enough). A claimed
+    // inbox row is locked while a stale `park_inbox` holding a watch key may wait for it and this
+    // commit, holding the row, wants that key later: PostgreSQL detects the cycle (`40P01`), aborts
+    // one side, and the store maps that to a transient error.
     let keys: Vec<&str> = commit
         .events
         .iter()
@@ -2141,7 +2154,7 @@ impl ThreadStore for PgStore {
         // lock and then counts; the lock lasts until this transaction ends, so the count and the
         // commit below are one step per person: the next admission of theirs counts this job.
         // The lock is taken before the thread's row lock, always, and `commit` takes none.
-        let mut tx = self.pool.begin().await.map_err(store_err)?;
+        let mut tx = self.begin_commit().await?;
         let limit = i32::try_from(limit).unwrap_or(i32::MAX);
         let admission = query("SELECT * FROM orch_admit($1, $2)")
             .bind(owner.as_str())
@@ -2176,7 +2189,7 @@ impl ThreadStore for PgStore {
         expected_version: i64,
         commit: Commit,
     ) -> Result<CommitOutcome, StoreError> {
-        let tx = self.pool.begin().await.map_err(store_err)?;
+        let tx = self.begin_commit().await?;
         commit_in(tx, thread, expected_version, commit).await
     }
 

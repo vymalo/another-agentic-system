@@ -13,7 +13,13 @@
 -- The lock comes first and the count follows it. The count is a statement of its own in a VOLATILE
 -- function, so under READ COMMITTED it takes a snapshot of its own, after the lock was granted: it
 -- sees the job of whoever held the lock before and committed. A count taken before the lock, or in
--- the same statement as it, could miss that job and admit two people's worth into one place.
+-- the same statement as it, could miss that job and admit two jobs into one place.
+--
+-- **The function relies on its caller's transaction being READ COMMITTED**, and cannot set that
+-- itself: under REPEATABLE READ or SERIALIZABLE the transaction's snapshot is taken as the call
+-- starts, before the wait for the lock, and the count reuses it, so it misses the job the holder
+-- committed. The store begins that transaction with `BEGIN ISOLATION LEVEL READ COMMITTED`, whatever
+-- the database or the role defaults to.
 --
 -- The lock is transaction-scoped: it lasts until the caller's transaction ends. The caller runs its
 -- whole commit in that same transaction, so the admission and the commit that adds the job are one

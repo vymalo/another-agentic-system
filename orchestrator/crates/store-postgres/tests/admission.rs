@@ -142,9 +142,13 @@ async fn admit(tx: &mut Tx, owner: &UserId, limit: i32) -> (String, i32) {
     (row.get("outcome"), row.get("running"))
 }
 
+/// The calls that wait for the admission lock of a person (`$1` the class, `$2` the owner).
+const WAITING: &str = "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted \
+     AND classid = $1::oid AND objid = hashtext($2)::oid AND objsubid = 2";
+
 /// Waits until `count`, a `count(*)` over `pg_locks` for the admission lock of `owner` (`$1` the
-/// class, `$2` the owner), is above zero.
-async fn until_seen(pool: &PgPool, count: &'static str, owner: &UserId) {
+/// class, `$2` the owner), is at least `at_least`.
+async fn until_seen(pool: &PgPool, count: &'static str, owner: &UserId, at_least: i64) {
     tokio::time::timeout(BOUND, async {
         loop {
             let n: i64 = query_scalar(count)
@@ -153,7 +157,7 @@ async fn until_seen(pool: &PgPool, count: &'static str, owner: &UserId) {
                 .fetch_one(pool)
                 .await
                 .unwrap();
-            if n > 0 {
+            if n >= at_least {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -229,6 +233,7 @@ async fn the_admission_lock_is_held_by_the_transaction_that_commits() {
          WHERE a.locktype = 'advisory' AND a.granted AND a.classid = $1::oid \
          AND a.objid = hashtext($2)::oid AND a.objsubid = 2",
         &owner,
+        1,
     )
     .await;
     blocker.rollback().await.unwrap();
@@ -268,16 +273,79 @@ async fn the_count_follows_the_lock() {
             answer
         })
     };
-    until_seen(
-        &pool,
-        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted \
-         AND classid = $1::oid AND objid = hashtext($2)::oid AND objsubid = 2",
-        &owner,
-    )
-    .await;
+    until_seen(&pool, WAITING, &owner, 1).await;
     first.commit().await.unwrap();
     let answer = tokio::time::timeout(BOUND, second).await.unwrap().unwrap();
     assert_eq!(answer, ("no_room".into(), 1));
+}
+
+/// An admission does not depend on what the database defaults to. With `REPEATABLE READ` as the
+/// default (`ALTER ROLE ... SET default_transaction_isolation`), a transaction that did not say its
+/// level would take its snapshot as it calls `orch_admit`, before the wait for the lock. The test
+/// holds the lock until both admissions of a person with one place wait for it, so both have begun
+/// before either commits: one is admitted, and the other counts that job.
+#[tokio::test]
+async fn an_admission_does_not_depend_on_the_isolation_the_database_defaults_to() {
+    let db = db_or_skip!();
+    // migrated on the direct connection: no pooled session exists before the settings below are
+    // the database's
+    PgStore::migrate_direct(&db.pinned_direct_url())
+        .await
+        .unwrap();
+    let store = PgStore::from_pool(
+        db.pool_with(
+            "admission-isolation",
+            4,
+            &[("default_transaction_isolation", "repeatable read")],
+        )
+        .await,
+    );
+    let level: String = query_scalar("SHOW default_transaction_isolation")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        level, "repeatable read",
+        "the pool's sessions default to it"
+    );
+    let pool = db.pool("admission-test", 4).await;
+    let owner = a_person();
+    let threads = [
+        idle_thread(&store, &owner).await,
+        idle_thread(&store, &owner).await,
+    ];
+
+    let mut holder = pool.begin().await.unwrap();
+    query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+        .bind(LOCK_CLASS)
+        .bind(owner.as_str())
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let admissions = threads.map(|thread| {
+        let (store, owner) = (store.clone(), owner.clone());
+        tokio::spawn(async move {
+            store
+                .admit_commit(&owner, 1, thread, 1, a_job(&owner))
+                .await
+        })
+    });
+    until_seen(&pool, WAITING, &owner, 2).await;
+    holder.rollback().await.unwrap();
+    let mut answers = Vec::new();
+    for admission in admissions {
+        let answer = tokio::time::timeout(BOUND, admission).await.unwrap();
+        answers.push(answer.unwrap().unwrap());
+    }
+    let admitted = answers
+        .iter()
+        .filter(|r| matches!(r, Admission::Admitted(CommitOutcome::Applied { .. })))
+        .count();
+    assert_eq!(admitted, 1, "{answers:?}");
+    assert!(
+        answers.contains(&Admission::NoRoom { running: 1 }),
+        "{answers:?}"
+    );
 }
 
 /// A replica of a build before migration `0038` takes the lock in a statement of its own, with the
@@ -329,16 +397,24 @@ async fn a_person_at_the_limit_is_no_room_and_nothing_is_written() {
     let pool = db.pool("admission-test", 4).await;
     let owner = a_person();
     let thread = idle_thread(&store, &owner).await;
-    let admitted = store
-        .admit_commit(&owner, 1, thread, 1, a_job(&owner))
-        .await
-        .unwrap();
+    // bounded: an admission lock that outlived its transaction must fail here, not hang
+    let admitted = tokio::time::timeout(
+        BOUND,
+        store.admit_commit(&owner, 1, thread, 1, a_job(&owner)),
+    )
+    .await
+    .expect("nobody holds the admission lock")
+    .unwrap();
     assert!(
         matches!(admitted, Admission::Admitted(CommitOutcome::Applied { .. })),
         "{admitted:?}"
     );
 
     let mut tx = pool.begin().await.unwrap();
+    query("SET LOCAL lock_timeout = '10s'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     assert_eq!(admit(&mut tx, &owner, 1).await, ("no_room".into(), 1));
     assert_eq!(admit(&mut tx, &owner, 0).await, ("no_room".into(), 1));
     assert_eq!(admit(&mut tx, &owner, 2).await, ("admitted".into(), 1));
