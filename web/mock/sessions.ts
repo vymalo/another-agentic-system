@@ -249,7 +249,8 @@ export const SCRIPTED_REFUSAL =
 export type SessionsConfig = {
   /**
    * The card's entry (`custom[URI]`), taken as given so a malformed one can be tried; `null`: the card
-   * lists nothing; `"unreadable"`: the card cannot be read (a start and a close are 503, the capabilities list nothing).
+   * lists nothing; `"unreadable"`: the card cannot be read (a start and a close are 503, the capabilities list nothing);
+   * `"blocked"`: the person's own agent is blocked for a reason waiting cannot clear (a start is a 500 `agent_blocked`, ADR 0103).
    */
   offer: unknown;
   /** `open`: a start opens after a step; `refuse`: the agent refuses it, in `SCRIPTED_REFUSAL`; `hold`: it waits for a release. */
@@ -641,6 +642,15 @@ export function createSessions(host: SessionsHost) {
     // the agent the registry lists, then its live card
     if (!host.agentOrRefuse(req, res, parent.target.agentId)) return;
     if (unreadable(req, res)) return;
+    if (host.config(req).offer === "blocked") {
+      return problem(
+        res,
+        500,
+        "Internal Server Error",
+        "your coder agent is blocked: NameConflict",
+        "agent_blocked",
+      );
+    }
     const offer = offerOf(req, parent.target.agentId);
     if (!offer) {
       return unprocessable(res, "no_child_sessions", "the agent does not offer helper sessions");

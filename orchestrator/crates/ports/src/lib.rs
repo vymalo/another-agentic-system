@@ -143,8 +143,8 @@ pub use prompts::{
     PromptStoreError, PromptSummary, PromptViewer, StoredPrompt,
 };
 pub use provisioner::{
-    AgentKind, AgentOwner, AgentProvisioner, AgentState, InvalidAgentOwner, MAX_OWNER_CHARS,
-    ProvisionError, ProvisionedAgent,
+    AgentKind, AgentOwner, AgentProvisioner, AgentState, BlockedReason, InvalidAgentOwner,
+    MAX_OWNER_CHARS, ProvisionError, ProvisionedAgent,
 };
 pub use registry::{
     AUDIENCE_EVERYONE, AgentAudience, AgentListing, AgentRegistry, AudienceRoles,

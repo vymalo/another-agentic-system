@@ -29,6 +29,9 @@ sequenceDiagram
   end
   loop until ready or ready_timeout
     P->>A: GET (state)
+    alt blocked, and conditions say NameConflict or CNPGNotInstalled
+      P-->>O: ProvisionError::Blocked (at once)
+    end
   end
   P-->>O: ProvisionedAgent
 ```
@@ -39,10 +42,16 @@ stateDiagram-v2
   Absent --> Saving: create
   Suspended --> Saving: resume
   Saving --> Ready
+  Saving --> Blocked: store or referent not ready
+  Blocked --> Ready: store or referent ready
+  Blocked --> Gone: NameConflict or CNPGNotInstalled, error Blocked
+  Saving --> Degraded: applied, not ready
+  Degraded --> Ready
   Ready --> Suspended: suspend
   Ready --> Deleting: delete
   Suspended --> Deleting: delete
   Deleting --> Absent
+  Gone: refused at once
 ```
 
 ## What it does
@@ -63,7 +72,15 @@ stateDiagram-v2
   `PlatformConfig::with_form`; the adapter adds `name`, `owner` and `suspend` and refuses a form
   that sets them.
 * A wait that ends before `ready` is `NotReady { last }` (transient); a `Deleting` agent is
-  `Deleting`. A bad token is `Refused`. No retry loop beyond the waits above.
+  `Deleting`. `Saving`, `Degraded` (applied, not ready: a rollout or a crash loop, which returns to
+  `ready` by itself) and `Blocked` are polled until `ready_timeout`: a fresh database cluster or a
+  referent not made yet blocks an agent that then goes `ready`, so a first message is not refused for
+  it. Only a `Blocked` agent whose `conditions` (each `{type, status, reason}`, as the platform's
+  detail has them) say that waiting cannot help is refused at once, as `ProvisionError::Blocked
+  { reason }` (a 500 `agent_blocked` for the person: the deployment's to repair): `RuntimeReady`
+  `False` for `NameConflict`, and `StoreReady` `False` for `CNPGNotInstalled`. Every other reason
+  (`ClusterNotReady`; `ConfigNotFound`, a `ConfigResolved` `False`; `ConfigInvalid`, which also reports a referent not made yet; `ConfigNotResolved`, a `StoreReady` `Unknown` while the config is not resolved; an unknown or missing one) is waited for
+  and ends, at the bound, as `NotReady { last: Blocked }`. A bad token is `Refused`. No retry loop beyond the waits above.
 
 ## Configuration
 
@@ -89,7 +106,11 @@ written from the OpenAPI document (bearer, `ETag`, `If-None-Match: *`, `If-Match
 another owner). It is a stateful axum server and not a WireMock stub, because the cases make an
 agent and then read it back. It also checks: a wrong token makes nothing, an agent of another owner
 with the same name is never written, the form that is sent, a wait that times out, and an
-unreachable platform.
+unreachable platform, and the platform's states: a `Blocked` agent (a store not ready) waited for until
+it is ready; `Blocked` for `NameConflict` and for `CNPGNotInstalled` refused at once (`Blocked`, a
+time bound and two reads); look-alike conditions (`RuntimeReady` `True` with `NameConflict`, `Ready`
+`False` with `NameConflict`) and `ConfigInvalid` still waited for, ending in `NotReady { last: Blocked }`;
+a `Degraded` agent waited for until it is ready, and `NotReady { last: Degraded }` when it stays so.
 
 The testkit itself is proven able to fail: `crates/ports/tests/provisioner_kit_catches.rs` builds
 fakes that each break one rule (a create that races, a resume that does not wait, a suspend that

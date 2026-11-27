@@ -49,7 +49,7 @@
 # because that is its directory; a `COMPOSE_PROJECT_NAME` in the environment still overrides either.
 
 x-wiremock: &wiremock
-  image: wiremock/wiremock:3.13.2 # verified 2026-09-29 (Docker Hub registry API); newest 3.x stable
+  image: wiremock/wiremock:3.13.2@sha256:0d4ecb3e4dc8213fd7a4d37d6a78f6e6b553a6d2e15bd51b0999781282ac61b3 # verified 2026-09-29 (Docker Hub registry API), digest of the index read 2026-11-27; newest 3.x stable
   # Every stub of these mocks fills its answer in from the request (JSON-RPC id, task id, host).
   command: ["--global-response-templating", "--disable-banner"]
   healthcheck:

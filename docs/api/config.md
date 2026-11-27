@@ -439,7 +439,9 @@ the message written and **sent to that agent** (the registry lists it under `<ki
 **503** `code: agent_not_ready`, "your coder agent is not ready after 120s", with `Retry-After`, and **nothing is written**
 (they send the message again; the agent keeps getting ready meanwhile). A platform that is down is a 503 "your coder agent
 could not be made ready"; one that refuses the orchestrator's token or the form is a 500 (the deployment's fault, never the
-person's), logged with the cause. The shared `chat` agent and any other agent never go through it. A binary built without the Cargo feature `provisioner-platform` refuses
+person's), logged with the cause; an agent the platform reports `Blocked` is waited for (a fresh database or a
+referent not made yet passes), except for a reason that waiting cannot clear (`NameConflict`, `CNPGNotInstalled`),
+which is a 500 `code: agent_blocked`, "your coder agent is blocked: NameConflict". The shared `chat` agent and any other agent never go through it. A binary built without the Cargo feature `provisioner-platform` refuses
 the section (exit 78).
 
 | Key | Meaning |

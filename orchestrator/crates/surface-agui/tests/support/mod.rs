@@ -319,6 +319,33 @@ impl Harness {
         policy: orch_app::Policy,
         sharing: orch_app::SharingSettings,
     ) -> Self {
+        Self::start_full(api, auth, policy, sharing, None).await
+    }
+
+    /// With a deployment that makes the person's own `coder` agent: `provisioning` is its
+    /// provisioner (ADR 0103).
+    pub async fn start_provisioned(provisioning: orch_app::Provisioning) -> Self {
+        let api = ApiConfig {
+            sse_keepalive: Duration::from_millis(150),
+            ..ApiConfig::default()
+        };
+        Self::start_full(
+            api,
+            HeaderAuth::new(),
+            orch_app::Policy::default(),
+            orch_app::SharingSettings::default(),
+            Some(provisioning),
+        )
+        .await
+    }
+
+    async fn start_full(
+        api: ApiConfig,
+        auth: HeaderAuth,
+        policy: orch_app::Policy,
+        sharing: orch_app::SharingSettings,
+        provisioning: Option<orch_app::Provisioning>,
+    ) -> Self {
         let store = MemoryStore::new();
         let agent = ScriptedAgent::new().with_releases("coder", sample_releases());
         let entry = |id: &str, name: &str| AgentEntry {
@@ -350,6 +377,7 @@ impl Harness {
                     stream_poll: Duration::from_millis(100),
                     policy,
                     sharing,
+                    provisioning,
                     // the servers a run may attach to the thread it creates (ADR 0024); `repos` is
                     // the coder's only
                     tool_servers: vec![

@@ -22,7 +22,7 @@
 
 services:
   mock-platform:
-    image: wiremock/wiremock:3.13.2 # the pin of x-wiremock in compose.yaml
+    image: wiremock/wiremock:3.13.2@sha256:0d4ecb3e4dc8213fd7a4d37d6a78f6e6b553a6d2e15bd51b0999781282ac61b3 # tag of x-wiremock in compose.yaml, digest of the index (read from the registry 2026-11-27)
     command: ["--global-response-templating", "--disable-banner", "--verbose"]
     ports:
       - "127.0.0.1:${MOCK_PLATFORM_PORT:-8105}:8080"
@@ -37,7 +37,7 @@ services:
   # dev/provisioner-e2e.sh lists it in `mock-registry` under `coder-<owner>`, the name the platform gives the agent it makes, and asserts that the
   # person's message reached it (and not the deployment's `adam`). Nothing else in the stack names it.
   mock-own-agent:
-    image: wiremock/wiremock:3.13.2 # the pin of x-wiremock in compose.yaml
+    image: wiremock/wiremock:3.13.2@sha256:0d4ecb3e4dc8213fd7a4d37d6a78f6e6b553a6d2e15bd51b0999781282ac61b3 # tag of x-wiremock in compose.yaml, digest of the index (read from the registry 2026-11-27)
     command: ["--global-response-templating", "--disable-banner"]
     ports:
       - "127.0.0.1:${MOCK_OWN_AGENT_PORT:-8106}:8080"

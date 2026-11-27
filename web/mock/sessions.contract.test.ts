@@ -286,6 +286,12 @@ describe("the mock honours docs/api/chat-api.yaml for child sessions", () => {
     const unavailable = await down.start(downParent);
     expect(unavailable.headers.get("Retry-After")).not.toBeNull();
     await documented(START, "post", unavailable);
+    // 500: the person's own agent is blocked for a reason waiting cannot clear
+    await down.config("sessions=blocked");
+    const blocked = await down.start(downParent);
+    expect(((await documented(START, "post", blocked)) as { code?: string }).code).toBe(
+      "agent_blocked",
+    );
     await down.config("sessions=on&signedIn=false");
     await documented(START, "post", await down.start(downParent));
   });

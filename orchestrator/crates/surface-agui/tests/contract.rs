@@ -12,7 +12,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use jsonschema::Validator;
 use orch_agui_proto::SCHEMA_1_0;
 use orch_app::Policy;
-use orch_ports::{Role, StoreError};
+use orch_ports::{
+    AgentKind, AgentOwner, AgentProvisioner, AgentState, BlockedReason, ProvisionError,
+    ProvisionedAgent, Role, StoreError,
+};
 use serde_json::{Value, json};
 use support::*;
 
@@ -306,6 +309,34 @@ fn the_pages_with_a_carry_are_what_the_contract_says() {
     assert!(carried >= 6, "{carried} pages with a carry");
 }
 
+/// A provisioner whose platform reports the person's agent blocked by a name conflict.
+struct BlockedProvisioner;
+
+impl AgentProvisioner for BlockedProvisioner {
+    async fn ensure_ready(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<ProvisionedAgent, ProvisionError> {
+        Err(ProvisionError::Blocked {
+            reason: BlockedReason::NameConflict,
+        })
+    }
+    async fn state(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<Option<AgentState>, ProvisionError> {
+        Ok(None)
+    }
+    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+    async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn the_agui_operations_answer_what_the_contract_documents() {
     let contract = Contract::load();
@@ -546,6 +577,17 @@ async fn the_agui_operations_answer_what_the_contract_documents() {
     let r = h.refused("plain", Some(ALICE), &fresh("r")).await;
     seen.problem("runAgent", 503, &r);
     assert!(r.headers.contains_key("retry-after"));
+    // A person's own agent the platform blocks for a reason waiting cannot clear (ANR-1062): a
+    // deployment whose provisioner answers `Blocked` for the `coder` agent, a 500 `agent_blocked`.
+    let blocked = Harness::start_provisioned(orch_app::Provisioning::new(
+        BlockedProvisioner,
+        [AgentKind::Coder],
+        std::time::Duration::from_secs(1),
+    ))
+    .await;
+    let r = blocked.refused("coder", Some(ALICE), &fresh("r")).await;
+    assert_eq!(r.problem(500)["code"], "agent_blocked");
+    seen.problem("runAgent", 500, &r);
 
     // connectThread 200 (a replay that ends: `mode=run` on a finished thread), 401, 404, 400, 406.
     let mut stream = h.connect_run(&thread, ALICE, None).await;

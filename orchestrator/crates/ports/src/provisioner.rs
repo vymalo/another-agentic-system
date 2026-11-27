@@ -85,7 +85,9 @@ impl AgentKind {
 pub enum AgentState {
     /// Being made or changed.
     Saving,
-    /// Cannot start (its configuration is refused).
+    /// The operator has not applied the agent: a store or a referent it needs is not ready yet
+    /// (which passes by itself), or a name is taken or a component is missing (which does not).
+    /// The reason is a platform condition, not this state.
     Blocked,
     /// Running, not fully healthy.
     Degraded,
@@ -104,6 +106,29 @@ pub struct ProvisionedAgent {
     pub name: String,
     /// Always [`AgentState::Ready`] when returned by [`AgentProvisioner::ensure_ready`].
     pub state: AgentState,
+}
+
+/// Why a blocked agent will stay blocked however long the caller waits: the reasons of the
+/// platform's conditions that nothing but an operator can clear. A closed set, so the text of an
+/// error built from it is bounded and holds no secret and no address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BlockedReason {
+    /// An object the agent needs exists and is not the platform's (condition reason `NameConflict`).
+    NameConflict,
+    /// The database operator the agent's store needs is absent (condition reason `CNPGNotInstalled`).
+    StoreOperatorMissing,
+}
+
+impl BlockedReason {
+    /// The platform's reason string for it, which is also the wording of the error.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BlockedReason::NameConflict => "NameConflict",
+            BlockedReason::StoreOperatorMissing => "CNPGNotInstalled",
+        }
+    }
 }
 
 /// Why the provisioner did not give an agent.
@@ -132,6 +157,14 @@ pub enum ProvisionError {
     /// The agent is being deleted; ask again once it is gone.
     #[error("the agent is being deleted")]
     Deleting,
+    /// The platform accepted the form, but the agent is blocked for a reason that waiting cannot
+    /// fix (a name held by an object that is not the platform's, a missing component). The
+    /// reason is the platform's condition reason, which holds no secret.
+    #[error("the agent is blocked ({})", reason.as_str())]
+    Blocked {
+        /// Which reason, from a closed set: nothing the platform sends reaches the error.
+        reason: BlockedReason,
+    },
 }
 
 impl ProvisionError {
@@ -204,6 +237,7 @@ impl Classify for ProvisionError {
             | ProvisionError::Deleting => ErrorClass::Transient,
             ProvisionError::Refused => ErrorClass::Unauthenticated,
             ProvisionError::Invalid => ErrorClass::Invalid,
+            ProvisionError::Blocked { .. } => ErrorClass::Internal,
         }
     }
 }
