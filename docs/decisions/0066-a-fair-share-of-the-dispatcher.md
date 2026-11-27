@@ -14,7 +14,7 @@ sidebarTitle: "0066 · A fair share of the dispatcher"
   [ADR 0036](0036-sending-while-an-agent-works.md) (the lanes of the per-thread order) and
   [ADR 0039](0039-nobody-reads-another-persons-thread.md) (a row's person is its thread's owner). Weighted shares by plan are left to
   issues [282](https://github.com/vymalo/another-agentic-system/issues/282) and
-  [287](https://github.com/vymalo/another-agentic-system/issues/287).
+  [287](https://github.com/vymalo/another-agentic-system/issues/287). **Amended (2026-11-27): ANR-1175, within one person the rank is by the time a row became due, then by age (the note under Decision).**
 
 ## Context
 
@@ -105,6 +105,17 @@ stateDiagram-v2
   Inflight --> Delivered: the turn ended
   Delivered --> [*]
 ```
+
+**Amended 2026-11-27 (ANR-1175): the order within a person.** The text above ranks a person's candidates by age (`ord`). Since ANR-1078
+PR 2 a routed row waiting for its person's agent to wake is put back `pending` between short probes (`wait_outbox`, the claim refunded),
+so by age alone it outranked its own person's newer, unrelated rows each time it was due again ([ADR 0103](0103-a-persons-own-agent-is-made-and-kept-ready-before-their-message-is-accepted.md),
+"Known limit"). The `rank` is now the position among the person's candidates ordered by **when each became due** (`next_attempt_at` for a
+`pending` row, `lease_until` for an expired lease), then by `ord`; the `load = running + rank`, the per-person fairness, the tie across people
+(`ord`) and the cancel rows are unchanged, and no migration is needed. For a row that never waited or failed, the due time is its creation,
+so the order is the age as before. A retry with a back-off is due later than rows enqueued before it became due, so it ranks behind them,
+which is the order it became claimable in. A waiting row is not starved: a row that was due earlier is never behind one that becomes due
+after it, and time only goes forward, so every due row is reached once the rows due before it are taken. The testkit case is
+`a_fair_claim_does_not_rank_a_row_that_only_waited_before_newer_work`.
 
 ## The measurement
 

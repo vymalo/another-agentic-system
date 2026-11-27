@@ -616,7 +616,7 @@ What the diagrams cannot say:
 - **A fair share of the slots ([ADR 0066](decisions/0066-a-fair-share-of-the-dispatcher.md)).** Which rows may be claimed is the per-thread
   order above; which of them are taken when there are more than free slots is `dispatcher.order`. `fair` (the default) gives each candidate the
   `load = running + rank` of its person, the owner of its thread: `running` is the person's rows `inflight` under a live lease, counted across
-  every replica and every kind, `rank` the row's place (1, 2, ...) among that person's candidates of this claim; the claim takes the lowest loads,
+  every replica and every kind, `rank` the row's place (1, 2, ...) among that person's candidates of this claim, ordered by when each became due and then by age (ANR-1175: a routed row that only waited does not outrank the person's newer work); the claim takes the lowest loads,
   the older row among equals. A person with nothing running gets the next free slot ahead of another person's queue, one person alone gets every
   slot, a `cancel` row goes first whatever the load, and a job that runs is never taken back. `fifo` is the oldest-first claim, kept as a switch.
   The rows come from an index of each person's open rows (`outbox.owner`, migration `0024`), so a claim reads the first rows of each person, not the queue.
