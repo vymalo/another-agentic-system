@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0068 · A person searches own threads"
+sidebarTitle: "0068 · A person searches their threads"
 ---
 
 # ADR 0068 — A person searches their own threads: whole words by their start, the rules in the contract, a derived index in the commit of the event

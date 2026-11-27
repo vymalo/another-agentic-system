@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0094 · An inspector reads a run"
+sidebarTitle: "0094 · An inspector; replay is a fork"
 ---
 
 # ADR 0094 — An inspector reads a run, and "replay from a step" is a fork of the journal into a new run

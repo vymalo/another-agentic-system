@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0086 · A person picks a model or level"
+sidebarTitle: "0086 · Pick a model or reasoning level"
 ---
 
 # ADR 0086 — A person picks a model or a reasoning level, for a thread or a message

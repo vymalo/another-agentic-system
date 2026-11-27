@@ -44,7 +44,7 @@ A page is read in layers, so it is progressive: the reader stops when they have 
   script. A block cannot sit inside a table cell: use a list or headings, a line each, then the block. Like `::: tip`,
   `::: in-depth` shows as literal text when the file is read on GitHub.
 - **Keep a sidebar label to 40 characters.** The sidebar is narrow, and a longer label wraps over two or three lines. A page
-  whose first heading is longer gives its label in its front matter: `sidebarTitle: "0103 · Own agents kept ready"`. The
+  whose first heading is longer gives its label in its front matter: `sidebarTitle: "0103 · Own agents kept ready"`; every ADR has one, since its `ADR NNNN — ` prefix alone is 11 characters. Quote the value and use no escapes: the reader is not a full YAML parser. The
   label shortens the heading and keeps its key nouns; it never rewords it. The page's `<title>` and its heading stay as
   written, which is why the key is not `title`. The site's `config.ts` reads `sidebarTitle` and fails the build, naming
   the file and its length, when a label from a file is over 40. (VitePress 1.6.4 has no such key of its own; this

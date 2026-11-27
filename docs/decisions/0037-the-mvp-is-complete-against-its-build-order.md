@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0037 · The MVP is complete"
+sidebarTitle: "0037 · MVP complete against build order"
 ---
 
 # ADR 0037 — The MVP is complete against its build order
