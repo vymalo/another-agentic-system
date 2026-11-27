@@ -1531,13 +1531,19 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       const stale = url.searchParams.get("stale");
       const minClient = url.searchParams.get("minClient");
       const maxTier = url.searchParams.get("maxTier");
-      // the subagents (ADR 0072, mock/sessions.ts): `sessions=off` takes the offer off the card, `sessions=unreadable` makes the card unreadable (a 503),
+      // the subagents (ADR 0072, mock/sessions.ts): `sessions=off` takes the offer off the card, `sessions=unreadable` makes the card unreadable (a 503), `sessions=blocked` the person's agent blocked (a start is a 500 `agent_blocked`),
       // `sessions=on` puts the default back; `sessionStarts=open|refuse|hold` is how a person's starts end; `sessionsNoted=<n>` the most a thread notes
       const offer = url.searchParams.get("sessions");
       const starts = url.searchParams.get("sessionStarts");
       const noted = url.searchParams.get("sessionsNoted");
-      if (offer !== null && offer !== "on" && offer !== "off" && offer !== "unreadable") {
-        return problem(res, 400, "Bad Request", "sessions is one of on, off, unreadable");
+      if (
+        offer !== null &&
+        offer !== "on" &&
+        offer !== "off" &&
+        offer !== "unreadable" &&
+        offer !== "blocked"
+      ) {
+        return problem(res, 400, "Bad Request", "sessions is one of on, off, unreadable, blocked");
       }
       if (starts !== null && !["open", "refuse", "hold"].includes(starts)) {
         return problem(res, 400, "Bad Request", "sessionStarts is one of open, refuse, hold");
@@ -1576,8 +1582,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         state.sessions.offer =
           offer === "off"
             ? null
-            : offer === "unreadable"
-              ? "unreadable"
+            : offer === "unreadable" || offer === "blocked"
+              ? offer
               : newSessionsConfig().offer;
       }
       if (starts !== null) state.sessions.starts = starts as SessionsConfig["starts"];
