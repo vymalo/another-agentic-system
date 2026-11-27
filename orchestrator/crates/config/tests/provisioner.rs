@@ -52,7 +52,8 @@ fn with(section: &str) -> String {
 
 #[test]
 fn a_file_without_the_section_is_off_and_prints_nothing_of_it() {
-    // the default claim (`email`): only a `provisioner` section asks for the `sub`
+    // the default auth, `proxy_header` with no token claim: only a `provisioner` section asks for
+    // the `sub`
     let valid = load(BARE, &env()).unwrap();
     assert!(valid.config.provisioner.is_none());
     assert!(valid.secrets.provisioner_client_secret.is_none());

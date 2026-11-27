@@ -75,7 +75,7 @@ struct Platform {
     /// When set, a write answers this status with a problem of this slug that **quotes the whole
     /// request body** (a platform that echoes what it was sent, the account included).
     echo: Mutex<Option<(StatusCode, &'static str)>>,
-    /// The bodies `echo` quoted back.
+    /// The replies `echo` answered with, as they were sent.
     echoed: Mutex<Vec<String>>,
 }
 
@@ -144,11 +144,12 @@ async fn write(
         return problem(StatusCode::UNAUTHORIZED, "unauthorized");
     }
     if let Some((status, slug)) = *p.echo.lock().unwrap() {
-        p.echoed.lock().unwrap().push(body.clone());
+        let reply = json!({"type": format!("urn:vymalo:agents:problem:{slug}"), "title": body, "detail": body, "status": status.as_u16()}).to_string();
+        p.echoed.lock().unwrap().push(reply.clone());
         return (
             status,
             [(header::CONTENT_TYPE, "application/problem+json")],
-            json!({"type": format!("urn:vymalo:agents:problem:{slug}"), "title": body, "detail": body, "status": status.as_u16()}).to_string(),
+            reply,
         )
             .into_response();
     }
@@ -437,10 +438,10 @@ fn all_text(e: &ProvisionError) -> String {
 async fn an_answer_that_quotes_the_account_puts_it_in_no_error() {
     let check = |platform: &Shared, what: &str, err: &ProvisionError| {
         // the control: the answer the adapter was given did hold the account
-        let quoted = platform.echoed.lock().unwrap();
+        let replies = platform.echoed.lock().unwrap();
         assert!(
-            quoted.last().is_some_and(|body| body.contains(ACCOUNT)),
-            "{what}: the stand-in quoted no account"
+            replies.last().is_some_and(|reply| reply.contains(ACCOUNT)),
+            "{what}: the stand-in's reply quoted no account"
         );
         for text in [all_text(err), all_text(&err.duplicate())] {
             assert!(!text.contains(ACCOUNT), "{what}: {text}");
@@ -471,6 +472,8 @@ async fn an_answer_that_quotes_the_account_puts_it_in_no_error() {
             .await
             .unwrap();
         *platform.echo.lock().unwrap() = Some((status, slug));
+        // forget the create's reply: the control below must see one made by the replace
+        platform.echoed.lock().unwrap().clear();
         let err = p
             .suspend(&owner("quiet"), AgentKind::Coder, &account())
             .await
