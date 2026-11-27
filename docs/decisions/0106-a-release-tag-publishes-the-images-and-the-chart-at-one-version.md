@@ -6,7 +6,8 @@ sidebarTitle: "0106 · Release images and chart by tag"
 
 - **Status:** **Accepted (2026-11-27)** by the owner: *"Cheat how I'm doing [here](https://github.com/vaam-apps/vpay/pull/417) to have
   automatic commits collections for building versions ... a similar flow for all of them. In prod we'll deploy only fixed versions
-  like that."* The platform's twin is its AD-070 (vymalo/another-agentic-platform#129).
+  like that."* The platform's twin is its AD-070 (vymalo/another-agentic-platform#129). *Amended (2026-11-27)* below: a push to
+  `main` is never cancelled, and the bump jobs have a group each.
 
 ## Context
 
@@ -82,3 +83,28 @@ Two facts shape how a tag can publish images:
   with the four pins, and the refusals of a bad tag and of a dispatch from another branch).
 - Not decided here: `web/package.json`'s version (0.1.0, the `X-Client-Version` the web and the apps state, ADR 0076) does not
   follow the release; moving it would also make every release commit rebuild the web.
+
+## Amended 2026-11-27 (ANR-1197)
+
+`orchestrator.yml` and `web.yml` had `cancel-in-progress: true` on every ref, so the next merge to `main` cancelled a build that was
+still running, and the commit a release copies could lose its `sha-<7>` image. The same failure hit the sibling coder repository's
+release gate (its pull request #493). The fix differs from theirs in one point: there the release commit's own run is the one a
+release needs; here the release commit touches no path of either workflow and has no run, and the image a release copies is the
+one of the newest commit that changed those paths (`tools/release-source.sh`), which cannot be known when it is pushed.
+
+- A pull request keeps its group (its ref) and still cancels. Every push to `main` gets a group of its own, its sha, and is never
+  cancelled. A shared group with `cancel-in-progress: false` would not do: a group keeps one running and one pending run, and a
+  newer pending run cancels the older pending one. The cost is that a burst of merges builds in parallel instead of skipping to
+  the newest.
+- The gate in `release.yml` already reads the registry, not the run's conclusion, so a run whose image job passed is accepted
+  whatever a later job did; a comment now says so. It was not changed otherwise.
+- The two bump jobs had one shared group (`deploy-bump`), which holds one pending run: with parallel builds, a pending web bump
+  could be replaced by an orchestrator bump and leave `web.image.tag` stale. Each has its own group now
+  (`deploy-bump-orchestrator`, `deploy-bump-web`); the fetch, reset and retry loop already handles a push that races. The bump's
+  "has a newer commit built this?" test reads the workflow's own `on.push.paths` through `tools/release-source.sh` instead of a
+  copied list that had dropped two paths.
+- *Verified 2026-11-27* ([GitHub's concurrency documentation](https://docs.github.com/en/actions/using-jobs/using-concurrency)):
+  a concurrency group holds at most one running and one pending run, and a newer pending run replaces the older pending one even
+  with `cancel-in-progress: false`.
+- *Unverified until a burst of merges runs it:* that no run of `main` is cancelled.
+
