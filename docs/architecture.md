@@ -1,5 +1,7 @@
 # Architecture
 
+A stateless Rust orchestrator over one Postgres event log drives any A2A agent and shows people the log over AG-UI. Read the goal and the principles, then the picture of what is built today; the detail is under the blocks, and the target design of a job comes after.
+
 > Status: **MVP steps 1–2 built** (one thread, one A2A agent, durable delegation, spoken to people
 > over AG-UI and A2UI); the rest is design. [As built](#as-built) is what the code does today, with diagrams; the sections after
 > it, [How a job flows](#how-a-job-flows) and [Job lifecycle](#job-lifecycle), are the target
@@ -40,6 +42,10 @@ state is the job ledger and event log (the chat) in Postgres.
 
 ## Components
 
+The orchestrator, Postgres, the web chat surface and the desktop app run here; agents, tools and the model endpoint are external.
+
+::: in-depth Each component: its role and notes
+
 | Component | Role | Notes |
 |---|---|---|
 | **Orchestrator** (Rust, this repo) | Durable thread state machine; decides what happens next | Stateless replicas over Postgres, run as a **control plane** (API, surfaces) and **workers** (dispatcher, inbox worker, in-process agents), or both in one process. ([ADR 0001](decisions/0001-rust-state-machine-on-postgres.md), [ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md)) |
@@ -50,9 +56,15 @@ state is the job ledger and event log (the chat) in Postgres.
 | **Tools** (external) | GitHub, docs, search, … | MCP servers. Planned. |
 | **Model endpoint** (external) | The orchestrator's own model calls | Any OpenAI-compatible endpoint — EAIG / Agent Router, AISIX, … ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md)). Planned: nothing calls a model yet. |
 
+:::
+
 ### Agent hosts
 
 This system does not care where an agent runs. Known hosts:
+
+adam-coder, another-agentic-platform and kagent are the hosts known today, and any other A2A server works too.
+
+::: in-depth Known hosts and what each adds
 
 | Host | What it adds |
 |---|---|
@@ -60,6 +72,8 @@ This system does not care where an agent runs. Known hosts:
 | **another-agentic-platform** (first-class) | Versioned agent services, release channels, scale-to-zero runtimes, per-run worktrees, credential broker. Its coding harness is ADK-Rust driving `opencode acp`. When a target comes from the platform, this system offers **release selection** through the platform's A2A extension. ([ADR 0008](decisions/0008-platform-integration-via-a2a-extension.md)) |
 | **kagent** | Declarative agents on Kubernetes, reached over A2A 1.0: kagent 0.10 at `/api/a2a/{namespace}/{name}` when the client sends `A2A-Version: 1.0` (an agent is a plain Deployment), and kagent 1.x at `/agents/{namespace}/{name}` (alpha, on Agent Substrate). [`dev/kagent-e2e.sh`](../dev/README.md#kagent-an-agent-on-kubernetes-over-plain-a2a) is the scenario (`KAGENT_VERSION=0.10` or `1.x`, written 2026-10-07 against `v0.10.3` and `v1.0.0-alpha8`, **not yet run**): plain A2A, no extension of ours, so no steps, streamed text, UI surfaces, release channels or thread tools; kagent's default authentication reads no credential; a paused task reaches the person as its question only (kagent's HITL extension is not activated); and **a first message names no contextId** ([ADR 0055](decisions/0055-the-agent-assigns-the-a2a-context.md)): kagent assigns the contextId and refuses one it did not (from its source), so the thread's binding adopts the one it answers with, and every later message is sent in it. |
 | **Anything else** | Any A2A server. |
+
+:::
 
 Considered and **not** chosen for this layer: **eve** (TypeScript durable
 agents — an agent host, not an orchestration layer), **Restate** (BSL server,
@@ -129,6 +143,10 @@ flowchart LR
   style surfaces stroke-dasharray: 5 5
 ```
 
+The notes below say how the core runs embedded, how the web reaches the orchestrator, how a person is authenticated, what a process runs for its role and how agents are found.
+
+::: in-depth The same core runs embedded
+
 - **The same core runs embedded.** The orchestrator is also a library: `orch-embed`
   (`orchestrator/crates/embed`) wires the same `orch-app` `App` and `Dispatcher` to one SQLite file and
   the caller's own agents, with no HTTP server and no Postgres, so an application runs a thread in its
@@ -136,6 +154,11 @@ flowchart LR
   4). The two compounds are roots, not layers: `bin/orchestrator` is the server's and does not depend on
   the crate, and the crate reimplements nothing the application already owns. A thread has one home —
   one process opens the file, and a second is refused by the store's lock.
+
+:::
+
+::: in-depth The web never talks to the orchestrator server to server
+
 - **The web never talks to the orchestrator server to server.** It is a static export served by Caddy (ADR 0047), whose
   runtime settings are `/config.json`; the browser calls `/api/*` and `/agui/*` on its own origin, and the edge routes those paths
   to the orchestrator and everything else to the web. The desktop app is the same export in a Tauri window: it calls the API's
@@ -143,6 +166,11 @@ flowchart LR
   of `server.cors.allowedOrigins` only, never with credentials (a preflight before identity; `apps/tauri/README.md`). There are no Next.js API routes, no server-side fetches and no secrets in the web
   (`web/README.md`). Its settings, when it has any, are the public `ui` section of the orchestrator's configuration
   file, read from `GET /api/config` (planned, [ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md)). *Accepted (2026-10-05, [ADR 0045](decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)), not built:* an `/admin` area whose one route handler forwards the edge's bearer to the platform's API, the web's only server-side call, and its one setting, `PLATFORM_API_URL`. SSE goes browser → edge → orchestrator, unbuffered.
+
+:::
+
+::: in-depth The orchestrator authenticates; the edge logs people in
+
 - **The orchestrator authenticates; the edge logs people in.** Identity is what the `Authenticator` port makes of a
   request's credentials, and it fails closed ([ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md),
   amending ADR 0012). With `auth.mode: jwt` the orchestrator is an OAuth2 resource server: oauth2-proxy stays in front
@@ -157,11 +185,21 @@ flowchart LR
   ([`config.md`](api/config.md#roles-and-permissions), ADR 0033). Locally (S16), `edge` is Caddy in front of a real oauth2-proxy and a mock issuer that approves
   anybody (`dev@example.com`, or the user the sign-in is told to be), the orchestrator runs `auth.mode: jwt`, and the scripts send a token of the
   mock ([`dev/README.md`](../dev/README.md#sign-in-a-mock-issuer-and-oauth2-proxy)). **Decided, not built:** a thread's owner may share it, `private`, `internal` or `public`, capped by `sharing.mode` and read through a link of its own, with one edge route that skips sign-in for the public link only ([ADR 0040](decisions/0040-thread-sharing-by-revocable-link.md)).
+
+:::
+
+::: in-depth A process runs the halves its role asks for
+
 - **A process runs the halves its role asks for** (`ORCH_ROLE`, ADR 0015): the HTTP server
   (`orch-api` plus the mounted surfaces) as the **control plane**, the dispatcher as a **worker**, or
   both (`all`, the default). A worker serves only `/healthz` and `/readyz`. The two halves meet only in
   Postgres, so control planes and workers scale apart. A process that dies loses nothing: its
   outbox leases lapse and another replica resumes the agent's task. Any replica can serve any thread's stream, because streams read the log.
+
+:::
+
+::: in-depth Agents are A2A agent-card URLs, and the registry
+
 - **Agents are A2A agent-card URLs**, from a static `AGENTS_FILE` read once at boot and, when
   `AGENT_REGISTRY_URL` is set, from the platform's agent registry
   ([ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md), the contract
@@ -175,6 +213,8 @@ flowchart LR
   The cards themselves are read live and never cached, and a release selection is offered only when
   the live card advertises the release-channels extension (ADR 0008): the registry lists no
   releases. Gate layers and the verifier are for the file's agents.
+
+:::
 
 ### A chat turn
 
@@ -241,6 +281,8 @@ sequenceDiagram
 
 Prose for what the diagram compresses:
 
+::: in-depth Point by point: the transaction, crashes, interrupts, streams and cancel
+
 - **One transaction is the whole decision** (the `ONE txn` message). `App::apply` reads the thread, runs the pure
   `transition`, and asks the store to commit the new state, the events and the outbox rows at the
   version it read. A lost race is a `VersionConflict`; `apply` re-reads and retries up to 8 times,
@@ -286,6 +328,8 @@ Prose for what the diagram compresses:
   `GET /api/threads/{id}/events` and `…/stream`, our own `Event` JSON over SSE) drove `App` the same
   way from the orchestrator inward; it was removed on 2026-09-30. Those routes answer 404, but
   `POST /api/threads` answers 405, because its path is shared with the resource API's `GET /api/threads`.
+
+:::
 
 The run as a state machine, as the projection shows it (a run is open exactly while the thread is
 `queued` or `working`; the thread's own states are in the next section):
@@ -421,6 +465,8 @@ stateDiagram-v2
   Cancelled --> [*]
 ```
 
+::: in-depth What the coder sends back, and that what it says is a folder
+
 The `branch` and `pull_request` artifacts arrive as JSON data parts, so the chat shows their JSON
 (`data.text` of the artifact event) and not a link until the coder also sends a URL part. The dev
 stack runs the published image against scripted mocks, and [`dev/coder-e2e.sh`](../dev/coder-e2e.sh)
@@ -439,7 +485,13 @@ a question (the thread waits, `blocked`), instead of a request for a task
 ([adam-rs#55](https://github.com/vymalo/another-adam-rs/issues/55), `dev/greeting-e2e.sh`). How a live model follows
 the instructions is *unverified*; the mocks prove that the folder reaches the model.
 
+:::
+
 ### Agents that are only a folder
+
+The dev stack runs a chat, a researcher and a browser agent beside the coder, and none of them has a build of its own: each is a folder served by `adam-agent`.
+
+::: in-depth The chat and the researcher: two folders on adam-agent
 
 The dev stack runs two more agents beside the coder, and neither has a build of its own: a **chat** and a **researcher**. Each is a folder
 ([`dev/agents/chat/agent/`](../dev/agents/chat/agent/instructions.md), [`dev/agents/researcher/agent/`](../dev/agents/researcher/agent/instructions.md)) served by
@@ -452,6 +504,10 @@ where the coder's (a question) leaves it `blocked`. How each is scripted, the di
 [`dev/README.md`](../dev/README.md#several-agents). Their real behaviour with a live model is *unverified*; the mocks prove that the folder reaches the model and
 that the tool call reaches the server.
 
+:::
+
+::: in-depth The browser agent and its sidecar
+
 A fourth folder agent, the **browser** ([ADR 0057](decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md)), has a
 sidecar: obscura, a headless browser whose MCP server listens on the pod's loopback (in compose, the agent runs in the sidecar's network
 namespace) behind a bearer, so each replica has a browser of its own, one replica with one worker. Others ask it: a person mentions
@@ -459,6 +515,8 @@ namespace) behind a bearer, so each replica has a browser of its own, one replic
 In the chart it is `browser.enabled` ([`deploy/chart`](../deploy/chart/README.md#the-browser-agent-adr-0057)), with a NetworkPolicy that lets
 it reach the public web only. Its screenshots are files of its run (obscura's `files: true`, adam-rs ADR 0033): the thread keeps them when
 the person talks to the browser or the chat's sub-agent passes them on; an `ask_agent` names them only (ADR 0057, amended 2026-10-09).
+
+:::
 
 ### AG-UI: how it is served
 
@@ -521,6 +579,10 @@ The run's own lifecycle is the state diagram under [A chat turn](#a-chat-turn); 
 produced from the log, and why no replica remembers a connection, is
 [Orchestrator: live updates](orchestrator.md#live-updates).
 
+Every part of the AG-UI side is built, from the wire types to the web, and the legacy chat API is removed.
+
+::: in-depth What is built, part by part
+
 | Part | What is built |
 |---|---|
 | Wire types | `orch-agui-proto`: all 31 AG-UI 1.0 events and `RunAgentInput` as closed enums, checked against the vendored official schema |
@@ -535,6 +597,8 @@ produced from the log, and why no replica remembers a connection, is
 | MCP server | `orch-surface-mcp` ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)): `list_agents`, `start_job`, `get_job`, `answer` and `cancel_job` at `/mcp` over streamable HTTP, stateless (any replica serves any call), a machine route behind static bearer tokens that map to users; straight to `App`, not through the inbox; `mcp` as an `ORCH_SURFACES` value and a `surface-mcp` feature (default). `wait_for_job` follows a job through the event log with `notifications/progress` (one per event, a heartbeat every 60 s), returns when the job is finished or blocked or on a timeout with `resume_after_seq`, and continues on any replica with `after_seq` |
 | Thread tools | `orch-surface-thread-tools` and `orch-thread-token` ([`api/thread-tools-v1.md`](api/thread-tools-v1.md), [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)): a second MCP endpoint, per thread, for the agents the orchestrator sends work to, at `/thread-tools/{threadId}/mcp` over streamable HTTP, stateless, a machine route behind a short-lived HS256 token scoped to one thread and one caller (minted by the A2A adapter at send time and put in the message metadata of an agent whose live card lists `thread-tools/v1`, verified by any replica, never in the log or the outbox); the built-in `get_ui_catalog` (the refetch seam) and a `ThreadToolProvider` seam for the tools of later slices, of which the **relay** is the first ([below](#the-relay-of-an-attached-mcp-servers-tools)); `thread-tools` as an `ORCH_SURFACES` value and a `surface-thread-tools` feature (default) |
 | The legacy chat API | Removed (2026-09-30, [ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md#the-legacy-interaction-endpoints-are-deprecated-by-the-flag), step 3): the crate `orch-surface-chat-api`, its feature `surface-chat-api`, the four interaction operations of `chat-api.yaml` and their goldens. The resource API stayed |
+
+:::
 
 `ORCH_SURFACES` accepts `agui` and defaults to it. The removed `chat-api` fails closed: naming it is a
 startup error (exit 78) that says it was removed and points to AG-UI. The resource API and health are
@@ -551,11 +615,15 @@ tools of its own per-thread endpoint, finds `websearch__search` among them, and 
 calls the server through the `ToolServerClient` port (`orch-tools-mcp` in the binary), and reports each call as one **step**
 with the server's icon, so the person sees it and the agent does not report it twice (`_meta.reportsStep`).
 
+::: in-depth Signed requests and the 2026-07-28 MCP protocol (ADR 0080)
+
 *2026-11-02 ([ADR 0080](decisions/0080-requests-to-a-tool-server-are-signed-for-the-person.md)).* A server of the deployment's list can speak
 MCP `2026-07-28` (`toolServers[].protocol`: the session opens with `server/discover`) and can take **signed requests** instead of a bearer
 (`toolServers[].signing`): every HTTP request the relay makes to it carries one header that binds the request, the thread and **the thread's owner**
 (the person the tool runs for, not the agent), so the tool server can authorise the person; the contract is
 [`api/signed-tool-requests-v1.md`](api/signed-tool-requests-v1.md). A server that is not configured for it is called exactly as above.
+
+:::
 
 ```mermaid
 sequenceDiagram
@@ -596,12 +664,18 @@ stateDiagram-v2
   Canceled --> [*]
 ```
 
+::: in-depth What the relay refuses, caches and logs
+
 A name that is not on the endpoint (an unknown or detached server, a tool the allow-list or the agent filter leaves out) is
 `-32602` and has no step; a call after the thread's task is over is a result with `isError` and has no step. Nothing is
 cached (each `tools/list` lists again) and the relay keeps nothing between calls, so any replica serves any call; what it
 writes is steps, in the thread's event log. The relay is an outbound surface: the servers come from the deployment (and,
 below, from the thread's owner), a result is cut at 256 KiB and is untrusted text for the agent's model, and no credential
 reaches a log line, an event or a table (the end-to-end tests search for them).
+
+:::
+
+::: in-depth A person's own servers (ADR 0046)
 
 **A person's own servers** (*built 2026-10-15, [ADR 0046](decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md),
 slice 5a; the contract is [`api/thread-tools-v1.md`](api/thread-tools-v1.md#a-persons-own-servers)*). With
@@ -612,6 +686,8 @@ every `tools/list` and every `tools/call`, moved into the request and never kept
 resolves to a private address is never connected to; what the server says is believed less (no `annotations`, a 2 KiB
 description); and a server whose credential cannot be had is **left out and fails a call as a step**, never skipped silently.
 A 401 or 403 from the server sets the definition to `needs_reauth`, and the picker tells the person to authorize or key it again.
+
+:::
 
 ### Child sessions: a helper an agent runs is a thread
 
@@ -657,10 +733,14 @@ stateDiagram-v2
   Cancelled --> Working: the next round, the next job
 ```
 
+::: in-depth A second round, the helper's tokens and deletion
+
 A kept-open session that is sent another message by its parent's model has a round 2: the parent's task says so, and the **same**
 child thread starts job 2. The helper's tokens are in the parent's totals, so the child logs its own with `counted: false` and the
 usage ledger counts the parent's alone. A child is neither forked nor shared, and deleting its parent deletes it (a child that works
 refuses the delete). How each part works is in [Orchestrator: child sessions](orchestrator.md#child-sessions-the-applications-half-slice-s2d).
+
+:::
 
 ## How a job flows
 
@@ -792,11 +872,17 @@ stateDiagram-v2
   Cancelled --> Queued: a user message: the next job, attempt 1
 ```
 
+::: in-depth The gate verifies only pushed work
+
 The gate verifies **only pushed work** ([ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-04-only-pushed-work-is-verified),
 2026-10-04, completed 2026-10-07 by [a status note](decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-07-pushed-work-is-verified-in-every-attempt-and-a-failure-on-the-base-is-a-note)): an agent that finishes an attempt with no `branch` artifact gave an answer (a question, a demo, a
 "hi", an investigation), and the thread is `Done` with no rework and no `check_result`, whatever else it reported, in any job of the
 thread. A `branch` artifact the gate cannot use, and a rework of a commit that was pushed, still fail. A failing check that fails
 on the base commit too (the agent marks it `preexisting`) does not fail the work.
+
+:::
+
+::: in-depth Sources, attempts and what the chat shows
 
 Three sources can be required, in any combination: CI on the pushed commit (a signed webhook,
 [ADR 0017](decisions/0017-ci-results-by-webhook.md)), the agent's own reported checks, and a verifier
@@ -807,6 +893,8 @@ per thread ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md)). The chat
 shows the pill **Checking the work…** while the gate runs; its checks (with the findings of a failed one), the CI reports and each rework
 ("Checks failed — trying again (2/3)") are steps in the **Activity** tab of the side panel, and the header has no attempt counter
 ([`api/agui.md`](api/agui.md) carries the `vymalo.check`, `vymalo.rework` and `vymalo.ci` activities).
+
+:::
 
 ## Where it runs
 

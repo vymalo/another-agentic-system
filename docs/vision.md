@@ -1,5 +1,9 @@
 # Vision: the system
 
+What the system is meant to be, in the owner's words, and how far the code is from it. The summary below lists each requirement as built on the pinned real agent image, built on mocks, partly built, planned or not built; the proof, the history and the detail are under the blocks. Everything built was proven on mocks, and the owner has not tried this state.
+
+::: in-depth Status notes: when this page was written and checked
+
 > Status: **written 2026-10-01 from the owner's review of the build; brought up to date on 2026-10-03.** This page says what
 > the system is meant to be, in the owner's words where possible, and how far the code is from it. The build order toward it is
 > the [MVP](mvp.md); the decisions it needed are
@@ -18,6 +22,8 @@
 > agent (there is none); the web is tested in Chromium against its own mock server, never against the compose stack; and the owner has not yet tried this state. See [Not proven](#not-proven) and
 > [ADR 0037](decisions/0037-the-mvp-is-complete-against-its-build-order.md). Statements about this repository's code were
 > checked on 2026-10-03 against main at `1a62efd` ([#135](https://github.com/vymalo/another-agentic-system/pull/135)) plus the pin [#136](https://github.com/vymalo/another-agentic-system/pull/136) and the skills pull request [#137](https://github.com/vymalo/another-agentic-system/pull/137).
+
+:::
 
 ## Why this page exists
 
@@ -76,38 +82,54 @@ reason. The proofs are the scripts of [`dev/`](../dev/README.md#run-the-scenario
 browser), the Rust tests under [`orchestrator/crates/e2e/tests/`](../orchestrator/crates/e2e/tests/), and the web's Playwright
 specs under [`web/e2e/`](../web/e2e/) (run against the web's own mock server).
 
+In short (the icons are the [legend of the reference](api/README.md#status-icons)):
+
+- ✅ built · run against the pinned real agent image: requirements 5, 7 and 9.
+- 🧪 experimental · built on mocks: requirements 1, 2a, 2b, 3, 4, 6 and 8.
+- ⚠️ partial · requirement 4b, a real researcher, browser and coder in the football run.
+- 🚧 planned · requirement 6b, a repository's devcontainer as its work environment, which waits on adam's own slice.
+- ❌ not supported · requirements 2c and 3b, not built.
+
+::: in-depth The requirements, one row each: state, proof and ADR
+
 | # | What the owner asked for | State | Proof | ADR |
 |---|---|---|---|---|
-| 1 | The platform is the agent registry: agents discovered live, no restart, releases from each card | **Built**, against a mock of the contract; the registry half also against the platform's real registry in the platform's CI (the platform's operator now serves the registry, and its kind end-to-end `chain-e2e` (vymalo/another-agentic-platform#34, *verified 2026-10-17* in run 38994193619) has this system's orchestrator, pinned at `sha-8df44c6`, list an agent the platform made, by audience); releases from a card only on mocks (the platform's v0 has no release-channels extension) | `dev/registry-e2e.sh`, `crates/e2e/tests/registry.rs`, `web/e2e/registry.spec.ts` | [0022](decisions/0022-platform-provisions-agents-system-discovers-them.md) |
-| 2a | The UI defines its components; they are sent once at the start, again when a newer UI joins, and an agent can refetch them | **Built** | `dev/choices-e2e.sh` (a newer catalog recorded on the same thread), `crates/e2e/tests/ui_catalog.rs`, `thread_tools.rs`, `web/e2e/catalog.spec.ts` | [0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md) |
-| 2b | Rich answers: Choices (the smarter `ask_user`: a title, a description, typed questions, pictures, a free box, and from version 7 a yes or no, a number, a scale, a day and a list to put in order, and from version 8 a question that shows a picture, a diagram, cards, a chart or code with it), Cards, Mermaid, Image, combined in one answer; and an agent's **plan** as one checklist that updates in place, with a dropped state and notes, pinned in the panel | **Built** (catalog version 8; Choices from version 5; the five kinds of question, `show` and the plan are proven on the web's mock only, no adam-rs agent asks with them or sends a plan yet) | `dev/choices-e2e.sh`, `dev/cards-e2e.sh`, `dev/artifact-e2e.sh`; `web/e2e/choices.spec.ts`, `choices-deck.spec.ts`, `choices-v7.spec.ts`, `choices-v8.spec.ts`, `plan.spec.ts`, `cards.spec.ts`, `files.spec.ts` | 0023, [0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md) |
-| 2c | List, Stepper, Agent suggestion, Skill request, Web view, Notification opt-in; rich input other than a choice | **Not built** | none | 0023; questions [37](open-questions.md), [38](open-questions.md) |
-| 3 | MCP tools attached to a conversation from the UI, used by the agent, one icon per tool on its step | **Built** for the servers a deployment lists | `dev/tools-e2e.sh`, `crates/e2e/tests/tool_relay.rs`, `tools.rs`, `web/e2e/tools.spec.ts` | [0024](decisions/0024-mcp-tools-attached-per-conversation.md) |
-| 3b | A person enters the URL of an MCP server of their own; the icon an upstream server offers | **Not built** | none | 0024; question 38 |
-| 4 | Several agents in one message by mention; the composer autocompletes; the football example | **Built**, with mock agents asked | `dev/mentions-e2e.sh`, `crates/e2e/tests/mentions.rs`, `ask_agent.rs`, `asks.rs`, `web/e2e/mentions.spec.ts`, `asks.spec.ts` | [0026](decisions/0026-agent-mentions-as-structured-references.md) |
-| 4b | A real researcher, browser and coder in the football run; a planner agent | **Partly built** (2026-10-09): a browser agent exists ([ADR 0057](decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md), adam-agent with obscura, asked by the chat on a mention of `@browser`, or, with `browser.chatSubagent` (off by default), by the chat itself as its remote sub-agent); its screenshots are files (adam-rs `0bfea49`, ADR 0057 amended 2026-10-09) that reach the person who talks to the browser or asks the chat that calls it, but not the person who mentions `@browser` (an asked agent's file is named, not kept); the football run still asks the three mocks by decision | `dev/browser-e2e.sh`, `dev/chat-browser-e2e.sh` (written, not yet run) | 0026, 0057 |
-| 5 | Nested steps, collapsed, a little more per click, spinners, bounded log | **Built** | `dev/coder-e2e.sh` (the tree an OpenCode delegation leaves), `crates/e2e/tests/steps.rs`, `web/e2e/steps.spec.ts`, `step-io.spec.ts` | [0025](decisions/0025-nested-steps-events-carry-their-source-path.md), [0030](decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md) |
-| 6 | Workspaces: several repositories, asking before a new one, ephemeral with none, GitHub through MCP, credentials per installation | **Built** in adam-coder; a job that pushes to two repositories is gated on the last only; the coder's checks are not published as GitHub check runs | `dev/workspace-e2e.sh`, `dev/coder-e2e.sh` (token and App) | [0014](decisions/0014-adam-coder-default-agent-over-a2a.md) status note; question 42 |
-| 6b | A repository's devcontainer is its work environment | **The contract stands** ([ADR 0028](decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md), amended 2026-11-19): the old *how* is removed, on Kubernetes the environment is a run pod of the repository's published image (adam ADR 0052, adam's own slice, not built yet and not this repository), and in this stack and on a desktop the tool does not appear | none here (its scenario was removed 2026-11-19); adam's slice, not built yet | [0028](decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md); question 41 |
-| 7 | Agents configured at run time, not compiled | **Built** | `dev/agent-folder-e2e.sh`, `dev/greeting-e2e.sh` | 0014 status notes |
-| 8 | Examples for several uses: a coder, a chat, a researcher, a browser | **Built** with a **mock browser**; the live researcher's real search is *unverified* | `dev/agents-e2e.sh`, `dev/mentions-e2e.sh` | 0014 |
-| 9 | Streaming answers, thread titles | **Built** | `dev/coder-e2e.sh` (live frames), `dev/title-e2e.sh`, `web/e2e/stream.spec.ts` | [0027](decisions/0027-live-text-relayed-not-stored.md), [0005](decisions/0005-openai-compatible-model-endpoint.md) |
+| 1 | The platform is the agent registry: agents discovered live, no restart, releases from each card | 🧪 experimental · **Built**, against a mock of the contract; the registry half also against the platform's real registry in the platform's CI (the platform's operator now serves the registry, and its kind end-to-end `chain-e2e` (vymalo/another-agentic-platform#34, *verified 2026-10-17* in run 38994193619) has this system's orchestrator, pinned at `sha-8df44c6`, list an agent the platform made, by audience); releases from a card only on mocks (the platform's v0 has no release-channels extension) | `dev/registry-e2e.sh`, `crates/e2e/tests/registry.rs`, `web/e2e/registry.spec.ts` | [0022](decisions/0022-platform-provisions-agents-system-discovers-them.md) |
+| 2a | The UI defines its components; they are sent once at the start, again when a newer UI joins, and an agent can refetch them | 🧪 experimental · **Built** | `dev/choices-e2e.sh` (a newer catalog recorded on the same thread), `crates/e2e/tests/ui_catalog.rs`, `thread_tools.rs`, `web/e2e/catalog.spec.ts` | [0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md) |
+| 2b | Rich answers: Choices (the smarter `ask_user`: a title, a description, typed questions, pictures, a free box, and from version 7 a yes or no, a number, a scale, a day and a list to put in order, and from version 8 a question that shows a picture, a diagram, cards, a chart or code with it), Cards, Mermaid, Image, combined in one answer; and an agent's **plan** as one checklist that updates in place, with a dropped state and notes, pinned in the panel | 🧪 experimental · **Built** (catalog version 8; Choices from version 5; the five kinds of question, `show` and the plan are proven on the web's mock only, no adam-rs agent asks with them or sends a plan yet) | `dev/choices-e2e.sh`, `dev/cards-e2e.sh`, `dev/artifact-e2e.sh`; `web/e2e/choices.spec.ts`, `choices-deck.spec.ts`, `choices-v7.spec.ts`, `choices-v8.spec.ts`, `plan.spec.ts`, `cards.spec.ts`, `files.spec.ts` | 0023, [0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md) |
+| 2c | List, Stepper, Agent suggestion, Skill request, Web view, Notification opt-in; rich input other than a choice | ❌ not supported · **Not built** | none | 0023; questions [37](open-questions.md), [38](open-questions.md) |
+| 3 | MCP tools attached to a conversation from the UI, used by the agent, one icon per tool on its step | 🧪 experimental · **Built** for the servers a deployment lists | `dev/tools-e2e.sh`, `crates/e2e/tests/tool_relay.rs`, `tools.rs`, `web/e2e/tools.spec.ts` | [0024](decisions/0024-mcp-tools-attached-per-conversation.md) |
+| 3b | A person enters the URL of an MCP server of their own; the icon an upstream server offers | ❌ not supported · **Not built** | none | 0024; question 38 |
+| 4 | Several agents in one message by mention; the composer autocompletes; the football example | 🧪 experimental · **Built**, with mock agents asked | `dev/mentions-e2e.sh`, `crates/e2e/tests/mentions.rs`, `ask_agent.rs`, `asks.rs`, `web/e2e/mentions.spec.ts`, `asks.spec.ts` | [0026](decisions/0026-agent-mentions-as-structured-references.md) |
+| 4b | A real researcher, browser and coder in the football run; a planner agent | ⚠️ partial · **Partly built** (2026-10-09): a browser agent exists ([ADR 0057](decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md), adam-agent with obscura, asked by the chat on a mention of `@browser`, or, with `browser.chatSubagent` (off by default), by the chat itself as its remote sub-agent); its screenshots are files (adam-rs `0bfea49`, ADR 0057 amended 2026-10-09) that reach the person who talks to the browser or asks the chat that calls it, but not the person who mentions `@browser` (an asked agent's file is named, not kept); the football run still asks the three mocks by decision | `dev/browser-e2e.sh`, `dev/chat-browser-e2e.sh` (written, not yet run) | 0026, 0057 |
+| 5 | Nested steps, collapsed, a little more per click, spinners, bounded log | ✅ built · **Built** | `dev/coder-e2e.sh` (the tree an OpenCode delegation leaves), `crates/e2e/tests/steps.rs`, `web/e2e/steps.spec.ts`, `step-io.spec.ts` | [0025](decisions/0025-nested-steps-events-carry-their-source-path.md), [0030](decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md) |
+| 6 | Workspaces: several repositories, asking before a new one, ephemeral with none, GitHub through MCP, credentials per installation | 🧪 experimental · **Built** in adam-coder; a job that pushes to two repositories is gated on the last only; the coder's checks are not published as GitHub check runs | `dev/workspace-e2e.sh`, `dev/coder-e2e.sh` (token and App) | [0014](decisions/0014-adam-coder-default-agent-over-a2a.md) status note; question 42 |
+| 6b | A repository's devcontainer is its work environment | 🚧 planned · **The contract stands** ([ADR 0028](decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md), amended 2026-11-19): the old *how* is removed, on Kubernetes the environment is a run pod of the repository's published image (adam ADR 0052, adam's own slice, not built yet and not this repository), and in this stack and on a desktop the tool does not appear | none here (its scenario was removed 2026-11-19); adam's slice, not built yet | [0028](decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md); question 41 |
+| 7 | Agents configured at run time, not compiled | ✅ built · **Built** | `dev/agent-folder-e2e.sh`, `dev/greeting-e2e.sh` | 0014 status notes |
+| 8 | Examples for several uses: a coder, a chat, a researcher, a browser | 🧪 experimental · **Built** with a **mock browser**; the live researcher's real search is *unverified* | `dev/agents-e2e.sh`, `dev/mentions-e2e.sh` | 0014 |
+| 9 | Streaming answers, thread titles | ✅ built · **Built** | `dev/coder-e2e.sh` (live frames), `dev/title-e2e.sh`, `web/e2e/stream.spec.ts` | [0027](decisions/0027-live-text-relayed-not-stored.md), [0005](decisions/0005-openai-compatible-model-endpoint.md) |
+
+:::
 
 Added by the owner after the first review (2026-10-02) and built; each has its own section below the capabilities:
 
+::: in-depth The additions after the first review: state, proof and ADR
+
 | What | State | Proof | ADR |
 |---|---|---|---|
-| Write while the agent works: Send steers the running task, Stop & send cancels it and starts the next | **Built**; the adam-rs fix that makes a task read `working` from its claim is merged there but **not in the compose pin yet** | `dev/steer-e2e.sh`, `crates/e2e/tests/steer.rs`, `web/e2e/steer.spec.ts` | [0036](decisions/0036-sending-while-an-agent-works.md) |
-| Fork a chat from any turn, edit a message into a branch | **Built** | `dev/fork-e2e.sh`, `web/e2e/fork.spec.ts`, `branches.spec.ts` | [0029](decisions/0029-forking-a-thread-copies-its-log.md) |
-| The person's own list of threads: Pinned, Chats and an Archived section in an order they keep, a fork nested under its parent, a three-dot menu on each row; deleting a thread erases it, and a thread that works is stopped first (asked 2026-10-03) | **Built** in the orchestrator and, since 2026-10-13, in the web, **except** dragging a row (not built) and, in the web only, the fork that is a draft until its first message (the orchestrator has it); both ADRs are *proposed*, the owner has not seen them; proven on mocks | `dev/rail-e2e.sh`, `dev/delete-e2e.sh` (the compose scenarios had not run when written), `web/e2e/rail.spec.ts`, `web/e2e/delete.spec.ts` | [0042](decisions/0042-the-thread-list-is-the-owners.md), [0043](decisions/0043-deleting-a-thread-erases-it.md) |
-| Files from agents reach the person (SVG, PNG, JSON), stored outside the log | **Built** | `dev/artifact-e2e.sh`, `crates/e2e/tests/files.rs`, `web/e2e/files.spec.ts` | 0032 |
-| Roles, an OAuth2 resource server behind oauth2-proxy | **Built** against a mock issuer | `dev/rbac-e2e.sh`, `web/e2e/roles.spec.ts` | [0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md) |
-| One YAML configuration, a model for the title and for a description of its own | **Built** | `dev/title-e2e.sh`, `dev/description-e2e.sh`, `web/e2e/description.spec.ts` | [0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md), [0035](decisions/0035-utility-model-tasks.md) |
-| A token gauge, LibreChat-like: the tokens of each model call from adam-rs to the log to the web, sub-agents counted apart (asked 2026-10-08) | **Built** on both sides: the orchestrator and the web here, the agents since the pin adam-rs `09291a6`; proven on mocks; the coder's greeting on the pinned image is asserted by `dev/greeting-e2e.sh`, which only Coder E2E runs | `dev/usage-e2e.sh`, `dev/greeting-e2e.sh`, `crates/e2e/tests/wiremock_agent.rs`, `crates/agent-a2a/tests/usage.rs`, `crates/agui-projection/tests/usage.rs`, `web/e2e/usage.spec.ts`, `web/e2e-system/usage.spec.ts` | [0056](decisions/0056-token-usage-per-model-call.md) |
-| The person adds MCP servers of their own from the web, with a token, a key or an OAuth sign-in, sees each one's status in words, connects an OAuth one after being shown the issuer, and attaches a ready one to a chat from the Tools menu (asked 2026-11-14: "LibreChat-grade"; the screen of ADR 0046) | **Built** in the web on its mock server (the **My tool servers** page, from the account menu for a holder of `tools.user.add`, and the picker); the orchestrator's side was built earlier on mocks; no live orchestrator, authorization server or MCP server was used, the chart does not yet render the feature's values, and the owner has not seen it | `web/e2e/my-tools.spec.ts`, `web/src/features/tools/components/my-servers/*.dom.test.tsx`, `web/mock/server.contract.test.ts` | [0046](decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md) |
-| The person reads what they used in a month on a page of their own: tokens per model, the sandbox time, a price on each line and a total that reads "at least" when a line has no price (asked 2026-11-14: "LibreChat-grade") | **Built** in the web on its mock server (the **Usage** page, from the account menu); no live orchestrator was read and the owner has not seen it | `web/e2e/usage-page.spec.ts`, `web/src/features/me/components/usage-page.dom.test.tsx`, `web/mock/server.contract.test.ts` | [0065](decisions/0065-a-usage-ledger-per-person.md) |
-| Quote a message into the reply, copy a message as Markdown (its source text, as `text/plain`) and export a thread as a Markdown file, each as a client recipe so a second client does the same (wave 1 slice 6 of ADR 0067, 2026-11-14) | **Built** in the web, proven on the mock: `docs/api/thread-markdown-v1.md` (the mapping and its conformance vectors, each an export and the file it makes), `web/e2e/quote.spec.ts`, `web/e2e/export.spec.ts`; not on a share link (no export route there: an API gap the page names); clipboard outside Chromium and the desktop app's download *unverified* | [`docs/api/thread-markdown-v1.md`](api/thread-markdown-v1.md) | 0067 |
-| What "LibreChat-grade" still needs: attachments, a prompt library (**its API is built, and the page "My prompts" (`/prompts`: list, create, edit, delete, copy a shared prompt) on the web's mock only**: [ADR 0070](decisions/0070-a-persons-prompt-library.md), [`prompts-v1.md`](api/prompts-v1.md); the form that fills a prompt, the `/` menu and the sharing control are not), memory, an artifacts panel with live previews, speech, import of conversations, tags, temporary chats, `/` commands and French (asked 2026-11-14) | **Not built**, except **search** (below) and **a theme the person chooses** (System, light or dark, one display preference of the device, no API: `web/README.md` "Theme", ADR 0011 amended 2026-11-14; proven on the mock in Chromium only); **search is built (slice 7a, 2026-11-15, the API: [ADR 0068](decisions/0068-a-person-searches-their-own-threads.md), proposed): `POST /api/search/threads` finds a person's own threads by the words of their titles, descriptions and messages (whole words by their start, accents folded; `docs/api/thread-search-v1.md` with vectors), through an index the store writes in the commit of the event (migration `0025`, `orchestrator search backfill`), proven on mocks (Rust unit and API tests on the in-memory store, the web's mock server on the same vectors) and, for Postgres, by the conformance suite run on a local PostgreSQL 16.15 on 2026-11-15 and by CI; `dev/search-e2e.sh` has not run against the stack; the web's box is built (slice 7b, 2026-11-15: under "New chat", its results in the list's place, the words marked from the contract's offsets, Ctrl or ⌘ with K; `web/DESIGN.md` "Search"; proven on the web's mock server in Chromium, on a desktop and a phone, with axe in both schemes, and not against a real orchestrator)**; the plan, its order and the rule that every one is implementable from `docs/api/` alone for a second client are [ADR 0067](decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md), proposed | none | 0067 **The prompt library's API is built (slices P1, P4 and the server half of P2, 2026-11-15, no web: [ADR 0070](decisions/0070-a-persons-prompt-library.md), proposed): `/api/prompts` saves a person's prompts with variables that are questions of the UI catalog, lists summaries, renders the text on the server from the person's answers (nothing is sent) and shares a prompt with roles under `prompts.share`, held by no role (the audience reads and renders it and never learns the author; `admin` has no bypass); `docs/api/prompts-v1.md` with vectors that the Rust core and the web's mock server both pass, migration `0026`; proven on mocks (Rust unit and API tests on the in-memory store, the mock server on the same vectors) and, for Postgres, by the conformance suite run on a local PostgreSQL 16.15 on 2026-11-15 and by CI; `dev/prompts-e2e.sh` has not run against the stack; the form that fills a prompt and the `/` menu (P2's web, P3) and MCP prompts (P5) are not built.** |
+| Write while the agent works: Send steers the running task, Stop & send cancels it and starts the next | 🧪 experimental · **Built**; the adam-rs fix that makes a task read `working` from its claim is merged there but **not in the compose pin yet** | `dev/steer-e2e.sh`, `crates/e2e/tests/steer.rs`, `web/e2e/steer.spec.ts` | [0036](decisions/0036-sending-while-an-agent-works.md) |
+| Fork a chat from any turn, edit a message into a branch | 🧪 experimental · **Built** | `dev/fork-e2e.sh`, `web/e2e/fork.spec.ts`, `branches.spec.ts` | [0029](decisions/0029-forking-a-thread-copies-its-log.md) |
+| The person's own list of threads: Pinned, Chats and an Archived section in an order they keep, a fork nested under its parent, a three-dot menu on each row; deleting a thread erases it, and a thread that works is stopped first (asked 2026-10-03) | ⚠️ partial · **Built** in the orchestrator and, since 2026-10-13, in the web, **except** dragging a row (not built) and, in the web only, the fork that is a draft until its first message (the orchestrator has it); both ADRs are *proposed*, the owner has not seen them; proven on mocks | `dev/rail-e2e.sh`, `dev/delete-e2e.sh` (the compose scenarios had not run when written), `web/e2e/rail.spec.ts`, `web/e2e/delete.spec.ts` | [0042](decisions/0042-the-thread-list-is-the-owners.md), [0043](decisions/0043-deleting-a-thread-erases-it.md) |
+| Files from agents reach the person (SVG, PNG, JSON), stored outside the log | 🧪 experimental · **Built** | `dev/artifact-e2e.sh`, `crates/e2e/tests/files.rs`, `web/e2e/files.spec.ts` | 0032 |
+| Roles, an OAuth2 resource server behind oauth2-proxy | 🧪 experimental · **Built** against a mock issuer | `dev/rbac-e2e.sh`, `web/e2e/roles.spec.ts` | [0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md) |
+| One YAML configuration, a model for the title and for a description of its own | 🧪 experimental · **Built** | `dev/title-e2e.sh`, `dev/description-e2e.sh`, `web/e2e/description.spec.ts` | [0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md), [0035](decisions/0035-utility-model-tasks.md) |
+| A token gauge, LibreChat-like: the tokens of each model call from adam-rs to the log to the web, sub-agents counted apart (asked 2026-10-08) | 🧪 experimental · **Built** on both sides: the orchestrator and the web here, the agents since the pin adam-rs `09291a6`; proven on mocks; the coder's greeting on the pinned image is asserted by `dev/greeting-e2e.sh`, which only Coder E2E runs | `dev/usage-e2e.sh`, `dev/greeting-e2e.sh`, `crates/e2e/tests/wiremock_agent.rs`, `crates/agent-a2a/tests/usage.rs`, `crates/agui-projection/tests/usage.rs`, `web/e2e/usage.spec.ts`, `web/e2e-system/usage.spec.ts` | [0056](decisions/0056-token-usage-per-model-call.md) |
+| The person adds MCP servers of their own from the web, with a token, a key or an OAuth sign-in, sees each one's status in words, connects an OAuth one after being shown the issuer, and attaches a ready one to a chat from the Tools menu (asked 2026-11-14: "LibreChat-grade"; the screen of ADR 0046) | 🧪 experimental · **Built** in the web on its mock server (the **My tool servers** page, from the account menu for a holder of `tools.user.add`, and the picker); the orchestrator's side was built earlier on mocks; no live orchestrator, authorization server or MCP server was used, the chart does not yet render the feature's values, and the owner has not seen it | `web/e2e/my-tools.spec.ts`, `web/src/features/tools/components/my-servers/*.dom.test.tsx`, `web/mock/server.contract.test.ts` | [0046](decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md) |
+| The person reads what they used in a month on a page of their own: tokens per model, the sandbox time, a price on each line and a total that reads "at least" when a line has no price (asked 2026-11-14: "LibreChat-grade") | 🧪 experimental · **Built** in the web on its mock server (the **Usage** page, from the account menu); no live orchestrator was read and the owner has not seen it | `web/e2e/usage-page.spec.ts`, `web/src/features/me/components/usage-page.dom.test.tsx`, `web/mock/server.contract.test.ts` | [0065](decisions/0065-a-usage-ledger-per-person.md) |
+| Quote a message into the reply, copy a message as Markdown (its source text, as `text/plain`) and export a thread as a Markdown file, each as a client recipe so a second client does the same (wave 1 slice 6 of ADR 0067, 2026-11-14) | 🧪 experimental · **Built** in the web, proven on the mock: `docs/api/thread-markdown-v1.md` (the mapping and its conformance vectors, each an export and the file it makes), `web/e2e/quote.spec.ts`, `web/e2e/export.spec.ts`; not on a share link (no export route there: an API gap the page names); clipboard outside Chromium and the desktop app's download *unverified* | [`docs/api/thread-markdown-v1.md`](api/thread-markdown-v1.md) | 0067 |
+| What "LibreChat-grade" still needs: attachments, a prompt library (**its API is built, and the page "My prompts" (`/prompts`: list, create, edit, delete, copy a shared prompt) on the web's mock only**: [ADR 0070](decisions/0070-a-persons-prompt-library.md), [`prompts-v1.md`](api/prompts-v1.md); the form that fills a prompt, the `/` menu and the sharing control are not), memory, an artifacts panel with live previews, speech, import of conversations, tags, temporary chats, `/` commands and French (asked 2026-11-14) | ⚠️ partial · **Not built**, except **search** (below) and **a theme the person chooses** (System, light or dark, one display preference of the device, no API: `web/README.md` "Theme", ADR 0011 amended 2026-11-14; proven on the mock in Chromium only); **search is built (slice 7a, 2026-11-15, the API: [ADR 0068](decisions/0068-a-person-searches-their-own-threads.md), proposed): `POST /api/search/threads` finds a person's own threads by the words of their titles, descriptions and messages (whole words by their start, accents folded; `docs/api/thread-search-v1.md` with vectors), through an index the store writes in the commit of the event (migration `0025`, `orchestrator search backfill`), proven on mocks (Rust unit and API tests on the in-memory store, the web's mock server on the same vectors) and, for Postgres, by the conformance suite run on a local PostgreSQL 16.15 on 2026-11-15 and by CI; `dev/search-e2e.sh` has not run against the stack; the web's box is built (slice 7b, 2026-11-15: under "New chat", its results in the list's place, the words marked from the contract's offsets, Ctrl or ⌘ with K; `web/DESIGN.md` "Search"; proven on the web's mock server in Chromium, on a desktop and a phone, with axe in both schemes, and not against a real orchestrator)**; the plan, its order and the rule that every one is implementable from `docs/api/` alone for a second client are [ADR 0067](decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md), proposed | none | 0067 **The prompt library's API is built (slices P1, P4 and the server half of P2, 2026-11-15, no web: [ADR 0070](decisions/0070-a-persons-prompt-library.md), proposed): `/api/prompts` saves a person's prompts with variables that are questions of the UI catalog, lists summaries, renders the text on the server from the person's answers (nothing is sent) and shares a prompt with roles under `prompts.share`, held by no role (the audience reads and renders it and never learns the author; `admin` has no bypass); `docs/api/prompts-v1.md` with vectors that the Rust core and the web's mock server both pass, migration `0026`; proven on mocks (Rust unit and API tests on the in-memory store, the mock server on the same vectors) and, for Postgres, by the conformance suite run on a local PostgreSQL 16.15 on 2026-11-15 and by CI; `dev/prompts-e2e.sh` has not run against the stack; the form that fills a prompt and the `/` menu (P2's web, P3) and MCP prompts (P5) are not built.** |
+
+:::
 
 ## Capabilities
 
@@ -123,6 +145,10 @@ order in the [MVP](mvp.md#the-new-build-order).
 A2A. The platform never learns about the UI, the catalog or the chat. Management (editing a system
 prompt, promoting a revision, tagging) happens in the platform; the system shows the result live.
 
+Agents are discovered live from the platform's registry, with no restart, and a person may use a registry agent only where its audience allows. This is built against a mock of the registry; a read of a real platform, a login beyond a bearer token and an explicit default-agent marker are not built.
+
+::: in-depth Built (slice 9): the port, the reader, the proof and who may use a platform agent
+
 **Built (slice 9, 2026-10-01).**
 - The port `AgentRegistry` with a fixed implementation (the static `AGENTS_FILE`) and a composite, and the live reader of the
   platform's `agent-registry/v1` linkset (`orch-registry-platform`, `AGENT_REGISTRY_URL`); `GET /api/registry`; the picker's
@@ -135,6 +161,8 @@ prompt, promoting a revision, tagging) happens in the platform; the system shows
   `crates/e2e/tests/registry.rs`, `web/e2e/registry.spec.ts`.
 - The release picker of ADR 0008 stays: a card that lists the release-channels extension offers its channels and revisions.
 - **Who may use a platform agent** ([ADR 0045](decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md), decision 1; built in the orchestrator 2026-10-16, slice D8a, proven on mocks and in unit, property and in-process tests; the dev stack's proof is slice D8b: the mock registry's four agents (everybody, one role value, no audience, a malformed audience), the user `holder@example.com` and the extended `dev/registry-e2e.sh`, *verified 2026-10-16*: its 79 checks passed in CI's `coder-e2e` job against the real orchestrator, run 38979721632). A registry item may carry an `audience`; for an agent the registry lists, a person reads or invokes it only when a role of theirs grants it over the id **and** the audience holds `"*"` or a value of their roles claim, or a role of theirs holds `admin`. No audience, an empty one or a malformed one is for administrators only. What the audience shuts a person out of is not there for them (not listed, "no such agent", "unknown agent"); a thread of their own on it is read-only. The deployment's own agents are unchanged. The platform's contract has no `admin` exception and reads a roles claim with a non-text element as no roles at all; this build follows the ADR and the orchestrator's reader, and says so (the ADR's note).
+
+:::
 
 **Not built.**
 - A read of a real platform. The platform is design only (*verified 2026-10-03*, its `CLAUDE.md`: "there is no code yet"), so
@@ -155,22 +183,26 @@ owner listed, and where each stands:
 
 | Component | What it does | Direction | State, 2026-10-03 |
 |---|---|---|---|
-| List | show the person a list | out | not built |
-| Choices | ask up to 8 questions at once with a title, a description and typed options (radio buttons, check boxes, a searchable list, a deck of pictures, a typed answer; from version 7 a yes or no, a number, a scale, a day, a rank; from version 8 a question may show components of its surface); the smarter `ask_user` | in | **built** (catalog version 2, widened in versions 5, 7 and 8) |
-| Stepper | walk the person through steps | out and in | not built |
-| Cards | show a list of cards | out | **built** (version 3) |
-| Web view | display a web rendering in the UI (e.g. an iframe) | out | not built: needs the Content-Security-Policy decision of question 38 |
-| Agent suggestion | propose another agent or a group of agents | in (the person accepts) | not built |
-| Skill request | ask for more skills | in (the person approves) | not built |
-| Mermaid | display a mermaid graph | out | **built** (version 3) |
-| Image | place a picture at the start, middle or end of a text, or in a list | out | **built** (version 4), for a file of the thread only: never a URL |
-| Notification opt-in | ask at first open to be notified later about this chat, and tell the agent | in | not built; decided 2026-11-19 by [ADR 0077](decisions/0077-push-notifications-for-a-persons-runs.md): the opt-in is the client's own control and a setting per thread, not a catalog component, and the agent is not told (pushes come from the log only); in R1 |
+| List | show the person a list | out | ❌ not supported · not built |
+| Choices | ask up to 8 questions at once with a title, a description and typed options (radio buttons, check boxes, a searchable list, a deck of pictures, a typed answer; from version 7 a yes or no, a number, a scale, a day, a rank; from version 8 a question may show components of its surface); the smarter `ask_user` | in | 🧪 experimental · **built** (catalog version 2, widened in versions 5, 7 and 8) |
+| Stepper | walk the person through steps | out and in | ❌ not supported · not built |
+| Cards | show a list of cards | out | 🧪 experimental · **built** (version 3) |
+| Web view | display a web rendering in the UI (e.g. an iframe) | out | ❌ not supported · not built: needs the Content-Security-Policy decision of question 38 |
+| Agent suggestion | propose another agent or a group of agents | in (the person accepts) | ❌ not supported · not built |
+| Skill request | ask for more skills | in (the person approves) | ❌ not supported · not built |
+| Mermaid | display a mermaid graph | out | 🧪 experimental · **built** (version 3) |
+| Image | place a picture at the start, middle or end of a text, or in a list | out | 🧪 experimental · **built** (version 4), for a file of the thread only: never a URL |
+| Notification opt-in | ask at first open to be notified later about this chat, and tell the agent | in | ❌ not supported · not built; decided 2026-11-19 by [ADR 0077](decisions/0077-push-notifications-for-a-persons-runs.md): the opt-in is the client's own control and a setting per thread, not a catalog component, and the agent is not told (pushes come from the log only); in R1 |
 
 And: **combine all of these** in one answer.
 
 **The owner's decision (2026-10-01):** "since the components are not dynamic, their params only are,
 then it's safe to send the UI components once at the beginning, then have a seam to refetch them,
 like a tool. So that a chat across multiple UI versions can get the newest UI items."
+
+The web defines its components in a catalog that the orchestrator sends once, sends again when a newer UI joins, and an agent can refetch. Choices, Cards, Mermaid and Image are built; List, Stepper, Web view, Agent suggestion, Skill request and Notification opt-in are not.
+
+::: in-depth Built (slices 3 and 4): the catalog, A2UI and the proof
 
 **Built (slices 3 and 4, plus the Image of ADR 0032).**
 - A2UI is the generative-UI format, end to end ([ADR 0013](decisions/0013-a2ui-generative-ui.md)). Agents send A2UI surfaces; the
@@ -190,6 +222,8 @@ like a tool. So that a chat across multiple UI versions can get the newest UI it
   older screen leaves the thread's catalog alone; a screen without `Cards` gets words only), `dev/artifact-e2e.sh` (a surface places two files as `Image`s),
   `crates/e2e/tests/ui_catalog.rs`, `web/e2e/choices.spec.ts`, `cards.spec.ts`, `catalog.spec.ts`, `files.spec.ts`.
 
+:::
+
 **Not built.**
 - The six components marked "not built" above, and rich input beyond Choices (a filled stepper, an accepted suggestion). Each is
   additive: it raises the catalog's version and is its own change to [`api/ui-catalog-v1.md`](api/ui-catalog-v1.md). They were not
@@ -202,6 +236,10 @@ like a tool. So that a chat across multiple UI versions can get the newest UI it
 > "I can imagine how A2A does coding, another does web research, ... And if I wanna do casual chat,
 > I might use each one of them, pass in MCP tools for e.g. web search, e.g. from the UI directly,
 > and let the agent somehow use it."
+
+A person attaches the servers a deployment lists to a conversation, and the orchestrator relays each call and keeps the credentials by reference. This section lists as not built a URL of one's own, an upstream server's icon and a per-role filter.
+
+::: in-depth Built (slice 8): attaching, the relay, the refusals and the proof
 
 **Built (slice 8, 2026-10-02).**
 - A person attaches servers to a conversation in the composer's Tools menu, and detaches them. The deployment lists what may be
@@ -219,6 +257,8 @@ like a tool. So that a chat across multiple UI versions can get the newest UI it
   the configured bearer and header reach the search and no secret is in the export, the frames or the model's requests; after a
   detach the chat answers "No web search attached"), `crates/e2e/tests/tool_relay.rs`, `tools.rs`, `web/e2e/tools.spec.ts`.
 
+:::
+
 **Not built.**
 - Entering the URL of an MCP server of one's own: ADR 0024 makes it off unless a deployment allows it, and no deployment can allow
   it yet, so a person chooses among the listed servers.
@@ -231,6 +271,10 @@ like a tool. So that a chat across multiple UI versions can get the newest UI it
 > "Help me understand football in Europe from 2011 till 2019. @researcher first check for data from
 > that period and @browser you look for pictures to illustrate this experiment. And then @coder will
 > plot the whole thing."
+
+A person mentions several agents in one message and the addressed agent coordinates them by calling `ask_agent`. It is built and proven with mock agents asked; a real browser, researcher and coder in the football run and a planner agent are not.
+
+::: in-depth Built (slice 10): mentions, ask_agent, AG-UI and the proof
 
 **Built (slice 10, 2026-10-02 and 2026-10-03).**
 - The composer autocompletes mentions from the agents the person may invoke and sends a **structured reference** (agent id, label,
@@ -252,6 +296,10 @@ like a tool. So that a chat across multiple UI versions can get the newest UI it
   endpoint on both stores, with a fake agent that makes the calls an adam agent makes); `web/e2e/mentions.spec.ts` (keyboard
   only, a refused send shown) and `web/e2e/asks.spec.ts` (nested, spinners, Stop ends them deepest first, axe in both schemes).
 
+:::
+
+::: in-depth Not built, or not proven
+
 **Not built, or not proven.**
 - **A real browser agent in the football run.** The browser agent of [ADR 0057](decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md)
   exists (a folder served by adam-agent, obscura beside it; `dev/browser-e2e.sh`, written and not yet run), but the football run still
@@ -266,12 +314,18 @@ like a tool. So that a chat across multiple UI versions can get the newest UI it
 - A real model's choice to call `ask_agent`, and that adam-rs's MCP client keeps a call of half an hour open (ADR 0026, *unverified*).
 - A planner agent (option B) and parallel agents: the first plan's step 4, not built.
 
+:::
+
 ### 5. Nested steps
 
 > "Too many tool calls make the UI unreadable."
 
 In one real thread, 7 messages produced 336 status events, 197 of them from OpenCode. "UI should
 be cute, sober, but still rich."
+
+An agent's tool calls and its sub-agents' work are drawn as a tree, collapsed below the first level, and a tool step opens onto its input and output. It is built; what a real OpenCode reports and the tree against the coder in containers are not proven.
+
+::: in-depth Built (slice 5): the source path, the tree and the proof
 
 **Built (slice 5, 2026-10-01; input and output 2026-10-02).**
 - Events carry their **source path**: the `agent_step` event, the contract [`api/steps-v1.md`](api/steps-v1.md) (A2A extension
@@ -287,6 +341,8 @@ be cute, sober, but still rich."
 - Proof: `dev/coder-e2e.sh` (an OpenCode sub-agent step with a command step under it, ended, the log bounded to six events per
   step, each tool step's input and output), `dev/agents-e2e.sh`, `crates/e2e/tests/steps.rs`, `web/e2e/steps.spec.ts`,
   `step-io.spec.ts`.
+
+:::
 
 **Not proven.** What a real OpenCode reports for its bash call, and the tree drawn by a browser against the coder in containers.
 
@@ -309,6 +365,10 @@ and the agents agree.
 - git stays the artifact ([ADR 0003](decisions/0003-git-as-durable-state-ephemeral-workers.md)):
   what outlives a workspace is what was pushed.
 - Where a workspace lives across workers was open question 24 (closed 2026-10-01: `shared` placement and one coder process by default).
+
+Built in MVP slice 7: adam-coder starts with no repository, adds one only after the person says yes and reads GitHub over MCP with the credential of one installation. Slice 7b's devcontainer path was removed on 2026-11-19; the work-environment contract of ADR 0028 stands, and its implementation is adam's own slice, not built yet.
+
+::: in-depth Notes by date: the workspace, the work environment and its removal
 
 > **Note, 2026-10-01: built (MVP slice 7).** adam-coder (adam-rs `1021836`) starts with no repository, in a scratch project it deletes when the task ends, and publishes it to a repository the person names;
 > a workspace holds several repositories, and a repository the person did not name joins it, or is created for them, only after they say yes to a form (the model never grants). It reads GitHub, read-only, through the
@@ -350,6 +410,10 @@ and the agents agree.
 > `.github/`. *Not built yet*: adam's side, which ADR 0052 records as not built (its slices are the epic's adam
 > tickets), so nothing here proves it.
 
+:::
+
+::: in-depth State and proof, 2026-10-03
+
 **State, 2026-10-03.** The notes stand. Proof: `dev/workspace-e2e.sh` (scratch work, a repository created after a yes to a form and
 none after a no, a second repository added only after a yes, the gate and the pull request on the repository the work reached),
 `dev/coder-e2e.sh` with `GITHUB_AUTH=token` and `app`. **Not proven:** a GitHub App against github.com,
@@ -357,6 +421,8 @@ the real `github-mcp-server`, and a live model's use of the consent tools (the e
 were removed on 2026-11-19: the note above). The
 compose pin is adam-rs `e2bfda9` (A2UI v1.0 only, adam-rs ADR 0056, [ADR 0075](decisions/0075-a2ui-v1-0-cutover.md) and [epic #380](https://github.com/vymalo/another-agentic-system/issues/380): every adam agent lists `https://a2ui.org/a2a-extension/a2ui/v1.0` and `ui-catalog/v2`, writes `"version": "1.0"` and draws nothing without `a2uiRendererCapabilities["1.0"]`, and its run store is on tokio-postgres, schema version 6, adam-rs ADR 0053, ADR 0014's note of 2026-11-21; since `b64e3fe`, [#136](https://github.com/vymalo/another-agentic-system/pull/136), it includes `7e5dcc3`: a task reads `working` from the moment a worker
 claims its run; `4edee18` adds a GitHub App that finds the installation of each owner, ADR 0014's note of 2026-10-04; `588e9b5` streams a model's reasoning, ADR 0014's note of 2026-10-05; `6478fbc` keeps the input of a step that started before its subscriber attached, ADR 0014's note of 2026-10-05, second; `d9d5ea4` makes the coder Adam, a general agent with read-only helpers, gives every tool step a title, lets a failure the base branch has too cost no check cycle and puts the build on the card, ADR 0014's note of 2026-10-07; `8e1133d` adds A2A's HTTP+JSON binding and Swagger UI at `/docs`, adam-rs ADR 0031, the same note; `09291a6` reports each model call's tokens, `usage/v1`, adam-rs ADR 0032, ADR 0014's note of 2026-10-09; `0bfea49` makes the files of an MCP server's results and of a remote sub-agent's answer files of the run, adam-rs ADR 0033, ADR 0014's second note of 2026-10-09; `5581d40` keeps a remote sub-agent's words beside its files, ADR 0014's third note of 2026-10-09; `8847c28` brings access tiers per message, adam-rs ADR 0036 and [ADR 0061](decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), `ask_user` forms with a title and typed questions, and a coder that asks nobody for consent when another agent asked it, adam-rs #115 and [ADR 0026](decisions/0026-agent-mentions-as-structured-references.md), ADR 0014's note of 2026-10-17; `ddef35e` makes an asked coder hear the repositories the person named only in the words the orchestrator carries beside the grant (`person.said`, the context key `vymalo.person`), never in the ask's text, adam-rs #116, the agent side of ADR 0026's fourth note of 2026-10-17 ([#271](https://github.com/vymalo/another-agentic-system/pull/271)), ADR 0014's note of 2026-10-18; `7418467` removes OpenCode from the coder, runs a turn's tool calls at the same time, gives every agent a plan and skills, puts `child-sessions/v1` on the cards of the agents with a subagent (the coder, the chat) and moves the run store to schema version 5 part 1, ADR 0014's note of 2026-11-19; `e2bfda9` and `8501494` make every adam agent speak A2UI v1.0 only and move the run store to schema version 6 on tokio-postgres, ADR 0014's note of 2026-11-21 and sys#418; `7ac3281` runs the coder's commands where the coder runs, with no devcontainer, and is the commit the crates of `agent-local` name too, so sqlx leaves the orchestrator, ADR 0014's note "adam-rs 7ac3281").
+
+:::
 
 ### 7. Agents configured at run time, not compiled
 
@@ -378,6 +444,10 @@ already had a run-time path (`adam-agent-fs`'s `Dir`, beside the embedded packag
   `Failed`. It now verifies only pushed work: an agent that finishes with no `branch` artifact gave an answer and the
   thread is `Done` ([ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-04-only-pushed-work-is-verified)).
 
+adam-coder reads its `agent/` folder at startup, so an agent is a folder and a change needs a restart. It is built; how a live model follows the instructions is not proven.
+
+::: in-depth Built (slices 1 and 2), and what is not proven
+
 **Built (slices 1 and 2, 2026-10-01).** adam-coder reads its `agent/` folder from `ADAM_AGENT_DIR` at startup (the embedded copy is the fallback),
 is named `Coder`, and answers "hi" with a greeting (adam-rs #56, #57, ADR 0004 there). One binary, `adam-agent`, serves any folder, so an agent
 is a folder and a dozen lines of compose ([`dev/README.md`](../dev/README.md#add-a-fourth-agent-by-writing-a-folder)).
@@ -385,10 +455,16 @@ Proof: `dev/greeting-e2e.sh`, `dev/agent-folder-e2e.sh` (the coder restarted on 
 **Not proven:** how a live model follows the instructions (the mocks prove that the folder reaches the model). A change needs a restart: the
 folder is read at startup, not watched.
 
+:::
+
 ### 8. Examples for several use cases
 
 compose and the live examples should run agents for several uses, not only a coder: a researcher,
 a browser, a chat-only agent.
+
+compose and the live examples run a coder, a chat and a researcher beside the mocks of the football example. It is built; the browser agent on a live page or model, a real search, the real model and a real GitHub are *unverified*.
+
+::: in-depth Built (slice 2): the agents, the live model and the proof
 
 **Built (slice 2).** [`dev/agents.yaml`](../dev/agents.yaml) lists the coder, a chat and a researcher (each a folder under
 [`dev/agents/`](../dev/agents/), served by `adam-agent` on a scripted model), the WireMock agents `mock-researcher`, `mock-browser` and
@@ -396,6 +472,8 @@ a browser, a chat-only agent.
 model, and the researcher at a real web search (`searxng-mcp` over SearXNG, Brave or Tavily:
 [`dev/README.md`](../dev/README.md#web-search-for-real)). Proof: `dev/agents-e2e.sh` (three agents, each answers in its role; the
 researcher's search is a step with its input and output).
+
+:::
 
 **Not built, or not proven.** The browser agent on a live page or model ([ADR 0057](decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md): its scenarios read a local page on scripted models, and have not run yet; the chat calls it as its remote sub-agent only with `browser.chatSubagent` in the chart, `dev/compose.chat-browser.yaml` in compose). The live stack has not been run: the real
 search, the real model and a real GitHub are *unverified*, and `dev/searxng-mcp/server.mjs` is covered by its own unit tests only
@@ -405,6 +483,10 @@ search, the real model and a real GitHub are *unverified*, and `dev/searxng-mcp/
 
 The owner's second round of feedback added requirements that the capabilities above do not cover. Each is an ADR and is built, except
 where it says proposed; the table at the top lists the proof.
+
+The second round added sending while an agent works, forking and editing, files, roles, who the person is to an agent, one YAML configuration with utility models, streaming and titles, token usage and an access tier for each message.
+
+::: in-depth The nine additions, each with its ADR
 
 - **Sending while an agent works** ([ADR 0036](decisions/0036-sending-while-an-agent-works.md)). "While an agent is working, it should also
   be possible for a human to send a message … e.g. 'you were wrong since line #1'." **Send** goes into the running task and is read at
@@ -434,6 +516,8 @@ where it says proposed; the table at the top lists the proof.
   agent. Proven on a WireMock agent and the fake agent, and since the pin adam-rs `09291a6` (2026-10-09) the coder, the chat and the researcher report it
   too, with `MODEL_CONTEXT_WINDOW=131072` in `compose.yaml`; `dev/greeting-e2e.sh` asserts the coder's greeting call and totals (CI only). The orchestrator's own title and description calls are not counted. Since 2026-10-27 the totals can also carry the time a run's commands used in a pod (`sandbox`, [`api/usage-v1.md`](api/usage-v1.md) section 5; adam-rs `55bbe9f`, ADR 0056 amended): logged and projected, proven on mocks, drawn by no screen and read by no limit yet. Since 2026-10-27 a **ledger per person** keeps what each person used (tokens by provider and model, the sandbox time), per task and UTC month, beyond the life of the thread ([ADR 0065](decisions/0065-a-usage-ledger-per-person.md), proposed): its write side, port, adapters and backfill are built, and since 2026-10-28 so are the price table (`usage.prices`, exact decimals, a line with no price said so and never counted as free), `GET /api/me/usage` (a person's own month, priced, with a total that says whether it is complete) and the retention sweep (`usage.retentionMonths`, 24 by default); proven on in-memory and Postgres stores and over HTTP, the scenario on mocks (`dev/`) is not yet written, and since 2026-11-14 the web draws the answer as the **Usage** page (`/usage`, from the account menu; proven on the web's mock server only).
 - **An access tier for each message** (proposed 2026-10-11; the orchestrator and the web are built against mocks, no live agent lists it yet; [ADR 0061](decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), [`api/access-tier-v1.md`](api/access-tier-v1.md)). The owner: "the agent should be fully autonomous, and its permissions should be as easy as eating chips", with a control for the user over the tier (`plan`, `edits`, `auto`, `bypass`) and no permissions passed down to children. An optional extension an agent lists in its card; the web shows a chip only for such an agent, and an agent without it (kagent) is unchanged.
+
+:::
 
 ### Not proven
 

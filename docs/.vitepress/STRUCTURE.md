@@ -75,11 +75,11 @@ A page is read in layers, so it is progressive: the reader stops when they have 
 
 | Icon | Word | Means |
 |---|---|---|
-| ✅ | built | fully supported or built |
+| ✅ | built | every side named is built, and a `dev/` scenario ran it against the pinned real agent image (a scripted model is fine) |
 | ⚠️ | partial | partially: the cell says what is missing |
 | ❌ | not supported | not supported |
 | 🚧 | planned | in progress or planned |
-| 🧪 | experimental | works, and may change or be removed |
+| 🧪 | experimental | every side is built, but the halves have met only mocks |
 | ➖ | n/a · retired | not applicable, or retired |
 | 🔒 | needs a role | needs a permission or a role |
 
