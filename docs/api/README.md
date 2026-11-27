@@ -63,9 +63,9 @@ another-agentic-platform (`docs/extensions/release-channels-v1.md` in that repos
 `https://agents.vymalo.com/a2a/extensions/<name>/v1`, decided on the owner's delegation on 2026-10-01. A breaking
 change is a `v2` URI and a new page, not an edit.
 
-The sixteen extensions below are optional, and each has its contract page and the decision that made it.
+The seventeen extensions below are optional, and each has its contract page and the decision that made it.
 
-::: in-depth The sixteen extensions: URI suffix, contract and decision
+::: in-depth The seventeen extensions: URI suffix, contract and decision
 
 | Extension | URI suffix | Contract | Decided in |
 |---|---|---|---|
