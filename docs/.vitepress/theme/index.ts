@@ -3,9 +3,11 @@ import Md3Theme from "@vaam-apps/vitepress-md3";
 import { theme as openapiTheme, useOpenapi } from "vitepress-openapi/client";
 import "vitepress-openapi/dist/style.css";
 // The contract is the one file; `?raw` hands its text to the library, which parses it.
-import spec from "../../api/chat-api.yaml?raw";
+import raw from "../../api/chat-api.yaml?raw";
+import { DEFAULT_TAG, rewriteDocLinks } from "../openapi/shared";
 
-const DEFAULT_TAG = "Chat";
+// Links in descriptions are rewritten to the site's routes under its base (Vite's BASE_URL is the config's `base`).
+const spec = rewriteDocLinks(raw, import.meta.env.BASE_URL);
 
 const theme: Theme = {
   ...Md3Theme,

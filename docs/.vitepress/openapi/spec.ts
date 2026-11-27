@@ -4,11 +4,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
+import { DEFAULT_TAG, rewriteDocLinks } from "./shared";
 
-export const DEFAULT_TAG = "Chat";
+export { DEFAULT_TAG };
 
 const file = join(dirname(fileURLToPath(import.meta.url)), "../../api/chat-api.yaml");
 
 export function loadSpec(): any {
-  return parse(readFileSync(file, "utf8"));
+  return parse(rewriteDocLinks(readFileSync(file, "utf8"), process.env.DOCS_BASE ?? "/another-agentic-system/"));
 }
