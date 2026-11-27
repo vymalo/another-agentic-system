@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0027 · Live text is relayed, not stored"
+---
+
 # ADR 0027 — Live text is relayed, not stored
 
 - **Status:** accepted (2026-10-01), on the owner's delegation (the relay on the `Wakeup` port, the

@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0088 · A person's schedules"
+---
+
 # ADR 0088 — A person's schedules live in the orchestrator, and each firing is a thread they can open
 
 - **Status:** **proposed (2026-11-24)** (task ANR-396, issue [#414](https://github.com/vymalo/another-agentic-system/issues/414),

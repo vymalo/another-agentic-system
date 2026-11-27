@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0020 · A thread is a conversation"
+---
+
 # ADR 0020 — A thread is a conversation: a message on a finished thread starts its next job
 
 - **Status:** accepted (2026-09-30). **Built (2026-09-30):** the core, the dispatcher, migration 0005, the AG-UI

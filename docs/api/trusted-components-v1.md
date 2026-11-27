@@ -1,3 +1,7 @@
+---
+sidebarTitle: "trusted-components/v1"
+---
+
 # `trusted-components/v1` — the agent names a component, the client draws it
 
 - **Status:** **proposed 2026-11-21** ([ADR 0083](../decisions/0083-trusted-components-the-agent-names-and-the-client-draws.md)).

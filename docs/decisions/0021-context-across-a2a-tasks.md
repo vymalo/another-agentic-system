@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0021 · Context across A2A tasks"
+---
+
 # ADR 0021 — Context across A2A tasks: same context, `referenceTaskIds`
 
 - **Status:** accepted (2026-09-30). **Built (2026-09-30)** on the orchestrator side (the port, both adapters, the

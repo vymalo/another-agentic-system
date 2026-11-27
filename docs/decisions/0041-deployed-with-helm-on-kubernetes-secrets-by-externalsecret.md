@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0041 · Helm on Kubernetes; ExternalSecret"
+---
+
 # ADR 0041 — Deployed with Helm on Kubernetes; secrets by ExternalSecret
 
 - **Status:** accepted (2026-10-03), on the owner's answers of 2026-10-03 ("your recommendations are fine; only the

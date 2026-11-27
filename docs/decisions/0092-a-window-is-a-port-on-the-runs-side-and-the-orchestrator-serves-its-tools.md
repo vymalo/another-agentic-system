@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0092 · A window is a port on a run"
+---
+
 # ADR 0092 — A window is a port on the server side of a run, and the orchestrator serves its tools
 
 - **Status:** **Proposed (2026-11-24).** Slice 1 of the windows epic ([#339](https://github.com/vymalo/another-agentic-system/issues/339)). Nothing is built; slices 2 to 10 are listed below. It amends no invariant.

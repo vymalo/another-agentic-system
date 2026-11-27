@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0086 · A person picks a model or reasoning"
+---
+
 # ADR 0086 — A person picks a model or a reasoning level, for a thread or a message
 
 - **Status:** **proposed 2026-11-23** (task ANR-14, issue #415, parity gap 15). **The orchestrator's side is built (slice 2,

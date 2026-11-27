@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0057 · A browser agent with obscura sidecar"
+---
+
 # ADR 0057 — A browser agent: an adam folder with obscura as its sidecar
 
 - **Status:** accepted (2026-10-09), on the owner's decision of that day: a **browser agent**, a folder agent `browser` served by

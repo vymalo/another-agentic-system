@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0067 · The plan to LibreChat-grade"
+---
+
 # ADR 0067 — The plan to LibreChat-grade, and the client-agnostic rule
 
 - **Status:** **proposed (2026-11-14)**, on the owner's words of that day: "When I say LibreChat grade, I mean it. Plus, with

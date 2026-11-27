@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0034 · One YAML config; secrets by reference"
+---
+
 # ADR 0034 — One YAML configuration file; secrets by reference
 
 - **Status:** accepted (2026-10-02), on the owner's request of 2026-10-02; the details are the planner's (plan 10,

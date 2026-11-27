@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0040 · Sharing a thread by a revocable link"
+---
+
 # ADR 0040 — Sharing a thread: private, internal or public, by a revocable link
 
 - **Status:** accepted (2026-10-03), on the owner's words of the same day: "messages are split per user (unless

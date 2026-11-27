@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0072 · Child sessions are nested threads"
+---
+
 # ADR 0072 — Child sessions are nested threads, followed through `child-sessions/v1`
 
 - **Status:** **proposed (2026-11-18).** The feature is the owner's decision of 2026-11-14, recorded in adam-rs

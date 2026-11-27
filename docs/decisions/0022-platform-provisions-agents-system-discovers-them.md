@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0022 · Platform provisions; system discovers"
+---
+
 # ADR 0022 — The platform provisions A2A agents; the system discovers them
 
 - **Status:** accepted (2026-10-01), on the owner's delegation: decision 6 (open question 39) is decided in the

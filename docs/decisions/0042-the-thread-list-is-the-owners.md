@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0042 · The thread list is the owner's"
+---
+
 # ADR 0042 — The thread list is the owner's: pin, archive, order and nesting on the row; a fork is made by its first message
 
 - **Status:** proposed (2026-10-03), on the owner's words of the same day:

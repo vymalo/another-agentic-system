@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0007 · Protocol-only dependencies"
+---
+
 # ADR 0007 — Protocol-only dependencies: an agnostic orchestration layer
 
 - **Status:** accepted (2026-09-28). Amended (2026-09-29) by

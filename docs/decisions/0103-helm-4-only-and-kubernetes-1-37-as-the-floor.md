@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0103 · Helm 4 only, Kubernetes 1.37 floor"
+---
+
 # ADR 0103 — Helm 4 only, and Kubernetes 1.37 as the floor
 
 - **Status:** **Accepted (2026-11-27)** by the owner: *"We'll support helm 4 only from now on. Hard cutover, move everything from helm 3. Support starts at k8s 1.37 too."* The platform's twin is AD-067.

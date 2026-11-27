@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0026 · Agent mentions as structured references"
+---
+
 # ADR 0026 — Agent mentions as structured references
 
 - **Status:** accepted (2026-10-01), on the owner's delegation: open question 34 is decided for option A in

@@ -1,3 +1,7 @@
+---
+sidebarTitle: "Model-credential injector"
+---
+
 # The model-credential injector: the headers the model endpoint may trust, and the balance a call may spend
 
 > **Status: built in the chart, off by default, and from 2026-11-26 the path for completely custom deployments only**

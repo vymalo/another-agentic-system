@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0003 · Git is the artifact; workers ephemeral"
+---
+
 # ADR 0003 — git is the durable artifact; workers are ephemeral
 
 - **Status:** accepted (2026-09-28); amended by ADR 0007 — workers are provided by agent hosts.

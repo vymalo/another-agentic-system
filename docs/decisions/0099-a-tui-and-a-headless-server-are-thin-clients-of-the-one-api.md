@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0099 · Terminal and headless clients"
+---
+
 # ADR 0099 — A terminal client and a headless server are clients of the one chat API
 
 - **Status:** **Accepted (2026-11-25): the direction, and Rust for the client (decision 5), by the owner on 2026-11-25.** Part 2 and below stay marked **(proposed)** until built. The owner's direction of 2026-11-25:

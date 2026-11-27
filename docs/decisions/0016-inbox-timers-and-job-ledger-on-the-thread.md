@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0016 · Inbox, timers, job ledger on the thread"
+---
+
 # ADR 0016 — Inbox, timers and the job ledger on the thread
 
 - **Status:** accepted (2026-09-30). This ADR is the design for MVP slices 2 and 5

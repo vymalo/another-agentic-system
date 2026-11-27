@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0082 · Streams reopen after a minute"
+---
+
 # ADR 0082 — A stream ends after a minute and is reopened; a message keeps the id its client made
 
 - **Status:** **proposed (2026-11-21)**. **Both halves are built in this change** (branch `stream-hardening`, off `d9258d2c`): the

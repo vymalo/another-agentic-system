@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0103 · Own agents kept ready"
+---
+
 # ADR 0103 — A person's own agent is made and kept ready before their message is accepted
 
 - **Status:** **Proposed (2026-11-26)** (ANR-806, part 2; built in `orchestrator/crates/app/src/provisioning.rs`, off unless the deployment has a `provisioner` section). Not yet tried against a real platform: the dev stack plays it with a WireMock stand-in (`dev/provisioner-e2e.sh`).

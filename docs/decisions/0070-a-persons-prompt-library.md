@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0070 · A person's prompt library"
+---
+
 # ADR 0070 — A person's prompt library: saved prompts with variables that are catalog questions, rendered by the server, shared by role
 
 - **Status:** **proposed (2026-11-15)**, the design of slices P1 (saved prompts), P4 (share a prompt with a role) and the **server half of P2** (fill the

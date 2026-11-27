@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0089 · Run identity is the agent's task id"
+---
+
 # ADR 0089 — The run identity stays the agent's task id, bound when the orchestrator first sees it
 
 - **Status:** **proposed (2026-11-24)** (task ANR-422, a follow-up to the ANR-417 ruling of 2026-11-23). **Nothing is

@@ -43,6 +43,12 @@ A page is read in layers, so it is progressive: the reader stops when they have 
   and a code fence inside is left alone. Inside VitePress's own `::: tip` or `::: details`, write that outer marker longer (`:::: tip` … `::::`), or the tip closes at the block's `:::`. It is a native `<details>`, so the keyboard and a screen reader work with no
   script. A block cannot sit inside a table cell: use a list or headings, a line each, then the block. Like `::: tip`,
   `::: in-depth` shows as literal text when the file is read on GitHub.
+- **Keep a sidebar label to 48 characters.** The sidebar is narrow, and a longer label wraps over two or three lines. A page
+  whose first heading is longer gives its label in its front matter: `sidebarTitle: "0103 · Own agents kept ready"`. The
+  label shortens the heading and keeps its key nouns; it never rewords it. The page's `<title>` and its heading stay as
+  written, which is why the key is not `title`. The site's `config.ts` reads `sidebarTitle` and fails the build, naming
+  the file and its length, when a label from a file is over 48. (VitePress 1.6.4 has no such key of its own; this
+  one is ours.) The operations of the chat API take their titles from the spec's summaries, so they are the spec's to keep short.
 - **Status tables use the legend below.** The icon always comes with its word in the cell (`✅ built`), because an icon
   alone says nothing to a screen reader or to a reader who does not know it. The cell keeps its facts after the word.
 

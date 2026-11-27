@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0074 · Agent-team: several primary agents"
+---
+
 # ADR 0074 — Agent-team: several primary agents in one chat, handing off and fanning out, with the person in the loop
 
 - **Status:** **Accepted (2026-11-19).** The feature is the owner's decision of 2026-11-19 (*"I also want the possibility of

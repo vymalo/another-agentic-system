@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0055 · The agent assigns the A2A context"
+---
+
 # ADR 0055 — The agent assigns the A2A context: a thread's first message names none, and the binding adopts what the agent answers
 
 - **Status:** accepted (2026-10-07), on the owner's approval of the same day. Refines [ADR 0021](0021-context-across-a2a-tasks.md) (which

@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0065 · A usage ledger per person"
+---
+
 # ADR 0065 — A usage ledger per person: counted per task by month, written in the commit of the event, outliving the thread
 
 - **Status:** **proposed (2026-10-27); PR 2 built in this change (2026-10-28), still proposed.** The design is the owner-side comment on

@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0068 · A person searches their own threads"
+---
+
 # ADR 0068 — A person searches their own threads: whole words by their start, the rules in the contract, a derived index in the commit of the event
 
 - **Status:** **proposed (2026-11-15)**, the design of slice 7 of [ADR 0067](0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md)

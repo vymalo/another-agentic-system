@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0079 · An agent's own commands from its card"
+---
+
 # ADR 0079 — An agent's own commands, listed from its card
 
 - **Status:** proposed (2026-11-19), as slice 11 of

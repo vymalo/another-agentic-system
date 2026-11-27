@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0090 · Clients generated from the contract"
+---
+
 # ADR 0090 — Published clients of the chat API are generated from the contract and built on the reference client
 
 - **Status:** **proposed (2026-11-24)** (task ANR-275, the sixth gap of M11 in [ROADMAP.md](../../ROADMAP.md),

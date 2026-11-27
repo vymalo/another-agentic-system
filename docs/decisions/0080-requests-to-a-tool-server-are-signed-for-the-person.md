@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0080 · Signed requests to a tool server"
+---
+
 # ADR 0080 — Requests to a tool server are signed for the person: MCP `2026-07-28`, one header, the thread's owner
 
 - **Status:** **proposed (2026-11-02).** Asked for by vaam-apps, whose agent will answer a buyer's conversation through this

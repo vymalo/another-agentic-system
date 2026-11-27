@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0059 · A thread opens at its end"
+---
+
 # ADR 0059 — A thread opens at its end: the transcript is seeded off screen and shown at the bottom; a paged history read is built only if that is not enough
 
 - **Status:** proposed (2026-10-09, revised the same day after a review), on the owner's words of that day: *"load messages from the bottom, so that

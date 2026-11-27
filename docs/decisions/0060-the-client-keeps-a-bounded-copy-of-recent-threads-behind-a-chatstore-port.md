@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0060 · Bounded client copy: ChatStore port"
+---
+
 # ADR 0060 — The client keeps a bounded copy of recent threads behind a `ChatStore` port
 
 - **Status:** proposed (2026-10-09, revised the same day after a review), on the owner's words of that day: *"we need to save some chat sessions on

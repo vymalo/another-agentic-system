@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0031 · Working text and the turn's answer"
+---
+
 # ADR 0031 — Working text and the turn's answer
 
 - **Status:** accepted (2026-10-02), on the owner's answer of the same day: the structural rule first, the

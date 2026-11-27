@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0011 · Chat surface: shadcn/ui on Tailwind v4"
+---
+
 # ADR 0011 — Chat surface: shadcn/ui on Tailwind v4, kebab-case feature layout
 
 - **Status:** accepted (2026-09-29). Amended (2026-10-01): the agent and release pickers are no longer native

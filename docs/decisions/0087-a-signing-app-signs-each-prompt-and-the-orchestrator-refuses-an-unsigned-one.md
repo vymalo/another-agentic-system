@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0087 · A signing app signs each prompt"
+---
+
 # ADR 0087 — A signing app signs each prompt, and the orchestrator refuses an unsigned one from it
 
 - **Status:** **proposed (2026-11-24)**, on the owner's decision of 2026-11-23: the phone and desktop apps sign each

@@ -1,3 +1,7 @@
+---
+sidebarTitle: "0101 · A cloud run's model calls are signed"
+---
+
 # ADR 0101 — A cloud run's model calls are signed for the run, and the injector stays only for custom cases
 
 - **Status:** **Accepted (2026-11-26): by the owner, by merging**, on his direction of 2026-11-26 (below). **Nothing is built.** It
