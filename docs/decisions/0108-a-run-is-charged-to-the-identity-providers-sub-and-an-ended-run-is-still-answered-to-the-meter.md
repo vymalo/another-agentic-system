@@ -129,7 +129,8 @@ stateDiagram-v2
   it is simply not metered. Not changed here; a card is filed.
   **Amended (2026-11-27, ANR-1163): closed.** Under `auth.jwt.userClaim: sub` in a mode that reads no identity header, each user of
   `mcp.tokensFile` must be a `sub` (`AccountId` alphabet, after `UserId::new`) and an `@` is refused; under any other claim the e-mail rule
-  stands. Either mismatch is exit 78 at load, naming the entry's position and never its value. The file is read once at start.
+  stands. Either mismatch is exit 78 at load, naming the entry's position (the first is entry 1) and not the user's value. The file is read once at start.
+  **Rollout:** before this build, a `sub` deployment must rewrite its tokens file's users to subs, or it exits 78 at start.
 - An older build ignores `ended_at`, but its `DELETE` removes the binding with no tombstone: roll the build out on every replica
   before the meter is turned on.
 - **Open (not decided here):** the injector's own token has no key in the configuration (`SharedTokens::with_injector` is never

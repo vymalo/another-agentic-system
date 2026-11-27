@@ -37,7 +37,7 @@ use orch_app::{
 };
 use orch_core::{
     AccountId, AgentId, AskLimits, CheckSource, DEFAULT_CI_TIMEOUT_SECS, DEFAULT_MAX_ATTEMPTS,
-    DEFAULT_VERIFIER_TIMEOUT_SECS, GatePolicy, TaskKind, UserId,
+    DEFAULT_VERIFIER_TIMEOUT_SECS, GatePolicy, MAX_ACCOUNT_ID_LEN, TaskKind, UserId,
 };
 use orch_ports::{AgentEndpoint, ToolServerEndpoint};
 #[cfg(feature = "surface-webhook")]
@@ -2645,7 +2645,7 @@ fn mcp_users_are_subs(auth: &AuthSettings) -> bool {
 /// deployment has: an e-mail address, or, when `subs` (`auth.jwt.userClaim: sub`), an account id of
 /// the platform's alphabet `[A-Za-z0-9._:/-]{1,128}` as [`UserId::new`] makes it (trimmed and
 /// lower-cased), which is what [`AccountId`] checks (ADR 0108). The other kind is refused, naming
-/// the entry's position and never its value.
+/// the entry's position (the first is entry 1) and never the user's value.
 fn parse_mcp_tokens(
     path: Option<String>,
     subs: bool,
@@ -2674,18 +2674,20 @@ fn parse_mcp_tokens(
     let mut tokens: Vec<(UserId, BTreeSet<orch_ports::Role>, SecretString)> =
         Vec::with_capacity(specs.len());
     for (index, spec) in specs.into_iter().enumerate() {
+        // The position a person reads: the first entry is entry 1.
+        let entry = index + 1;
         let user = spec.user.trim();
         if subs {
             if AccountId::of_user(&UserId::new(user)).is_err() {
                 return Err(invalid(format!(
-                    "the user of entry {index} must be the identity provider's sub (auth.jwt.userClaim \
-                     is sub): 1 to 128 letters, digits, '.', '_', ':', '/' or '-', and no '@' \
+                    "the user of entry {entry} must be the identity provider's sub (auth.jwt.userClaim \
+                     is sub): 1 to {MAX_ACCOUNT_ID_LEN} letters, digits, '.', '_', ':', '/' or '-', and no '@' \
                      (ADR 0108)"
                 )));
             }
         } else if !user.contains('@') {
             return Err(invalid(format!(
-                "user {user:?} must be the e-mail address the jobs belong to"
+                "the user of entry {entry} must be the e-mail address the jobs belong to"
             )));
         }
         let var = spec.token_env.trim();
@@ -5766,7 +5768,7 @@ mod tests {
                 ),
                 "{shown}"
             );
-            assert!(shown.contains("entry 1"), "{shown}");
+            assert!(shown.contains("entry 2"), "{shown}");
             let value = user.trim_matches('\'');
             assert!(value.is_empty() || !shown.contains(value), "{shown}");
             assert!(!shown.contains("alice-secret"), "{shown}");
@@ -5787,10 +5789,12 @@ mod tests {
             (AuthMode::JwtOrProxyHeader, "sub"),
         ] {
             let error = load_mcp_as(mode, claim, sub_user).err().unwrap();
+            let shown = error.to_string();
             assert!(
-                error.to_string().contains("must be the e-mail address"),
-                "{claim}: {error}"
+                shown.contains("entry 1 must be the e-mail address"),
+                "{claim}: {shown}"
             );
+            assert!(!shown.contains("cm1abc2def"), "{claim}: {shown}");
             let cfg = load_mcp_as(mode, claim, email_user).unwrap();
             let user = cfg.mcp.unwrap().tokens[0].0.clone();
             assert_eq!(user.as_str(), "alice@example.com");
