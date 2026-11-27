@@ -928,7 +928,7 @@ The pin moves from `945208e` to `9f90f1e6`, 99 commits of adam-rs `main`, and it
 adam-rs `main` before that move whose `coder` image exists, so this bump keeps the toolchain where it is and the next bump
 is the one that raises it (ANR-983 and ANR-1001 build on this).
 
-- **What it brings, and the reason the M1 cards wait for it** (another-context `plans/2026-11-26-extensions-roadmap.md`):
+- **What it brings, and the reason the M1 cards wait for it** (the owner's private plan of 2026-11-26):
   `model-pick/v1` (#349: a served agent takes the model a message names; #364: each choice carries its endpoint label),
   `reasoning/v1` (#354: the card lists the model's levels and a level it does not take is refused; a usage call reports
   the level it named), `prompt-statement/v1` (#419: the statement and the person's envelope on every model call),

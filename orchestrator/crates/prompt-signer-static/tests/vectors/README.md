@@ -1,7 +1,7 @@
 # Signer vectors (TEST ONLY)
 
 A copy, taken on 2026-11-25, of part of the **shared prompt-signature test vectors** of the signature contract's cloud
-section (its ADR-0033, not this repository's ADR 0033), vector **V1**:
+section (a decision of that contract's, not of this repository), vector **V1**:
 
 | File | What |
 |---|---|

@@ -187,6 +187,7 @@ npm --prefix tools/agui-conformance ci    # once per clone, for the next line
 node tools/agui-conformance/check.mjs     # every AG-UI golden reads cleanly through the reference client
 node tools/agents/sync.mjs                # after editing .agents/agents: writes the links and adapters
 node tools/agents/sync.mjs --check        # (also in CI) every agent link and adapter matches .agents/agents
+sh tools/check-private-names.sh           # (also in CI) no tracked file names a private repository or its org
 sh deploy/chart/tests/render-check.sh     # needs helm: the chart's guarantees on its render and its refusals (also in CI, deploy.yml)
 git config core.hooksPath .githooks       # once per clone: local Conventional Commits hook
 ```
