@@ -1,0 +1,105 @@
+/* Diagrams, drawn by vitepress-mermaid-renderer (see ./mermaid.ts). Colours are the theme's own Material 3 tokens. */
+
+/* The box of a diagram: its own height (set from the drawing in mermaid.ts), a surface, a rounded edge. */
+.vp-doc .mermaid-container {
+  --mermaid-control-bg: var(--md-sys-color-surface-container-high);
+  --mermaid-control-text: var(--md-sys-color-on-surface);
+  --mermaid-control-text-active: var(--md-sys-color-primary);
+  --mermaid-control-border: var(--md-sys-color-outline-variant);
+  --mermaid-control-shadow: 0 1px 3px color-mix(in srgb, var(--md-sys-color-scrim) 28%, transparent);
+  --mermaid-control-radius: var(--md-sys-shape-corner-medium);
+  --mermaid-control-button-radius: var(--md-sys-shape-corner-small);
+  --mermaid-control-button-min-size: 2rem;
+  --mermaid-control-icon-size: 18px;
+  --mermaid-error-bg: var(--md-sys-color-error-container);
+  --mermaid-error-border: var(--md-sys-color-error);
+  --mermaid-error-text: var(--md-sys-color-on-error-container);
+
+  height: var(--diagram-height, 20rem);
+  min-height: 14rem;
+  max-height: none;
+  margin: 16px 0;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-large);
+  background: var(--md-sys-color-surface-container-lowest);
+}
+
+/* A strip on top holds the toolbar, so it never covers the drawing. */
+.vp-doc .mermaid-container::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3rem;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface-container-low);
+}
+.vp-doc .mermaid-container:not(.dialog-fullscreen-active) .diagram-wrapper {
+  inset: 3rem 0 0 0;
+}
+.vp-doc .mermaid-container:not(.dialog-fullscreen-active) .controls {
+  top: 0.4rem;
+  right: 0.5rem;
+  box-shadow: none;
+  background: transparent;
+}
+
+/* A drawing is dragged with the mouse: say so. */
+.vp-doc .mermaid-container .diagram-wrapper {
+  cursor: grab;
+}
+.vp-doc .mermaid-container .diagram-wrapper:active {
+  cursor: grabbing;
+}
+
+/* The toolbar is always there, and its buttons can be reached and seen with the keyboard. */
+.vp-doc .mermaid-container .controls {
+  opacity: 1;
+  visibility: visible;
+}
+.vp-doc .mermaid-container .controls button:focus-visible,
+.vp-doc .mermaid-container .diagram-wrapper:focus-visible {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: -3px;
+}
+.vp-doc .mermaid-container .zoom-level {
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* Drawings read at the size of the page text: Mermaid's own labels, kept legible and never wrapped to a stub. */
+.vp-doc .mermaid-container svg {
+  max-width: none;
+}
+.vp-doc .mermaid-container svg text,
+.vp-doc .mermaid-container svg .nodeLabel,
+.vp-doc .mermaid-container svg .edgeLabel {
+  font-family: var(--md-sys-typescale-plain-font);
+}
+
+/* Fullscreen (dialog): the same surface as the page. */
+.mermaid-container.dialog-fullscreen-active {
+  width: min(96vw, 1500px) !important;
+  height: min(92vh, 1000px) !important;
+  background: var(--md-sys-color-surface) !important;
+  border-color: var(--md-sys-color-outline-variant);
+}
+.mermaid-dialog-backdrop {
+  background: color-mix(in srgb, var(--md-sys-color-scrim) 45%, transparent);
+}
+
+@media (max-width: 768px) {
+  .vp-doc .mermaid-container {
+    margin-inline: 0;
+  }
+  /* The toolbar of a phone is the renderer's own, one row of touch-sized buttons. */
+  .vp-doc .mermaid-container:not(.dialog-fullscreen-active) .controls {
+    max-width: calc(100% - 1rem);
+    --mermaid-control-button-min-size: 2.25rem;
+    --mermaid-control-padding: 0.25rem;
+    --mermaid-control-gap: 0.125rem;
+  }
+}
+
+/* The figure of an actor and its name sit on the page, not on a box: the text colour of the page. */
+.vp-doc .mermaid-container svg text.actor-man {
+  fill: var(--md-sys-color-on-surface);
+}
