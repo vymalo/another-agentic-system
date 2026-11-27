@@ -124,7 +124,8 @@ x-orchestrator-env: &orchestrator-env
 # `prompt-statement/v1` (the statement and the person's envelope on every model call), `uploads/v1` on the card (no params; the inline threshold
 # is the setting, 10 MiB by default), a kept-open child that asks the person and only a shown one, `session_config`/`admit` (the seven limits,
 # narrowed only), the plugin and hook sets of adam-rs ADR 0050, and the TurnKeys port of ADR 0068 T1. It is the last adam-rs main commit before
-# adam-rs #399 moved its workspace to Rust 1.98 (this repository is on 1.94.1): the next bump of this pin is the one that raises it.
+# adam-rs #399 moved adam's own workspace to Rust 1.98; this repository moved to 1.98 on 2026-11-27 (ANR-1328), so a later
+# pin no longer needs a toolchain raise for that.
 # ADR 0014's status note "adam-rs 9f90f1e6" has the list this stack sees. `945208e` is `7ea653f` plus adam-rs #347 (the interface language reaches the
 # model as one more turn after the history, never in `system`). `7ea653f` is `7ac3281` plus
 # adam-rs #321, #324, #327, #328, #329, #333 and #335 (the `locale/v1` card among them). `7ac3281` is `8501494` plus

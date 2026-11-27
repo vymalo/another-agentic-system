@@ -964,3 +964,7 @@ is the one that raises it (ANR-983 and ANR-1001 build on this).
   `-p orch-agent-adam` pass on this head.
 - *Unverified where this was written*: the 3.11 GB image was not pulled locally; every scenario on it is the Coder E2E
   workflow's, in the pull request that pins it.
+
+*(2026-11-27: this repository's workspace moved from 1.94 to 1.98 — ANR-1328, `orchestrator/Cargo.toml` and
+`orchestrator/rust-toolchain.toml` — so the "next bump is the one that raises it" note above no longer applies: a pin at or
+after adam-rs `278b6999` now builds here. The 2026-11-26 sentence stays as it was written.)*

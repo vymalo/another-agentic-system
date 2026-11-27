@@ -19,7 +19,7 @@
 # declared after the dependency layer, so a new commit never rebuilds the dependencies; unset, the export says
 # `unknown`.
 
-FROM lukemathwalker/cargo-chef:0.1.77-rust-1.94.1-bookworm AS chef
+FROM lukemathwalker/cargo-chef:0.1.78-rust-1.98.1-bookworm AS chef
 WORKDIR /src
 
 FROM chef AS planner

@@ -7,9 +7,10 @@
 //! path, the SHA-256 of its exact body bytes, the thread and the thread's owner.
 //!
 //! This crate is **pure**: no I/O, no async, and no clock (every function that needs the time takes it). It does not use
-//! `cratestack-cose`, which needs Rust 1.98 where the orchestrator is on 1.94; the bytes it writes are held to that crate's
-//! by the known-answer test of this crate and by `interop/`, a crate with a toolchain of its own that runs the real
-//! `sign_claims` and `open_claims` against them.
+//! `cratestack-cose` yet: it writes the claim object itself, and holds its bytes to the real crate's by the known-answer test
+//! of this crate and by `interop/`, a crate with a toolchain of its own that runs the real `sign_claims` and `open_claims`
+//! against them. The workspace moved to Rust 1.98 on 2026-11-27 (ANR-1328), so using the real crate is now possible; the
+//! swap is a change of its own.
 //!
 //! ```
 //! use orch_signed_request::{Method, Request, Signer, SigningKey, verify::{Incoming, Verifier}};
