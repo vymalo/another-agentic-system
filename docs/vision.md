@@ -86,9 +86,9 @@ In short (the icons are the [legend of the reference](api/README.md#status-icons
 
 - ✅ built · run against the pinned real agent image: requirements 5, 7 and 9.
 - 🧪 experimental · built on mocks: requirements 1, 2a, 2b, 3, 4, 6 and 8.
-- ⚠️ partial · requirement 4b, a real researcher, browser and coder in the football run.
+- ⚠️ partial · requirement 3b, a person's own MCP server is built and its icon is not; requirement 4b, a real researcher, browser and coder in the football run.
 - 🚧 planned · requirement 6b, a repository's devcontainer as its work environment, which waits on adam's own slice.
-- ❌ not supported · requirements 2c and 3b, not built.
+- ❌ not supported · requirement 2c, not built.
 
 ::: in-depth The requirements, one row each: state, proof and ADR
 
@@ -99,7 +99,7 @@ In short (the icons are the [legend of the reference](api/README.md#status-icons
 | 2b | Rich answers: Choices (the smarter `ask_user`: a title, a description, typed questions, pictures, a free box, and from version 7 a yes or no, a number, a scale, a day and a list to put in order, and from version 8 a question that shows a picture, a diagram, cards, a chart or code with it), Cards, Mermaid, Image, combined in one answer; and an agent's **plan** as one checklist that updates in place, with a dropped state and notes, pinned in the panel | 🧪 experimental · **Built** (catalog version 8; Choices from version 5; the five kinds of question, `show` and the plan are proven on the web's mock only, no adam-rs agent asks with them or sends a plan yet) | `dev/choices-e2e.sh`, `dev/cards-e2e.sh`, `dev/artifact-e2e.sh`; `web/e2e/choices.spec.ts`, `choices-deck.spec.ts`, `choices-v7.spec.ts`, `choices-v8.spec.ts`, `plan.spec.ts`, `cards.spec.ts`, `files.spec.ts` | 0023, [0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md) |
 | 2c | List, Stepper, Agent suggestion, Skill request, Web view, Notification opt-in; rich input other than a choice | ❌ not supported · **Not built** | none | 0023; questions [37](open-questions.md), [38](open-questions.md) |
 | 3 | MCP tools attached to a conversation from the UI, used by the agent, one icon per tool on its step | 🧪 experimental · **Built** for the servers a deployment lists | `dev/tools-e2e.sh`, `crates/e2e/tests/tool_relay.rs`, `tools.rs`, `web/e2e/tools.spec.ts` | [0024](decisions/0024-mcp-tools-attached-per-conversation.md) |
-| 3b | A person enters the URL of an MCP server of their own; the icon an upstream server offers | ❌ not supported · **Not built** | none | 0024; question 38 |
+| 3b | A person enters the URL of an MCP server of their own; the icon an upstream server offers | ⚠️ partial · **Built** for the URL ([ADR 0046](decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), accepted 2026-10-11): a person who holds `tools.user.add` adds an MCP server of their own (no authentication, a bearer token, an API key, or OAuth 2), its credentials sealed, on the web's page "My tool servers" (`/tools`), attaches it to a conversation, and the chat's agent calls it through the relay; it ran against the pinned real agent image, with a scripted model (*verified 2026-11-27* against `orchestrator/crates/api/src/user_tools.rs`, `web/src/app/tools/page.tsx` and run 45959707562 of `coder-e2e.yml` on `main` at `df5ace5`, where `user-tools` and `user-tools-relay` passed). **Not built:** the icon an upstream server offers (a person's server is drawn with the glyph of a tool, ADR 0046 departure 147; question 38) | `dev/user-tools-e2e.sh`, `dev/user-tools-relay-e2e.sh`, `web/e2e/my-tools.spec.ts` | 0024, [0046](decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md); question 38 |
 | 4 | Several agents in one message by mention; the composer autocompletes; the football example | 🧪 experimental · **Built**, with mock agents asked | `dev/mentions-e2e.sh`, `crates/e2e/tests/mentions.rs`, `ask_agent.rs`, `asks.rs`, `web/e2e/mentions.spec.ts`, `asks.spec.ts` | [0026](decisions/0026-agent-mentions-as-structured-references.md) |
 | 4b | A real researcher, browser and coder in the football run; a planner agent | ⚠️ partial · **Partly built** (2026-10-09): a browser agent exists ([ADR 0057](decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md), adam-agent with obscura, asked by the chat on a mention of `@browser`, or, with `browser.chatSubagent` (off by default), by the chat itself as its remote sub-agent); its screenshots are files (adam-rs `0bfea49`, ADR 0057 amended 2026-10-09) that reach the person who talks to the browser or asks the chat that calls it, but not the person who mentions `@browser` (an asked agent's file is named, not kept); the football run still asks the three mocks by decision | `dev/browser-e2e.sh`, `dev/chat-browser-e2e.sh` (written, not yet run) | 0026, 0057 |
 | 5 | Nested steps, collapsed, a little more per click, spinners, bounded log | ✅ built · **Built** | `dev/coder-e2e.sh` (the tree an OpenCode delegation leaves), `crates/e2e/tests/steps.rs`, `web/e2e/steps.spec.ts`, `step-io.spec.ts` | [0025](decisions/0025-nested-steps-events-carry-their-source-path.md), [0030](decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md) |
@@ -145,7 +145,7 @@ order in the [MVP](mvp.md#the-new-build-order).
 A2A. The platform never learns about the UI, the catalog or the chat. Management (editing a system
 prompt, promoting a revision, tagging) happens in the platform; the system shows the result live.
 
-Agents are discovered live from the platform's registry, with no restart, and a person may use a registry agent only where its audience allows. This is built against a mock of the registry; a read of a real platform, a login beyond a bearer token and an explicit default-agent marker are not built.
+Agents are discovered live from the platform's registry, with no restart, and a person may use a registry agent only where its audience allows. This is built and proven against a mock of the registry and, for the registry half, against the platform's real registry in the platform's own CI (the platform's operator now serves it, and its kind end-to-end `chain-e2e` has this system's orchestrator list an agent the platform made, by audience: *verified 2026-11-27* in run 38994193619 of another-agentic-platform, whose `chain-e2e` job succeeded). A read of a deployed platform, releases from a real platform, a login beyond a bearer token and an explicit default-agent marker are not built.
 
 ::: in-depth Built (slice 9): the port, the reader, the proof and who may use a platform agent
 
@@ -165,8 +165,11 @@ Agents are discovered live from the platform's registry, with no restart, and a 
 :::
 
 **Not built.**
-- A read of a real platform. The platform is design only (*verified 2026-10-03*, its `CLAUDE.md`: "there is no code yet"), so
-  `agent-registry/v1` and `release-channels/v1` are read only from mocks (open question 10 stays open).
+- A read of a deployed platform, and releases from a real one. The platform is no longer design only (*verified 2026-11-27*, its
+  `CLAUDE.md` line 9: "design, plus slices S1 to S9 of the v0 operator"; on 2026-10-03 it said "there is no code yet"), and its
+  operator serves `agent-registry/v1`, read by this orchestrator in the platform's CI (run 38994193619). `release-channels/v1` is
+  not implemented by the platform's v0, whose registry publishes no releases (*verified 2026-10-17*, [`mvp.md`](mvp.md), "Reading a
+  real platform"; not re-checked since), so releases are read only from mocks (open question 10 stays open).
 - Authentication to the registry beyond a bearer token (open question 11).
 - The file's agents come first and the first is the default; an explicit marker is open question 23.
 
@@ -237,7 +240,7 @@ The web defines its components in a catalog that the orchestrator sends once, se
 > I might use each one of them, pass in MCP tools for e.g. web search, e.g. from the UI directly,
 > and let the agent somehow use it."
 
-A person attaches the servers a deployment lists to a conversation, and the orchestrator relays each call and keeps the credentials by reference. This section lists as not built a URL of one's own, an upstream server's icon and a per-role filter.
+A person attaches the servers a deployment lists to a conversation, and the orchestrator relays each call and keeps the credentials by reference. A person's own server (a URL of one's own, with its credentials sealed) is built too, as the paragraph below says. This section lists as not built an upstream server's icon and a per-role filter.
 
 ::: in-depth Built (slice 8): attaching, the relay, the refusals and the proof
 
@@ -257,11 +260,11 @@ A person attaches the servers a deployment lists to a conversation, and the orch
   the configured bearer and header reach the search and no secret is in the export, the frames or the model's requests; after a
   detach the chat answers "No web search attached"), `crates/e2e/tests/tool_relay.rs`, `tools.rs`, `web/e2e/tools.spec.ts`.
 
+**Built since: a person's own server ([ADR 0046](decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), accepted 2026-10-11).** A person who holds `tools.user.add` (a role's permission; the dev stack's role `tool-maker`) adds the URL of an MCP server of their own with `POST /api/user-tool-servers` (at most eight; kinds `none`, `bearer`, `api_key` and `oauth2`; a URL the egress guard refuses is refused), lists, renames, re-keys and deletes it, and the web draws the page "My tool servers" (`/tools`, 2026-11-14). The credentials are sealed in Postgres behind the ports `SecretStore` and `CredentialBroker`, and are in no answer, log, export or frame. A server of one's own is attached with the same `PUT /api/threads/{id}/tools` when it is ready and the thread's owner owns it, and each call is relayed with a credential leased for that one call, through a client that judges every connection; the step's icon is `mcp-server:<id>` and is drawn as the glyph of a tool. Proof: `dev/user-tools-e2e.sh` (the routes, the limit, the refusals, no secret anywhere) and `dev/user-tools-relay-e2e.sh` (the chat's scripted model calls `<id>__web_search`, the mock was sent exactly that token, the permission taken away detaches the server, the guard at the connection, a wrong key makes it `needs_reauth`), `web/e2e/my-tools.spec.ts`; both scenarios ran and passed in CI's `coder-e2e` job on `main` (run 45959707562, 2026-11-27, *verified*), against the pinned coder image's `adam-agent` for the `chat` agent. A deployment turns it on with the `userToolServers` section of its configuration; off, a person chooses among the listed servers as before.
+
 :::
 
 **Not built.**
-- Entering the URL of an MCP server of one's own: ADR 0024 makes it off unless a deployment allows it, and no deployment can allow
-  it yet, so a person chooses among the listed servers.
 - The icon an upstream server offers, and any icon at a URL: only `data:` icons from the configuration are shown, because a
   remote image can track the person (question 38).
 - No per-role filter on who may attach which server (anyone with `thread.write` may, for the servers listed for the thread's agent).
