@@ -3,10 +3,10 @@
   "skills": {
     "adam-a2a-extensions": {
       "source": "vymalo/another-adam-rs",
-      "commit": "67dccc5d82c9446ac1d29cec000227c8e09d8f09",
+      "commit": "59d36b96fb44550ae2e1a4819c90c203c205139c",
       "sourceType": "github",
       "skillPath": ".agents/skills/adam-a2a-extensions/SKILL.md",
-      "computedHash": "a72af56d182bd6ab7052fd6a7788e54c5659a1e69b4b24c38603dad443e80a06"
+      "computedHash": "22d55dc13a6cb7c7c5b0c20784f67f4684c6aa147e19deed5f6d021031fad7a5"
     },
     "adam-agent-folder": {
       "source": "vymalo/another-adam-rs",
