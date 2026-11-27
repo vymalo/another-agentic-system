@@ -270,7 +270,7 @@ mod tests {
         assert_eq!(exit_code(&gate), 78);
         // A token variable that is missing, or a file that cannot be read, is a configuration error.
         let no_token = anyhow::Error::from(ConfigError::McpTokenEnvMissing {
-            user: "alice@example.com".to_owned(),
+            entry: 1,
             var: "MCP_TOKEN_ALICE".to_owned(),
         })
         .context("reading the configuration");

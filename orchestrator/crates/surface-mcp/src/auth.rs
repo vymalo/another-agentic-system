@@ -118,9 +118,13 @@ impl TokenTable {
                     second: user.to_string(),
                 });
             }
+            // The email is set only for an e-mail address (an `@`). A `sub` principal (ANR-1163, a
+            // tokens-file user under `userClaim: sub`) therefore has none, a change from the
+            // earlier `Some(user)`; harmless, the only reader being `/api/me` (ANR-1186).
+            let email = user.as_str().contains('@').then(|| user.to_string());
             entries.push(Entry {
                 principal: Principal {
-                    email: Some(user.to_string()),
+                    email,
                     user,
                     name: None,
                     roles,
@@ -224,6 +228,21 @@ mod tests {
             (UserId::new("bob@example.com"), secret(BOB_TOKEN)),
         ])
         .unwrap()
+    }
+
+    /// ANR-1186: `Principal.email` is an e-mail address or nothing; a `sub` is not one.
+    #[test]
+    fn the_principal_has_an_e_mail_only_when_its_user_is_one() {
+        let t = TokenTable::new([
+            (UserId::new("Alice@Example.com"), secret(ALICE_TOKEN)),
+            (UserId::new("cm1abc2def"), secret(BOB_TOKEN)),
+        ])
+        .unwrap();
+        let alice = t.authenticate(ALICE_TOKEN).unwrap();
+        assert_eq!(alice.email.as_deref(), Some("alice@example.com"));
+        let sub = t.authenticate(BOB_TOKEN).unwrap();
+        assert_eq!(sub.user.as_str(), "cm1abc2def");
+        assert_eq!(sub.email, None);
     }
 
     #[test]

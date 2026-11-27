@@ -144,7 +144,7 @@ No Cargo features. The crate reads no environment: the binary reads these and bu
 | Variable | Meaning |
 |---|---|
 | `ORCH_SURFACES` | include `mcp` to mount this crate |
-| `MCP_TOKENS_FILE` | YAML list of `{user, tokenEnv}`; required with `mcp` on a role that serves HTTP. The binary checks `user`: an e-mail address, or the identity provider's `sub` when the deployment reads `auth.jwt.userClaim: sub` (ADR 0108, ANR-1163) |
+| `MCP_TOKENS_FILE` | YAML list of `{user, tokenEnv}`; required with `mcp` on a role that serves HTTP. The binary checks `user` against the deployment's `auth.jwt.userClaim`: an e-mail address (`email`, or a mode that reads a header), the identity provider's `sub` (`sub`, ADR 0108, ANR-1163), or what the claim yields (any other, ANR-1186). The token's principal has an `email` only when its user is an e-mail address (an `@`), `None` otherwise |
 | `MCP_TOKEN_<NAME>` | whatever `tokenEnv` names; the bearer token, secret, at least 32 bytes; unset, empty or shorter is a startup error |
 | `MCP_ALLOWED_HOSTS` | the `Host` values accepted, comma separated, each `host` or `host:port` (a URL or `*` is a startup error); required with `mcp` |
 | `MCP_ALLOWED_ORIGINS` | browser origins let through (`https://app.example.com`, comma separated); default none |
