@@ -1383,8 +1383,14 @@ impl AgentProvisioner for Gated {
 /// the delegation's back and is not given up: it is tried again (`max_cancel_attempts` of the
 /// dispatcher, plus what fits in the wake bound for a routed thread) until the delegation has
 /// been sent, and then stops the task it started. `min_attempts` is how many claims the stop must
-/// have had while the delegation still waited.
-async fn a_stop_waits_for_a_waking_delegation(max_cancel_attempts: u32, min_attempts: u32) {
+/// have had while the delegation still waited. `transient_cancels` is how many times the agent
+/// then fails the stop's `CancelTask` with an error that passes (ANR-1078, gap A of ADR 0103: the
+/// waits are refunded, so the stop is still given its own `max_cancel_attempts` for the cancel).
+async fn a_stop_waits_for_a_waking_delegation(
+    max_cancel_attempts: u32,
+    min_attempts: u32,
+    transient_cancels: usize,
+) {
     let w = World::new();
     let registry = MemoryRegistry::new();
     // the request path (one application) makes the thread and lists the agent at once; the
@@ -1415,6 +1421,9 @@ async fn a_stop_waits_for_a_waking_delegation(max_cancel_attempts: u32, min_atte
     );
     w.agent
         .set_extensions(&mine(), &[orch_core::KnownExtension::Steer]);
+    w.agent.fail_next_cancels(transient_cancels, || {
+        orch_ports::AgentError::unreachable("the agent is busy")
+    });
     let token = tokio_util::sync::CancellationToken::new();
     let task = tokio::spawn(
         Dispatcher::new(
@@ -1460,26 +1469,150 @@ async fn a_stop_waits_for_a_waking_delegation(max_cancel_attempts: u32, min_atte
     registry.add(own_entry(&mine()));
     open_tx.send(true).unwrap();
     wait_in(&w, id, ThreadState::Cancelled).await;
+    let cancels = w
+        .agent
+        .calls()
+        .iter()
+        .filter(|c| matches!(c, Call::Cancel { .. }))
+        .count();
     assert!(
-        w.agent
-            .calls()
-            .iter()
-            .any(|c| matches!(c, Call::Cancel { .. })),
+        cancels >= 1,
         "the task the delegation started was cancelled at the agent"
     );
+    if transient_cancels > 0 {
+        assert_eq!(
+            cancels,
+            1 + transient_cancels,
+            "the stop that waited is tried again for a cancel that failed, and then stops the task"
+        );
+    }
     token.cancel();
     let _ = task.await;
 }
 
 #[tokio::test]
 async fn a_stop_does_not_cancel_a_thread_whose_delegation_waits_for_the_agent_to_wake() {
-    a_stop_waits_for_a_waking_delegation(10_000, 2).await;
+    a_stop_waits_for_a_waking_delegation(10_000, 2, 0).await;
 }
 
 #[tokio::test]
 async fn a_stop_outlasts_max_cancel_attempts_while_a_routed_delegation_waits_for_the_agent() {
     // two attempts would end the stop; the wake bound (30 s plus the backstop) is what it may wait
-    a_stop_waits_for_a_waking_delegation(2, 5).await;
+    a_stop_waits_for_a_waking_delegation(2, 5, 0).await;
+}
+
+#[tokio::test]
+async fn a_stop_that_waited_longer_than_max_cancel_attempts_is_still_retried_for_a_cancel_that_failed()
+ {
+    // the stop waits for five claims behind the delegation (`max_cancel_attempts` is 2), then the
+    // agent refuses the first `CancelTask` with an error that passes: only the claims that tried
+    // something count, so the stop is claimed again and stops the task
+    a_stop_waits_for_a_waking_delegation(2, 5, 1).await;
+}
+
+/// ANR-1078, gap B of ADR 0103: a stop that waited behind a waking delegation, then finds the task
+/// running at an agent the registry does not list, still tries the listing
+/// `own_agent_listing_attempts` times before it cancels the thread locally.
+#[tokio::test]
+async fn a_stop_that_waited_still_gets_its_listing_attempts_before_it_cancels_locally() {
+    const LISTING: u32 = 3;
+    const WAITS: u32 = 3;
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let requests = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            listing(&registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let (open_tx, open_rx) = tokio::sync::watch::channel(false);
+    let entered = Arc::new(AtomicUsize::new(0));
+    let dispatching = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            Gated {
+                inner: MemoryProvisioner::new(),
+                open: open_rx,
+                entered: Arc::clone(&entered),
+            },
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    w.agent
+        .set_extensions(&mine(), &[orch_core::KnownExtension::Steer]);
+    let token = tokio_util::sync::CancellationToken::new();
+    // a stop waits half a second between claims: after the one that has just waited, the test has
+    // that long to let the delegation go out and to unlist the agent before the stop looks again
+    let task = tokio::spawn(
+        Dispatcher::new(
+            Arc::clone(&dispatching),
+            orch_app::DispatcherConfig {
+                own_agent_listing_attempts: LISTING,
+                cancel_retry_delay: Duration::from_millis(500),
+                ..fast()
+            },
+            "d1",
+        )
+        .run(token.clone()),
+    );
+    let id = new_coder_thread(&requests, "gate refactor the parser").await;
+    eventually("the delegation at the gate", || async {
+        (entered.load(Ordering::SeqCst) >= 1).then_some(())
+    })
+    .await;
+    requests.cancel(&alice(), id).await.unwrap();
+    // the stop has waited WAITS times and has just been put back (due in half a second)
+    let waited = eventually("the stop waited behind the delegation", || async {
+        w.store
+            .list_open_outbox(id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| {
+                r.kind == orch_ports::OutboxKind::Cancel
+                    && r.status == orch_ports::OutboxStatus::Pending
+                    && r.attempts >= WAITS
+            })
+    })
+    .await;
+    assert_eq!(
+        waited.refunded, waited.attempts,
+        "every claim so far only waited"
+    );
+    // the delegation goes out, and the platform stops listing the agent behind it
+    open_tx.send(true).unwrap();
+    eventually("the delegation sent", || async {
+        (sends_to(&w, &mine()) == 1).then_some(())
+    })
+    .await;
+    registry.remove(&AgentId::new(mine()));
+
+    wait_in(&w, id, ThreadState::Cancelled).await;
+    assert!(
+        !w.agent
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::Cancel { .. })),
+        "the unlisted agent was not asked to cancel"
+    );
+    let row = eventually("the stop finished", || async {
+        let row = w.store.get_outbox(waited.id).await.unwrap().unwrap();
+        (row.status == orch_ports::OutboxStatus::Delivered).then_some(row)
+    })
+    .await;
+    assert_eq!(
+        (row.attempts, row.refunded),
+        (waited.attempts + LISTING, waited.attempts),
+        "after the waits the stop made its listing attempts, each one claim, and then cancelled"
+    );
+    assert_eq!(row.counted_attempts(), LISTING);
+    token.cancel();
+    let _ = task.await;
 }
 
 #[tokio::test]
