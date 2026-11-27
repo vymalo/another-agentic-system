@@ -616,10 +616,10 @@ What the diagrams cannot say:
 - **A fair share of the slots ([ADR 0066](decisions/0066-a-fair-share-of-the-dispatcher.md)).** Which rows may be claimed is the per-thread
   order above; which of them are taken when there are more than free slots is `dispatcher.order`. `fair` (the default) gives each candidate the
   `load = running + rank` of its person, the owner of its thread: `running` is the person's rows `inflight` under a live lease, counted across
-  every replica and every kind, `rank` the row's place (1, 2, ...) among that person's candidates of this claim; the claim takes the lowest loads,
+  every replica and every kind, `rank` the row's place (1, 2, ...) among that person's candidates of this claim, ordered by `next_attempt_at` and then by age (ANR-1175: a routed row that only waited does not outrank the person's newer work, a row recovered after a crash keeps its place); the claim takes the lowest loads,
   the older row among equals. A person with nothing running gets the next free slot ahead of another person's queue, one person alone gets every
   slot, a `cancel` row goes first whatever the load, and a job that runs is never taken back. `fifo` is the oldest-first claim, kept as a switch.
-  The rows come from an index of each person's open rows (`outbox.owner`, migration `0024`), so a claim reads the first rows of each person, not the queue.
+  The rows come from an index of each person's open rows (`outbox.owner`, migration `0024`), so a claim reads the first rows of each person, not the queue (Postgres: `outbox_open_owner_due (owner, next_attempt_at, ord)`, migration `0036`, ANR-1175).
 - **Attempts and refunds (ANR-1078).** `attempts` counts claims and only goes up: it is the fence of the lease. A claim that
   only *waited* is given back (`outbox.refunded`, `OutboxItem::refunded`, raised by `ThreadStore::wait_outbox`, which the stop's wait for a
   delegation in flight calls instead of `retry_outbox`; the inbox's `refunded` of ADR 0016 over again), and `OutboxItem::counted_attempts()`
@@ -2797,7 +2797,7 @@ The design choices are closed enums, authentication at the edge with authorizati
 
 *Decided 2026-11-27, nothing built:* the rules of these tables move into the database, as functions for the mutations that carry one and views for such reads, with PostgreSQL 18 as the floor ([ADR 0107](decisions/0107-the-sql-adapters-keep-their-rules-in-the-database.md)); each slice updates this section with the functions and views its migration creates.
 
-**Built.** 35 migrations of the Postgres store, `crates/store-postgres/migrations/0001_init.sql` to `0035_run_leases_tombstone.sql` (the tables of this section carry the number of the migration that added each column; `run_leases` (the broker's bindings, `0030`) has `ended_at` from `0035`, the tombstone of an ended run that only the meter's account route reads, [ADR 0108](decisions/0108-a-run-is-charged-to-the-identity-providers-sub-and-an-ended-run-is-still-answered-to-the-meter.md); `orch-secrets-pg` keeps three of its own, and the SQLite store of an embedded application nine; *verified 2026-11-27* by counting the files of those directories), applied at boot by every
+**Built.** 36 migrations of the Postgres store, `crates/store-postgres/migrations/0001_init.sql` to `0036_outbox_open_owner_due.sql` (the tables of this section carry the number of the migration that added each column; `run_leases` (the broker's bindings, `0030`) has `ended_at` from `0035`, the tombstone of an ended run that only the meter's account route reads, [ADR 0108](decisions/0108-a-run-is-charged-to-the-identity-providers-sub-and-an-ended-run-is-still-answered-to-the-meter.md); `orch-secrets-pg` keeps three of its own, and the SQLite store of an embedded application nine; *verified 2026-11-27* by counting the files of those directories), applied at boot by every
 replica (`orch-pg-migrate` takes sqlx's advisory lock and keeps its history; an applied migration is never edited).
 
 ```mermaid
