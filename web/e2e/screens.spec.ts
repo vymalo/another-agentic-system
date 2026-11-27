@@ -91,6 +91,21 @@ async function shot(page: Page, name: string, { hovering = false, full = false }
   });
 }
 
+/**
+ * The turn as the log has it. While a job runs the conversation draws an optimistic turn (`data-turn-id`
+ * `__optimistic__…`); when the job ends the log's turn takes its place under another id, and everything inside it
+ * is mounted again (a graph drawn again, the cards and the answer new elements). The badge says Done in the same
+ * commit, so a locator resolved on Done can still hold the old turn's element when it is detached
+ * ("Element is not attached to the DOM", ANR-1004). Scroll to or shoot only what is inside the log's own turn.
+ */
+async function finalTurn(page: Page) {
+  const turn = conversation(page).locator(
+    '[data-slot="agent-turn"]:not([data-turn-id^="__optimistic__"])',
+  );
+  await expect(turn).toHaveCount(1);
+  return turn;
+}
+
 async function send(page: Page, text: string) {
   await page.getByLabel("Message", { exact: true }).fill(text);
   await page.getByRole("button", { name: "Send" }).click();
@@ -144,7 +159,7 @@ for (const scheme of ["light", "dark"] as const) {
       await startThread(page, "Fix the redirect loop after signing in");
       await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
       await shot(page, "done-pull-request");
-      await page.getByText("I fixed the redirect loop").scrollIntoViewIfNeeded();
+      await (await finalTurn(page)).getByText("I fixed the redirect loop").scrollIntoViewIfNeeded();
       await shot(page, "done-answer");
     });
 
@@ -248,11 +263,13 @@ for (const scheme of ["light", "dark"] as const) {
       // the answer of words, three cards and a drawn graph, in the narrower column the panel leaves
       await startThread(page, "cards-mermaid please", "Reviewer");
       await expect(badge(page)).toHaveText("Done");
-      await expect(page.locator('[data-slot="mermaid-image"]')).toBeVisible();
-      await page.locator('[data-slot="mermaid-image"]').scrollIntoViewIfNeeded();
+      const turn = await finalTurn(page);
+      const graph = turn.locator('[data-slot="mermaid-image"]');
+      await expect(graph).toBeVisible();
+      await graph.scrollIntoViewIfNeeded();
       await shot(page, "cards-mermaid");
       // the answer is taller than the screen: the cards (their heading at the top) are above the graph
-      await page
+      await turn
         .getByRole("heading", { name: "Three ways to keep a session" })
         .scrollIntoViewIfNeeded();
       await shot(page, "cards");
