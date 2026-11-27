@@ -1,5 +1,62 @@
 # Changelog
 
+## [0.9.0](https://github.com/vymalo/another-agentic-system/compare/v0.8.0...v0.9.0) (2026-11-27)
+
+
+### Features
+
+* **app:** send a person's message to their own provisioned agent ([#590](https://github.com/vymalo/another-agentic-system/issues/590)) ([794618a](https://github.com/vymalo/another-agentic-system/commit/794618a4b83e0c62861944a852b6993252ea9f5f))
+
+
+### Documentation
+
+* **adr:** renumber the later ADR of each duplicated number, 0094 and 0103 (ANR-1096) ([#603](https://github.com/vymalo/another-agentic-system/issues/603)) ([8610c68](https://github.com/vymalo/another-agentic-system/commit/8610c687bdaf3e983259408a8e11668db8716a84))
+* **api:** tags, examples and unwrapped descriptions in chat-api.yaml (ANR-1083) ([#605](https://github.com/vymalo/another-agentic-system/issues/605)) ([5f56692](https://github.com/vymalo/another-agentic-system/commit/5f566925ee78a8c64699edb2a261bfdd6c600da4))
+* fix stale built and not-built facts in vision, architecture, orchestrator and the api index (ANR-1125) ([#608](https://github.com/vymalo/another-agentic-system/issues/608)) ([830e4eb](https://github.com/vymalo/another-agentic-system/commit/830e4eb9cadb285ba26e25fa63139718aaeb25c0))
+* GitHub slugs on the site and a docs-check rule for dead #anchors (ANR-1127) ([#610](https://github.com/vymalo/another-agentic-system/issues/610)) ([663af83](https://github.com/vymalo/another-agentic-system/commit/663af83965197d1a8a3540922049e0e8f6087b67))
+* name no private repository, and a check that keeps it so ([#615](https://github.com/vymalo/another-agentic-system/issues/615)) ([63e0f92](https://github.com/vymalo/another-agentic-system/commit/63e0f92403176891fa6ae2f6519af2e0fc5f8cca))
+* progressive pages with in-depth blocks and one status-icon rule (ANR-1087) ([#606](https://github.com/vymalo/another-agentic-system/issues/606)) ([926cb1d](https://github.com/vymalo/another-agentic-system/commit/926cb1ddeeb6c7af9f09c3e6b1b3423fef245462))
+* **readme:** a features table with a status per row, and the ADR notes and counts it found stale ([#614](https://github.com/vymalo/another-agentic-system/issues/614)) ([e48f649](https://github.com/vymalo/another-agentic-system/commit/e48f649df483c5608f4280ebb7b288c385df9dac))
+* short sidebar labels with a 40-character guard, starting with the ADRs (ANR-1092) ([#599](https://github.com/vymalo/another-agentic-system/issues/599)) ([35f8e4b](https://github.com/vymalo/another-agentic-system/commit/35f8e4baa8162e8d55c3be429595dcd87004f0a1))
+* STRUCTURE.md v3, a wider sidebar, in-depth blocks and status icons (ANR-1084) ([#594](https://github.com/vymalo/another-agentic-system/issues/594)) ([f98fb19](https://github.com/vymalo/another-agentic-system/commit/f98fb196181767c86e662823bf9e515438a6857c))
+
+
+### Tests
+
+* **config:** read titled yaml fences of config.md ([#613](https://github.com/vymalo/another-agentic-system/issues/613)) ([1b075e6](https://github.com/vymalo/another-agentic-system/commit/1b075e62a77ebfe39c3022c9b7a56965a6a6d63b))
+* **web:** scroll to the log's own turn in the cards and done screens (ANR-1004) ([#600](https://github.com/vymalo/another-agentic-system/issues/600)) ([df5ace5](https://github.com/vymalo/another-agentic-system/commit/df5ace5ba710405df01e0ab54c06fe532584151a))
+* **web:** wait for a mention pick before typing on, in the mentions-warning screen ([#595](https://github.com/vymalo/another-agentic-system/issues/595)) ([2720425](https://github.com/vymalo/another-agentic-system/commit/2720425d5fd354392901f527fdc0cc5c87120f0b))
+* **web:** wait for the focus and the error words of a refused audience (ANR-1138) ([#611](https://github.com/vymalo/another-agentic-system/issues/611)) ([dbafabb](https://github.com/vymalo/another-agentic-system/commit/dbafabb2060107028e72a9ef398d94bc27fc3ae7))
+
+
+### Build System
+
+* **deploy:** Helm 4 only and Kubernetes 1.37 as the floor (ADR 0103) ([#591](https://github.com/vymalo/another-agentic-system/issues/591)) ([0cc6b29](https://github.com/vymalo/another-agentic-system/commit/0cc6b29ce36c12f7ecac372efee32b086dccc4b7))
+* **docs:** draw diagrams with vitepress-mermaid-renderer in the Material 3 colours (ANR-1091) ([#601](https://github.com/vymalo/another-agentic-system/issues/601)) ([030e2e0](https://github.com/vymalo/another-agentic-system/commit/030e2e0c38933c67ec0fb53528b47b858dc04ab3))
+* **docs:** group icons on titled fences and code groups (ANR-1089) ([#602](https://github.com/vymalo/another-agentic-system/issues/602)) ([8ea1cdb](https://github.com/vymalo/another-agentic-system/commit/8ea1cdb320e5cdd0c2939a9f63aeb2098c4db51b))
+* **docs:** mermaid 12.3.0 in the docs checker, the docs site and the web ([#612](https://github.com/vymalo/another-agentic-system/issues/612)) ([a6fb6d7](https://github.com/vymalo/another-agentic-system/commit/a6fb6d7946be65611564b0c5cdf3a85b315a6995))
+* **docs:** publish llms.txt, llms-full.txt and a .md per page (ANR-1088) ([#598](https://github.com/vymalo/another-agentic-system/issues/598)) ([4a301c5](https://github.com/vymalo/another-agentic-system/commit/4a301c5089587ee9961e2e60aa416c3e19fd1c00))
+
+
+### Continuous Integration
+
+* **release:** a tag publishes the orchestrator and web images and the chart at X.Y.Z, signed (ADR 0106) ([#616](https://github.com/vymalo/another-agentic-system/issues/616)) ([98c20b6](https://github.com/vymalo/another-agentic-system/commit/98c20b6af15e5ca4d1c198d080cd16cf1cbabf12))
+* **web:** update-screens commits only the stills beyond the bound (ANR-1128) ([#607](https://github.com/vymalo/another-agentic-system/issues/607)) ([a7ce933](https://github.com/vymalo/another-agentic-system/commit/a7ce9334e19b866ffe98829c6afc4b1443dbcdff))
+
+
+### Chores
+
+* **deploy:** bump orchestrator to sha-63e0f92 ([86845b6](https://github.com/vymalo/another-agentic-system/commit/86845b62a30cf2005fde7650657c582eb7533d7c))
+* **deploy:** bump orchestrator to sha-794618a ([e1dd01b](https://github.com/vymalo/another-agentic-system/commit/e1dd01b264608d7ace2061720fc747652cb5c78b))
+* **deploy:** bump web to sha-2720425 ([01598f4](https://github.com/vymalo/another-agentic-system/commit/01598f4ea27ddaeb987465fad93606e666717567))
+* **deploy:** bump web to sha-3ec5059 ([a84b5ee](https://github.com/vymalo/another-agentic-system/commit/a84b5ee09b2847a7e607703ea8842fa719e7dce9))
+* **deploy:** bump web to sha-663af83 ([5864ef5](https://github.com/vymalo/another-agentic-system/commit/5864ef5e5b7ba3454592049c95abcc6622a0ba87))
+* **deploy:** bump web to sha-a6fb6d7 ([a948ef4](https://github.com/vymalo/another-agentic-system/commit/a948ef444925fcba7b5c7f2db64fac76ee3d9da3))
+* **deploy:** bump web to sha-dbafabb ([76ff3e0](https://github.com/vymalo/another-agentic-system/commit/76ff3e034bdc682b4ecf3990672ec49887449ee9))
+* **deploy:** bump web to sha-df5ace5 ([179aefd](https://github.com/vymalo/another-agentic-system/commit/179aefd4cc0330b385aea382a0154aa41ff5eb34))
+* **web:** re-baseline the screens from CI's own image ([#597](https://github.com/vymalo/another-agentic-system/issues/597)) ([6743129](https://github.com/vymalo/another-agentic-system/commit/6743129cd7eb86c661300c005340eb85f57713e1))
+* **web:** re-baseline the screens from CI's own image ([#604](https://github.com/vymalo/another-agentic-system/issues/604)) ([3ec5059](https://github.com/vymalo/another-agentic-system/commit/3ec5059fd3e67aeb810fd2ce1465004c7137272f))
+
 ## [0.8.0](https://github.com/vymalo/another-agentic-system/compare/v0.7.1...v0.8.0) (2026-11-27)
 
 
