@@ -8,6 +8,8 @@ An agent works it (and may ask the other agents you mentioned), the system
 verifies it against real checks, and a pull request comes back. You read the
 chat surface. Planner-led parallel work and reviewer agents are post-MVP.
 
+Documentation site: <https://vymalo.github.io/another-agentic-system/>
+
 > **Status, 2026-10-03: the MVP is complete against its build order** — the orchestrator
 > (`orchestrator/`) and the chat surface (`web/`) carry every slice of the [MVP](docs/mvp.md) and every
 > requirement of the [vision](docs/vision.md) that is not listed there as post-MVP: a live registry of agents, rich
