@@ -149,7 +149,10 @@ impl Migrator {
 
     /// The same migrations with another floor, as `server_version_num` says it (`180000` is
     /// 18.0): for a test that proves the refusal on a server at or above [`MIN_SERVER_VERSION`].
-    /// A crate migrates with the default.
+    /// **Test-only**: `#[doc(hidden)]`, out of the crate's documented API (an integration test
+    /// cannot see a `cfg(test)` item, and a feature would be one more to forget in a release
+    /// build). A crate migrates with the default.
+    #[doc(hidden)]
     #[must_use]
     pub fn with_min_server_version(mut self, version: i32) -> Self {
         self.min_server_version = version;

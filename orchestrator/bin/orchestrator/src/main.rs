@@ -65,15 +65,21 @@ const EX_SOFTWARE: u8 = 70;
 /// that says what kind of failure it is (sysexits.h values, *unverified*: from memory of the
 /// BSD header). Anything else exits 1.
 fn exit_code(err: &anyhow::Error) -> u8 {
+    // The deployment points at a PostgreSQL below the floor (ADR 0107 decision 4): either store's
+    // migrations refused it before any DDL, and a restart changes nothing. Read before the walk
+    // below, wherever it sits in the chain: the port error that carries it (the thread store's
+    // `Internal`, the secret store's `Unavailable`, whose outage test depends on the build's
+    // features) must not decide first.
+    if err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<orch_pg_migrate::MigrateError>(),
+            Some(orch_pg_migrate::MigrateError::ServerTooOld { .. })
+        )
+    }) {
+        return EX_CONFIG;
+    }
     for cause in err.chain() {
         if cause.downcast_ref::<ConfigError>().is_some() {
-            return EX_CONFIG;
-        }
-        // The deployment points at a PostgreSQL below the floor (ADR 0107 decision 4): either
-        // store's migrations refused it before any DDL, and a restart changes nothing.
-        if let Some(orch_pg_migrate::MigrateError::ServerTooOld { .. }) =
-            cause.downcast_ref::<orch_pg_migrate::MigrateError>()
-        {
             return EX_CONFIG;
         }
         if let Some(store) = cause.downcast_ref::<StoreError>()

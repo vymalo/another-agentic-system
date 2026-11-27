@@ -788,7 +788,11 @@ fn migrate_err(err: MigrateError) -> SecretError {
             SecretError::unavailable("the migrations of the secret store failed").with_source(e)
         }
         // the deployment points at a server below the floor (ADR 0107): kept as the source so the
-        // binary exits 78; not an outage, so never restarted for ever
+        // binary exits 78 (its `exit_code` looks for it in the whole chain first), and no outage
+        // (`is_outage` is false for a `MigrateError` source). It is the port's `Unavailable`, class
+        // `Transient`, because `SecretError` has no other variant that keeps a source: the thread
+        // store's `Internal` would need a new variant of the port, which ADR 0107 decision 3 rules
+        // out. A caller that decides by the class alone must read the source.
         e @ MigrateError::ServerTooOld { .. } => {
             SecretError::unavailable("the database server is older than the secret store needs")
                 .with_source(e)

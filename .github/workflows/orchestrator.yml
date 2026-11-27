@@ -195,8 +195,9 @@ jobs:
       - run: cargo clippy -p orchestrator --features agent-local --all-targets --locked -- -D warnings
       - run: cargo test -p orchestrator --features agent-local --locked
 
-  # The store suites on PostgreSQL 18, the floor (ADR 0107 decision 4, the owner's decision 5), beside `check`'s 19.0: every crate
-  # that talks to PostgreSQL, the migrations' floor test and the fresh-database tests among them. A job of its own rather than a
+  # The store suites on PostgreSQL 18, the floor (ADR 0107 decision 4, the owner's decision 5), beside `check`'s 19.0: the crates of
+  # the two PostgreSQL stores and their migrator and connection (the floor test and the fresh-database tests among them) and the
+  # binary's own tests. Other crates that reach PostgreSQL (orch-e2e, the adam-backed local agent) run on 19.0 in `check` only. A job of its own rather than a
   # matrix of `check`, so `check` keeps its name and the lints and the other suites are not run twice. The server is 18.7, the
   # version the chart pins, by tag and digest (the manifest list, *verified 2026-11-27* by a pull from Docker Hub).
   store-floor:

@@ -40,7 +40,8 @@ What it adds to sqlx's runner (ADR 0107 decision 4): **the first statement of a 
 `MIN_SERVER_VERSION` (`180000`, PostgreSQL 18.0) is refused with `MigrateError::ServerTooOld { found, required }`,
 whose text names both versions as people write them (`17.6`, `18.0`) and nothing else. Nothing else is sent, so a
 database is never half-migrated by a build whose migrations need a newer server. `Migrator::with_min_server_version(n)`
-moves the floor, for a test that proves the refusal on a server at or above it; a crate migrates with the default.
+moves the floor, for a test that proves the refusal on a server at or above it; it is `#[doc(hidden)]`, test-only and
+out of the documented API, and a crate migrates with the default.
 
 A session lock needs one session: run it on a connection to the database itself, never through a
 transaction-mode pooler (PgBouncer). A run that is cancelled (its future dropped by a timeout or a shutdown) keeps

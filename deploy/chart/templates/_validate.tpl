@@ -879,8 +879,6 @@ missing identity must fail the render rather than silently serve a link another 
 {{- fail "orchestrator.toolServers needs the thread-tools surface in orchestrator.surfaces: the relay is one of its providers (ADR 0024)" -}}
 {{- end -}}
 {{- end -}}
-{{- /* The databases. `instances` is a whole number (`int` would cut 1.5 to 1 and quietly run no replica) and so is the pooler's; both are checked whether or not the pooler is on, so a wrong
-       value is found when it is written and not the day the pooler is turned on. The ceiling is a typo guard (a PVC per instance), not CloudNativePG's. */ -}}
 {{- /* The floor of the orchestrator's stores is PostgreSQL 18 (ADR 0107 decision 4): the orchestrator refuses an older server at its first
        migration and exits 78, so a render that names an older image is refused here first. The major is read from the tag of
        `database.imageName` (`postgresql:18.7-…`, a digest after it ignored); an image whose tag names no major is refused too, since nothing
@@ -897,6 +895,8 @@ missing identity must fail the render rather than silently serve a link another 
 {{- fail (printf "database.imageName is PostgreSQL %s, below the floor: the orchestrator needs PostgreSQL 18 or later (ADR 0107)" $major) -}}
 {{- end -}}
 {{- end -}}
+{{- /* The databases. `instances` is a whole number (`int` would cut 1.5 to 1 and quietly run no replica) and so is the pooler's; both are checked whether or not the pooler is on, so a wrong
+       value is found when it is written and not the day the pooler is turned on. The ceiling is a typo guard (a PVC per instance), not CloudNativePG's. */ -}}
 {{- include "agentic.checkWhole" (dict "name" "database.instances" "value" .Values.database.instances "min" 1 "max" 20) -}}
 {{- include "agentic.checkWhole" (dict "name" "database.pooler.instances" "value" .Values.database.pooler.instances "min" 1 "max" 20) -}}
 {{- if not (kindIs "bool" .Values.database.pooler.enabled) -}}

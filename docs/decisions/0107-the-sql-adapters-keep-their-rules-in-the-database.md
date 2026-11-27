@@ -117,7 +117,8 @@ Categories, 18 documentation), which is what a read after another writer's commi
    - **The refusal is in `orch-pg-migrate`, before any DDL.** `Migrator::run` reads
      `current_setting('server_version_num')::integer` on its connection **before** it takes the advisory lock and before
      it creates the history table, and below `180000` returns a new `MigrateError::ServerTooOld { found }` that names
-     the version and nothing else. Both histories go through it (`PgStore::migrate` and `migrate_direct`,
+     the version and nothing else. *Amended (2026-11-27, P0):* it is `ServerTooOld { found, required }`, and its text
+     names both versions (`17.6`, `18.0`), so a test that moves the floor reads the floor it moved. Both histories go through it (`PgStore::migrate` and `migrate_direct`,
      `PgSecretStore::migrate` and `migrate_direct`), so neither half-migrates; the binary's `exit_code` maps the error
      in a cause chain to 78 (the deployment points at a server it cannot run on). A test proves it on CI's own server
      with a floor one above the server's version, and checks that no table and no function of the run exists after.
@@ -167,7 +168,10 @@ Categories, 18 documentation), which is what a read after another writer's commi
      a tool that splits a file on `;` must never apply these files.
    - **A fresh-database test** in each PostgreSQL crate (`tests/functions.rs`) migrates an empty database, lists
      `pg_proc` and `pg_views` of the schema whose names start with the crate's prefix as `name(identity arguments)`,
-     fails when that set differs from the list the test holds, and calls every listed function once. The SQLite store
+     fails when that set differs from the list the test holds, and calls every listed function once. *Amended
+     (2026-11-27, P0):* the test lists **every** function and view of the schema, prefixed or not, which is stricter: a
+     routine without the prefix fails it too, and the one there is today, `outbox_set_owner()` (migration 0024's
+     trigger), is listed by name with no call. The SQLite store
      has the same test over `sqlite_master` (its triggers and views).
 7. **SQLite: constraints, views and triggers; no functions.** It has none. Its rules go where SQLite can hold them:
    the sequence of the log (a trigger that raises `orch:seq` when an event's `seq` is not the thread's `last_seq` plus
