@@ -8,8 +8,10 @@ sidebarTitle: "0062 · A network tier for each message"
   **Accepted 2026-11-26, the owner's decision, with two amendments:** **(1)** `allow-list` is **the deployment's** list, never
   the person's — which decision 2 already says, and which the acceptance makes binding. **(2)** A tier the agent **cannot
   enforce** (no egress proxy, a laptop) is **not listed** on its card: the card lists what the agent keeps to, not what it
-  would like to. What acceptance covers: the three tiers, the card's `params` and the message member; every name, status
-  code, default and shape below, and the open questions at the end, are still proposed, for the owner to confirm. **The owner's own, 2026-10-11:** the direction (more concepts like
+  would like to. **What acceptance covers:** decisions 1 to 10 and the three tier words `offline`, `allow-list` and `open`;
+  the status codes, the error texts and the configuration keys below stay proposed, and so do the open questions.
+  *(Original status, kept: proposed (2026-10-11), at the owner's request — the text below is as it was written, and
+  decisions 1, 9, the sketch, the Consequences and question 6 carry a dated amendment where the acceptance changes them.)* **The owner's own, 2026-10-11:** the direction (more concepts like
   `thread-tools/v1`, one for the network), the three tiers `offline`, `allow-list` (package registries and the forge) and `open`, that the agent enforces
   it, adam's way (run pods that reach only an egress proxy that applies the tier), that nothing is passed to children, a role cap `maxNetworkTier`, and what the
   orchestrator checks. **Proposed**, for the owner to confirm: every name, status code, default and shape below, and the open questions at the end. **Nothing of
@@ -39,8 +41,9 @@ What exists, and what the design rests on:
 
 ## Decision
 
-1. **An optional extension, `network-tier/v1`**, URI `https://agents.vymalo.com/a2a/extensions/network-tier/v1`. An agent lists it in its card with `params: {tiers, default}`: the tiers it honours and what it
-   works under when a message names none. The orchestrator reads the card on every send, uses the extension only when it is listed exactly with well-formed params, and an agent that lists nothing gets plain A2A.
+1. **An optional extension, `network-tier/v1`**, URI `https://agents.vymalo.com/a2a/extensions/network-tier/v1`. An agent lists it in its card with `params: {tiers, default}`: the tiers it **enforces** and what it
+   works under when a message names none. *(Amended 2026-11-26: the card lists only tiers the agent can enforce — see
+   decision 9 — so a tier it cannot keep is not offered at all.)* The orchestrator reads the card on every send, uses the extension only when it is listed exactly with well-formed params, and an agent that lists nothing gets plain A2A.
 2. **Three tiers, a closed list** ([ADR 0004](0004-closed-enums-over-dyn-registry.md)): `offline` < `allow-list` < `open`.
    - `offline`: what the agent runs reaches nothing but the agent's own channels (its model endpoint, the orchestrator's thread tools and relay, the files host).
    - `allow-list`: also the hosts of the deployment's list, **the package registries and the forge**. The list is the agent's deployment's, never the person's and never the orchestrator's.
@@ -56,7 +59,10 @@ What exists, and what the design rests on:
 7. **A role may cap the tier**: `auth.roles.<role>.maxNetworkTier`, optional, one of the three; absent means no cap. `GET /api/me` says it as a hint.
 8. **The web** shows a network chip in the composer **only when** the selected agent's capabilities document carries the extension; hidden otherwise, never a disabled or invented control. It sends a tier once the
    person has picked one.
-9. **A tier only narrows**, and it is **a promise by the agent unless the deployment makes it a boundary**. It never grants what the deployment's network policy, credentials or the forge withheld. It does not govern the servers a
+9. **A tier only narrows**, and **a listed tier is a boundary of the agent's deployment, not a promise**. *(Amended
+   2026-11-26: the card lists only what the agent enforces, so a tier the agent cannot keep is not offered; what the
+   orchestrator still cannot check is whether the agent keeps it — that is the defect the Consequences describe.)* It
+   never grants what the deployment's network policy, credentials or the forge withheld. It does not govern the servers a
    person attached to the thread (the orchestrator calls those, [ADR 0024](0024-mcp-tools-attached-per-conversation.md)); open question 78 asks whether it should.
 10. **Independent of the access tier.** A person may pick `edits` and `offline`. Neither implies nor widens the other.
 
@@ -95,9 +101,16 @@ The state diagram of one message's tier is in [the contract](../api/network-tier
 ## Consequences
 
 - **Easier:** one chip controls how far what the agent runs may reach. An agent without the extension, kagent included, gets the request it got before, byte for byte. An export shows the tier of every message.
-- **Harder, and said plainly:** a tier is a promise unless the agent's deployment enforces it. An agent that lists the extension and works above its tier has a defect the orchestrator cannot see. For adam the sketch
+- **Harder, and said plainly:** a listed tier is one the agent's deployment enforces (amended 2026-11-26), so the
+  question is not whether the tier is a promise but whether the deployment really enforces it. An agent that lists the
+  extension and works above its tier has a defect the orchestrator cannot see. For adam the sketch
   below makes it a boundary, but only if the cluster's network plugin enforces the policy (*unverified* for the owner's cluster, as adam-rs's own page says).
 - **Harder:** an asked agent works under its own network, so a person who picks `offline` relies on the agent they talk to not to ask another agent for what needs the network (duty 1). The price of passing nothing down.
+- **The scenario that proves it, and its condition (2026-11-26):** ANR-911 sends `offline` to the real coder and expects a
+  command that fetches a URL to fail. That needs the coder's deployment to enforce the tier — an egress proxy, which the
+  compose stack does not have today — because a coder that cannot enforce `offline` must not list it (decision 9, as
+  amended). Until the stack has a proxy, or ANR-986 shows how `offline` is enforced without run pods, the scenario runs
+  only where the tier is a boundary.
 - **Required elsewhere:** in the orchestrator, the `NetworkTier` enum, the checks, `user_message.networkTier`, `agent_status` `data.networkTier`, the adapter, the dispatcher's second read of the card, `maxNetworkTier`
   on a role and on `GET /api/me`, the capabilities key with its params; in the web, the chip and the tier on a message; in the docs, the pages the contract names under *What the build changes*; in adam-rs, below.
 
@@ -105,7 +118,10 @@ The state diagram of one message's tier is in [the contract](../api/network-tier
 
 adam-rs designs and builds its side in its own ADR. The shape, so the contract can be seen to be implementable (the contract page has the diagram):
 
-- **The card** lists the extension with `tiers: [offline, allow-list, open]` and `default: open` in `adam-coder` and `adam-agent` (an agent folder may list fewer).
+- **The card** lists the extension with the tiers its deployment enforces — all three, `[offline, allow-list, open]`,
+  only behind the egress proxy — and `default: open`; `adam-coder` and `adam-agent` list them there. Without an egress
+  proxy (a laptop, the compose stack) the agent enforces no tier, so it lists **no tier at all** and does not list the
+  extension: plain A2A, no chip (amended 2026-11-26, decision 9).
 - **The run pod's NetworkPolicy** allows egress **only to an egress proxy** and to the agent's own channels, and no DNS: the proxy resolves names. The proxy applies the tier per run, set by the coder when a message names
   one: `offline` refuses every `CONNECT`, `allow-list` accepts the targets on the deployment's list, `open` accepts any target whose resolved address is not private.
 - **The message:** read `tier` from a message that activated the extension, from the next step on, newest first, never in the middle of a tool call. A task never keeps a tier from another task.
@@ -119,4 +135,6 @@ adam-rs designs and builds its side in its own ADR. The shape, so the contract c
 3. **Other doors.** The MCP surface, webhooks and timers send no tier. Should `start_job` take one?
 4. **No cap is the default.** `maxNetworkTier` absent means a person may pick `open` on any agent that honours it.
 5. **The servers a person attached under `offline`** (decision 9): hide them from the agent, or leave them? [`open-questions.md`](../open-questions.md), question 78.
-6. **A promise or a boundary.** Should the card say which a tier is, so the web can tell the person? Question 79.
+6. ~~**A promise or a boundary.** Should the card say which a tier is, so the web can tell the person?~~ **Answered
+   2026-11-26:** a listed tier is a boundary of the agent's deployment, because the card lists only what the agent
+   enforces (decision 9, as amended). Question 79 is closed with this date; there is no `enforced` param to add.
