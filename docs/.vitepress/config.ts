@@ -112,7 +112,7 @@ export default withMermaid(
     cleanUrls: true,
     rewrites: { "api/README.md": "api/index.md" },
     // Pages link to source files outside docs/ (checked by tools/docs-check); every other dead link fails the build.
-    ignoreDeadLinks: [/^\.\/(\.\.\/)+/, /(^|\/)examples\//, /(^|\/)tester-note$/],
+    ignoreDeadLinks: [/^\.\/(\.\.\/)+/, /(^|\/)examples\//],
     // tester-note.md is a draft for the owner: it stays in the repository and is not on the site.
     srcExclude: ["**/node_modules/**", "**/examples/**", "tester-note.md"],
     themeConfig: {
