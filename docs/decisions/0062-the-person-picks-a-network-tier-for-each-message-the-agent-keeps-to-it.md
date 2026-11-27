@@ -9,13 +9,14 @@ sidebarTitle: "0062 · A network tier for each message"
   the person's — which decision 2 already says, and which the acceptance makes binding. **(2)** A tier the agent **cannot
   enforce** (no egress proxy, a laptop) is **not listed** on its card: the card lists what the agent keeps to, not what it
   would like to. **What acceptance covers:** decisions 1 to 10 and the three tier words `offline`, `allow-list` and `open`;
-  the status codes, the error texts and the configuration keys below stay proposed, and so do the open questions.
+  the status codes, the error texts and the configuration keys below stay proposed (including those inside decisions 3, 4
+  and 7), and so do the open questions.
   *(Original status, kept: proposed (2026-10-11), at the owner's request — the text below is as it was written, and
-  decisions 1, 9, the sketch, the Consequences and question 6 carry a dated amendment where the acceptance changes them.)* **The owner's own, 2026-10-11:** the direction (more concepts like
+  decisions 1, 9, the sketch, the Consequences and question 6 carry a dated amendment where the acceptance changes them. **The owner's own, 2026-10-11:** the direction (more concepts like
   `thread-tools/v1`, one for the network), the three tiers `offline`, `allow-list` (package registries and the forge) and `open`, that the agent enforces
   it, adam's way (run pods that reach only an egress proxy that applies the tier), that nothing is passed to children, a role cap `maxNetworkTier`, and what the
   orchestrator checks. **Proposed**, for the owner to confirm: every name, status code, default and shape below, and the open questions at the end. **Nothing of
-  this is built.** Extends [ADR 0008](0008-platform-integration-via-a2a-extension.md) (the optional-extension pattern) and
+  this is built.*** Extends [ADR 0008](0008-platform-integration-via-a2a-extension.md) (the optional-extension pattern) and
   [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md) (roles). It is the sibling of the access tier ([ADR 0061](0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), *proposed; the orchestrator and the web are built against mocks*):
   the same shape on another axis. The wire contract is [`api/network-tier-v1.md`](../api/network-tier-v1.md).
 
@@ -107,10 +108,11 @@ The state diagram of one message's tier is in [the contract](../api/network-tier
   below makes it a boundary, but only if the cluster's network plugin enforces the policy (*unverified* for the owner's cluster, as adam-rs's own page says).
 - **Harder:** an asked agent works under its own network, so a person who picks `offline` relies on the agent they talk to not to ask another agent for what needs the network (duty 1). The price of passing nothing down.
 - **The scenario that proves it, and its condition (2026-11-26):** ANR-911 sends `offline` to the real coder and expects a
-  command that fetches a URL to fail. That needs the coder's deployment to enforce the tier — an egress proxy, which the
-  compose stack does not have today — because a coder that cannot enforce `offline` must not list it (decision 9, as
-  amended). Until the stack has a proxy, or ANR-986 shows how `offline` is enforced without run pods, the scenario runs
-  only where the tier is a boundary.
+  command that fetches a URL to fail, and the same message at `open` to succeed. Both need the coder's deployment to
+  enforce the tier — an egress proxy, which the compose stack does not have today — because a coder that cannot enforce
+  `offline` (or cannot keep `open` from reaching private ranges) must not list either (decision 9, as amended). Until the
+  stack has a proxy, or ANR-986 shows how a tier is enforced without run pods, the scenario runs only where the tier is a
+  boundary.
 - **Required elsewhere:** in the orchestrator, the `NetworkTier` enum, the checks, `user_message.networkTier`, `agent_status` `data.networkTier`, the adapter, the dispatcher's second read of the card, `maxNetworkTier`
   on a role and on `GET /api/me`, the capabilities key with its params; in the web, the chip and the tier on a message; in the docs, the pages the contract names under *What the build changes*; in adam-rs, below.
 
@@ -118,10 +120,12 @@ The state diagram of one message's tier is in [the contract](../api/network-tier
 
 adam-rs designs and builds its side in its own ADR. The shape, so the contract can be seen to be implementable (the contract page has the diagram):
 
-- **The card** lists the extension with the tiers its deployment enforces — all three, `[offline, allow-list, open]`,
-  only behind the egress proxy — and `default: open`; `adam-coder` and `adam-agent` list them there. Without an egress
-  proxy (a laptop, the compose stack) the agent enforces no tier, so it lists **no tier at all** and does not list the
-  extension: plain A2A, no chip (amended 2026-11-26, decision 9).
+- **The card** lists the extension with the tiers its deployment enforces, and there are three cases. **All three**
+  (`[offline, allow-list, open]`, `default: open`) behind an egress proxy; `adam-coder` and `adam-agent` list them there.
+  **`[open]` alone** where run pods exist and the network plugin enforces the policy (it already refuses private ranges,
+  link-local and the cluster's CIDRs — what `open` requires; *unverified* for the owner's cluster), with no proxy. **No
+  tier at all** where neither holds (a laptop, the compose stack): the agent does not list the extension, gets plain A2A
+  and no chip (amended 2026-11-26, decision 9).
 - **The run pod's NetworkPolicy** allows egress **only to an egress proxy** and to the agent's own channels, and no DNS: the proxy resolves names. The proxy applies the tier per run, set by the coder when a message names
   one: `offline` refuses every `CONNECT`, `allow-list` accepts the targets on the deployment's list, `open` accepts any target whose resolved address is not private.
 - **The message:** read `tier` from a message that activated the extension, from the next step on, newest first, never in the middle of a tool call. A task never keeps a tier from another task.

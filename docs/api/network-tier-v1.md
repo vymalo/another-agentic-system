@@ -1,8 +1,9 @@
 # A2A extension: network tier (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/network-tier/v1`
-- **Status:** **accepted (2026-11-26)**, with the ADR's two amendments; nothing is built. Proposed 2026-10-11, at the owner's request. Acceptance covers the three
-  tiers, the card's `params` and the message member; every name, status code and default here is still proposed, for the owner to confirm. The amendments:
+- **Status:** **accepted (2026-11-26)**, with the ADR's two amendments; nothing is built. Proposed 2026-10-11, at the owner's request. Acceptance covers the ADR's
+  decisions 1 to 10 and the three tier words `offline`, `allow-list` and `open`; the status codes, the error texts and the
+  configuration keys here stay proposed, for the owner to confirm. The amendments:
   **`allow-list` is the deployment's list, never the person's**, and **a tier the agent cannot enforce is not listed on its card**.
 - **Decided in:** [ADR 0062](../decisions/0062-the-person-picks-a-network-tier-for-each-message-the-agent-keeps-to-it.md); the optional-extension pattern is
   [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md). It is the sibling of the access tier ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), [`access-tier-v1.md`](access-tier-v1.md), *proposed; the
@@ -84,9 +85,11 @@ stateDiagram-v2
 ```json
 {"uri": "https://agents.vymalo.com/a2a/extensions/network-tier/v1",
  "description": "Keeps what it runs to the network tier the person picks for each message.",
- "required": false,
- "params": {"tiers": ["offline", "allow-list", "open"], "default": "open"}}   // an agent behind the egress proxy; see `tiers` below
+ "required": false, "params": {"tiers": ["offline", "allow-list", "open"], "default": "open"}}
 ```
+
+That card is the card of an agent **behind the egress proxy**, which can keep all three; `tiers` below says what an agent
+that cannot does.
 
 | Param | Meaning |
 |---|---|
