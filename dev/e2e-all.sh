@@ -90,13 +90,17 @@
 #                     both extensions activated and each member in its metadata; each message names its own and one that names none carries
 #                     no member; an alias or level the card does not offer, and a model for mock-coder, are typed 422s carrying `offered`
 #                     before anything is written
-#   pick-real         the model pick on a REAL adam agent (ADR 0086): the chat's card    pick-real-e2e.sh
-#                     lists model-pick/v1 with the two aliases of dev/model-profiles.json
-#                     (MODEL_ALIASES_FILE); GET /api/agents carries them; a message naming
-#                     none is answered by the chat's own model, the thread's default is
-#                     answered by its alias, a message's pick wins over the thread's, and
-#                     an alias the card does not offer is a 422 with the offered list and
-#                     nothing sent
+#   pick-real         the model pick and the reasoning level on a REAL adam agent          pick-real-e2e.sh
+#                     (ADR 0086): the chat's card lists model-pick/v1 with the two aliases
+#                     of dev/model-profiles.json (MODEL_ALIASES_FILE) and reasoning/v1
+#                     with the levels and the default that same file declares; GET
+#                     /api/agents carries both; a message naming none is answered by the
+#                     chat's own model, the thread's default is answered by its alias, a
+#                     message's pick wins over the thread's, and an alias the card does not
+#                     offer is a 422 with the offered list and nothing sent; a run at `high`
+#                     reaches the model with `reasoning_effort: high`, the thread's default
+#                     level reaches it too, and a level the card does not offer is a 422
+#                     `reasoning_not_offered` with nothing written
 #   locale-real       the interface language on a REAL adam agent (ADR 0069): the chat's   locale-real-e2e.sh
 #                     card lists locale/v1 with the deployment's tag (DEFAULT_LOCALE of
 #                     compose.yaml), a message naming de-DE reaches the model as one more turn
@@ -406,10 +410,12 @@ for s in "$@"; do
         esac
       done ;;
     pick-real)
-      case " $agents " in
-        *" chat "*) ;;
-        *) echo "scenario pick-real needs the agent chat; GET /api/agents does not list it (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
-      esac ;;
+      for a in chat researcher; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario pick-real needs the agents chat and researcher; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
     commands)
       for a in adam chat; do
         case " $agents " in
