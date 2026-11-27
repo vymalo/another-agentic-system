@@ -21,9 +21,10 @@ owner moved the estate's floor in one step: Helm 4 only, Kubernetes 1.37 or late
 3. **Every kind job runs `kindest/node:v1.37.0`**, by tag and digest
    (`sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5`), with kind v0.33.0 and kubectl v1.37.3
    (the minor of the node, so the client is never two minors from the server) — except the agent-router spike, which keeps
-   kubectl v1.36.7, one minor under: `kubectl port-forward` in 1.37 enters the pod's network namespace and dials
-   `127.0.0.1` inside it, and Envoy Gateway's proxy binds the pod's address, not loopback, so every tunnel to it is
-   refused (run 45946481869). The spike is the only job here that port-forwards.
+   kubectl v1.35.9, the version it last passed with: `kubectl port-forward` in 1.36 and 1.37 enters the pod's network
+   namespace and dials `127.0.0.1` inside it, and Envoy Gateway's proxy binds the pod's address, not loopback, so every
+   tunnel to it is refused (runs 45946481869 and 45948777930). The spike is the only job here that port-forwards; it is
+   re-pinned when the proxy listens on loopback or the spike reaches the gateway another way.
 4. **kubeconform checks the render at 1.37.0** (`KUBERNETES_VERSION` of `deploy.yml`), whose schemas exist
    (`master-1.37.0` of `yannh/kubernetes-json-schema`).
 5. **Helm 4's behaviour was read, not assumed**, on the pinned binary:
