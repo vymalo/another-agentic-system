@@ -2041,9 +2041,10 @@ async fn two_waiters_on_one_failing_flight(make: fn() -> ProvisionError) -> (App
         target: target("coder"),
         text: text.to_owned(),
     };
+    let person = alice();
     let (a, b) = tokio::join!(
-        app.create_thread(&alice(), new("one")),
-        app.create_thread(&alice(), new("two")),
+        app.create_thread(&person, new("one")),
+        app.create_thread(&person, new("two")),
     );
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -2214,7 +2215,8 @@ async fn a_joiner_that_starts_its_own_flight_is_cut_at_its_own_deadline() {
         text: text.to_owned(),
     };
     let t0 = tokio::time::Instant::now();
-    let first = app.create_thread(&alice(), new("early"));
+    let person = alice();
+    let first = app.create_thread(&person, new("early"));
     let joiner = async {
         tokio::time::sleep(Duration::from_secs(1)).await;
         app.create_thread(&alice(), new("joiner")).await
@@ -2299,7 +2301,8 @@ async fn a_late_joiner_of_a_flight_that_runs_out_gets_its_own_deadline() {
         target: target("coder"),
         text: text.to_owned(),
     };
-    let first = app.create_thread(&alice(), new("early"));
+    let person = alice();
+    let first = app.create_thread(&person, new("early"));
     let late = async {
         tokio::time::sleep(Duration::from_secs(15)).await;
         app.create_thread(&alice(), new("late")).await
