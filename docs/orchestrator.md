@@ -2784,6 +2784,8 @@ The design choices are closed enums, authentication at the edge with authorizati
 
 ## Data model
 
+*Decided 2026-11-27, nothing built:* the rules of these tables move into the database, as functions for the mutations that carry one and views for such reads, with PostgreSQL 18 as the floor ([ADR 0107](decisions/0107-the-sql-adapters-keep-their-rules-in-the-database.md)); each slice updates this section with the functions and views its migration creates.
+
 **Built.** 33 migrations of the Postgres store, `crates/store-postgres/migrations/0001_init.sql` to `0033_user_tool_server_last4.sql` (the tables of this section carry the number of the migration that added each column; `orch-secrets-pg` keeps three of its own, and the SQLite store of an embedded application eight; *verified 2026-11-27* by counting the files of those directories), applied at boot by every
 replica (`orch-pg-migrate` takes sqlx's advisory lock and keeps its history; an applied migration is never edited).
 
