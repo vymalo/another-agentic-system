@@ -186,7 +186,7 @@ call (the event's data, `by` and `at`), the agent's own under its invocation `su
 task's totals, one entry per provider and model. The reference client hands the `CUSTOM` events on and keeps the run's usage
 (`expected/usage.json`, its `custom` and `runs[0].usage`).
 
-The `ci.agui.json` golden is the CI gate a viewer reads (ADR 0017, [`../agui.md`](../agui.md#ci-results-vymalo-ci)): **one
+The `ci.agui.json` golden is the CI gate a viewer reads (ADR 0017, [`../agui.md`](../agui.md#ci-results-vymaloci)): **one
 run** across two attempts, the `vymalo.check` card of the source `ci` (`check-1-1-ci`, pending, then failed), between them
 the `vymalo.ci` card of the report (`ci-<sha>-ci/build`, `replace: true`: conclusion, `passed`, `shortSha`, url and
 summary), `vymalo.rework`, the next attempt's subagent, and the same again for a green report on the second commit.

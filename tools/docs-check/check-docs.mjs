@@ -5,8 +5,7 @@
 //      <source> of a <picture>) does too, and
 //   4. every `::: in-depth` block of the site (docs/.vitepress/theme/in-depth.ts) is closed, and
 //   5. every `#fragment` of such a link, from a README.md or a file under docs/, to a Markdown file
-//      names a heading (slugged as the docs site does, VitePress's default slugify with markdown-it-anchor's
-//      -1, -2 suffixes for repeats) or an `id="..."` of an HTML tag of that file, and
+//      names a heading (slugged as GitHub and the docs site do, github-slugger, -1, -2 for repeats) or an `id="..."` of an HTML tag of that file, and
 //   6. every Rust crate (a directory with a Cargo.toml under orchestrator/crates/ or
 //      orchestrator/bin/) has a README.md next to it.
 // Usage (from the repo root):  npm --prefix tools/docs-check ci && node tools/docs-check/check-docs.mjs
@@ -66,15 +65,9 @@ function unclosedInDepth(src) {
 }
 const failures = [];
 
-// The docs site's slug of a heading (VitePress 1.6: docs/.vitepress/config.ts sets no markdown.anchor.slugify).
-const rControl = /[\u0000-\u001f]/g;
-const rSpecial = /[\s~`!@#$%^&*()\-_+=[\]{}|\\;:"'“”‘’<>,.?/]+/g;
-const rCombining = /[\u0300-\u036F]/g;
-const slugify = (str) => str.normalize('NFKD').replace(rCombining, '').replace(rControl, '').replace(rSpecial, '-')
-  .replace(/-{2,}/g, '-').replace(/^-+|-+$/g, '').replace(/^(\d)/, '_$1').toLowerCase();
-
-// GitHub's slug of a heading, for a README or a page read on github.com: lowercase, punctuation dropped (not
-// turned into a hyphen: "dispatcher's" is "dispatchers", "ask_agent" keeps its underscore), spaces to hyphens.
+// GitHub's slug of a heading, which is also the docs site's (docs/.vitepress/config.ts sets markdown.anchor.slugify to
+// github-slugger), so one link works on both: lowercase, punctuation dropped (not turned into a hyphen: "dispatcher's"
+// is "dispatchers", "ask_agent" keeps its underscore), spaces to hyphens, -1, -2 on a repeat.
 const githubSlug = (str) => str.toLowerCase().replace(/[^\p{L}\p{M}\p{N}_\- ]/gu, '').replace(/ /g, '-');
 
 // The text markdown-it-anchor slugs: the text and code of the heading, no markup, no image, no HTML tag.
@@ -91,10 +84,10 @@ const headingText = (raw) => raw
 
 // The anchors of a Markdown file: its headings (ATX or Setext, outside fenced code) and the id="" of its HTML tags.
 const anchorCache = new Map();
-function anchorsOf(file, scheme) {
-  const key = `${scheme}:${file}`;
+function anchorsOf(file) {
+  const key = file;
   if (anchorCache.has(key)) return anchorCache.get(key);
-  const slug = scheme === 'site' ? slugify : githubSlug;
+  const slug = githubSlug;
   const ids = new Set();
   const used = new Map();
   const add = (title) => {
@@ -158,10 +151,8 @@ for (const file of markdownFiles(root)) {
     if (fragment && checksAnchors(rel) && resolved.endsWith('.md') && fs.statSync(resolved).isFile()) {
       anchors++;
       const want = decodeURIComponent(fragment);
-      // A page of the site linking a page of the site is read on the site; everything else is read on github.com.
-      const scheme = rel.startsWith('docs' + path.sep) && path.relative(path.join(root, 'docs'), resolved).split(path.sep)[0] !== '..' ? 'site' : 'github';
-      if (!anchorsOf(resolved, scheme).has(want)) {
-        failures.push(`${rel}:${lineOf(src, m.index)} dead anchor: #${fragment} is no heading or id of ${path.relative(root, resolved)} (${scheme} slugs)`);
+      if (!anchorsOf(resolved).has(want)) {
+        failures.push(`${rel}:${lineOf(src, m.index)} dead anchor: #${fragment} is no heading or id of ${path.relative(root, resolved)}`);
       }
     }
   }
