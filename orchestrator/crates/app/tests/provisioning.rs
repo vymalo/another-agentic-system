@@ -2053,7 +2053,7 @@ async fn two_waiters_on_one_failing_flight(make: fn() -> ProvisionError) -> (App
     (a.unwrap_err(), b.unwrap_err())
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn two_waiters_on_a_flight_that_is_refused_both_get_refused() {
     let (a, b) = two_waiters_on_one_failing_flight(|| ProvisionError::Refused).await;
     for e in [a, b] {
@@ -2085,7 +2085,7 @@ impl std::error::Error for SendingFailed {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn two_waiters_on_an_unavailable_flight_both_get_it_with_its_cause_chain() {
     let (a, b) = two_waiters_on_one_failing_flight(|| {
         ProvisionError::unavailable(SendingFailed(std::io::Error::other("connection refused")))
@@ -2162,6 +2162,82 @@ async fn a_provisioner_that_panics_is_not_ready_at_once_and_the_next_call_starts
             "{err:?}"
         );
     }
+}
+
+/// A provisioner that never answers: the flight ends at its own backstop.
+struct Hanging {
+    calls: Arc<AtomicUsize>,
+}
+
+impl AgentProvisioner for Hanging {
+    async fn ensure_ready(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<ProvisionedAgent, ProvisionError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        std::future::pending().await
+    }
+    async fn state(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<Option<AgentState>, ProvisionError> {
+        Ok(None)
+    }
+    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+    async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+}
+
+/// A caller is never kept past its own deadline (its start plus `BOUND` plus `OUTER_SLACK`): one
+/// that joins at t=1 a flight that ends at the backstop (t=40) starts a flight of its own at once
+/// and is cut at t=41, with the time it actually waited, 40 s, in whole seconds. The caller that
+/// started the first flight is told the bound.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_that_starts_its_own_flight_is_cut_at_its_own_deadline() {
+    let w = World::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = app_with(
+        &w,
+        Hanging {
+            calls: Arc::clone(&calls),
+        },
+        &[AgentKind::Coder],
+    );
+    let new = |text: &str| NewThread {
+        title: None,
+        target: target("coder"),
+        text: text.to_owned(),
+    };
+    let t0 = tokio::time::Instant::now();
+    let first = app.create_thread(&alice(), new("early"));
+    let joiner = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        app.create_thread(&alice(), new("joiner")).await
+    };
+    let (first, joiner) = tokio::join!(first, joiner);
+    let total = t0.elapsed();
+    let AppError::AgentNotReady { waited, .. } = first.unwrap_err() else {
+        panic!("not ready");
+    };
+    assert_eq!(waited, BOUND);
+    let AppError::AgentNotReady { waited, .. } = joiner.unwrap_err() else {
+        panic!("not ready");
+    };
+    assert_eq!(
+        waited,
+        Duration::from_secs(40),
+        "the time the joiner waited, in whole seconds"
+    );
+    assert!(
+        total >= Duration::from_secs(41) && total < Duration::from_secs(42),
+        "the joiner was cut at its own deadline, not kept for a second backstop: {total:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "one more request, no spin");
 }
 
 /// The first call of this provisioner ends `NotReady` after 20 s; every later one is ready after

@@ -66,6 +66,11 @@ enum Outcome {
     Failed(ProvisionError),
 }
 
+/// `elapsed` rounded up to whole seconds, so that a 503's detail never shows nanoseconds.
+fn whole_seconds(elapsed: Duration) -> Duration {
+    Duration::from_secs(elapsed.as_secs() + u64::from(elapsed.subsec_nanos() > 0))
+}
+
 type Flight = watch::Receiver<Option<Arc<Outcome>>>;
 type Flights = Mutex<HashMap<(AgentOwner, AgentKind), Flight>>;
 
@@ -192,27 +197,49 @@ impl Provisioning {
             return Ok(None);
         };
         let owner = Self::owner_of(user);
-        // This caller's own deadline, whatever flight it joins.
+        // This caller's own deadline, whatever flight it joins; none if the sum overflows.
         let began = Instant::now();
-        let deadline = began + self.ready_timeout.saturating_add(OUTER_SLACK);
+        let deadline = began.checked_add(self.ready_timeout.saturating_add(OUTER_SLACK));
+        let mut last_seen = None;
+        let mut rounds = 0_u32;
         loop {
-            let (outcome, started) = self.fly(owner.clone(), kind).await;
+            let round = self.fly(owner.clone(), kind);
+            // Dropping the wait at the deadline is safe: the flight goes on without it.
+            let (outcome, started) = match deadline {
+                Some(at) => match tokio::time::timeout_at(at, round).await {
+                    Ok(done) => done,
+                    Err(_elapsed) => {
+                        return Err(AppError::AgentNotReady {
+                            kind: kind.prefix(),
+                            waited: whole_seconds(began.elapsed()),
+                            last: last_seen,
+                        });
+                    }
+                },
+                None => round.await,
+            };
             match &*outcome {
                 Outcome::Ready(agent) => return Ok(Some(AgentId::new(agent.name.clone()))),
                 // A flight this caller joined may have been started long before it came, and ended
                 // `NotReady` on its own bound. This caller still has time: it joins the next
-                // flight, or starts one. A flight it started itself is final. (The dispatcher's
-                // probe cuts this whole call at the probe, whichever way it goes.)
-                Outcome::NotReady(_) if !started && Instant::now() < deadline => {}
+                // flight, or starts one, and is cut at its own deadline. A flight it started
+                // itself is final. Each extra round is paid by a flight that ended, so there is no
+                // spin. (The dispatcher's probe cuts this whole call at the probe anyway.)
+                Outcome::NotReady(last)
+                    if !started && deadline.is_none_or(|at| Instant::now() < at) =>
+                {
+                    last_seen = *last;
+                    rounds += 1;
+                }
                 Outcome::NotReady(last) => {
                     return Err(AppError::AgentNotReady {
                         kind: kind.prefix(),
-                        // the bound that ran out for a flight of its own; the time this caller
-                        // actually waited for one it joined
-                        waited: if started {
+                        // the bound that ran out for the only flight this caller waited on, which
+                        // it started; otherwise the time it actually waited
+                        waited: if started && rounds == 0 {
                             self.ready_timeout
                         } else {
-                            began.elapsed()
+                            whole_seconds(began.elapsed())
                         },
                         last: *last,
                     });
