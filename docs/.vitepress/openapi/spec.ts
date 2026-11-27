@@ -3,9 +3,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
-import { DEFAULT_BASE, DEFAULT_TAG, rewriteDocLinks } from "./shared";
-
-export { DEFAULT_TAG };
+import { DEFAULT_BASE, rewriteDocLinks } from "./shared";
 
 const file = fileURLToPath(new URL("../../api/chat-api.yaml", import.meta.url));
 

@@ -3,9 +3,6 @@
 // The site's base, written once: config.ts reads DOCS_BASE with this default, and so does the loader.
 export const DEFAULT_BASE = "/another-agentic-system/";
 
-// The tag the library puts the spec's untagged operations under. The contract names no tags.
-export const DEFAULT_TAG = "Chat";
-
 const REPO_BLOB = "https://github.com/vymalo/another-agentic-system/blob/main/docs";
 
 // A route id or tag becomes a path segment of a built page: nothing else may.

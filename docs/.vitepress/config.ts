@@ -5,7 +5,7 @@ import { defineMd3Config } from "@vaam-apps/vitepress-md3/config";
 import { useSidebar } from "vitepress-openapi";
 import llmstxt from "vitepress-plugin-llms";
 import { groupIconMdPlugin, groupIconVitePlugin } from "vitepress-plugin-group-icons";
-import { DEFAULT_BASE, DEFAULT_TAG } from "./openapi/shared";
+import { DEFAULT_BASE } from "./openapi/shared";
 import { loadSpec } from "./openapi/spec";
 import { llmsSidebar } from "./llms";
 import { inDepth } from "./theme/in-depth";
@@ -59,7 +59,7 @@ const apiPages: { text: string; link: string }[] = [
 const chatApiOperations: SidebarItem = {
   text: "Chat API operations",
   collapsed: true,
-  items: useSidebar({ spec: loadSpec(), defaultTag: DEFAULT_TAG, linkPrefix: "/api/operations/", tagLinkPrefix: "/api/tags/" }).generateSidebarGroups({ tags: [DEFAULT_TAG] }),
+  items: useSidebar({ spec: loadSpec(), linkPrefix: "/api/operations/", tagLinkPrefix: "/api/tags/" }).generateSidebarGroups(),
 };
 // Reference > Extensions: the A2A extensions and the other contracts a tool server or an agent implements.
 const extensionPages = [
