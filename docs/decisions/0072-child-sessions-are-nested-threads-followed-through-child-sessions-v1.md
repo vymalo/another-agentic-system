@@ -8,7 +8,7 @@ sidebarTitle: "0072 · Child sessions are nested threads"
   [ADR 0045](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md)
   (*"we need to add the capability that opencode has to create child session, and exchange messages with it. At creation, there
   should be a button to auto-close after work is done, so that the child session can further be reused."*), whose decision 11 puts
-  the contract of the extension in this repository. The shape below is proposed, slice by slice. **Amended (2026-11-19, S3): the person's half is decided, see the note at the end; S3a is this documentation, the code follows in S3b to S3e.** **Built: S1, S2a–S2f** (the contract
+  the contract of the extension in this repository. The shape below is proposed, slice by slice. **Amended (2026-11-19, S3): the person's half is decided, see the note at the end; S3a is this documentation, the code follows in S3b to S3e.** **Amended (2026-11-27, ANR-1176): a start or a close of a person's own agent that cannot be made ready ends with its own refusal, see the last note.** **Built: S1, S2a–S2f** (the contract
   [`child-sessions-v1.md`](../api/child-sessions-v1.md) and the orchestrator's reading of the card; the pure core; the store; the A2A
   client's activation and strict reading of what an agent says; the application and the dispatcher that make the child threads and follow
   their rounds, and the API that says them; the AG-UI projection; the scenario on mocks, [`dev/child-sessions-e2e.sh`](../../dev/child-sessions-e2e.sh), *verified 2026-11-19* by running it twice against the real orchestrator, Postgres and the WireMock agent `mock-sessions` (modelled on adam-rs's `subscribe.rs`, `session_events.rs` and `child_sessions.rs`), without the edge, the web or a real agent; the full stack runs it in CI only). Epic:
@@ -273,3 +273,9 @@ The web draws it ([`web/README.md`](../../web/README.md#subagents-child-sessions
 - **The Activity tab's line for a subagent is deferred.**
 
 *Unverified:* a real agent's cards in the web (the mock plays the contract; adam-rs ADR 0045 slice 6 has not been seen in a browser).
+
+## Amended (2026-11-27, ANR-1176)
+
+A person's start and close of a helper session end with the word, never with a failed job (the state diagram of S3: "the agent refused, or could not be reached"). That held where the agent is not listed, and did not where the thread's agent is the person's own and cannot be made ready: the give-ups of the wake (the platform's wait spent, or the agent blocked, [ADR 0103](0103-a-persons-own-agent-is-made-and-kept-ready-before-their-message-is-accepted.md)) failed the job beside the row, which a start or a close is not part of. Now the wake's give-ups end a `SessionStart` row like any other refusal (`child_session_start_ended` `failed`, with "your agent could not be made ready" or "your agent is blocked: <reason>", and the pending start is gone) and a `SessionClose` row as the agent's refusal of the close (an `error` of the helper with the same words, the ask cleared so that the person may ask again); the row is dead and the job is not failed. A delegation and a steer keep their `DeliveryFailed`. A stop and a follow never wake, so they never reach it.
+
+*Verified 2026-11-27 by reading the dispatcher; the tests in `orchestrator/crates/app/tests/provisioning.rs` have not been run on this host (CI is the compiler).*
