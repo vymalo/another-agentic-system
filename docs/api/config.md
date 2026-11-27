@@ -453,13 +453,16 @@ which is a 500 `code: agent_blocked`, "your coder agent is blocked: NameConflict
 the section (exit 78).
 
 **The account** (ADR 0108): the form the orchestrator sends carries `account`, which the platform charges the agent's pods
-to. It is the person's id under the identity provider's `sub` (trimmed and lower-cased, `[A-Za-z0-9._:/-]{1,128}`), so
-**provisioning needs `auth.jwt.userClaim: sub`**. A person who is not such an id (an e-mail address, under
-`userClaim: email`, which is the default, or from an identity header) gets a **500** for a message to a provisioned kind:
+to. It is the identity provider's `sub` (trimmed and lower-cased), so **a `provisioner` section needs `auth.mode: jwt`
+with `auth.jwt.userClaim: sub`, and startup refuses it otherwise** (exit 78 naming `provisioner`): under `email`, which
+is the default, under any other claim, and in a mode that reads the identity header (`proxy_header`, with or without
+`devUser`, and `jwt_or_proxy_header`). Moving a deployment to `sub` re-keys its people (their threads and their agents
+belong to the id the claim gives), so it is the deployment's own decision. A `sub` that is not
+`[A-Za-z0-9._:/-]{1,128}` (an `@` is never one) passes startup and gets a **500** for a message to a provisioned kind:
 the platform is not asked, nothing is written, and the cause is logged (`account_not_opaque`), without the person.
-**Startup does not check the claim.** Moving a deployment to `sub` re-keys its people (their threads and their agents
-belong to the id the claim gives), so it is the deployment's own decision. The platform takes the account from the write,
-so an agent made before this gets it the next time it is resumed or suspended; one that is `ready` is only read.
+The orchestrator sends the account only when it writes the agent: when it creates, resumes or suspends it. **An agent
+that is already `ready` is only read, so one made without an account keeps none until something suspends it and a
+message resumes it, and nothing in the orchestrator's application suspends an agent today.**
 
 | Key | Meaning |
 |---|---|

@@ -12,9 +12,12 @@
 //! and every other agent are never provisioned.
 //!
 //! The person's agent is charged to their account, the [`AccountId`] of their [`UserId`]
-//! ([`account_of`], ADR 0108). A person who is not one (the deployment does not read the identity
-//! provider's `sub`) is refused, before the platform is asked, with
-//! [`ProvisionError::AccountNotOpaque`]: no agent is made without an account.
+//! ([`account_of`], ADR 0108). That account is the identity provider's `sub` **because the
+//! orchestrator's configuration requires `auth.jwt.userClaim: sub` beside a `provisioner` section
+//! and refuses to start otherwise**; [`account_of`] checks the alphabet and the length alone, so a
+//! composition of its own must hold the same rule. A person who is not an [`AccountId`] is refused,
+//! before the platform is asked, with [`ProvisionError::AccountNotOpaque`]: no agent is made
+//! without an account.
 
 use std::collections::HashMap;
 use std::fmt;

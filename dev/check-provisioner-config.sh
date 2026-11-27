@@ -25,6 +25,8 @@ else
   bad "orchestrator.provisioner.yaml differs from orchestrator.yaml outside its markers (above): change both, or only the marked blocks"
 fi
 
+# `userClaim: sub` is not the scenario's taste: the orchestrator refuses to start a `provisioner` section under any other claim
+# (exit 78 naming `provisioner`; a person's own agent is charged to the issuer's `sub`, ADR 0108).
 for key in '    userClaim: sub' 'provisioner:' '  url: http://mock-platform:8080' '  kinds: [coder]' '  readyTimeoutSecs: 6'; do
   if grep -Fxq "$key" "$derived"; then ok "the derived file has '$key'"; else bad "the derived file lacks '$key'"; fi
 done

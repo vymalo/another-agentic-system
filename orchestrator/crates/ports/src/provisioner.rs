@@ -166,10 +166,14 @@ pub enum ProvisionError {
         /// Which reason, from a closed set: nothing the platform sends reaches the error.
         reason: BlockedReason,
     },
-    /// The person is not an [`AccountId`]: the deployment does not read the identity provider's
-    /// `sub` as the person (ADR 0108), so there is no account their agent can be charged to and
-    /// none is made without one. It is the caller's refusal, made before the port is asked, and it
-    /// holds no part of the person. Retrying cannot help.
+    /// The person is not an [`AccountId`], so there is no account their agent can be charged to
+    /// and none is made without one. The account is the identity provider's `sub` (ADR 0108), and
+    /// the orchestrator's configuration refuses to start a provisioner unless the person is that
+    /// claim (`auth.jwt.userClaim: sub`); what is left to refuse here is a `sub` outside the
+    /// alphabet of an [`AccountId`], or a composition that did not hold that rule. The check is
+    /// the alphabet's alone: it cannot tell a `sub` from another claim that fits it. It is the
+    /// caller's refusal, made before the port is asked, and it holds no part of the person.
+    /// Retrying cannot help.
     #[error(
         "the person is not an account id: the deployment must read the identity provider's sub as \
          the person (auth.jwt.userClaim: sub) (account_not_opaque)"

@@ -7,13 +7,21 @@ mod support;
 use orch_config::{ProvisionedKind, ProvisionerCredentials};
 use support::{Fake, lines, load};
 
-const HEAD: &str = "\
+/// A file with only what is required and no `auth` section.
+const BARE: &str = "\
 version: 1
 database:
   url: { env: DATABASE_URL }
 agents:
   file: agents.yaml
 ";
+
+/// The one `auth` a `provisioner` section is read beside: tokens, and a person who is the `sub`.
+const JWT_SUB: &str = concat!(
+    "auth:\n",
+    "  mode: jwt\n",
+    "  jwt: { issuer: 'https://idp.example/realms/main', audiences: [web], userClaim: sub }\n",
+);
 
 fn env() -> Fake {
     Fake::default()
@@ -39,12 +47,13 @@ provisioner:
 ";
 
 fn with(section: &str) -> String {
-    format!("{HEAD}{section}")
+    format!("{BARE}{JWT_SUB}{section}")
 }
 
 #[test]
 fn a_file_without_the_section_is_off_and_prints_nothing_of_it() {
-    let valid = load(HEAD, &env()).unwrap();
+    // the default claim (`email`): only a `provisioner` section asks for the `sub`
+    let valid = load(BARE, &env()).unwrap();
     assert!(valid.config.provisioner.is_none());
     assert!(valid.secrets.provisioner_client_secret.is_none());
     let shown = serde_norway::to_string(&valid.config.effective()).unwrap();
@@ -115,6 +124,36 @@ fn a_form_that_names_who_is_charged_is_refused_at_that_key() {
         "{text}"
     );
     assert!(!text.contains("acct-from-the-file"), "{text}");
+}
+
+#[test]
+fn a_provisioner_is_refused_at_startup_unless_every_person_is_the_sub() {
+    let jwt = |mode: &str, claim: &str| {
+        format!(
+            "auth:\n  mode: {mode}\n  jwt: {{ issuer: 'https://idp.example/realms/main', \
+             audiences: [web]{claim} }}\n"
+        )
+    };
+    for auth in [
+        // today's default claim, spelled out and not; another claim the alphabet would pass
+        jwt("jwt", ", userClaim: email"),
+        jwt("jwt", ""),
+        jwt("jwt", ", userClaim: preferred_username"),
+        // the identity header: beside the tokens, alone, and its development user
+        jwt("jwt_or_proxy_header", ", userClaim: sub"),
+        String::new(),
+        "auth:\n  mode: proxy_header\n  devUser: dev@example.com\n".to_owned(),
+    ] {
+        let errors = lines(load(&format!("{BARE}{auth}{GOOD}"), &env()));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with("provisioner:") && e.contains("userClaim: sub")),
+            "{auth:?}: {errors:?}"
+        );
+        assert!(errors.iter().all(|e| !e.contains("hunter2")), "{errors:?}");
+    }
+    load(&with(GOOD), &env()).unwrap();
 }
 
 #[test]

@@ -128,8 +128,8 @@ written from the OpenAPI document (bearer, `ETag`, `If-None-Match: *`, `If-Match
 another owner). It is a stateful axum server and not a WireMock stub, because the cases make an
 agent and then read it back. It also checks: a wrong token makes nothing, an agent of another owner
 with the same name is never written, the form that is sent (the account beside `name`, `owner` and `suspend`, on a create,
-a suspend and a resume), a configured form with an `account` refused at build, the account in no error or `Debug` text even
-when the stand-in quotes the request back in its problem (create and replace, each status), a wait that times out, and an
+a suspend and a resume), a configured form with an `account` refused at build, the account in no error (`Display`, `Debug`
+and the cause chain) when the stand-in quotes the request back in its problem (create and replace, each status), a wait that times out, and an
 unreachable platform, and the platform's states: a `Blocked` agent (a store not ready) waited for until
 it is ready; `Blocked` for `NameConflict` and for `CNPGNotInstalled` refused at once (`Blocked`, a
 time bound and two reads); look-alike conditions (`RuntimeReady` `True` with `NameConflict`, `Ready`

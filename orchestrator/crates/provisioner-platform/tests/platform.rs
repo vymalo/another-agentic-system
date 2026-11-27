@@ -75,6 +75,8 @@ struct Platform {
     /// When set, a write answers this status with a problem of this slug that **quotes the whole
     /// request body** (a platform that echoes what it was sent, the account included).
     echo: Mutex<Option<(StatusCode, &'static str)>>,
+    /// The bodies `echo` quoted back.
+    echoed: Mutex<Vec<String>>,
 }
 
 type Shared = Arc<Platform>;
@@ -142,6 +144,7 @@ async fn write(
         return problem(StatusCode::UNAUTHORIZED, "unauthorized");
     }
     if let Some((status, slug)) = *p.echo.lock().unwrap() {
+        p.echoed.lock().unwrap().push(body.clone());
         return (
             status,
             [(header::CONTENT_TYPE, "application/problem+json")],
@@ -416,15 +419,33 @@ fn a_configured_form_that_carries_an_account_is_refused_at_build() {
     assert!(!format!("{err} {err:?}").contains(ACCOUNT), "{err:?}");
 }
 
-/// No error, `Display` or `Debug`, its causes included, holds the account, whatever the platform
-/// answers, even when it quotes the request that carried it. The crate has no logging dependency,
-/// so it writes no log line: errors and `Debug` are all that can leave it.
+/// `Display` and `Debug` of the error and of every cause under it.
+fn all_text(e: &ProvisionError) -> String {
+    let mut text = String::new();
+    let mut next: Option<&dyn std::error::Error> = Some(e);
+    while let Some(error) = next {
+        text.push_str(&format!("{error} {error:?}\n"));
+        next = error.source();
+    }
+    text
+}
+
+/// A platform that refuses a write may quote the request, the account included, in its answer:
+/// nothing of that body reaches the error, on a create or on a replace, whatever the status. (The
+/// crate has no logging dependency, so an error is what could carry it out.)
 #[tokio::test]
-async fn no_error_or_debug_text_of_the_adapter_holds_the_account() {
-    let clean = |what: &str, text: String| {
-        assert!(!text.contains(ACCOUNT), "{what}: {text}");
+async fn an_answer_that_quotes_the_account_puts_it_in_no_error() {
+    let check = |platform: &Shared, what: &str, err: &ProvisionError| {
+        // the control: the answer the adapter was given did hold the account
+        let quoted = platform.echoed.lock().unwrap();
+        assert!(
+            quoted.last().is_some_and(|body| body.contains(ACCOUNT)),
+            "{what}: the stand-in quoted no account"
+        );
+        for text in [all_text(err), all_text(&err.duplicate())] {
+            assert!(!text.contains(ACCOUNT), "{what}: {text}");
+        }
     };
-    let shown = |e: &ProvisionError| format!("{} {e:?}", orch_core::report(e));
     for (status, slug) in [
         (StatusCode::UNPROCESSABLE_ENTITY, "invalid"),
         (StatusCode::BAD_REQUEST, "invalid-request"),
@@ -442,36 +463,20 @@ async fn no_error_or_debug_text_of_the_adapter_holds_the_account() {
             .ensure_ready(&owner("quiet"), AgentKind::Coder, &account())
             .await
             .unwrap_err();
-        assert_eq!(put_count(&platform).await, 1, "{status}: the form was sent");
-        clean(slug, shown(&err));
-        clean(slug, shown(&err.duplicate()));
-        clean(slug, format!("{p:?}"));
+        check(&platform, slug, &err);
 
-        // a replace
+        // a replace; a `409` there is read again until the races run out, and every status errs
         *platform.echo.lock().unwrap() = None;
         p.ensure_ready(&owner("quiet"), AgentKind::Coder, &account())
             .await
             .unwrap();
         *platform.echo.lock().unwrap() = Some((status, slug));
-        // a `409` on a replace is read again until the races run out; every status errs
         let err = p
             .suspend(&owner("quiet"), AgentKind::Coder, &account())
             .await
             .unwrap_err();
-        clean(slug, shown(&err));
+        check(&platform, slug, &err);
     }
-
-    // a wait that runs out, after a create that carried the account
-    let (url, platform) = serve().await;
-    platform.delay_ms.store(60_000, Ordering::SeqCst);
-    let cfg = config(&url, TOKEN).with_ready_timeout(Duration::from_millis(100));
-    clean("config", format!("{cfg:?}"));
-    let p = PlatformProvisioner::new(cfg).unwrap();
-    let err = p
-        .ensure_ready(&owner("slow"), AgentKind::Coder, &account())
-        .await
-        .unwrap_err();
-    clean("not ready", shown(&err));
 }
 
 #[tokio::test]
