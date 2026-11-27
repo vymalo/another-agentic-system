@@ -16,7 +16,8 @@ sidebarTitle: "0062 · A network tier for each message"
   2. **A tier the agent cannot enforce is not listed on its card.** An agent with no egress proxy (a laptop, for example) leaves that tier out of `tiers`. The card lists only tiers the agent keeps.
 
   The text of 2026-10-11 below stays as it was written. Where it differs from an amendment, a dated note (*Amended 2026-11-26*) says so and the amendment holds. The scenario that proves the
-  accepted text is **not built yet** (*Proof*, below). The per-run identity at the proxy (ANR-108) is not decided here: it stays open.
+  accepted text is **not built yet** (*Proof*, below). 
+  Not decided by this acceptance (the author's note, not the owner's): the per-run identity at the proxy (ANR-108) stays open.
 
 ## Context
 
@@ -42,7 +43,7 @@ What exists, and what the design rests on:
 
 1. **An optional extension, `network-tier/v1`**, URI `https://agents.vymalo.com/a2a/extensions/network-tier/v1`. An agent lists it in its card with `params: {tiers, default}`: the tiers it honours and what it
    works under when a message names none. The orchestrator reads the card on every send, uses the extension only when it is listed exactly with well-formed params, and an agent that lists nothing gets plain A2A.
-   *Amended 2026-11-26 (the owner's amendment 2):* **`tiers` holds only the tiers the agent can enforce.** An agent that has no egress proxy (a laptop) leaves out each tier it cannot enforce. `default` is one of the listed tiers, and an agent that can enforce no tier lists no extension and gets plain A2A.
+   *Amended 2026-11-26 (the owner's amendment 2):* **`tiers` holds only the tiers the agent can enforce.** An agent that has no egress proxy (a laptop) leaves out each tier it cannot enforce. `default` is one of the listed tiers.
 2. **Three tiers, a closed list** ([ADR 0004](0004-closed-enums-over-dyn-registry.md)): `offline` < `allow-list` < `open`.
    - `offline`: what the agent runs reaches nothing but the agent's own channels (its model endpoint, the orchestrator's thread tools and relay, the files host).
    - `allow-list`: also the hosts of the deployment's list, **the package registries and the forge**. The list is the agent's deployment's, never the person's and never the orchestrator's.

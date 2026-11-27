@@ -89,8 +89,8 @@ stateDiagram-v2
 
 | Param | Meaning |
 |---|---|
-| `tiers` | Required. A non-empty list of the tiers the agent honours, each of the three at most once. Only the tiers the agent can **enforce**: an agent with no egress proxy (a laptop) does not list a tier it cannot keep, and one that can enforce none lists no extension (*amended 2026-11-26*). An agent that cannot open the network lists `["offline", "allow-list"]`. |
-| `default` | Required. One of `tiers`: what the agent works under when no message names a tier. adam's is `open`, which is what its run pods allow today. A deployment may set it lower. It is one of `tiers`, so it is never a tier the agent cannot enforce. |
+| `tiers` | Required. A non-empty list of the tiers the agent honours, each of the three at most once. Only the tiers the agent can **enforce**: an agent with no egress proxy (a laptop) does not list a tier it cannot keep (*amended 2026-11-26*). An agent that cannot open the network lists `["offline", "allow-list"]`. |
+| `default` | Required. One of `tiers`: what the agent works under when no message names a tier. adam's is `open`, which is what its run pods allow today. A deployment may set it lower. As it is one of `tiers`, it is never a tier the agent cannot enforce. |
 
 `required` stays `false`. The orchestrator reads the card on **every send**, never caches it, and fails closed: the extension is used when the URI is listed exactly **and** `params` are well-formed.
 The AG-UI capabilities document carries `custom[<uri>] = {tiers, default}` so the web can draw the chip before anything is sent ([`agui.md`](agui.md#capabilities-document), updated by the pull request that builds this).
@@ -257,7 +257,7 @@ What a build is tested for (the orchestrator's fake agent plays the agent side):
 - no tier on an `ask_agent` child task, a verifier task, an MCP, webhook or timer message;
 - the agent echoes the tier, refuses an unhonoured one, never inherits one across tasks, and says which tier a failed step needed;
 - `dev/kagent-e2e.sh` passes unchanged;
-- a card that lists a tier its agent cannot enforce is a defect of the agent, not of the orchestrator, which cannot see it.
+- the list is the agent's promise; the orchestrator cannot check it.
 
 **Proof (not built yet):** ANR-911 adds a scenario on the stack. A message with `offline` to the real coder makes a command that fetches a URL fail, and the run says so. The same message with `open`
 makes it succeed. Until it passes in CI, nothing here is proven against a real agent.
