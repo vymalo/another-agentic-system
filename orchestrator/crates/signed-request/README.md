@@ -13,7 +13,7 @@ Depends on `aws-lc-rs` (Ed25519; already in the tree as rustls' provider), `sha2
 `zeroize`; on no other crate of the workspace. Used by [`orch-tools-mcp`](../tools-mcp/README.md), which signs each request of a session
 with it; the binary reads a signing key with it at startup (feature `tool-relay`) so that a key that is not one stops the process.
 
-It does **not** use `cratestack-cose`, which needs Rust 1.98 (the workspace moved to 1.98 on 2026-11-27, ANR-1328; this crate keeps its own writer). The bytes it writes are held to that
+It does **not** use `cratestack-cose` yet: it writes the claim object itself, and holds its bytes to the real crate's by the known-answer test and by `interop/`. The workspace moved to Rust 1.98 on 2026-11-27 (ANR-1328), so the real crate can be used now; the swap is a change of its own. The bytes it writes are held to that
 crate's by a known-answer test (the vector was made by the real `sign_claims`) and by [`interop/`](interop/README.md), a crate with a
 toolchain of its own that runs the real `sign_claims` and `open_claims` on them.
 

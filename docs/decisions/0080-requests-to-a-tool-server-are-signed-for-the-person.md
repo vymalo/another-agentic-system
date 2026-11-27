@@ -86,7 +86,7 @@ a request is signed when it is sent and nothing is kept; the replay record is th
   authorises the owner itself; its clock agrees with the orchestrator's within 30 seconds. A deployment that turns `signing` on creates a key
   and gives the public half to the tool server's operator.
 - **Harder:** a second place writes the bytes of a format whose reference is another repository's. The known-answer vector and the
-  interoperability job are what keep the two honest, and the job needs a second toolchain in CI until the workspace moves to 1.98.
+  interoperability job are what keep the two honest, and the job needs a second toolchain in CI until the workspace moves to 1.98 (*met 2026-11-27, ANR-1328*).
 - **Risk:** the key holder can name any owner on its server. The contract says so; the key is one per server, held by reference, and rotated
   by the steps on the contract page.
 

@@ -924,7 +924,7 @@ as one more turn after the history of every request of a run whose context names
 ### Status note, 2026-11-26: model pick, reasoning and the prompt statement on the real adam (adam-rs 9f90f1e6)
 
 The pin moves from `945208e` to `9f90f1e6`, 99 commits of adam-rs `main`, and it is deliberately **not** adam-rs's head:
-#399 moved adam's own workspace to Rust 1.98, while this repository was on 1.94.1 (`this repository moved to 1.98 on 2026-11-27, ANR-1328`). `9f90f1e6` is the newest commit of
+#399 moved adam's own workspace to Rust 1.98, while this repository is on 1.94.1. `9f90f1e6` is the newest commit of
 adam-rs `main` before that move whose `coder` image exists, so this bump keeps the toolchain where it is and the next bump
 is the one that raises it (ANR-983 and ANR-1001 build on this).
 
@@ -964,3 +964,7 @@ is the one that raises it (ANR-983 and ANR-1001 build on this).
   `-p orch-agent-adam` pass on this head.
 - *Unverified where this was written*: the 3.11 GB image was not pulled locally; every scenario on it is the Coder E2E
   workflow's, in the pull request that pins it.
+
+*(2026-11-27: this repository's workspace moved from 1.94 to 1.98 — ANR-1328, `orchestrator/Cargo.toml` and
+`orchestrator/rust-toolchain.toml` — so the "next bump is the one that raises it" note above no longer applies: a pin at or
+after adam-rs `278b6999` now builds here. The 2026-11-26 sentence stays as it was written.)*
