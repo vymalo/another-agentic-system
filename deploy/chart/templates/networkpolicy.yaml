@@ -128,6 +128,16 @@ spec:
             matchLabels:
               {{- toYaml .Values.orchestrator.internal.injector.matchLabels | nindent 14 }}
         {{- end }}
+        {{- if .Values.orchestrator.internal.meter.enabled }}
+        # The operator's pod-minute meter (ADR 0106): it asks `GET /internal/runs/{run}/account` and nothing else. Its token,
+        # not this rule, says it may; the rule says only its pods can reach the port.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.orchestrator.internal.meter.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.orchestrator.internal.meter.matchLabels | nindent 14 }}
+        {{- end }}
         {{- if .Values.injector.enabled }}
         # This chart's own injector (values.yaml, `injector`): Authorino's pods query the lease. The label is the one
         # the Authorino operator puts on the instance's pods (`authorino-resource: <CR name>`).

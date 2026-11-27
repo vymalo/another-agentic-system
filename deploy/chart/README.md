@@ -125,6 +125,7 @@ commented; the ones that matter:
 | `orchestrator.agents.registry.url`, `.tokenProperty` | `""`, `""` | the platform's **agent registry** (`agents.registry.url` and `.token`, [config](../../docs/api/config.md#agents)) beside the agents file: the file's agents first, then the registry's. **OFF with an empty `url`**: no `registry` key is written. `tokenProperty` is the AWS property of the registry's bearer, mounted as a file and read as `{ file }`, never a value. Needs an `orchestrator.image.tag` whose build has `registry-platform` (otherwise exit 78). Refused: a URL with no property, a property with no URL, a URL that is not http or https with a host, or one with a credential, query or fragment |
 | `orchestrator.internal.enabled`, `.port` | `false`, `8081` | the credential broker's **run routes** (`POST /internal/runs`, `DELETE /internal/runs/{run}`, `GET /internal/runs/{run}/lease`, [ADR 0084](../../docs/decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md), cards ANR-378 and ANR-578) on a second port that **no Ingress and no edge route names**. It writes `server.internal` into the orchestrator's configuration, so the broker's router and **only** it is served there (no surface, no health); **OFF by default**, and a deployment turns it on only with an `orchestrator.image.tag` at or after the run routes' merge commit and a model endpoint whose key every lease answers. Refused: a port that is 8080 or outside 1025–65535, a non-boolean `enabled`, or `enabled` without `tokenProperty` |
 | `orchestrator.internal.tokenProperty`, `.agents` | `""`, `{}` | the **tokens of the run routes**: the AWS property of the orchestrator's own token (the bind and the unbind), and, per agent id, the property of the token it leases with. Read as files of the orchestrator's Secret, never as values of this chart. Refused: an empty property, a key that is not an agent id, an empty or non-string value, or two callers naming one property (the door would answer an agent as the orchestrator) |
+| `orchestrator.internal.meter.enabled`, `.tokenProperty`, `.namespace`, `.matchLabels` | `false`, `""`, `""`, `{}` | the operator's **pod-minute meter** ([ADR 0106](../../docs/decisions/0106-a-run-is-charged-to-the-identity-providers-sub-and-an-ended-run-is-still-answered-to-the-meter.md)): the one caller of `GET /internal/runs/{run}/account`. Writes `server.internal.meter` (a `{ file }` reference to the AWS property `tokenProperty`) and admits the meter's pods (its namespace and labels) to the port. **Refused: `enabled` with `auth.userClaim` other than `sub`** (the meter is answered the identity provider's `sub`, never an e-mail address), without a token property, a namespace or labels, with a token another caller already has, or without `orchestrator.internal.enabled` |
 | `orchestrator.internal.injector.enabled`, `.namespace`, `.matchLabels` | `false`, `""`, `{}` | whether the **injector's** pods (Authorino or Agent Router, S9) may reach that port to look a lease up. The orchestrator's own pods are always admitted (the bind). **Refused: `enabled` without a namespace or without labels** — a policy with an empty selector admits every pod of the namespace, which is worse than no policy. `enabled` also needs `orchestrator.internal.enabled` |
 | `injector.enabled`, `.gatewayClassName`, `.upstream.url`, `.model`, `.broker.*`, `.authorino.*` | `false`, `""`, `""`, `""`, `""`/`""`/`30`, `""`/`1`/`[]` | [the model-credential injector](#the-model-credential-injector-s9): Agent Router in front of the model endpoint, Envoy Gateway's gRPC external authorization and Authorino, off by default. The model key never reaches an agent: Authorino answers the run's lease from the broker and adds it upstream only. Every value is refused when missing; `injector.broker.tokenProperty` is an AWS property, never a value |
 | `orchestrator.logLevel` | `info` | rendered as `RUST_LOG`, which **replaces** the orchestrator's default filter. The orchestrator adds **`rmcp=off`** to whatever it is, unless the value names `rmcp` (`info,rmcp=warn`): `info` runs as `info,rmcp=off`. `rmcp` is the MCP library, and it logs the words of the server it talks to (at `info`, the `instructions` of its handshake, which a stranger's server can use to say a lent bearer back) and the URL of a failed request. **Do not name `rmcp` where people add MCP servers** ([ADR 0046](../../docs/decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), slice 5a review; [`orch-log-filter`](../../orchestrator/crates/log-filter/README.md)) |
@@ -1613,11 +1614,12 @@ key for it ([ADR 0084](../../docs/decisions/0084-the-run-lease-the-broker-binds-
 |---|---|---|
 | `POST /internal/runs` | the orchestrator (its own token) | `204`; `409 run_already_bound` for a different binding of one run |
 | `DELETE /internal/runs/{run}` | the orchestrator (its own token) | `204`, idempotent |
-| `GET /internal/runs/{run}/lease` | the orchestrator or the injector — never an agent, its own run included | `200 {"token","accountId","expiresAt"}` (`accountId` is the run's person, the `UserId` the usage ledger is keyed by — `usage_tasks.owner`, ADR 0065 — never a provider account or a ledger-service account number; in no log line, refusal, error or message to an agent — ADR 0084 amended 2026-11-24), `Cache-Control: no-store` |
+| `GET /internal/runs/{run}/lease` | the orchestrator or the injector — never an agent, its own run included | `200 {"token","accountId","expiresAt"}` (`accountId` is the person's identity-provider `sub`, an id of the closed alphabet `[A-Za-z0-9._:/-]{1,128}` and never an e-mail address — [ADR 0106](../../docs/decisions/0106-a-run-is-charged-to-the-identity-providers-sub-and-an-ended-run-is-still-answered-to-the-meter.md); in no log line, refusal, error or message to an agent — ADR 0084 amended 2026-11-24), `Cache-Control: no-store`; `422 account_not_opaque` when the person is not one |
+| `GET /internal/runs/{run}/account` | the operator's meter alone (`orchestrator.internal.meter`) | `200 {"accountId"}` (the same `sub`), also for 24 hours after the run ended; `404 run_not_bound` for any other caller and past that bound; `422 account_not_opaque` |
 
 They are served on a **second port**, `orchestrator.internal.port`, that no Ingress and no edge route names, and that serves **the
 broker's router and nothing else**: no surface, no `/healthz`, no resource API. Refusals are the ruled slugs (`run_not_bound`,
-`lease_expired`, `unavailable`, `unauthenticated`, `not_allowed`), and a model the deployment has **no key for** is `unavailable`,
+`lease_expired`, `account_not_opaque`, `unavailable`, `unauthenticated`, `not_allowed`), and a model the deployment has **no key for** is `unavailable`,
 never an empty `Authorization` header.
 
 **Off by default.** Turning it on takes three values plus the injector's, and an `orchestrator.image.tag` at or after the run
@@ -1637,6 +1639,30 @@ orchestrator:
       matchLabels:
         app.kubernetes.io/name: agent-router
 ```
+
+**The meter** ([ADR 0106](../../docs/decisions/0106-a-run-is-charged-to-the-identity-providers-sub-and-an-ended-run-is-still-answered-to-the-meter.md))
+is the operator's pod-minute meter, another chart's. It asks which account a run pod is charged to, and the answer is the person's
+`sub`, so it only works where the deployment reads `sub` (`auth.userClaim: sub`, as the [BFF-only shape](#the-bff-only-shape-the-web-and-the-edge-off) does).
+The default `auth.userClaim: email` and the meter together are refused, in the chart and by the orchestrator (exit 78 naming
+`server.internal.meter`):
+
+```yaml
+auth:
+  userClaim: sub
+orchestrator:
+  internal:
+    meter:
+      enabled: true
+      tokenProperty: internal_meter_token        # AWS property of the meter's token
+      namespace: operator                        # the meter's namespace and labels: its pods may reach the port
+      matchLabels:
+        app.kubernetes.io/name: pod-minute-meter
+```
+
+The pod's `adam.vymalo.com/run-id` annotation is the run id the meter sends (the label `adam.vymalo.com/run` is a hash the broker does
+not know). `tests/meter.values.yaml` is the fixture the render checks layer. *Verified 2026-11-27:* on renders only (Helm 3.16 with
+`--kube-version 1.37.0`; the seven byte-for-byte golden checks fail there on the unchanged base too, a Helm 3 against 4 difference);
+*unverified* on a cluster.
 
 Each token is a property of the ExternalSecret's AWS secret (`externalSecrets.key`), at least 32 bytes, mounted as a file and read
 as `server.internal.token` and `server.internal.agents.<id>`. **No two callers may name one property**: the door compares the

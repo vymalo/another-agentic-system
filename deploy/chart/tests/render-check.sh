@@ -2590,6 +2590,28 @@ check "run routes: the port may not be 8080" fails helm template another-agentic
 check "run routes: enabled without the orchestrator's token is refused (the bind would answer nobody)" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" --set orchestrator.internal.enabled=true
 check "run routes: an agent naming the orchestrator's own token is refused (the door would answer it as the orchestrator)" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$internal_values" --set orchestrator.internal.agents.coder=internal_orchestrator_token
 check "run routes: a key that is not an agent id is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$internal_values" --set orchestrator.internal.agents.not_an_id=internal_coder_token
+# ---- The operator's pod-minute meter on the run routes (ADR 0106): off by default, on by values, only with `sub` --------------
+meter_values="$chart/tests/meter.values.yaml"
+render -f "$internal_values"
+config_of config.yaml "$cfg"
+check "meter off by default: no meter key, token, mount or selector anywhere" sh -c "! grep -Eq 'meter' '$cfg' && ! grep -Eq 'internal-meter-token|internal_meter_token|pod-minute-meter' '$out'"
+check "values.yaml: orchestrator.internal.meter.enabled is false by default" sh -c "awk '/^  internal:/{i=1} i && /^    meter:/{m=1} m && /^      enabled:/{print \$2; exit}' \"$chart/values.yaml\" | grep -qx false"
+render -f "$internal_values" -f "$meter_values"
+config_of config.yaml "$cfg"
+check "meter on: the config declares server.internal.meter as a { file } reference" cfg_has '^    meter: \{ file: /run/secrets/orchestrator/internal-meter-token \}$'
+check "meter on: the deployment reads the sub, the one claim the account route answers" cfg_has '^    userClaim: "sub"$'
+check "meter on: the orchestrator's Secret carries the meter's token, by AWS property" dhas ExternalSecret another-agentic-orchestrator 'internal_meter_token'
+check "meter on: the pod mounts the token where the config reads it" out_all '^              - key: internal-meter-token$' '^                path: internal-meter-token$'
+check "meter on: the port admits the meter's pods by namespace and labels, beside the orchestrator's" out_all '^              kubernetes.io/metadata.name: "operator"$' '^              app.kubernetes.io/name: pod-minute-meter$'
+check "meter on: every secret key of the configuration is still a reference" test -z "$(plain_secret_in_config)"
+refused "a meter with an e-mail claim (the meter is answered the sub, never an e-mail address)" -f "$internal_values" -f "$meter_values" --set auth.userClaim=email
+refused "a meter without orchestrator.internal" --set orchestrator.internal.meter.enabled=true --set auth.userClaim=sub --set orchestrator.internal.meter.tokenProperty=internal_meter_token --set orchestrator.internal.meter.namespace=operator --set orchestrator.internal.meter.matchLabels.a=b
+refused "a meter without a token property" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.tokenProperty=
+refused "a meter naming the orchestrator's own token (the door would answer it as the orchestrator)" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.tokenProperty=internal_orchestrator_token
+refused "a meter naming an agent's token" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.tokenProperty=internal_coder_token
+refused "a meter without a namespace" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.namespace=
+refused "a meter without a selector (a policy that admits the whole namespace is worse than none)" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.matchLabels=null
+refused "a meter switch that is not a boolean" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.enabled=yes
 # ---- The platform's agent registry (ANR-685): off by default, on by values ---------------------------------------------------
 registry_values="$chart/tests/registry.values.yaml"
 render

@@ -196,6 +196,10 @@ spec:
               - key: {{ printf "internal-agent-%s-token" (toString $agent) }}
                 path: {{ printf "internal-agent-%s-token" (toString $agent) }}
               {{- end }}
+              {{- if .Values.orchestrator.internal.meter.enabled }}
+              - key: internal-meter-token
+                path: internal-meter-token
+              {{- end }}
               {{- end }}
               {{- if include "agentic.userSecrets" . }}
               {{- range .Values.orchestrator.userSecrets.keys }}
