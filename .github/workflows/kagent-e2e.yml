@@ -52,7 +52,7 @@ jobs:
       - name: Install helm at the version kagent's CI uses (checksum checked)
         env:
           HELM_VERSION: v4.3.2
-          HELM_SHA256: 961e587fc2c03807f8a99ac25ef063fa9e6915f1894729399cbb95d2a79af931
+          HELM_SHA256: d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/helm"
@@ -85,15 +85,15 @@ jobs:
           sudo docker image prune --all --force >/dev/null
           df -h /
       - name: Install kind, kubectl and helm at pinned versions (checksums checked)
-        # kind v0.33.0 and helm v4.3.2 are the versions kagent's own CI uses; kubectl is the newest 1.35, the minor of the node image.
-        # The checksums were computed on 2026-10-07 from the release asset (kind: its .sha256sum, kubectl: dl.k8s.io's .sha256, helm: its .sha256sum).
+        # kind v0.33.0 is kagent's CI version; helm v4.3.2 and kubectl v1.37.3 are this repository's floor (ADR 0103), kubectl on the node image's minor.
+        # The checksums were recomputed on 2026-11-27 from the release asset (kind: its .sha256sum, kubectl: dl.k8s.io's .sha256, helm: its .sha256sum).
         env:
           KIND_VERSION: v0.33.0
           KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
           KUBECTL_VERSION: v1.37.3
           KUBECTL_SHA256: 9a1b55af2795b25dd288dbef62387db9b5530087ab918d28c6ad067f2e3cb07c
           HELM_VERSION: v4.3.2
-          HELM_SHA256: 961e587fc2c03807f8a99ac25ef063fa9e6915f1894729399cbb95d2a79af931
+          HELM_SHA256: d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/helm"
@@ -182,15 +182,15 @@ jobs:
           sudo docker image prune --all --force >/dev/null
           df -h /
       - name: Install kind, kubectl and helm at pinned versions (checksums checked)
-        # The same tools as the 1.x job: kind v0.33.0 and helm v4.3.2 are the versions kagent's own CI uses; kubectl is the newest 1.35, the minor of the node
-        # image. No Substrate, so no `kubectl-ate`, no AppArmor setting and no gVisor.
+        # The same tools as the 1.x job: kind v0.33.0 is kagent's CI version, helm v4.3.2 and kubectl v1.37.3 are this repository's floor (ADR 0103).
+        # No Substrate, so no `kubectl-ate`, no AppArmor setting and no gVisor.
         env:
           KIND_VERSION: v0.33.0
           KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
           KUBECTL_VERSION: v1.37.3
           KUBECTL_SHA256: 9a1b55af2795b25dd288dbef62387db9b5530087ab918d28c6ad067f2e3cb07c
           HELM_VERSION: v4.3.2
-          HELM_SHA256: 961e587fc2c03807f8a99ac25ef063fa9e6915f1894729399cbb95d2a79af931
+          HELM_SHA256: d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/helm"
