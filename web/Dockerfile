@@ -39,6 +39,10 @@ RUN pnpm build
 FROM base AS screens
 ENV CI=true \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+# ImageMagick compares the stills (scripts/screens-compare.sh: at most 0.05 % of the pixels beyond 8/255). Debian bookworm's
+# package, so the base tag above pins its version; the check prints it. Before `COPY web/` so a change of the web keeps this layer.
+RUN apt-get update && apt-get install -y --no-install-recommends imagemagick \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY docs/api/chat-api.yaml docs/api/chat-api.yaml
 COPY orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json

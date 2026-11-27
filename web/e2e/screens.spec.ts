@@ -46,7 +46,39 @@ async function shot(page: Page, name: string, { hovering = false, full = false }
   // the caret and the scroll-to-bottom button's fade are noise in a still
   // (a still of something the pointer is resting on keeps the pointer there)
   if (!hovering) await page.mouse.move(0, 0);
+  // A still is only reproducible when the page has stopped moving: the fonts are in, every animation and transition
+  // has finished (a dialog, a menu, a panel still opening is the common case), and two frames have been painted since.
+  // A fixed wait was tried and is not enough on a slower runner: at 250 ms `tools-add-form`'s card corner differed
+  // between runs by one level, and at 500 ms a CI draw still differed from a local one on 38 images (ANR-1004).
+  await page.evaluate(() => document.fonts.ready);
+  await page.evaluate(async () => {
+    for (let round = 0; round < 20; round += 1) {
+      // an endless animation (a spinner, a pulse) never finishes: the screenshot's `animations: "disabled"` freezes it,
+      // so waiting on it would hang the still instead
+      const running = document
+        .getAnimations()
+        .filter(
+          (a) =>
+            a.playState === "running" &&
+            a.effect?.getComputedTiming().iterations !== Number.POSITIVE_INFINITY,
+        );
+      if (running.length === 0) break;
+      await Promise.all(running.map((a) => a.finished.catch(() => undefined)));
+    }
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve(null))),
+    );
+  });
   await page.waitForTimeout(250);
+  // A scroll position is fractional when the content's height is, and a glyph drawn at a fractional offset is one
+  // rasterisation step away from the next run's: a still is of a whole-pixel scroll position.
+  await page.evaluate(() => {
+    for (const el of [document.scrollingElement, ...document.querySelectorAll("*")]) {
+      if (!el) continue;
+      if (el.scrollTop % 1 !== 0) el.scrollTop = Math.round(el.scrollTop);
+      if (el.scrollLeft % 1 !== 0) el.scrollLeft = Math.round(el.scrollLeft);
+    }
+  });
   // a page that scrolled itself (the document, not the chat) is a still with its header cut off
   expect(await page.evaluate(() => document.scrollingElement?.scrollTop ?? 0)).toBe(0);
   await page.screenshot({
@@ -380,6 +412,8 @@ for (const scheme of ["light", "dark"] as const) {
         .filter({ hasText: "the docs as well" });
       await expect(edited.locator('[data-slot="branch-picker"]')).toContainText("2/2");
       await expect(edited).toBeFocused();
+      // where the browser put it is the browser's business; the still is of the message at a known place
+      await edited.evaluate((el) => el.scrollIntoView({ block: "center" }));
       await shot(page, "branches");
     });
 

@@ -3241,10 +3241,20 @@ Playwright already pins (no other tool needed), and commit the result.
 [`e2e/__screens__/`](e2e/__screens__/) (`e2e/screens.spec.ts`); look at them after a visual change.
 **The committed set is generated in one environment: the `screens` target of [`Dockerfile`](Dockerfile)** (the build's base and
 locked dependencies, plus Playwright's Chromium and the fonts it installs). `sh scripts/screens-docker.sh write` regenerates the
-set there and `sh scripts/screens-docker.sh check` compares (the CI job `screens` of `web.yml` runs it and fails on a difference,
-naming each image and whether its dimensions changed: same dimensions with different bytes is rasterisation or fonts, changed
-dimensions is layout). A host's own `pnpm screens` is for looking, not for committing: its fonts and browser build differ and move
-images nobody changed.
+set there and `sh scripts/screens-docker.sh check` compares (the CI job `screens` of `web.yml` runs it).
+**The comparison is bounded, not byte for byte** (owner's decision ANR-Q133, 2026-11-27): a still passes when **at most 0.05 % of
+its pixels differ by more than 8/255** (`compare -metric AE -fuzz`, ImageMagick installed in the `screens` target and run there,
+never on a host: `scripts/screens-compare.sh`). A still that is missing on either side, or whose dimensions differ, fails, and no
+still is skipped. The failure message names each failing still with its pixel count, its percentage and the limits. **Why a
+bound:** Chromium's sub-pixel rasterisation differs between processes, so two CI draws of one commit in one image differed on
+about 14 of 64 stills, by 15 to about 500 pixels, each by at most 32/255 (*measured* on two CI runs, 2026-11-27; the mock share
+token and the settling of `shot` already removed the other causes). A byte comparison fails on that noise and hides nothing a
+person can see; a changed layout, text or colour moves far more than 0.05 % of a still. The bound is the owner's to change, not
+an agent's. A host's own `pnpm screens` is for looking, not for committing: its fonts and browser build differ and move
+images nobody changed. **A re-baseline is a workflow, not a hand**: Actions → *Update screens* (`update-screens.yml`) draws the set
+in the same image and opens one pull request with it, so a still drawn outside the image cannot land; its `screens` job compares the
+new set with the image again (within the bound above). Re-baseline when a visual change is deliberate or the base image moves
+(a Chromium, a font); a failure that only names stills within a few pixels of the bound is noise, not a reason to re-baseline.
 **The docs embed these files** (the repository README, this file, [DESIGN.md](DESIGN.md) and
 [`dev/README.md`](../dev/README.md), each as a `<picture>` of the `-light-` and `-dark-` file of a state). A screen that is
 renamed or dropped breaks a doc: `tools/docs-check` fails on an image path that does not resolve, in `![](…)` and in the

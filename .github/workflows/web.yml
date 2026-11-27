@@ -88,7 +88,8 @@ jobs:
             web/playwright-report-browser
 
   # The committed screenshots (web/e2e/__screens__) are generated in the `screens` target of web/Dockerfile, never on a host: this
-  # regenerates them there and fails on any difference (web/README.md "screens-docker.sh").
+  # regenerates them there and fails when a still differs by more than the bound: at most 0.05 % of its pixels beyond 8/255, or a
+  # missing still or other dimensions (web/README.md "screens-docker.sh").
   screens:
     needs: check
     runs-on: ubuntu-24.04
