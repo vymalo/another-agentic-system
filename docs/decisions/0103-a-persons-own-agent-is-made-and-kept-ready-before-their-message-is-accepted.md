@@ -96,12 +96,18 @@ slow agents could take every slot (`concurrency`, 32 by default) from everyone e
 - **The wake is a probe.** `Dispatcher::load` waits for the person's agent to answer that it is ready for
   `DispatcherConfig.own_agent_probe` (2 s) and no longer: `tokio::time::timeout` cuts the call. The cut drops the **wait**, never the request: the wake runs
   in a task of `Provisioning`, one per (owner, kind), joined by every caller (the dispatcher's rows, so a person's N waiting rows
-  make **one** request to the platform, and the request path), and a result, an error included, is delivered to each waiter.
+  make **one** request to the platform, and the request path), and a result, an error included, is delivered to each waiter (a copy of the error with its cause chain,
+  `ProvisionError::duplicate`, an exhaustive match of the port, so a variant added later must be copied faithfully).
   The entry leaves the map when the task ends, which the backstop (`readyTimeoutSecs` plus `OUTER_SLACK`) bounds; the map is
   process-local and holds no datum of the person's, so invariant 3 stands. Without it a platform slower than the probe (one
   request may take 5 s, with a cold token fetch more) would have every probe drop the request and the row die on an agent that
   would have come up. Whether the platform finishes a create or a resume whose client vanished is *unverified*; the flight makes
-  it not matter for the dispatcher. The next claim finds the agent, the port's rule (below) covering a restart. A probe that runs out, or a platform that answers
+  it not matter for the dispatcher. The next claim finds the agent, the port's rule (below) covering a restart. **The request path keeps its own
+  deadline:** a caller that joined a flight which ends `NotReady` before the caller's own deadline (its start plus
+  `readyTimeoutSecs` plus `OUTER_SLACK`) joins the next flight, or starts one, until that deadline; a flight a caller started is
+  final, and `waited` is the bound that ran out for it, the time actually waited for one it joined. The dispatcher's probe cuts
+  the call at the probe either way. A flight the dispatcher started **cannot be cancelled by a person's delete** while it runs
+  (it ends at the backstop at the latest, as the request path's wait did before). A probe that runs out, or a platform that answers
   `AgentNotReady`, sends the row back with `ThreadStore::wait_outbox` (the refund of PR 1, Consequences) after the
   **fixed** delay `own_agent_wait_delay` (2 s), not the exponential backoff: with the backoff a row could sit up to 60 s after
   the agent was ready. The claim is refunded, so `max_attempts` and the other caps read only the claims that tried something. A
