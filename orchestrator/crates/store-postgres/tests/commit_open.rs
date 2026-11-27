@@ -22,6 +22,17 @@ macro_rules! db_or_skip {
     };
 }
 
+/// A lease's id, owner and attempts, each as the caller may leave it out.
+type LeaseArgs = (Option<Uuid>, Option<String>, Option<i32>);
+/// What is wrong, the thread, the version, the outbox lease and the inbox lease.
+type Case = (
+    &'static str,
+    Option<Uuid>,
+    Option<i64>,
+    LeaseArgs,
+    LeaseArgs,
+);
+
 const THREAD: Uuid = Uuid::from_u128(0x0190_0000_0000_7000_8000_0000_0000_0001);
 const OUTBOX: Uuid = Uuid::from_u128(0x0190_0000_0000_7000_8000_0000_0000_0002);
 const INBOX: Uuid = Uuid::from_u128(0x0190_0000_0000_7000_8000_0000_0000_0003);
@@ -139,7 +150,7 @@ async fn each_outcome_and_the_order_in_which_they_win() {
     let r = open(&pool, THREAD, 2, Some(("w", 1)), None, &["k1"]).await;
     assert_eq!(outcome(&r), "fenced");
     let r = open(&pool, THREAD, 2, None, None, &["k1"]).await;
-    assert_eq!(outcome(&r), "version_conflict");
+    assert_eq!(outcome(&r), "conflict");
     let r = open(&pool, THREAD, 3, None, None, &["k0", "k1"]).await;
     assert_eq!(outcome(&r), "duplicate");
     let r = open(&pool, THREAD, 3, None, None, &[]).await;
@@ -147,27 +158,88 @@ async fn each_outcome_and_the_order_in_which_they_win() {
 }
 
 #[tokio::test]
-async fn a_lease_with_a_part_missing_is_refused_before_a_lock_is_taken() {
+async fn arguments_that_disagree_are_refused_before_a_lock_is_taken() {
     let db = db_or_skip!();
     let pool = db.pool("commit-open", 4).await;
     drop(db.store().await);
     seed(&pool).await;
-    // an id with no owner, an owner with no attempts: a caller's bug, `OR002`
-    for (id, owner, attempts) in [
-        (Some(OUTBOX), None, Some(1_i32)),
-        (None, Some("w".to_owned()), Some(1)),
-        (Some(OUTBOX), Some("w".to_owned()), None),
-    ] {
-        let err =
-            query("SELECT * FROM orch_commit_open($1, 3, $2, $3, $4, NULL, NULL, NULL, '{}')")
-                .bind(THREAD)
-                .bind(id)
-                .bind(owner)
-                .bind(attempts)
-                .fetch_one(&pool)
-                .await
-                .unwrap_err();
-        assert_eq!(err.code(), Some("OR002"), "{err:?}");
+    // a lease with a part missing (the outbox's, then the inbox's), a NULL thread, a NULL version:
+    // a caller's bug, `OR002`
+    let lease = |id: Option<Uuid>, owner: Option<&str>, attempts: Option<i32>| {
+        (id, owner.map(str::to_owned), attempts)
+    };
+    let cases: Vec<Case> = vec![
+        (
+            "outbox owner",
+            Some(THREAD),
+            Some(3),
+            lease(Some(OUTBOX), None, Some(1)),
+            lease(None, None, None),
+        ),
+        (
+            "outbox id",
+            Some(THREAD),
+            Some(3),
+            lease(None, Some("w"), Some(1)),
+            lease(None, None, None),
+        ),
+        (
+            "outbox attempts",
+            Some(THREAD),
+            Some(3),
+            lease(Some(OUTBOX), Some("w"), None),
+            lease(None, None, None),
+        ),
+        (
+            "inbox owner",
+            Some(THREAD),
+            Some(3),
+            lease(None, None, None),
+            lease(Some(INBOX), None, Some(2)),
+        ),
+        (
+            "inbox id",
+            Some(THREAD),
+            Some(3),
+            lease(None, None, None),
+            lease(None, Some("i"), Some(2)),
+        ),
+        (
+            "inbox attempts",
+            Some(THREAD),
+            Some(3),
+            lease(None, None, None),
+            lease(Some(INBOX), Some("i"), None),
+        ),
+        (
+            "thread",
+            None,
+            Some(3),
+            lease(None, None, None),
+            lease(None, None, None),
+        ),
+        (
+            "version",
+            Some(THREAD),
+            None,
+            lease(None, None, None),
+            lease(None, None, None),
+        ),
+    ];
+    for (what, thread, version, outbox, inbox) in cases {
+        let err = query("SELECT * FROM orch_commit_open($1, $2, $3, $4, $5, $6, $7, $8, '{}')")
+            .bind(thread)
+            .bind(version)
+            .bind(outbox.0)
+            .bind(outbox.1)
+            .bind(outbox.2)
+            .bind(inbox.0)
+            .bind(inbox.1)
+            .bind(inbox.2)
+            .fetch_one(&pool)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Some("OR002"), "{what}: {err:?}");
     }
 }
 

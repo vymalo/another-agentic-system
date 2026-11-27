@@ -22,16 +22,14 @@ CREATE FUNCTION orch_usage_counted_through(p_usage_through bigint, p_forked_at b
 -- anything is written, whether the commit may go on. One row comes back:
 --
 --   outcome  'applied' (go on, the locks are held until the caller's transaction ends), 'not_found',
---            'fenced' (a claim the commit names is not held by it any more), 'version_conflict'
+--            'fenced' (a claim the commit names is not held by it any more), 'conflict'
 --            (the thread's version is not `p_expected_version`) or 'duplicate' (one of `p_keys` is
 --            already in the thread's log). The first that applies wins, in that order.
 --   cur_*    the locked thread's values the commit goes on from (NULL for 'not_found');
 --            `cur_counted_through` is `orch_usage_counted_through` of the row.
 --
 -- A lease is present when its id is not NULL; its owner and attempts are then required. The caller
--- rolls back on any outcome but 'applied'. PL/pgSQL, for the lock order, the early return and the
--- `RAISE` of an `OR` SQLSTATE: `OR002` when the arguments contradict each other (a caller's bug,
--- raised before a lock is taken).
+-- rolls back on any outcome but 'applied'.
 CREATE FUNCTION orch_commit_open(
     p_thread uuid,
     p_expected_version bigint,
@@ -56,6 +54,7 @@ CREATE FUNCTION orch_commit_open(
         cur_description text
     )
     LANGUAGE plpgsql
+    SET search_path FROM CURRENT
 AS $$
 DECLARE
     t threads%ROWTYPE;
@@ -67,7 +66,7 @@ BEGIN
         OR (p_inbox_id IS NULL) <> (p_inbox_attempts IS NULL)
         OR p_thread IS NULL OR p_expected_version IS NULL
     THEN
-        RAISE EXCEPTION 'orch_commit_open: a lease needs its id, owner and attempts together'
+        RAISE EXCEPTION 'orch_commit_open: its arguments disagree: a thread and a version are required, and a lease needs its id, owner and attempts together'
             USING ERRCODE = 'OR002';
     END IF;
 
@@ -101,7 +100,7 @@ BEGIN
         END IF;
     END IF;
     IF v_outcome = 'applied' AND t.version <> p_expected_version THEN
-        v_outcome := 'version_conflict';
+        v_outcome := 'conflict';
     END IF;
     IF v_outcome = 'applied' AND coalesce(cardinality(p_keys), 0) > 0 THEN
         PERFORM 1 FROM events

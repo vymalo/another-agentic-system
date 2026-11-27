@@ -1991,7 +1991,7 @@ impl ThreadStore for PgStore {
                 rollback(tx).await;
                 return Ok(CommitOutcome::Fenced);
             }
-            "version_conflict" => {
+            "conflict" => {
                 rollback(tx).await;
                 return Err(StoreError::VersionConflict);
             }

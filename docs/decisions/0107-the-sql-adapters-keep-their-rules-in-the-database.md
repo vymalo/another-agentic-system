@@ -16,7 +16,11 @@ sidebarTitle: "0107 · Rules in SQL, PostgreSQL 18 floor"
   append as one statement). Its migration is `0037_orch_commit_open.sql`, not `0036_…`: `0036` was taken on `main` by
   `outbox_open_owner_due` (ANR-1175) before P1 landed, so the first function migration of the store is `0037`. No
   function of P1 names a column in a SQL-standard body (`orch_commit_open` is PL/pgSQL, `orch_usage_counted_through`
-  reads only its arguments), so decision 6's rule that such a body freezes its columns is not met yet. P2 is next.
+  reads only its arguments), so decision 6's rule that such a body freezes its columns is not met yet. The outcome word is
+  `conflict` (decision 2), and `orch_commit_open` carries `SET search_path FROM CURRENT` (decision 1), which
+  `tests/functions.rs` holds for every PL/pgSQL `orch_` function. For P2: a commit updates the `threads` row twice (the
+  append's CTE advances `last_seq`, then the final `UPDATE`), which leaves an extra row version; computing the append's
+  `base` from `cur_last_seq` and letting the final `UPDATE` write `last_seq` would avoid it. P2 is next.
   The owner decided on 2026-11-27 (the owner, 2026-11-27):
 
   > *"If something can be done in SQL, we better use SQL rather than rust."*

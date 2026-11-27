@@ -18,15 +18,34 @@ const ROUTINES: &[(&str, Option<&str>)] = &[
     // function from before ADR 0107, so it has no `orch_` prefix; `outbox` inserts fire it in every
     // conformance case that writes an outbox row.
     ("outbox_set_owner()", None),
-    // 0037 (P1): the opening of a commit, called here for a thread that is not there.
+    // 0037 (P1): the opening of a commit.
     (
         "orch_commit_open(p_thread uuid, p_expected_version bigint, p_outbox_id uuid, \
          p_outbox_owner text, p_outbox_attempts integer, p_inbox_id uuid, p_inbox_owner text, \
          p_inbox_attempts integer, p_keys text[])",
+        // a seeded thread, so a renamed column of `threads`, `outbox` or `inbox` fails here: the
+        // answer is `applied` for the thread's own version, with the fences and a key it holds
         Some(
-            "DO $$ BEGIN IF (SELECT outcome FROM orch_commit_open(gen_random_uuid(), 1, NULL, \
-             NULL, NULL, NULL, NULL, NULL, '{}')) <> 'not_found' THEN RAISE EXCEPTION 'outcome'; \
-             END IF; END $$",
+            "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+             updated_at, rail_rank) VALUES ('00000000-0000-7000-8000-0000000000f1', 'o', 't', 'a', \
+             'queued', 1, 1, now(), now(), 'h'); \
+             INSERT INTO events (thread_id, seq, at, kind, actor, data, idempotency_key) VALUES \
+             ('00000000-0000-7000-8000-0000000000f1', 1, now(), 'agent_status', '{}', '{}', 'k'); \
+             INSERT INTO outbox (id, thread_id, kind, payload, status, attempts, lease_owner, \
+             lease_until, next_attempt_at, created_at, updated_at) VALUES \
+             ('00000000-0000-7000-8000-0000000000f2', '00000000-0000-7000-8000-0000000000f1', \
+             'delegate', '{}', 'inflight', 1, 'w', now() + interval '1 hour', now(), now(), now()); \
+             INSERT INTO inbox (id, source, idempotency_key, kind, payload, status, available_at, \
+             attempts, lease_owner, lease_until, created_at, updated_at) VALUES \
+             ('00000000-0000-7000-8000-0000000000f3', 's', 'k', 'timer', '{}', 'inflight', now(), 2, \
+             'i', now() + interval '1 hour', now(), now()); \
+             DO $$ BEGIN IF (SELECT outcome FROM orch_commit_open(\
+             '00000000-0000-7000-8000-0000000000f1', 1, '00000000-0000-7000-8000-0000000000f2', 'w', 1, \
+             '00000000-0000-7000-8000-0000000000f3', 'i', 2, '{k2}')) <> 'applied' \
+             OR (SELECT outcome FROM orch_commit_open('00000000-0000-7000-8000-0000000000f1', 1, \
+             NULL, NULL, NULL, NULL, NULL, NULL, '{k}')) <> 'duplicate' \
+             OR (SELECT outcome FROM orch_commit_open(gen_random_uuid(), 1, NULL, NULL, NULL, NULL, \
+             NULL, NULL, '{}')) <> 'not_found' THEN RAISE EXCEPTION 'outcome'; END IF; END $$",
         ),
     ),
     // 0037 (P1): how far the usage ledger has counted a log; the greater of the two.
@@ -109,4 +128,48 @@ async fn a_stray_function_or_view_is_found() {
         found.iter().any(|r| r == "view orch_stray_view"),
         "{found:?}"
     );
+}
+
+/// ADR 0107 decision 1: a PL/pgSQL function carries `SET search_path FROM CURRENT`, so it resolves
+/// its tables through the migration's search path and not the caller's. A function without it
+/// would work in a test whose every connection sets the path, and fail in a deployment whose
+/// roles do not.
+#[tokio::test]
+async fn every_plpgsql_function_pins_its_search_path() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    drop(db.store().await);
+    let conn = support::connect_with(&db.options()).await;
+    let unpinned: Vec<String> = query_scalar(
+        "SELECT p.proname::text FROM pg_proc p \
+         JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang \
+         WHERE n.nspname = $1 AND l.lanname = 'plpgsql' AND p.proname LIKE 'orch\\_%' \
+         AND NOT EXISTS (SELECT 1 FROM unnest(coalesce(p.proconfig, '{}')) c \
+                         WHERE c LIKE 'search_path=%') ORDER BY 1",
+    )
+    .bind(db.schema.clone())
+    .fetch_all(&conn)
+    .await
+    .unwrap();
+    assert!(
+        unpinned.is_empty(),
+        "no `SET search_path FROM CURRENT`: {unpinned:?}"
+    );
+    // the check sees a function that lacks it
+    raw_sql(
+        "CREATE FUNCTION orch_unpinned() RETURNS integer LANGUAGE plpgsql AS $$ BEGIN RETURN 1; END $$",
+        &conn,
+    )
+    .await
+    .unwrap();
+    let found: Vec<String> = query_scalar(
+        "SELECT p.proname::text FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
+         WHERE n.nspname = $1 AND p.proname = 'orch_unpinned' AND p.proconfig IS NULL",
+    )
+    .bind(db.schema.clone())
+    .fetch_all(&conn)
+    .await
+    .unwrap();
+    assert_eq!(found, ["orch_unpinned"]);
 }
