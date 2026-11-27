@@ -70,6 +70,7 @@ fn migrator() -> Result<Migrator, StoreError> {
         "0031_thread_pick.sql",
         "0032_user_team_presets.sql",
         "0033_user_tool_server_last4.sql",
+        "0034_outbox_refunded.sql",
     )
     .map_err(migrate_err)?;
     Migrator::new(MIGRATIONS_TABLE, migrations).map_err(migrate_err)
@@ -2413,6 +2414,30 @@ impl ThreadStore for PgStore {
         .map_err(store_err)
     }
 
+    async fn wait_outbox(
+        &self,
+        lease: &Lease,
+        next_attempt_at: Timestamp,
+        note: String,
+    ) -> Result<bool, StoreError> {
+        // `retry_outbox` and the claim given back: `attempts`, the fencing token, is not touched.
+        query(
+            "UPDATE outbox SET status = 'pending', next_attempt_at = $4, lease_owner = NULL, \
+             lease_until = NULL, last_error = $5, refunded = refunded + 1, \
+             updated_at = clock_timestamp() \
+             WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight'",
+        )
+        .bind(lease.id.0)
+        .bind(&lease.owner)
+        .bind(attempt(lease))
+        .bind(to_db(next_attempt_at))
+        .bind(note)
+        .execute(&self.pool)
+        .await
+        .map(|r| r.rows_affected() == 1)
+        .map_err(store_err)
+    }
+
     async fn complete_outbox(
         &self,
         lease: &Lease,
@@ -2847,6 +2872,6 @@ mod tests {
             .unwrap();
         let first = &migrator.migrations()[0];
         assert_eq!((first.version(), first.description()), (1, "init"));
-        assert_eq!(migrator.migrations().len(), 33);
+        assert_eq!(migrator.migrations().len(), 34);
     }
 }

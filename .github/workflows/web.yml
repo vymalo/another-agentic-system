@@ -138,6 +138,10 @@ jobs:
           build-args: |
             NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start
             NEXT_PUBLIC_BUILD_REVISION=${{ github.sha }}
+          # the same labels as the push below, so the image tried is the image pushed
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=web
       - name: The image serves the export
         run: sh web/tests/image-smoke.sh web:smoke
@@ -155,6 +159,11 @@ jobs:
           build-args: |
             NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start
             NEXT_PUBLIC_BUILD_REVISION=${{ github.sha }}
+          # The commit this image is built from, read by release.yml before it copies `sha-<7>` to a release tag (ADR 0106), as the
+          # orchestrator's image carries it from docker/metadata-action.
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           tags: |
             ghcr.io/vymalo/another-agentic-system/web:sha-${{ steps.tag.outputs.short }}
             ghcr.io/vymalo/another-agentic-system/web:latest

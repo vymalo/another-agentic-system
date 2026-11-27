@@ -510,6 +510,7 @@ fn write_commit(
             payload: row.payload,
             status: OutboxStatus::Pending,
             attempts: 0,
+            refunded: 0,
             sent_at: None,
             task_id: None,
             next_attempt_at: commit.now,
@@ -1713,6 +1714,26 @@ impl ThreadStore for MemoryStore {
                 r.lease_owner = None;
                 r.lease_until = None;
                 r.last_error = Some(error);
+            })
+            .is_some())
+    }
+
+    async fn wait_outbox(
+        &self,
+        lease: &Lease,
+        next_attempt_at: Timestamp,
+        note: String,
+    ) -> Result<bool, StoreError> {
+        let mut inner = self.lock();
+        Ok(leased(&mut inner, lease)
+            .map(|r| {
+                r.status = OutboxStatus::Pending;
+                r.next_attempt_at = next_attempt_at;
+                r.lease_owner = None;
+                r.lease_until = None;
+                r.last_error = Some(note);
+                // A wait is not a failed try: this claim does not count against the caps.
+                r.refunded += 1;
             })
             .is_some())
     }
