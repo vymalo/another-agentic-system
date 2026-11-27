@@ -9,7 +9,7 @@ sidebarTitle: "0087 · A signing app signs each prompt"
   key** ([adam-rs ADR 0068](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0068-adam-signs-its-own-history.md),
   `TurnKeys`); **the orchestrator checks prompt signatures and refuses an unsigned or badly signed prompt** from those
   apps; **the web app does not sign.** What follows (names, shapes, limits, codes) is the proposal that builds that
-  decision, which the owner may change by a dated note. **Nothing is built.** Extends
+  decision, which the owner may change by a dated note. **Nothing is built.** *Amended (2026-11-27): parts are built since; see [the status note of 2026-11-27](#status-note-2026-11-27-what-is-built).* Extends
   [ADR 0077](0077-push-notifications-for-a-persons-runs.md) (a person's devices),
   [ADR 0047](0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md) (one public client per
   platform) and [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md) (who the person is).
@@ -210,3 +210,14 @@ Different keys keep them apart, and the `typ` of each signature keeps them apart
   registration, a prompt key, or both".
 - A signing app keeps a private key in the platform's keychain (open question 1).
 - An AG-UI client that isn't a listed signing client is unchanged.
+
+## Status note, 2026-11-27: what is built
+
+*Verified 2026-11-27 against `main` (`a6fb6d7`).* What the amendment of 2026-11-25 lists as built is on `main`:
+`orch-prompt-statement` (the statement's payload, RFC 8785 and the integrity rule; pure), the `PromptSigner` port with
+`prompt_signer_conformance!` in `orch-ports`, and `orch-prompt-signer-static`, a test signer from files
+([#530](https://github.com/vymalo/another-agentic-system/pull/530)). Since then
+[#535](https://github.com/vymalo/another-agentic-system/pull/535) added `auth.signingClients` to the configuration with
+its rules, and the presence check of a signing client's envelope as a pure function
+(`orchestrator/crates/prompt-statement/src/presence.rs`). Nothing calls that check at intake yet, there is no PKI
+signer, and no statement goes with an agent's messages: no prompt is refused or attested today.

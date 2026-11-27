@@ -4,7 +4,7 @@ sidebarTitle: "0092 · A window is a port on a run"
 
 # ADR 0092 — A window is a port on the server side of a run, and the orchestrator serves its tools
 
-- **Status:** **Proposed (2026-11-24).** Slice 1 of the windows epic ([#339](https://github.com/vymalo/another-agentic-system/issues/339)). Nothing is built; slices 2 to 10 are listed below. It amends no invariant.
+- **Status:** **Proposed (2026-11-24).** Slice 1 of the windows epic ([#339](https://github.com/vymalo/another-agentic-system/issues/339)). Nothing is built; slices 2 to 10 are listed below. *Amended (2026-11-27): parts are built since; see [the status note of 2026-11-27](#status-note-2026-11-27-what-is-built).* It amends no invariant.
 - **Why it is proposed and not accepted:** it settles a seam and a set of rules, and it names what a later slice must decide with the platform (decision 5). No owner decision is needed for the seam itself, which is why it can be written now.
 
 ## Context
@@ -66,3 +66,10 @@ Following the epic's table ([#339](https://github.com/vymalo/another-agentic-sys
 - **A separate MCP server for windows.** It would duplicate the relay's auth, its step reporting and its listing rules for no benefit; the built-in enum already exists and is the cheaper road (premise 1).
 - **A live stream in slice 1's design.** Nobody has measured it, and it needs the platform change of decision 5b; designing a stream against an ingress path that does not exist would invent an interface for a network nobody agreed to.
 - **Driving the person's own browser.** It would put a window's content in the person's origin and require their credentials; the epic puts third-party sign-in out of scope, and decision 7's sandbox is the opposite choice.
+
+## Status note, 2026-11-27: what is built
+
+*Verified 2026-11-27 against `main` (`a6fb6d7`).* Slice 2 is built:
+[#522](https://github.com/vymalo/another-agentic-system/pull/522) adds `orchestrator/crates/window` (`orch-window`): the
+`Window` port, its URL guard, a conformance testkit and a fake adapter, with no network (`tests/fake.rs`). No other crate
+depends on it yet: the tools (slice 3) and every later slice are not built, so no agent can open a window.

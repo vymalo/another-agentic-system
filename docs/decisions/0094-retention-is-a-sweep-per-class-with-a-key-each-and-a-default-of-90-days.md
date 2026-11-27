@@ -5,7 +5,7 @@ sidebarTitle: "0094 · Retention: one sweep per class"
 # ADR 0094 — Retention is one sweep per class, one key each, and a default of 90 days
 
 - **Status:** **Proposed (2026-11-24).** Mechanism for open questions 28, 29 and 46 (issue
-  [#157](https://github.com/vymalo/another-agentic-system/issues/157)). Nothing is built. The ages are recorded (see
+  [#157](https://github.com/vymalo/another-agentic-system/issues/157)). Nothing is built. The ages are recorded *Amended (2026-11-27): parts are built since; see [the status note of 2026-11-27](#status-note-2026-11-27-what-is-built).* (see
   *Decision of the ages*, 2026-11-25) and the questions are Closed; the mechanism is built slice by slice.
 - **Owner's decision, ANR-Q51, 2026-11-24 06:07Z:** *"(b) An open-source default of 90 days for all of them"*. Recorded
   in the owner's decision log of 2026-11-24, row 2. The ages are the owner's; this ADR is the
@@ -108,3 +108,13 @@ Status note, recorded by ANR-289. The owner decided the ages on 2026-11-24 (ANR-
 | Adam's coder's finished runs | 90 days, an open-source default |
 
 The value is the project's default, not only a setting of a reference deployment; a deployment that wants another value, or `forever`, sets the class's key. The owner's answer names no quota, so none is set by default. This note changes no mechanism: the sweeps, keys and the floor stay as decided above and are still not built.
+
+## Status note, 2026-11-27: what is built
+
+*Verified 2026-11-27 against `main` (`a6fb6d7`).* One sweep is built, for a class this ADR's tables do not name:
+[#549](https://github.com/vymalo/another-agentic-system/pull/549) (merged 2026-11-25) erases a thread with no active job
+whose last event is older than `retention.threads.days` (1 to 36500, default 90), through the same path as the person's
+own delete ([ADR 0043](0043-deleting-a-thread-erases-it.md)), so its files go with it; `orchestrator/crates/app/tests/thread_retention.rs`
+proves it and [`config.md`](../api/config.md) documents the key. The `retention` section holds that key alone: slice R1's
+other keys and the inbox floor, and R2 to R8 (the inbox, watches, journal, file age and orphan sweeps, the lifecycle-rule
+mode, the metrics), are not built.
