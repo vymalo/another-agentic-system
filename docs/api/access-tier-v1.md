@@ -341,7 +341,7 @@ extension and works above its tier has a defect, as in [`steer/v1`](steer-v1.md#
 
 **One optional line caps the highest tier a role may pick:**
 
-```yaml
+```yaml [orchestrator.yaml]
 auth:
   roles:
     chat-only: { permissions: [agent.read, agent.invoke, thread.read, thread.write], agents: [chat], maxTier: auto }

@@ -1473,10 +1473,17 @@ The rule is v1's, over the v2 document:
   catalog 8's digest, `sha256:22c333102bed676791dc9d47f21fc0a39be6e5062ef2c52f5a599ecca1b8341d`; a test can pin both.
 - To recompute a vector by hand:
 
-  ```sh
+  ::: code-group
+
+  ```sh [sha256sum]
   printf '%s' '<the canonical form above>' | sha256sum
+  ```
+
+  ```sh [python3]
   python3 -c 'import json,hashlib,sys; c=json.dumps(json.load(sys.stdin),sort_keys=True,separators=(",",":"),ensure_ascii=False); print("sha256:"+hashlib.sha256(c.encode()).hexdigest())' < catalog.json
   ```
+
+  :::
 
 - `version` is an integer from 1, **bumped by hand on every change** of the catalog. It orders catalogs: the newest is
   the one with the highest `version`. **Version 9 is the first v2 catalog**; versions 1 to 8 are v1 documents and are

@@ -135,7 +135,7 @@ per thread and content: one thread can never read another's file by its hash.
 Same origin, no CORS, no presigned URL. The name goes in `Content-Disposition`, so it is never in the request line and
 never in the orchestrator's log; a client that has no name sends no header.
 
-```ts
+```ts [uploadAttachment.ts]
 async function uploadAttachment(threadId: string, file: File) {
   const headers: Record<string, string> = {
     "content-type": file.type || "application/octet-stream",

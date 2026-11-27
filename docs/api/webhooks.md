@@ -129,7 +129,7 @@ Take the secret `dev-webhook-secret-0123456789abcdef0123` (the compose stack's; 
 `body.json` with no trailing newline (the signature covers every byte; `printf` adds none, an
 editor often does):
 
-```sh
+```sh [terminal]
 SECRET=dev-webhook-secret-0123456789abcdef0123
 TS=1790800000
 BODY='{"version":1,"repository":"https://github.com/acme/widgets","sha":"0123456789abcdef0123456789abcdef01234567","branch":"agent/fix-flaky-test","name":"ci/build","conclusion":"success","url":"https://ci.example.com/runs/42","summary":"212 tests passed"}'
@@ -148,7 +148,7 @@ e7ff72c4411e69debb1f634a339e7c884641e4ada663a42369deead91e617944
 Post it, with the current time in place of the fixed one (the fixed timestamp is outside the skew
 window of a live orchestrator, so use `TS=$(date +%s)` and recompute `SIG`):
 
-```sh
+```sh [terminal]
 TS=$(date +%s)
 SIG=$(printf '%s.%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -r | cut -d' ' -f1)
 curl -sS -i https://orchestrator.example.com/webhooks/ci \
@@ -201,7 +201,7 @@ name every check of that app alike (a delivery of it is acknowledged and stored 
 For a GitHub delivery the signature is over the body alone (no timestamp). With the same secret and
 body as the example above:
 
-```sh
+```sh [terminal]
 printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -r | cut -d' ' -f1
 # 3f7810292c8978124166e4004b825bbb80dbd5b64b72ddecd8099f832ba345d0
 ```
