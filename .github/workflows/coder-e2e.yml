@@ -41,6 +41,8 @@ name: Coder E2E
 #              dev/orchestrator.yaml, an unpriced model named, the same answer after one thread is deleted, another user's month empty),
 #              the access tier (dev/tier-e2e.sh: `mock-tiered`, a WireMock agent that lists access-tier/v1; a message that names a tier is logged with it and sent
 #              under the extension's URI, the tier the agent echoes is logged, a tier the plain agent does not list is refused before anything is written),
+#              the access tier on the real coder (dev/tier-real-e2e.sh: `coder-share`'s capabilities list the tiers up to its cap; the scripted `[mock:tier]` write is refused by the coder at `plan` and
+#              allowed at `edits`; a tier above the cap is a 422 and writes nothing),
 #              the model and the reasoning effort of a message (dev/pick-e2e.sh: `mock-pick`, a WireMock agent that lists model-pick/v1 and reasoning/v1;
 #              a message that names an alias and a level is logged with it and sent with both extensions activated, a pick the card does not offer is a
 #              typed 422 carrying `offered` and writes nothing),
