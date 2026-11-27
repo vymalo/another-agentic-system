@@ -27,7 +27,7 @@ check() { # name
   w="${da%x*}"; h="${da#*x}"; px=$((w * h))
   # compare exits 1 when the images differ and 2 on an error; AE (pixels beyond the fuzz) goes to stderr
   set +e; ae="$(compare -metric AE -fuzz "$fuzz_pct" "$gen/$n" "$com/$n" null: 2>&1)"; rc=$?; set -e
-  if [ "$rc" -gt 1 ]; then say "FAIL compare error ($rc): $n: $ae"; fail "$n"; return; fi
+  if [ "$rc" -gt 1 ]; then ae="$(echo "$ae" | tr '\n' ' ')"; say "FAIL compare error ($rc): $n: $ae"; fail "$n"; return; fi
   ae="$(echo "$ae" | awk '{ printf "%d", $1 }')"
   [ "$ae" -eq 0 ] && return
   pct="$(awk "BEGIN { printf \"%.4f\", $ae * 100 / $px }")"
@@ -37,7 +37,8 @@ check() { # name
     say "ok (within the bound) $n: $ae of $px pixels (${pct} %) differ by more than $FUZZ_Q/255"
   fi
 }
-names="$( { ls "$gen"; ls "$com"; } | grep '\.png$' | sort -u )"
-for n in $names; do check "$n"; done
+names="$(mktemp)"; trap 'rm -f "$names"' EXIT
+{ ls "$gen"; ls "$com"; } | grep '\.png$' | sort -u >"$names"
+while IFS= read -r n; do check "$n"; done <"$names"
 say "$total compared: $failed failed (bound: at most 0.05 % of a still's pixels differ by more than $FUZZ_Q/255)"
 [ "$list" -eq 1 ] || [ "$failed" -eq 0 ]

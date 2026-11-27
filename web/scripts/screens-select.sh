@@ -16,7 +16,8 @@ gen="$(cd "$gen" && pwd)"; com="$(cd "$com" && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 docker run --rm -v "$gen:/generated:ro" -v "$com:/committed:ro" --entrypoint sh "$image" \
-  scripts/screens-compare.sh --list-failing /generated /committed >"$work/failing" 2>"$work/detail"
+  scripts/screens-compare.sh --list-failing /generated /committed >"$work/failing" 2>"$work/detail" \
+  || { echo "screens-select: the comparison aborted, so nothing was selected:" >&2; cat "$work/detail" >&2; exit 1; }
 cat "$work/detail" >&2
 : >"$work/report"
 copied=0; removed=0
@@ -27,7 +28,8 @@ done <"$work/failing"
 # every FAIL line of the comparison names one still that was touched above; one line each, "<name>: <what>"
 sed -n -e 's/^FAIL not generated: \(.*\)$/\1: removed, no longer drawn/;t out' \
   -e 's/^FAIL new, not committed: \(.*\)$/\1: new/;t out' \
-  -e 's/^FAIL changed dimensions: \([^ ]*\) (\(.*\))$/\1: changed dimensions (\2)/;t out' \
+  -e 's/^FAIL changed dimensions: \(.*\) (\(generated [^)]*\))$/\1: changed dimensions (\2)/;t out' \
+  -e 's/^FAIL compare error (\([0-9]*\)): \([^:]*\): \(.*\)$/\2: compare error (\1) \3/;t out' \
   -e 's/^FAIL //;t out' -e 'd' -e ':out' -e 'p' "$work/detail" >"$work/report"
 cp "$work/report" "$report"
 echo "screens-select: $copied copied (beyond the bound, new), $removed removed (no longer drawn); the rest stays as committed"

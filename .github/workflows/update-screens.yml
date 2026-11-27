@@ -43,6 +43,7 @@ jobs:
           BRANCH: screens/update-${{ github.run_id }}
           SCREENS_REPORT: ${{ runner.temp }}/screens-report.txt
           SCREENS_KEEP: ${{ runner.temp }}/screens-drawn
+          BASE: ${{ github.ref_name }}
         run: |
           set -eu
           if [ -z "$(git status --porcelain -- web/e2e/__screens__)" ]; then
@@ -52,7 +53,14 @@ jobs:
           changed=$(git status --porcelain -- web/e2e/__screens__ | wc -l | tr -d ' ')
           echo "$changed files changed"
           cat "$SCREENS_REPORT"
-          list=$(sed 's/^/- \x60/; s/: /\x60: /' "$SCREENS_REPORT")
+          # one line per still, "<name>: <what>"; removals go in a section of their own
+          fmt() { sed 's/^/- \x60/; s/: /\x60: /'; }
+          list=$(grep -v ': removed, no longer drawn$' "$SCREENS_REPORT" | fmt || true)
+          removedlist=$(grep ': removed, no longer drawn$' "$SCREENS_REPORT" | sed 's/: removed, no longer drawn$//' | sed 's/^/- \x60/; s/$/\x60/' || true)
+          removed_section=""
+          if [ -n "$removedlist" ]; then
+            removed_section=$(printf 'Removed (no longer drawn):\n\n%s\n' "$removedlist")
+          fi
           # A pull request opened with the default GITHUB_TOKEN starts no workflow (GitHub's rule), so its `screens` job never runs:
           # the proof is made here, in the same image, before anything is pushed. The set the image drew is compared with the
           # committed tree as it now stands; any still beyond the bound, new or missing fails the job and no pull request opens.
@@ -78,6 +86,8 @@ jobs:
           - \`web/e2e/__screens__\`: $changed image(s), drawn by \`web/scripts/screens-docker.sh update\` in the \`screens\` target of \`web/Dockerfile\`. Only the stills beyond the bound (more than 0.05 % of their pixels differ by more than 8/255, or other dimensions), the new ones and the dropped ones are touched; a still within the bound stays as committed. Each, with the comparison's pixel count and percentage:
 
           $list
+
+          $removed_section
 
           It solves:
 
@@ -193,6 +203,6 @@ jobs:
           * [x] Product intent
           * [x] Edge cases
           EOF
-          gh pr create --base "${{ github.ref_name }}" --head "$BRANCH" \
+          gh pr create --base "$BASE" --head "$BRANCH" \
             --title "chore(web): re-baseline the screens from CI's own image" \
             --body-file /tmp/body.md

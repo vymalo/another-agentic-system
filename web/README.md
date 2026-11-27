@@ -3261,7 +3261,7 @@ changes the committed tree by exactly: (a) the stills beyond the bound or of oth
 committed stills no longer drawn, removed. A still that differs **within** the bound stays byte for byte as committed, so the
 sub-pixel noise between two runs rewrites nothing (pull request #604 rewrote 28 stills for it). The pull request body lists each
 touched still with its pixel count and percentage; when nothing is beyond the bound the job logs "nothing to update" and opens no
-pull request. **Limit:** a pull request opened with the default `GITHUB_TOKEN` starts no workflow (GitHub's rule), so the bot's pull
+pull request. **Limit:** a pull request opened with the default `GITHUB_TOKEN` starts no workflow (GitHub's rule, *verified 2026-11-27*, [Triggering a workflow](https://docs.github.com/en/actions/using-workflows/triggering-a-workflow): "events triggered by the `GITHUB_TOKEN` will not create a new workflow run", with `workflow_dispatch` and `repository_dispatch` as the exceptions), so the bot's pull
 request has no `screens` or `Web` run of its own. The workflow therefore compares the drawn set with the selected tree itself, in the
 same image, before it pushes (a failure there opens no pull request) and prints the verdict in the body; a person runs the pull
 request's checks by closing and reopening it, or by pushing to it. (Opening it with a GitHub App token or a PAT would start them,
