@@ -189,6 +189,11 @@ expect "its params.default is the profile's own level, medium" \
   "medium"
 echo "== an agent whose card declares no levels"
 researcher_card=$(card "$researched" "$researcher_token" 2>"$tmp/err" || true)
+if [ -z "$researcher_card" ]; then
+  bad "the researcher's card was not read from $researched/.well-known/agent-card.json: $(cat "$tmp/err")"
+else
+  ok "the researcher's card was read"
+fi
 expect "the researcher's card does not list reasoning/v1" \
   "$(printf '%s' "$researcher_card" | jq -r --arg u "$reasoning_uri" '[.. | objects | select((.uri? // "") == $u)] | length')" \
   "0"
@@ -196,12 +201,9 @@ expect "the researcher's card does not list reasoning/v1" \
 # --- what the web reads ------------------------------------------------------------------------------------------------
 echo "== the agent list carries the chat's choices and levels from its live card"
 api GET /api/agents >"$tmp/agents.json" 2>/dev/null || echo '[]' >"$tmp/agents.json"
-expect "chat: the two aliases of MODEL_ALIASES_FILE" \
-  "$(jq -cS '[.[] | select(.id == "chat") | .pick.models][0]' "$tmp/agents.json")" \
-  '[{"id":"mock-persona-one","label":"mock-persona-one"},{"id":"mock-persona-two","label":"mock-persona-two"}]'
-expect "chat: no model default (adam names none), and the levels and default of the mock-persona profile" \
-  "$(jq -cS '[.[] | select(.id == "chat") | .pick | {modelDefault: (.modelDefault // null), efforts, effortDefault}] | first' "$tmp/agents.json")" \
-  '{"effortDefault":"medium","efforts":["low","medium","high"],"modelDefault":null}'
+expect "chat: its whole pick — the two aliases of MODEL_ALIASES_FILE, no model default (adam names none), and the levels and default of the mock-persona profile" \
+  "$(jq -cS '[.[] | select(.id == "chat") | .pick] | first' "$tmp/agents.json")" \
+  '{"effortDefault":"medium","efforts":["low","medium","high"],"models":[{"id":"mock-persona-one","label":"mock-persona-one"},{"id":"mock-persona-two","label":"mock-persona-two"}]}'
 expect "researcher: it sets no MODEL_ALIASES_FILE, so its card lists neither extension and the web draws no chip" \
   "$(jq -r '[.[] | select(.id == "researcher")][0] | has("pick")' "$tmp/agents.json")" "false"
 
@@ -295,6 +297,6 @@ expect "it carries the levels the card does offer" "$(jq -cS '.offered // []' "$
 expect "no thread was created" \
   "$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$base/api/threads/$max_thread" -H "$id_header")" "404"
 expect "the model was sent nothing for the refused level" \
-  "$(bodies_of "$max_nonce" mock-persona | wc -l | tr -d ' ')" "0"
+  "$(models_sent "$max_nonce" | wc -l | tr -d ' ')" "0"
 
 if [ "$fail" -eq 0 ]; then echo "pick (real adam) e2e passed"; else echo "pick (real adam) e2e FAILED"; exit 1; fi

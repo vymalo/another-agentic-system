@@ -406,10 +406,12 @@ for s in "$@"; do
         esac
       done ;;
     pick-real)
-      case " $agents " in
-        *" chat "*) ;;
-        *) echo "scenario pick-real needs the agent chat; GET /api/agents does not list it (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
-      esac ;;
+      for a in chat researcher; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario pick-real needs the agents chat and researcher; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
     locale-real)
       for a in chat researcher; do
         case " $agents " in
