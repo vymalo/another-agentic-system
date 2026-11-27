@@ -4,7 +4,7 @@ sidebarTitle: "0101 · A cloud run's calls are signed"
 
 # ADR 0101 — A cloud run's model calls are signed for the run, and the injector stays only for custom cases
 
-- **Status:** **Accepted (2026-11-26): by the owner, by merging**, on his direction of 2026-11-26 (below). **Nothing is built.** It
+- **Status:** **Accepted (2026-11-26): by the owner, by merging**, on his direction of 2026-11-26 (below). **Nothing is built.** It **Amended 2026-11-27:** the run-certificate contract v1 (section 8's amendment).
   **amends** [ADR 0084](0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md) (the run lease) and
   [ADR 0089](0089-the-run-identity-stays-the-agents-task-id-bound-on-first-sight.md) (the run identity), each with a
   dated note, and builds on [ADR 0087](0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md)
@@ -254,16 +254,22 @@ one sentence of section 4.
 1. **The issuer is behind a port on adam's side.** adam makes the Ed25519 key **and the CSR inside the run**; the issuer
    only takes a CSR and answers a chain. The deployment picks the issuer by configuration: **the broker over HTTP first**,
    and an **OpenBao adapter** as well. The broker never sees a private key, and the key never leaves the run's memory.
+   **Open, and not decided by this amendment:** on the OpenBao path nothing of section 3's checks runs — that the run is
+   bound, live and `signed`, that the caller is the binding's agent, that the leaf is registered with the gateway's key
+   registry before the answer — and section 5's way of cutting a person's agents off ("revokes their live leaves, it
+   knows each run's serial") assumes the broker issued every leaf. Two ways out, the owner's or ANR-714's: an OpenBao
+   role **per run** templated on the run's SAN, or the broker as the only issuer in any deployment that needs revocation.
+   Until one is chosen, `openbao` is the adapter for a deployment that does not need the broker's checks.
 2. **The contract is versioned in the body, and it is v1.** `POST /internal/runs/{run}/certificate` takes
    `{"v": 1, "csr": "<base64 DER>"}` and answers `{"v": 1, "chain": ["<base64 DER>", …]}` — the leaf first, then its
-   intermediates, roots omitted. The route is section 3's; the shapes of section 3 (`{csr}`, `{chain, kid, notAfter}`) are
-   **superseded**: a version in the body lets a later shape be added without a second route, and `kid` and `notAfter` are
+   intermediates, roots omitted. The route is section 3's; the shapes of section 3 (`{csr}`, `{chain, kid, notAfter}`) and the
+   sequence diagram that draws them are **superseded**: a version in the body lets a later shape be added without a second route, and `kid` and `notAfter` are
    read from the leaf, which the caller already has. Wire fixtures for the request, the answer and each refusal are in
    [`docs/api/fixtures/run-certificate-v1/`](../api/fixtures/run-certificate-v1/README.md), for adam's tests and the
    broker's to share.
-3. **The names**, which AD-063's two proposed ones extend:
-   `RUN_CERT_ISSUER` (`broker` or `openbao`), `RUN_CERT_ISSUER_URL`, `RUN_CERT_TOKEN_FILE`, `RUN_CERT_CA_FILE`,
-   `RUN_CERT_RENEW_FRACTION`.
+3. **The names:** `RUN_CERT_ISSUER` (`broker` or `openbao`), `RUN_CERT_ISSUER_URL`, `RUN_CERT_TOKEN_FILE`,
+   `RUN_CERT_CA_FILE`, `RUN_CERT_RENEW_FRACTION`. The last two of those, `RUN_CERT_ISSUER_URL` and
+   `RUN_CERT_TOKEN_FILE`, are the two the deployment's own AD-063 proposed; they are kept.
 4. **The run's leaf signs model requests only.** Run *history* keeps adam's process turn key (ADR 0068): a leaf names one
    run, and the history outlives it.
 5. **Renewal:** at **2/3 of the leaf's life**, with a **new key each time**; the old leaf is kept until the new one
@@ -271,14 +277,19 @@ one sentence of section 4.
    in `(0, 1)`.
 6. **The run-signer sidecar** forwards plain HTTP from loopback to `RUN_SIGNER_UPSTREAM`, and trusts
    `RUN_CERT_CA_FILE` for **both** the issuer and the model gateway.
-7. **Correction to section 4.** That section's table and the S5 slice say adam gains "a run-certificate `TurnKeys`
+7. **Correction to section 4, its Consequences and the S5 slice.** They say adam gains "a run-certificate `TurnKeys`
    adapter". adam's `TurnKeys` is **per process** (`crates/adam-core/src/turn/mod.rs` takes no run), so a key that belongs
    to one run cannot be one: the run key gets **a port of its own** in adam, beside `TurnKeys` and not inside it. The
-   rest of section 4 stands.
+   rest of section 4 stands. *Verified 2026-11-27:* `crates/adam-core/src/turn/mod.rs`'s `TurnKeys::current()` takes no
+   run, in the adam-rs checkout this repository pins.
 
 **The refusals of v1**, each with the status the fixtures pin: `401` `unauthenticated`; `403` `run_not_bound`,
-`lease_expired` and `not_signed` (the three of section 3 that say nothing of whether a run exists); `400` `bad_csr`; `503`
-`unavailable`. They are `application/problem+json`, as everywhere else, with the `code` member naming the refusal.
+`lease_expired`, `not_signed`; `400` `bad_csr`; `503` `unavailable`. **Only `run_not_bound` may be answered for a run that
+does not exist or whose caller is not its agent**; `lease_expired` and `not_signed` are answered only for a binding that
+exists, so section 3's order must put *"the caller's workload is the binding's agent"* **before** the path and lease rows,
+or those two codes leak the existence of a run to any workload the broker's audience accepts. That order is part of v1.
+`lease_expired`'s name predates section 6 (a `signed` binding holds no lease): it means the binding's time is up, and a
+better name is the broker's to choose, with the fixtures. They are `application/problem+json`, as everywhere else, with the `code` member naming the refusal.
 
 - *Verified 2026-11-27:* the owner's rulings are recorded here as he gave them; the fixture files parse as JSON and their
   `v` is `1`; the base64 in them decodes to DER.

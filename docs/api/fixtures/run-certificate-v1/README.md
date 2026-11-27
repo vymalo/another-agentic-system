@@ -29,8 +29,10 @@ audience, once per run.
   anchor does. At most 8 certificates.
 - There is no `kid` and no `notAfter`: both are read from the leaf, which the caller now has. This is what supersedes
   section 3's `{chain, kid, notAfter}`.
-- The leaf's URI SAN names the run, its extended key usage is client authentication, and it signs **model requests
-  only** — run history keeps adam's process turn key (ADR 0068).
+- The leaf's **one URI SAN names the person and the run**, in the shape ADR 0101 section 2 proposes:
+  `urn:another:person:<sub>:agent:<run>` — the fixture's is `urn:another:person:alice@example.com:agent:run-1`, and it is
+  **critical**. Its extended key usage is client authentication, its key usage is `digitalSignature` (its only job is
+  signing), and it signs **model requests only** — run history keeps adam-rs's process turn key (adam-rs ADR 0068).
 
 ## The refusals
 
@@ -51,6 +53,8 @@ The statuses are the amendment's proposal: a slice that disagrees changes them *
 
 They are a real chain, made once with `openssl` and committed for their shape: a root (not in the file), an
 intermediate, and a leaf whose CSR is the one in `request.v1.json` — so a test can verify that the answer's leaf
-belongs to the request's key. Ed25519 throughout, the leaf's EKU is client authentication, and its URI SAN is
-`spiffe://another/ns/agents/sa/run-1`. They expire a day after they were made: a test that needs a valid leaf mints
-its own, and reads these files for the **shape**, not for the validity.
+belongs to the request's key. Ed25519 throughout; the leaf's EKU is client authentication, its key usage is
+`digitalSignature`, and its URI SAN is `urn:another:person:alice@example.com:agent:run-1`, critical.
+
+**The certificates live 100 years and no private key is committed**, so a test that validates the chain against the
+clock never goes red and nothing secret travels; the keys are throwaway.
