@@ -1,6 +1,6 @@
 # ADR 0103 — A person's own agent is made and kept ready before their message is accepted
 
-- **Status:** **Proposed (2026-11-26)** (ANR-806, part 2; built in `orchestrator/crates/app/src/provisioning.rs`, off unless the deployment has a `provisioner` section). Not yet tried against a real platform: the dev stack plays it with a WireMock stand-in (`dev/provisioner-e2e.sh`).
+- **Status:** **Proposed (2026-11-26)** (ANR-806, part 2; built in `orchestrator/crates/app/src/provisioning.rs`, off unless the deployment has a `provisioner` section). Not yet tried against a real platform: the dev stack plays it with a WireMock stand-in (`dev/provisioner-e2e.sh`). **Amended (2026-11-27): ANR-1061, a person's message goes to their own agent by a route recorded in `Job.route`, and the dispatcher's sends for a routed thread provision too (decision 5, the amendment below).**
 
 ## Context
 
@@ -34,7 +34,11 @@ and how long a person may be made to wait.
 4. **A replay is not a reason to ask.** A request whose idempotency key is already in the log (`ThreadStore::key_recorded`), a
    first message whose thread already exists, and a fork that is the replay of an earlier one write nothing, so they do not ask
    the platform and get the acceptance they had even while the platform is down.
-5. **What this does not do.** *(Amended 2026-11-26, ANR-1061: the message is sent to the person's own agent, by a route recorded with the thread, and the dispatcher's sends for a routed thread provision too; see the note below.)* An `@mention` or `ask_agent` to a coder does not provision: the dispatcher does not ask the platform for it.
+5. **What this does not do.** ~~The message still goes to the deployment's **configured agent**; routing it to the person's own
+   agent is a follow-up. Sends that do not come from a person's request (the verifier and CI re-delegation, a redelivery, an
+   `@mention` or `ask_agent` to a coder) do not provision: the dispatcher does not ask the platform.~~ *Superseded
+   2026-11-27 by the amendment below (ANR-1061): the message goes to the person's own agent, and the dispatcher's sends for a
+   routed thread provision too. What stays true: an `@mention` or `ask_agent` to a coder does not provision.*
 
 ## Amended 2026-11-26 (ANR-1061): the message goes to the person's own agent
 
@@ -47,7 +51,9 @@ This amendment replaces its first version, which recomputed the route from the c
   title or the attached servers. The thread's **target stays the configured agent** (`coder`, `adam`): the gates, the tiers, the
   tool grants and the permissions are keyed by it and do not change.
 - **`Dispatcher::load` uses the recorded route for every row kind** (delegation, action, steer, cancel, follow, helper-session
-  start and close, redelivery), never the configuration. A row for a thread with no route goes where it always went.
+  start and close, redelivery), never the configuration. A row for a thread with no route goes where it always went. **A helper
+  session's thread inherits its parent's route when it is opened** (`open_child` copies it, the core stays pure), so the helper's
+  follow, a message the person sends in it and its close go to the same agent, in the context that agent made.
 - **A thread that began before provisioning keeps its agent and its context.** Its job has no route, so no mid-thread switch:
   the shared agent holds its A2A context and task, and a message to it asks the platform nothing and makes no agent nobody uses.
   (Whether an agent refuses a context it did not make is *unverified*; the design does not rely on it.)
@@ -58,11 +64,12 @@ This amendment replaces its first version, which recomputed the route from the c
   before it is loaded, so a re-delegation by the verifier or CI, a redelivery and a session start find a suspended agent resumed;
   one platform read per row when the agent is up. **A stop (`Cancel`) and a follow (`Observe`) never wake an agent.**
 - **Not listed yet.** The platform says `Ready` before its registry may list the agent. A row for a routed thread whose agent the
-  registry does not list is tried again `own_agent_listing_attempts` times (`DispatcherConfig`, **default 5**, about 15 s with the
-  default backoff), with a debug log each time and a warning when it is given up, and then fails with its own reason, "your agent
-  ... is ready but is not listed yet". It is never sent to the shared agent in its place, and the retry applies to the thread's own
+  registry does not list is tried for up to `own_agent_listing_attempts` attempts of the row in all (`DispatcherConfig`, **default 5**, about 15 s
+  with the default backoff; not that many extra retries), with a debug log each time and a warning when it is given up, and then fails with its own reason: "your agent
+  ... is ready but is not listed yet" when this row's own provisioning call returned the agent ready, and, when no call was made
+  or provisioning no longer covers the kind, "the person's own agent ... is not listed, and nothing made it ready for this row". It is never sent to the shared agent in its place, and the retry applies to the thread's own
   agent only. A stop whose agent is not listed is answered here: an agent the platform does not list holds no task to stop, so the
-  thread is cancelled without asking it (`CancelledBeforeStart`).
+  thread is cancelled without asking it (`CancelledBeforeStart`), **at the first look, before any listing retry**.
 - **The tier and the cap come from the own agent's card.** The request checks a tier against the thread's agent, the send against
   the card of the agent the row goes to (`tier_for_send`), so an own agent that does not list `access-tier/v1` gets no tier, and one
   that lists it is given the message under it. The same holds for the model pick and the other extensions read from the live card.
@@ -78,6 +85,19 @@ This amendment replaces its first version, which recomputed the route from the c
   one (the commit still refuses the duplicate).
 - The 503 is additive to the chat API (`docs/api/chat-api.yaml`).
 - Changing the identity claim is a data migration of platform agents (decision 1).
+- **ANR-1061 (amendment of 2026-11-27):**
+  - The job ledger gains the optional field `Job.route` (the person's agent's id, absent for a thread that began before
+    provisioning); `DispatcherConfig` gains the public field `own_agent_listing_attempts`, which **breaks any struct literal of
+    it outside the workspace** (use `..DispatcherConfig::default()`).
+  - A routed row holds a dispatcher slot while it waits for the agent, up to `readyTimeoutSecs` plus slack per row; a
+    follow-up card will bound it.
+  - **A rollback past this change is one-way.** An older binary drops `route` from `job_json` on its next write, and the next
+    message then goes to the shared agent carrying the person's agent's context. Do not roll back past it while provisioning is
+    on.
+  - Turning provisioning off, or removing a kind from `provisioner.kinds`, **strands the routed threads**: they never return to
+    the shared agent (a row for one that is not listed ends with the reason above).
+  - The request-time checks of tier, model pick, uploads and child sessions read the **shared agent's** card and are
+    pre-checks only; the send is checked against the person's own agent's card.
 
 ## Alternatives rejected
 
@@ -87,3 +107,7 @@ This amendment replaces its first version, which recomputed the route from the c
   says in the dev stack, and the deployment would have to keep the two equal.
 - **Provisioning from the dispatcher.** It would cover every send, but the person would see a message accepted that then waits on
   the platform with nowhere to say so; at the request the answer can be a 503 that writes nothing.
+  *Note 2026-11-27 (ANR-1061): partly adopted for routed rows.* The dispatcher's own sends for a routed thread (re-delegation,
+  redelivery, a steer, a session start) now wake the person's agent, because the message path alone cannot cover them and the
+  agent they go to must be up. The 503-at-request argument still holds for the message path: a person's message still waits
+  and is refused with nothing written at the request, never accepted and left waiting in the dispatcher.
