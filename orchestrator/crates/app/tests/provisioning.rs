@@ -1782,9 +1782,9 @@ async fn routed_rows_that_wait_for_a_slow_agent_leave_the_slots_to_the_rest(
     for n in 0..routed {
         coders.push(new_coder_thread(&requests, &format!("echo routed {n}")).await);
     }
-    // every slot is at the gate
-    eventually("the slots at the gate", || async {
-        (entered.load(Ordering::SeqCst) >= SLOTS).then_some(())
+    // the wake is at the gate: one flight for the person, whatever the number of rows
+    eventually("the wake at the gate", || async {
+        (entered.load(Ordering::SeqCst) >= 1).then_some(())
     })
     .await;
 
@@ -1836,6 +1836,11 @@ async fn routed_rows_that_wait_for_a_slow_agent_leave_the_slots_to_the_rest(
         0,
         "nothing reached the person's agent"
     );
+    assert_eq!(
+        entered.load(Ordering::SeqCst),
+        1,
+        "{routed} waiting rows of one person made one request to the platform, not one each"
+    );
 
     // the agent wakes: every routed row sends once and ends
     open_tx.send(true).unwrap();
@@ -1868,9 +1873,177 @@ async fn routed_rows_waiting_for_a_slow_agent_leave_the_slots_to_the_next_row() 
 
 #[tokio::test]
 async fn routed_rows_at_twice_the_slots_waiting_for_a_slow_agent_leave_slots_to_another_person() {
-    // twice as many as slots: the claim order is fair between people and oldest first within one
-    // person, so the unrelated thread is another person's (see ADR 0103, amended 2026-11-27)
+    // twice as many as slots. The unrelated thread is ANOTHER person's on purpose: the claim order
+    // is fair between people but by row position within one person, so alice's own newer
+    // unrelated row could be kept from a slot by her older routed rows, which are due again as soon
+    // as a slot frees. That is a known limit (ADR 0103, amended 2026-11-27), not what this test
+    // proves: it proves that no routed row holds a slot for the wake.
     routed_rows_that_wait_for_a_slow_agent_leave_the_slots_to_the_rest(4, bob()).await;
+}
+
+/// A platform slower than the probe still finishes the wake: the call is a flight of its own and a
+/// cut probe leaves it running, so the row is cut more than once and then sends (ANR-1078 PR 2).
+/// Without the flight each probe would drop the request and start it again from the beginning.
+#[tokio::test]
+async fn a_wake_slower_than_the_probe_still_completes_and_the_row_then_sends() {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let requests = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            listing(&registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    // 700 ms to be ready, against a probe of 200 ms
+    let memory = MemoryProvisioner::new().with_ready_delay(Duration::from_millis(700));
+    let dispatching = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(memory.clone(), [AgentKind::Coder], BOUND)),
+    );
+    let token = tokio_util::sync::CancellationToken::new();
+    let task = tokio::spawn(
+        Dispatcher::new(
+            Arc::clone(&dispatching),
+            orch_app::DispatcherConfig {
+                own_agent_probe: Duration::from_millis(200),
+                own_agent_wait_delay: Duration::from_millis(100),
+                ..fast()
+            },
+            "d1",
+        )
+        .run(token.clone()),
+    );
+    let id = new_coder_thread(&requests, "echo slow wake").await;
+    eventually("the row cut at the probe", || async {
+        w.store
+            .list_open_outbox(id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.kind == orch_ports::OutboxKind::Delegate && r.refunded >= 1)
+    })
+    .await;
+    wait_in(&w, id, ThreadState::Done).await;
+    assert_eq!(sends_to(&w, &mine()), 1);
+    assert_eq!(memory.created(), 1, "one agent, made once");
+    token.cancel();
+    let _ = task.await;
+}
+
+use orch_ports::Clock as _;
+
+/// The bound of the wake (ANR-1078 PR 2, `Dispatcher::wait_for_wake`): a routed row whose agent
+/// never gets ready is given up once its refunded claims reach `wake_waits()`, the cycles of a
+/// probe (200 ms) and a wait (100 ms) that fit in `BOUND` plus `OUTER_SLACK`: 134. It ends dead
+/// with `own agent not ready` and the thread is told (`Failed`).
+///
+/// Paused time is not used: the rows' due times come from the store's wall clock, which a paused
+/// tokio clock does not move. The row is **seeded** instead: its first claims are made and
+/// refunded through the store (`claim_outbox`, `wait_outbox`) before the dispatcher runs, so the
+/// dispatcher's own claim is the next one. With the seed one short of the bound the row waits once
+/// more and then ends (`refunded` 134); with the seed at the bound it ends at its first claim
+/// (`refunded` 134, no wait). If `row.refunded < self.wake_waits()` were always true the row would
+/// wait for ever and never end; if it were `<=` the first case would end with 135.
+async fn the_row_gives_up_when_the_wake_bound_is_spent(dispatching: Provisioning, short_by: u32) {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let requests = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            listing(&registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let dispatching = app_over(&w, &registry, Some(dispatching));
+    let waits = u32::try_from((BOUND + OUTER_SLACK).as_millis().div_ceil(300)).unwrap();
+    assert_eq!(waits, 134);
+    let id = new_coder_thread(&requests, "echo never woke").await;
+    let mut row_id = None;
+    for _ in 0..(waits - short_by) {
+        let claimed = w
+            .store
+            .claim_outbox(
+                "seed",
+                SystemClock.now(),
+                Duration::from_secs(60),
+                1,
+                orch_ports::ClaimOrder::Fifo,
+            )
+            .await
+            .unwrap();
+        let row = claimed.into_iter().next().expect("the delegation is due");
+        assert_eq!(row.kind, orch_ports::OutboxKind::Delegate);
+        assert!(
+            w.store
+                .wait_outbox(&row.lease().unwrap(), SystemClock.now(), "seed".to_owned())
+                .await
+                .unwrap()
+        );
+        row_id = Some(row.id);
+    }
+    let row_id = row_id.unwrap();
+    let token = tokio_util::sync::CancellationToken::new();
+    let task = tokio::spawn(
+        Dispatcher::new(
+            Arc::clone(&dispatching),
+            orch_app::DispatcherConfig {
+                own_agent_probe: Duration::from_millis(200),
+                own_agent_wait_delay: Duration::from_millis(100),
+                ..fast()
+            },
+            "d1",
+        )
+        .run(token.clone()),
+    );
+    let row = eventually("the row gives up", || async {
+        let row = w.store.get_outbox(row_id).await.unwrap().unwrap();
+        (row.status == orch_ports::OutboxStatus::Dead).then_some(row)
+    })
+    .await;
+    assert_eq!(row.refunded, waits, "{row:?}");
+    assert_eq!(row.last_error.as_deref(), Some("own agent not ready"));
+    wait_in(&w, id, ThreadState::Failed).await;
+    assert_eq!(sends_to(&w, &mine()), 0);
+    token.cancel();
+    let _ = task.await;
+}
+
+fn never_opening() -> (tokio::sync::watch::Sender<bool>, Provisioning) {
+    let (open_tx, open_rx) = tokio::sync::watch::channel(false);
+    let gated = Gated {
+        inner: MemoryProvisioner::new(),
+        open: open_rx,
+        entered: Arc::new(AtomicUsize::new(0)),
+    };
+    (open_tx, Provisioning::new(gated, [AgentKind::Coder], BOUND))
+}
+
+#[tokio::test]
+async fn a_row_whose_agent_never_wakes_gives_up_when_the_wake_bound_is_spent() {
+    // the sender stays alive: a closed gate channel would let the call through
+    let (_open_tx, provisioning) = never_opening();
+    the_row_gives_up_when_the_wake_bound_is_spent(provisioning, 0).await;
+}
+
+#[tokio::test]
+async fn a_row_one_wait_short_of_the_wake_bound_waits_once_more_and_then_gives_up() {
+    let (_open_tx, provisioning) = never_opening();
+    the_row_gives_up_when_the_wake_bound_is_spent(provisioning, 1).await;
+}
+
+#[tokio::test]
+async fn a_platform_that_answers_not_ready_at_once_gives_up_at_the_same_bound() {
+    the_row_gives_up_when_the_wake_bound_is_spent(
+        Provisioning::new(NeverReady, [AgentKind::Coder], BOUND),
+        0,
+    )
+    .await;
 }
 
 #[tokio::test]
