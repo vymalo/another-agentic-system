@@ -504,10 +504,10 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// The request could not be delivered: retry while it can help, then hold the thread.
     async fn verifier_send_failed(&self, v: &Verification, err: AgentError) -> Done {
         let operator = report(&err);
-        if err.is_retryable() && v.row.attempts < self.cfg.max_attempts {
+        if err.is_retryable() && v.row.counted_attempts() < self.cfg.max_attempts {
             tracing::warn!(id = %v.row.id, attempt = v.row.attempts, error = %operator, class = ?err.class(), "verification request failed; will retry");
             return self
-                .retry(&v.row, self.delay(v.row.attempts, &err), operator)
+                .retry(&v.row, self.delay(v.row.counted_attempts(), &err), operator)
                 .await;
         }
         tracing::warn!(id = %v.row.id, error = %operator, class = ?err.class(), "verification request dead-lettered");

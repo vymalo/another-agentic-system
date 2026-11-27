@@ -27,7 +27,7 @@ pub(crate) const THREAD_COLS: &str = "id, owner, title, description, agent_id, r
 
 /// The columns of `outbox`, in the order [`outbox_from_row`] reads them.
 pub(crate) const OUTBOX_COLS: &str = "id, thread_id, kind, payload, status, attempts, \
-     next_attempt_at, lease_owner, lease_until, sent_at, task_id, last_error, created_at";
+     next_attempt_at, lease_owner, lease_until, sent_at, task_id, last_error, created_at, refunded";
 
 /// The columns of `inbox`, in the order [`inbox_from_row`] reads them.
 pub(crate) const INBOX_COLS: &str = "id, source, idempotency_key, kind, payload, correlation, \
@@ -241,6 +241,7 @@ pub(crate) fn outbox_from_row(row: &Row<'_>) -> Result<OutboxItem, StoreError> {
     let payload: OutboxPayload = serde_json::from_value(payload)
         .map_err(|e| StoreError::corrupt_with("outbox payload", e))?;
     let attempts: i64 = row.get(5).map_err(store_err)?;
+    let refunded: i64 = row.get(13).map_err(store_err)?;
     Ok(OutboxItem {
         id: OutboxId(get_id(row, 0)?),
         thread_id: ThreadId(get_id(row, 1)?),
@@ -248,6 +249,7 @@ pub(crate) fn outbox_from_row(row: &Row<'_>) -> Result<OutboxItem, StoreError> {
         payload,
         status: parse_enum("outbox status", &status)?,
         attempts: u32::try_from(attempts).unwrap_or(0),
+        refunded: u32::try_from(refunded).unwrap_or(0),
         sent_at: get_ts_opt(row, 9)?,
         task_id: get_text_opt(row, 10)?,
         next_attempt_at: get_ts(row, 6)?,

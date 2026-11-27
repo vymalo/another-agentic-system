@@ -172,6 +172,9 @@ struct State {
     cards_down: HashSet<AgentId>,
     unreachable: HashSet<AgentId>,
     fail_sends: VecDeque<AgentError>,
+    fail_cancels: VecDeque<AgentError>,
+    /// Runs once, inside the next send, before the message is answered ([`ScriptedAgent::on_next_send`]).
+    on_send: Option<Box<dyn FnOnce() + Send>>,
     no_resubscribe: bool,
     /// Agents that are redeployed with tiers right after their card is next read
     /// ([`ScriptedAgent::redeploy_with_tiers_after_next_card_read`]).
@@ -519,6 +522,22 @@ impl ScriptedAgent {
         let mut st = self.state();
         for _ in 0..n {
             st.fail_sends.push_back(error());
+        }
+    }
+
+    /// Runs `hook` once, inside the next send, after the call is recorded and before the task
+    /// exists: whatever the test changes in it (a registry entry, say) is changed before the
+    /// delegation's caller can see a task. The hook must not call this agent: it runs under its lock.
+    pub fn on_next_send(&self, hook: impl FnOnce() + Send + 'static) {
+        self.state().on_send = Some(Box::new(hook));
+    }
+
+    /// The next `n` cancels of a task (`CancelTask`) fail with what `error` builds, after the call
+    /// is recorded and before the task is touched: it is still running when the call is made again.
+    pub fn fail_next_cancels(&self, n: usize, error: impl Fn() -> AgentError) {
+        let mut st = self.state();
+        for _ in 0..n {
+            st.fail_cancels.push_back(error());
         }
     }
 
@@ -1774,6 +1793,9 @@ impl AgentClient for ScriptedAgent {
                 locale: req.locale.clone(),
                 pick: req.pick.clone(),
             })));
+            if let Some(hook) = st.on_send.take() {
+                hook();
+            }
             if st.unreachable.contains(&req.endpoint.id) {
                 return Err(AgentError::unreachable("agent unreachable"));
             }
@@ -2059,6 +2081,9 @@ impl AgentClient for ScriptedAgent {
             });
             if st.unreachable.contains(&task.endpoint.id) {
                 return Err(AgentError::unreachable("agent unreachable"));
+            }
+            if let Some(err) = st.fail_cancels.pop_front() {
+                return Err(err);
             }
             let rec = st
                 .tasks
