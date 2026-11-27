@@ -88,8 +88,8 @@ impl Which {
                  A page that is private, on loopback or link-local, or not http(s), is refused \
                  (url_refused). A conversation holds at most 4 windows (too_many_windows). The \
                  answer is the window's id and a frame: a picture handed over by reference \
-                 (frame.url is artifact:<id>), never the bytes. A window closes itself after 15 \
-                 minutes alone."
+                 (frame.url is artifact:<id>), never the bytes. A real adapter may close a \
+                 window after 15 minutes alone."
             }
             Which::Look => {
                 "Look at a window: one frame, the picture of the page as it is now. A window that \

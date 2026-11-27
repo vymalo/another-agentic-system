@@ -37,7 +37,8 @@ run's**: closing the client does not close the window, and a client that comes b
 ## The tools
 
 Four built-ins of [`thread-tools/v1`](thread-tools-v1.md), served by the orchestrator (ADR 0092 decision 2) — listed to a
-thread's **main caller** only, and each call is a step of the thread with its input and output.
+thread's **main caller** only. ADR 0092 wants each call to be a step of the thread with its input and output; the orchestrator does not
+record one yet (see [what slice 3 built](#what-slice-3-built-and-what-it-did-not)).
 
 ### `window_open`
 
@@ -124,6 +125,8 @@ What the code does where this page is silent or says otherwise:
   on one is `window_unknown`; `close` of one is `{"closed": false}`.
 - **Every failure is a tool error** (`isError: true`) whose text is `<code>: <reason>`, as `request_upload`'s are; the arguments that do not
   parse are `invalid`. `unavailable` is the tool's own: a call that took over 30 seconds.
+- **The fake adapter never closes a window by itself.** The 15-minute idle close belongs to a real adapter; on the fake, a window lives until
+  `window_close`.
 - **`label` is read and dropped**: the port has no place for it (at most 200 bytes).
 - **The tier of the message is not read.** The access tier and the network tier of a message are not in the thread token, the orchestrator
   enforces neither (ADR 0061, and ADR 0062 is accepted and unbuilt), so a window tool is not gated by them. What gates a call today is the
@@ -134,7 +137,8 @@ What the code does where this page is silent or says otherwise:
 
 ## What the server logs
 
-The tool call and its outcome, **as a step** — the tool's name, its input, its answer — cut and redacted as any step is
+*Target, not yet built (no step is recorded today: [what slice 3 built](#what-slice-3-built-and-what-it-did-not)).* The tool call and its
+outcome, **as a step** — the tool's name, its input, its answer — cut and redacted as any step is
 ([ADR 0030](../decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md)). A frame's **bytes are never
 logged**, only its artifact reference; a URL is logged as the step's input like any other argument, and a credential a
 page might contain is never in the step.
