@@ -1,10 +1,11 @@
 ---
-sidebarTitle: "0103 · Helm 4 only, Kubernetes 1.37"
+sidebarTitle: "0105 · Helm 4 only, Kubernetes 1.37"
 ---
 
-# ADR 0103 — Helm 4 only, and Kubernetes 1.37 as the floor
+# ADR 0105 — Helm 4 only, and Kubernetes 1.37 as the floor
 
 - **Status:** **Accepted (2026-11-27)** by the owner: *"We'll support helm 4 only from now on. Hard cutover, move everything from helm 3. Support starts at k8s 1.37 too."* The platform's twin is AD-067.
+- **Renumbered (2026-11-27):** from 0103 to 0105, because 0103 was also taken by "A person's own agent is made and kept ready before their message is accepted"; the decision is unchanged.
 
 ## Context
 

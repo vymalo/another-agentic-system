@@ -1469,7 +1469,7 @@ check "files host on: ... and a path with any % in it is refused (it is not a ke
   fin '@artifact {' 'not vars_regexp {http.request.uri} ^[^?]*%'
 check "files host on: ... and not on a cleaned path (path_regexp folds // and /../ into a path that matches while RustFS is sent the one that does not)" fcf_lacks 'path_regexp|^[[:space:]]+path '
 # Helm 4 ends a rendered document with a blank line, which is not part of the Caddyfile: the last handle is the last
-# non-blank line, as it was under Helm 3 (ADR 0103).
+# non-blank line, as it was under Helm 3 (ADR 0105).
 last_handle_404() { grep -v '^[[:space:]]*$' "$fcf" | tail -n 4 | tr -d '\t' | tr '\n' ' ' | grep -Fq 'handle { respond "not found" 404 } } '; }
 check "files host on: everything else is a 404 whatever the method (the last handle)" last_handle_404
 one_upstream() { [ "$(grep -Ec '^[[:space:]]*reverse_proxy ' "$fcf")" -eq 1 ] && fline 'reverse_proxy another-agentic-rustfs.another-agentic-system.svc:9000 {'; }
@@ -2153,7 +2153,7 @@ bk_strip() { # bk_strip <render>: the render without what backups add
     { skip = 0; buf = buf $0 "\n" }
     END { flush() }' "$1"
 }
-# the blank line Helm 4 puts before each `---` is the renderer's, not the document's: it is dropped before the compare (ADR 0103)
+# the blank line Helm 4 puts before each `---` is the renderer's, not the document's: it is dropped before the compare (ADR 0105)
 bk_additive() { bk_strip "$out.def" | grep -v '^$' > "$sec"; bk_strip "$out" | grep -v '^$' > "$sec2"; cmp -s "$sec" "$sec2"; }
 check "backup: on, every other document is the default render's, byte for byte (no pod restarts), and the Cluster differs by its plugins block only" bk_additive
 

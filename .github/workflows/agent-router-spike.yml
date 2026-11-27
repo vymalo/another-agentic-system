@@ -38,7 +38,7 @@ jobs:
         # spike last passed with (2026-11-25), because its `kubectl port-forward` is the one this scenario needs: 1.36.7
         # and 1.37.3 both enter the pod's network namespace and dial 127.0.0.1 inside it, where Envoy Gateway's proxy does
         # not listen (it binds the pod's address), so every tunnel answers "failed to connect to localhost:10080 inside
-        # namespace" (runs 45946481869 and 45948777930). ADR 0103 records the exception; re-pin when the proxy listens on
+        # namespace" (runs 45946481869 and 45948777930). ADR 0105 records the exception; re-pin when the proxy listens on
         # loopback or the spike reaches the gateway another way.
         env:
           KIND_VERSION: v0.33.0

@@ -53,8 +53,8 @@ flowchart LR
 | `Ingress` + `Deployment` + `Service` + `ConfigMap` files, `NetworkPolicy` | **off by default** (`rustfs.ingress.enabled`, needs `rustfs.enabled`): [the public files host of RustFS](#the-files-host-adr-0058), a Traefik `Ingress` with TLS in front of a small Caddy proxy (the edge's image) in front of the RustFS Service; uid 65532, read-only root, TCP probes; the proxy routes the artifact keys of the bucket and nothing else; in from the ingress controller's namespace, out to DNS and RustFS |
 
 ```sh
-# Needs Helm 4.3.2 (CI's version, and the only major supported since ADR 0103), nothing else. The chart needs Kubernetes 1.37 or later
-# (`kubeVersion`, ADR 0103) and refuses to render without a host and an issuer.
+# Needs Helm 4.3.2 (CI's version, and the only major supported since ADR 0105), nothing else. The chart needs Kubernetes 1.37 or later
+# (`kubeVersion`, ADR 0105) and refuses to render without a host and an issuer.
 helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml
 helm template another-agentic-system deploy/chart --namespace another-agentic-system -f deploy/chart/examples/netcup.values.yaml
 sh deploy/chart/tests/render-check.sh                     # the guarantees, asserted on the render and on the refusals
