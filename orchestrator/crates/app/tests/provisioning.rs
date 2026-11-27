@@ -1881,9 +1881,56 @@ async fn routed_rows_at_twice_the_slots_waiting_for_a_slow_agent_leave_slots_to_
     routed_rows_that_wait_for_a_slow_agent_leave_the_slots_to_the_rest(4, bob()).await;
 }
 
+/// A provisioner whose agent is ready only when **one call runs to its end**: the call sleeps
+/// `delay`, then the agent is ready. A call that is dropped before the end leaves nothing done, and
+/// the next call starts the sleep again. It is what a platform is that needs the request to be
+/// held: not the memory provisioner, which is ready by the clock whoever waits.
+#[derive(Clone)]
+struct Uninterrupted {
+    delay: Duration,
+    ready: Arc<std::sync::atomic::AtomicBool>,
+    entered: Arc<AtomicUsize>,
+}
+
+impl AgentProvisioner for Uninterrupted {
+    async fn ensure_ready(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+    ) -> Result<ProvisionedAgent, ProvisionError> {
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        if !self.ready.load(Ordering::SeqCst) {
+            tokio::time::sleep(self.delay).await;
+            self.ready.store(true, Ordering::SeqCst);
+        }
+        Ok(ProvisionedAgent {
+            name: kind.agent_name(owner),
+            state: AgentState::Ready,
+        })
+    }
+    async fn state(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<Option<AgentState>, ProvisionError> {
+        Ok(None)
+    }
+    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+    async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+}
+
 /// A platform slower than the probe still finishes the wake: the call is a flight of its own and a
 /// cut probe leaves it running, so the row is cut more than once and then sends (ANR-1078 PR 2).
-/// Without the flight each probe would drop the request and start it again from the beginning.
+///
+/// The provisioner needs one uninterrupted call of 700 ms, the probe is 200 ms. With the flight the
+/// one call runs to its end and `entered` is 1. If `Provisioning::fly` were a direct
+/// `timeout(probe, ensure_ready)`, every probe would drop the call at 200 ms, the sleep would start
+/// again each time, the agent would never be ready, and the row would give up at the wake bound:
+/// the test would never see `Done` (and `entered` would be many).
 #[tokio::test]
 async fn a_wake_slower_than_the_probe_still_completes_and_the_row_then_sends() {
     let w = World::new();
@@ -1897,12 +1944,18 @@ async fn a_wake_slower_than_the_probe_still_completes_and_the_row_then_sends() {
             BOUND,
         )),
     );
-    // 700 ms to be ready, against a probe of 200 ms
-    let memory = MemoryProvisioner::new().with_ready_delay(Duration::from_millis(700));
+    let slow = Uninterrupted {
+        delay: Duration::from_millis(700),
+        ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        entered: Arc::new(AtomicUsize::new(0)),
+    };
+    // the request path found the agent ready at once (its own provisioner); only the dispatcher's
+    // is slow
+    let entered = Arc::clone(&slow.entered);
     let dispatching = app_over(
         &w,
         &registry,
-        Some(Provisioning::new(memory.clone(), [AgentKind::Coder], BOUND)),
+        Some(Provisioning::new(slow, [AgentKind::Coder], BOUND)),
     );
     let token = tokio_util::sync::CancellationToken::new();
     let task = tokio::spawn(
@@ -1929,9 +1982,260 @@ async fn a_wake_slower_than_the_probe_still_completes_and_the_row_then_sends() {
     .await;
     wait_in(&w, id, ThreadState::Done).await;
     assert_eq!(sends_to(&w, &mine()), 1);
-    assert_eq!(memory.created(), 1, "one agent, made once");
+    assert_eq!(
+        entered.load(Ordering::SeqCst),
+        1,
+        "the one call was held until it ended"
+    );
     token.cancel();
     let _ = task.await;
+}
+
+/// A provisioner that fails every call with the error `make` builds, after 100 ms (so that
+/// concurrent callers are on the same flight), counting its calls.
+struct Failing {
+    make: fn() -> ProvisionError,
+    calls: Arc<AtomicUsize>,
+}
+
+impl AgentProvisioner for Failing {
+    async fn ensure_ready(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<ProvisionedAgent, ProvisionError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        Err((self.make)())
+    }
+    async fn state(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<Option<AgentState>, ProvisionError> {
+        Ok(None)
+    }
+    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+    async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+}
+
+/// Two first messages of one person at once share one flight that fails with `make`; each gets the
+/// error, and the platform was asked once.
+async fn two_waiters_on_one_failing_flight(make: fn() -> ProvisionError) -> (AppError, AppError) {
+    let w = World::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = app_with(
+        &w,
+        Failing {
+            make,
+            calls: Arc::clone(&calls),
+        },
+        &[AgentKind::Coder],
+    );
+    let new = |text: &str| NewThread {
+        title: None,
+        target: target("coder"),
+        text: text.to_owned(),
+    };
+    let (a, b) = tokio::join!(
+        app.create_thread(&alice(), new("one")),
+        app.create_thread(&alice(), new("two")),
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "two waiters, one request to the platform"
+    );
+    (a.unwrap_err(), b.unwrap_err())
+}
+
+#[tokio::test]
+async fn two_waiters_on_a_flight_that_is_refused_both_get_refused() {
+    let (a, b) = two_waiters_on_one_failing_flight(|| ProvisionError::Refused).await;
+    for e in [a, b] {
+        assert!(
+            matches!(
+                e,
+                AppError::Provisioning {
+                    source: ProvisionError::Refused,
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+    }
+}
+
+#[derive(Debug)]
+struct SendingFailed(std::io::Error);
+
+impl std::fmt::Display for SendingFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("error sending request")
+    }
+}
+
+impl std::error::Error for SendingFailed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+#[tokio::test]
+async fn two_waiters_on_an_unavailable_flight_both_get_it_with_its_cause_chain() {
+    let (a, b) = two_waiters_on_one_failing_flight(|| {
+        ProvisionError::unavailable(SendingFailed(std::io::Error::other("connection refused")))
+    })
+    .await;
+    for e in [a, b] {
+        let AppError::Provisioning {
+            source: ProvisionError::Unavailable { source },
+            ..
+        } = &e
+        else {
+            panic!("expected Unavailable, got {e:?}");
+        };
+        assert_eq!(source.to_string(), "error sending request");
+        assert_eq!(
+            std::error::Error::source(&**source).map(ToString::to_string),
+            Some("connection refused".to_owned()),
+            "the cause chain is kept for every waiter"
+        );
+    }
+}
+
+// TODO(ANR-1062 merge): when `ProvisionError::Blocked` lands (PR #617), add the same case here:
+// two waiters of a flight that ends `Blocked` both get `Blocked` with its reason (500
+// `agent_blocked`), which `ProvisionError::duplicate`'s exhaustive match forces it to copy.
+
+/// A provisioner that panics.
+struct Panicking;
+
+impl AgentProvisioner for Panicking {
+    async fn ensure_ready(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<ProvisionedAgent, ProvisionError> {
+        panic!("the provisioner broke");
+    }
+    async fn state(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<Option<AgentState>, ProvisionError> {
+        Ok(None)
+    }
+    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+    async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_provisioner_that_panics_is_not_ready_at_once_and_the_next_call_starts_afresh() {
+    let w = World::new();
+    let app = app_with(&w, Panicking, &[AgentKind::Coder]);
+    for _ in 0..2 {
+        let err = tokio::time::timeout(
+            Duration::from_secs(5),
+            app.create_thread(
+                &alice(),
+                NewThread {
+                    title: None,
+                    target: target("coder"),
+                    text: "hello".to_owned(),
+                },
+            ),
+        )
+        .await
+        .expect("a dropped sender is an answer, not a hang")
+        .unwrap_err();
+        assert!(
+            matches!(err, AppError::AgentNotReady { last: None, .. }),
+            "{err:?}"
+        );
+    }
+}
+
+/// The first call of this provisioner ends `NotReady` after 20 s; every later one is ready after
+/// 1 s.
+struct SlowThenReady {
+    calls: Arc<AtomicUsize>,
+}
+
+impl AgentProvisioner for SlowThenReady {
+    async fn ensure_ready(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+    ) -> Result<ProvisionedAgent, ProvisionError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            Err(ProvisionError::NotReady {
+                last: AgentState::Saving,
+            })
+        } else {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            Ok(ProvisionedAgent {
+                name: kind.agent_name(owner),
+                state: AgentState::Ready,
+            })
+        }
+    }
+    async fn state(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<Option<AgentState>, ProvisionError> {
+        Ok(None)
+    }
+    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+    async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+}
+
+/// A caller that joins a flight started long before it came, which then ends `NotReady` on its own
+/// bound, still has its own deadline: it joins the next flight (here, one it starts) and is served.
+/// The caller that started the first flight is told what that flight said.
+#[tokio::test(start_paused = true)]
+async fn a_late_joiner_of_a_flight_that_runs_out_gets_its_own_deadline() {
+    let w = World::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = app_with(
+        &w,
+        SlowThenReady {
+            calls: Arc::clone(&calls),
+        },
+        &[AgentKind::Coder],
+    );
+    let new = |text: &str| NewThread {
+        title: None,
+        target: target("coder"),
+        text: text.to_owned(),
+    };
+    let first = app.create_thread(&alice(), new("early"));
+    let late = async {
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        app.create_thread(&alice(), new("late")).await
+    };
+    let (first, late) = tokio::join!(first, late);
+    let AppError::AgentNotReady { waited, last, .. } = first.unwrap_err() else {
+        panic!("the starter of the flight is told what it said");
+    };
+    assert_eq!(waited, BOUND);
+    assert_eq!(last, Some(AgentState::Saving));
+    late.expect("the late joiner had time left and was served by a flight of its own");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
 use orch_ports::Clock as _;
