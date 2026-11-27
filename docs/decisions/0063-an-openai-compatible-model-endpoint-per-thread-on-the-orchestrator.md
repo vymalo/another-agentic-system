@@ -6,10 +6,10 @@ sidebarTitle: "0063 · A model endpoint per thread"
 
 - **Status:** **accepted (2026-11-26)**; proposed 2026-10-11, at the owner's request (the quote in *Context*).
   **Accepted 2026-11-26, the owner's decision:** "Keep model-relay/v1. This goes against the recommendation to retire it: the relay stays for agents that are not adam and do not sign their calls."
-  The relay is kept, against the recommendation to retire it, for agents that are not adam and do not sign their model calls. For context only, not part of his decision: an adam agent's calls
-  are carried by [ADR 0084](0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md) (the run lease and the injector) and
+  The relay is kept, against the recommendation to retire it, for agents that are not adam and do not sign their model calls. **What acceptance covers:** it keeps the relay and its scope; every name, status code, default and shape, and the open questions, are still proposed, for the owner to confirm.
+  Context, not part of his decision: an adam agent's calls are carried by [ADR 0084](0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md) (the run lease and the injector) and
   [ADR 0101](0101-a-cloud-runs-model-calls-are-signed-for-the-run-and-the-injector-stays-for-custom-cases.md) (signed calls). **Not built, and not proven:** the proof to come is ANR-912's
-  scenario (the real adam with no model key of its own answers through the thread's endpoint, and `mock-model`'s journal shows the orchestrator's key, never one from A2A). Of the text below,
+  scenario (the real adam with no model key of its own answers through the thread's endpoint, and `mock-model`'s journal shows the orchestrator's key, never one from A2A). It uses adam as a stand-in; whether it proves the relay for agents that are not adam is the owner's to re-scope. Of the text below,
   only the status, this note and the amendment note after decision 11 changed on 2026-11-26. (Original status, kept:)
   **Proposed (2026-10-11).** **The owner's own, 2026-10-11:** the direction and its shape (the card declares the extension, the message
   carries `{url, token, expiresAt, models}`, the agent calls `POST {url}/v1/chat/completions` and `/v1/models`, the orchestrator forwards to the configured model server with its own key, records usage
@@ -69,6 +69,8 @@ What exists, and what the design rests on:
 > **Amendment note (2026-11-26).** The owner kept the relay "for agents that are not adam and do not sign their calls". The text above was written with an adam agent as its first client (*Context*,
 > first bullet; *What adam-rs implements*). It is left as written. Where it names adam as the agent that takes its model from the relay, read it with the owner's words: an adam agent's calls are
 > carried by ADR 0084 and ADR 0101, and the relay is for agents that are not adam and do not sign. Any further narrowing of this scope is for the owner.
+>
+> **Open point for the owner, not decided here:** ADR 0101 quotes him: "for models not using adam or not signing yet, we proxy with a small signature injector ... keep the injector for completely custom use-cases". Both that injector and this relay now claim agents that are not adam and do not sign. Which of the two serves them is his to say.
 
 ```mermaid
 sequenceDiagram
