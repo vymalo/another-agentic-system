@@ -586,11 +586,14 @@ describe("the sharing control (P4)", () => {
       save.focus();
       fireEvent.click(save);
       await waitFor(() => expect(field.getAttribute("aria-invalid")).toBe("true"));
-      expect(document.activeElement).toBe(field);
-      const described = document.getElementById(
-        field.getAttribute("aria-describedby")?.split(" ").pop() ?? "",
-      );
-      expect(described?.textContent).toMatch(/A role is 1 to 64 characters with no spaces/);
+      // the focus is set by an effect after the refusal renders: wait for it, never read it in the same tick
+      await waitFor(() => expect(document.activeElement).toBe(field));
+      await waitFor(() => {
+        const described = document.getElementById(
+          field.getAttribute("aria-describedby")?.split(" ").pop() ?? "",
+        );
+        expect(described?.textContent).toMatch(/A role is 1 to 64 characters with no spaces/);
+      });
       // the typed roles stay
       expect(field.value).toBe(typed);
     }
