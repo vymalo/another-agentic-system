@@ -2912,7 +2912,7 @@ so that parallel slices do not collide:
   Postgres scan `threads` under an exclusive lock), and `sandbox_environment` is checked for its shape, not against today's three words, so a new `SandboxEnvironment`
   needs no migration. A catch-up folds the events of each task in memory and writes each changed row once; the backfill waits at most 5 s for a thread's lock (a thread
   it cannot lock is skipped and counted, exit `75`) and its first page detaches the rows of threads an older build erased.
-- **`0034` (outbox refunds, built, ANR-1078, [ADR 0103](decisions/0103-a-persons-own-agent-is-made-and-kept-ready-before-their-message-is-accepted.md)):** `outbox` gains `refunded integer NOT NULL DEFAULT 0` (SQLite: `0009`), the claims that only waited. No event kind changes. A replica of an older build that is *already running* ignores the column, counts the waits and may dead-letter a waited row earlier than this build would (the row ends as it ended before); a restarted old-build pod is refused by the database, because `orch-pg-migrate` returns `VersionMissing` for a migration it does not know, as for every migration.
+- **`0034` (outbox refunds, built, ANR-1078, [ADR 0103](decisions/0103-a-persons-own-agent-is-made-and-kept-ready-before-their-message-is-accepted.md)):** `outbox` gains `refunded integer NOT NULL DEFAULT 0` (SQLite: `0009`), the claims that only waited. No event kind changes. A replica of an older build that is *already running* ignores the column, counts the waits and may dead-letter a waited row earlier than this build would (the row ends as it ended before); a restarted old-build pod refuses to start, because its own `orch-pg-migrate` returns `VersionMissing` for a migration it does not know, as for every migration.
 
 :::
 
