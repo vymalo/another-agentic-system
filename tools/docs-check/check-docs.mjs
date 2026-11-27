@@ -13,7 +13,8 @@ import path from 'node:path';
 import { JSDOM } from 'jsdom';
 
 const root = process.cwd();
-const skipDirs = new Set(['.git', 'node_modules']);
+// dist: the site's build output, which holds a generated .md per page (vitepress-plugin-llms), not sources.
+const skipDirs = new Set(['.git', 'node_modules', 'dist']);
 
 function* markdownFiles(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
