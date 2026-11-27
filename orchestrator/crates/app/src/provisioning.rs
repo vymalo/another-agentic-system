@@ -35,6 +35,11 @@ use crate::error::AppError;
 /// asserts it ends between the wait-ready bound and the bound plus this); nothing configures it.
 pub const OUTER_SLACK: Duration = Duration::from_secs(10);
 
+/// How far past the backstop of a flight a caller's own deadline lies: a flight the caller started
+/// therefore always delivers its own outcome (`NotReady` with the bound) before the caller is cut,
+/// and only a caller that joined a flight is ever cut at its deadline.
+const CUT_MARGIN: Duration = Duration::from_secs(1);
+
 /// Characters of the owner key: 24 hex digits (96 bits of the person's hash), so that the longest
 /// agent name, `workspace-<owner>`, stays under the platform's 40.
 const OWNER_HEX_CHARS: usize = 24;
@@ -197,9 +202,14 @@ impl Provisioning {
             return Ok(None);
         };
         let owner = Self::owner_of(user);
-        // This caller's own deadline, whatever flight it joins; none if the sum overflows.
+        // This caller's own deadline, whatever flight it joins, a margin past the backstop of a
+        // flight it would start; none if the sum overflows.
         let began = Instant::now();
-        let deadline = began.checked_add(self.ready_timeout.saturating_add(OUTER_SLACK));
+        let deadline = began.checked_add(
+            self.ready_timeout
+                .saturating_add(OUTER_SLACK)
+                .saturating_add(CUT_MARGIN),
+        );
         let mut last_seen = None;
         let mut rounds = 0_u32;
         loop {

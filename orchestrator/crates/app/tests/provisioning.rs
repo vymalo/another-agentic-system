@@ -2272,10 +2272,11 @@ impl AgentProvisioner for Hanging {
     }
 }
 
-/// A caller is never kept past its own deadline (its start plus `BOUND` plus `OUTER_SLACK`): one
-/// that joins at t=1 a flight that ends at the backstop (t=40) starts a flight of its own at once
-/// and is cut at t=41, with the time it actually waited, 40 s, in whole seconds. The caller that
-/// started the first flight is told the bound.
+/// A caller is never kept past its own deadline (its start plus `BOUND` plus `OUTER_SLACK` plus a
+/// one-second margin, so a flight it starts always ends first): one that joins at t=1 a flight that
+/// ends at the backstop (t=40) starts a flight of its own at once and is cut at t=42, with the time
+/// it actually waited, 41 s, in whole seconds. The caller that started the first flight is told the
+/// bound.
 #[tokio::test(start_paused = true)]
 async fn a_joiner_that_starts_its_own_flight_is_cut_at_its_own_deadline() {
     let w = World::new();
@@ -2310,11 +2311,11 @@ async fn a_joiner_that_starts_its_own_flight_is_cut_at_its_own_deadline() {
     };
     assert_eq!(
         waited,
-        Duration::from_secs(40),
+        Duration::from_secs(41),
         "the time the joiner waited, in whole seconds"
     );
     assert!(
-        total >= Duration::from_secs(41) && total < Duration::from_secs(42),
+        total >= Duration::from_secs(42) && total < Duration::from_secs(43),
         "the joiner was cut at its own deadline, not kept for a second backstop: {total:?}"
     );
     assert_eq!(calls.load(Ordering::SeqCst), 2, "one more request, no spin");
