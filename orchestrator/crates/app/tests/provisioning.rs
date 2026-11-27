@@ -1545,15 +1545,21 @@ async fn a_stop_that_waited_still_gets_its_listing_attempts_before_it_cancels_lo
     );
     w.agent
         .set_extensions(&mine(), &[orch_core::KnownExtension::Steer]);
+    // the platform stops listing the agent inside the send, before the delegation has a task: the
+    // stop can see the task running only after that, so it always finds the agent unlisted
+    {
+        let registry = registry.clone();
+        let agent = AgentId::new(mine());
+        w.agent.on_next_send(move || {
+            registry.remove(&agent);
+        });
+    }
     let token = tokio_util::sync::CancellationToken::new();
-    // a stop waits half a second between claims: after the one that has just waited, the test has
-    // that long to let the delegation go out and to unlist the agent before the stop looks again
     let task = tokio::spawn(
         Dispatcher::new(
             Arc::clone(&dispatching),
             orch_app::DispatcherConfig {
                 own_agent_listing_attempts: LISTING,
-                cancel_retry_delay: Duration::from_millis(500),
                 ..fast()
             },
             "d1",
@@ -1566,31 +1572,17 @@ async fn a_stop_that_waited_still_gets_its_listing_attempts_before_it_cancels_lo
     })
     .await;
     requests.cancel(&alice(), id).await.unwrap();
-    // the stop has waited WAITS times and has just been put back (due in half a second)
-    let waited = eventually("the stop waited behind the delegation", || async {
+    // the stop has waited WAITS times behind the delegation
+    let stop = eventually("the stop waited behind the delegation", || async {
         w.store
             .list_open_outbox(id)
             .await
             .unwrap()
             .into_iter()
-            .find(|r| {
-                r.kind == orch_ports::OutboxKind::Cancel
-                    && r.status == orch_ports::OutboxStatus::Pending
-                    && r.attempts >= WAITS
-            })
+            .find(|r| r.kind == orch_ports::OutboxKind::Cancel && r.attempts >= WAITS)
     })
     .await;
-    assert_eq!(
-        waited.refunded, waited.attempts,
-        "every claim so far only waited"
-    );
-    // the delegation goes out, and the platform stops listing the agent behind it
     open_tx.send(true).unwrap();
-    eventually("the delegation sent", || async {
-        (sends_to(&w, &mine()) == 1).then_some(())
-    })
-    .await;
-    registry.remove(&AgentId::new(mine()));
 
     wait_in(&w, id, ThreadState::Cancelled).await;
     assert!(
@@ -1601,16 +1593,16 @@ async fn a_stop_that_waited_still_gets_its_listing_attempts_before_it_cancels_lo
         "the unlisted agent was not asked to cancel"
     );
     let row = eventually("the stop finished", || async {
-        let row = w.store.get_outbox(waited.id).await.unwrap().unwrap();
+        let row = w.store.get_outbox(stop.id).await.unwrap().unwrap();
         (row.status == orch_ports::OutboxStatus::Delivered).then_some(row)
     })
     .await;
+    assert!(row.refunded >= WAITS, "the waits were refunded: {row:?}");
     assert_eq!(
-        (row.attempts, row.refunded),
-        (waited.attempts + LISTING, waited.attempts),
-        "after the waits the stop made its listing attempts, each one claim, and then cancelled"
+        row.counted_attempts(),
+        LISTING,
+        "after the waits the stop made its listing attempts, each one claim, and then cancelled: {row:?}"
     );
-    assert_eq!(row.counted_attempts(), LISTING);
     token.cancel();
     let _ = task.await;
 }

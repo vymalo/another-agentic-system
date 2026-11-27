@@ -1417,18 +1417,16 @@ pub trait ThreadStore:
     /// claims that tried something. `attempts` is left as it is, because it is the fencing token.
     /// `false` if `lease` is no longer the row's current claim; then nothing is written.
     ///
-    /// **Provided**: the default is [`retry_outbox`](Self::retry_outbox) with no refund, so an
-    /// implementer that has not written it keeps compiling and counts a wait as a failure, as
-    /// before. Every store of this repository overrides it (the case
-    /// `a_wait_is_refunded_and_a_retry_and_a_lapse_are_counted` holds them).
+    /// **Required**, with no default: a store, or a wrapper of one, that forwarded only
+    /// `retry_outbox` would count every wait as a failure again, and a stop that waited would be
+    /// refused its listing and cancel attempts (ADR 0103). The case
+    /// `a_wait_is_refunded_and_a_retry_and_a_lapse_are_counted` holds every implementation.
     fn wait_outbox(
         &self,
         lease: &Lease,
         next_attempt_at: Timestamp,
         note: String,
-    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
-        self.retry_outbox(lease, next_attempt_at, note)
-    }
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     /// Finishes the row.
     fn complete_outbox(

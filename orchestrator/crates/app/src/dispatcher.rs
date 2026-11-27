@@ -2144,8 +2144,9 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// The attempts a stop may spend waiting for a routed delegation to wake its agent: the
     /// waits that fit in the wake bound; none for a thread that is not routed. Only the wait
     /// for the delegation uses it, and it is still needed: the waits are refunded
-    /// ([`OutboxItem::counted_attempts`]) so the later phases (the listing, the `CancelTask`)
-    /// keep their plain caps, but the wait's own bound is the one cap that counts them (ANR-1078).
+    /// ([`OutboxItem::counted_attempts`]) so the later phases (the listing, the `CancelTask`) count
+    /// only the claims that tried something (they share that one counted counter, and a lapse
+    /// counts), but the wait's own bound is the one cap that counts the waits (ANR-1078).
     fn wake_headroom(&self, routed: bool) -> u32 {
         let Some(bound) = routed.then(|| self.app.own_agent_wake_bound()).flatten() else {
             return 0;
@@ -2192,6 +2193,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         // then ends the thread locally (the task at the agent is not stopped)
         if running.is_some() && own_unlisted {
             if row.counted_attempts() < self.cfg.own_agent_listing_attempts {
+                tracing::debug!(id = %row.id, attempt = row.attempts, counted = row.counted_attempts(), "the stop's agent is not listed yet; will retry");
                 return self
                     .retry(
                         &row,
@@ -2200,7 +2202,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                     )
                     .await;
             }
-            tracing::warn!(id = %row.id, agent = %ctx.endpoint.id, "the task at the person's own agent could not be stopped: the agent is not listed; the thread is cancelled without it");
+            tracing::warn!(id = %row.id, agent = %ctx.endpoint.id, attempt = row.attempts, counted = row.counted_attempts(), "the task at the person's own agent could not be stopped: the agent is not listed; the thread is cancelled without it");
             self.apply_quiet(
                 &row,
                 Input::CancelledBeforeStart,
@@ -2227,6 +2229,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                     if e.is_retryable()
                         && row.counted_attempts() < self.cfg.max_cancel_attempts =>
                 {
+                    tracing::debug!(id = %row.id, attempt = row.attempts, counted = row.counted_attempts(), error = %report(&e), "stopping the task failed; will retry");
                     self.retry(&row, self.delay(row.counted_attempts(), &e), report(&e))
                         .await
                 }
@@ -2274,8 +2277,10 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         // For a routed thread that can take as long as the person's agent needs to wake, so the
         // budget covers the wake bound too: a stop is not lost while the agent is coming up. The
         // wait is not a failure, so it is refunded and the phases after it (the listing, the
-        // `CancelTask`) count only their own claims; the bound of the wait itself is the one thing
-        // that must count the waits, so it reads the raw claims.
+        // `CancelTask`) count only the claims that tried something (they share one counted
+        // counter, and a lapse counts); the bound of the wait itself is the one thing that must
+        // count the waits, so it reads the raw claims.
+        tracing::debug!(id = %row.id, attempt = row.attempts, counted = row.counted_attempts(), "the stop waits for a delegation in flight");
         if row.attempts < self.in_flight_cancel_budget(routed) {
             return self
                 .wait(
