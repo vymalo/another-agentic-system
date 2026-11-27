@@ -92,7 +92,7 @@ const sidebar = [
       page("mvp", "MVP and build order"),
       page("lessons-from-agent-canvas", "Lessons as requirements"),
       page("open-questions", "Open questions"),
-      group("Plans and checks", [...pages("plans"), page("vendor-check-2026-11-24", "Vendor check")]),
+      group("Plans and checks", [page("vendor-check-2026-11-24", "Vendor check")]),
     ],
   },
   { text: "Get started", items: [page("getting-started", "Run it locally")] },
