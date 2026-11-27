@@ -3,7 +3,8 @@ name: Update screens
 # Re-baselines the committed screenshots (web/e2e/__screens__) from the image that draws them, on demand.
 #
 # The set is only ever written by the `screens` target of web/Dockerfile (web/README.md, "screens-docker.sh"), and the
-# `screens` job of Web fails when the committed set differs from what that image draws. When the difference is a
+# `screens` job of Web fails when the committed set differs from what that image draws by more than the bound (at most 0.05 % of a
+# still's pixels beyond 8/255, web/README.md). When the difference is a
 # deliberate visual change, or a new base image (a Chromium, a font), this workflow draws the set in the same image and
 # opens one pull request with it: never commit screenshots drawn on a host, whose fonts and browser build differ.
 #
