@@ -686,9 +686,7 @@ async fn the_token_file_is_read_again_at_each_login() {
 #[tokio::test]
 async fn nothing_secret_is_in_a_debug_an_error_or_a_log() {
     use std::io::Write;
-    use tracing_subscriber::filter::Targets;
     use tracing_subscriber::fmt::MakeWriter;
-    use tracing_subscriber::layer::SubscriberExt;
 
     #[derive(Clone, Default)]
     struct Capture(Arc<Mutex<Vec<u8>>>);
@@ -708,15 +706,17 @@ async fn nothing_secret_is_in_a_debug_an_error_or_a_log() {
         }
     }
     let capture = Capture::default();
-    let subscriber = tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_writer(capture.clone())
-                .with_ansi(false),
-        )
-        .with(
-            Targets::new().with_target("orch_platform_credentials_openbao", tracing::Level::TRACE),
-        );
+    // Everything every crate logs while the adapter works, at the most verbose level, with no
+    // target filter: the repository's own pattern (`agent-a2a/tests/thread_tools_logs.rs`). A
+    // `Targets` filter on the adapter's crate name heard nothing in CI, and which module target an
+    // event carries is not something this test should depend on. The runtime is single-threaded, so
+    // this thread-local subscriber hears every task, the stand-in server's included; the two
+    // `contains` below prove the capture works, and fail if the adapter stops logging.
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
+        .with_writer(capture.clone())
+        .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
     let h = start().await;
