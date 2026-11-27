@@ -1878,6 +1878,7 @@ stateDiagram-v2
 
 **Built** (2026-10-01): the core, the store, the API and the AG-UI projection (the marker `vymalo.fork` and `thread.forkedFrom`, [`agui.md`](api/agui.md#forks)); the transcript on the wire (`SendRequest.history`, below); the web is the next step. A fork is a new thread that starts with a
 copy of its parent's events up to a cut, then a `thread_forked` event ([ADR 0029](decisions/0029-forking-a-thread-copies-its-log.md)).
+When the agent lists `signed-turns/v1` (proposed, nothing built), the fork's first message also sends one run's signed rows back, copies none, and falls back to the text above when adam refuses them ([ADR 0111](decisions/0111-the-orchestrator-verifies-the-rows-an-agent-signs-and-sends-them-back-on-a-fork.md)).
 `orch_core::fork` holds the pure rules; nothing in it reads a store:
 
 ::: in-depth The decisions, the store, the application and the API of a fork
