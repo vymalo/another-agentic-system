@@ -94,8 +94,23 @@ The request is an agent **`Message`** whose `metadata` holds the extension's URI
 
 - It may ride on a message with words or with a surface, or be a message of its own. A message with
   no words, no surface and no request is ignored, as it always was.
-- **A status update's message is not a carrier.** The request is an agent `Message` in the stream;
-  its words are not a status detail, and its metadata is not the status's tier echo or stream entry.
+- On a status update it is the `status.message` of an `input-required` status, with the same
+  `metadata` member and the same bounds:
+  ```json
+  {"kind": "status-update", "taskId": "task-1", "final": false,
+   "status": {"state": "input-required",
+     "message": {"role": "agent", "messageId": "m-2", "parts": [{"text": "Which server?"}],
+       "metadata": {"https://agents.vymalo.com/a2a/extensions/trusted-components/v1":
+         {"component": "McpCredential", "hints": {"name": "My search"}}}}}}
+  ```
+- **The status message of an `input-required` task is a carrier too (amended 2026-11-27).** A
+  `Message` in the stream and the status message of an `input-required` task are the two places a
+  request may ride; **exactly one request per task state** — the same status seen twice (a
+  reconnect, a re-read of the task) is the same request, keyed by the task and the state, never a
+  second one. Why: adam parks a turn only through its question (`ToolError::NeedsInput`), and that
+  question *is* the `input-required` status message, so the request has nowhere else to go. On any
+  other state a status message is still not a carrier: its words are not a status detail, and its
+  metadata is not the status's tier echo or stream entry.
 - `component` must be one this build draws, matched exactly. `hints` must be an object; its members
   are optional and bounded:
 

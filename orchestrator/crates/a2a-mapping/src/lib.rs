@@ -709,6 +709,30 @@ fn status_envelopes(
             ))
         }),
     };
+    // A trusted component asked from the status message of an `input-required` task (ADR 0083,
+    // amended 2026-11-27): adam parks a turn only through its question, and that question is the
+    // status message, so the request rides there. One per task state: a status the adapter sees
+    // twice — a reconnect, a re-read of the task — is the same request, not a second one.
+    if state == Some(AgentTaskState::InputRequired) {
+        let trusted = message
+            .and_then(|m| m.metadata.as_ref())
+            .and_then(|metadata| metadata.get(TRUSTED_COMPONENTS_EXTENSION))
+            .and_then(TrustedRequestData::from_metadata_value);
+        if let Some(request) = trusted {
+            out.push(AgentEnvelope {
+                task_id: task_id.to_owned(),
+                context_id: context_id.to_owned(),
+                task_state: None,
+                revision: revision.clone(),
+                key: IdemKey::Task(format!(
+                    "a2a:{task_id}:status-trusted:{}",
+                    state.map_or("unspecified", slug)
+                )),
+                update: Some(AgentUpdate::TrustedRequest(request)),
+                live: None,
+            });
+        }
+    }
     // A step is a `working` status whose message says so; anything else is a plain status.
     let step = message
         .filter(|_| state == Some(AgentTaskState::Working))
@@ -2716,6 +2740,51 @@ mod tests {
             envs[0].update,
             Some(AgentUpdate::TrustedRequest(_))
         ));
+    }
+
+    #[test]
+    fn a_trusted_request_on_the_status_message_of_an_input_required_task_is_the_request() {
+        let mut message = trusted_message(
+            "m-6",
+            json!({"component": "McpCredential", "hints": {"name": "My search"}}),
+        );
+        message.task_id = Some(T.into());
+        message.context_id = Some(C.into());
+        let envs =
+            ok(StreamMapper::default().map(status_update(TaskState::InputRequired, Some(message))));
+        let trusted: Vec<_> = envs
+            .iter()
+            .filter(|e| matches!(e.update, Some(AgentUpdate::TrustedRequest(_))))
+            .collect();
+        assert_eq!(trusted.len(), 1, "{envs:?}");
+        assert_eq!(
+            trusted[0].key,
+            IdemKey::Task(format!("a2a:{T}:status-trusted:input-required"))
+        );
+        let Some(AgentUpdate::TrustedRequest(request)) = &trusted[0].update else {
+            panic!("not a trusted request");
+        };
+        assert_eq!(
+            request.component,
+            orch_core::TrustedComponent::McpCredential
+        );
+        assert_eq!(request.hints.name.as_deref(), Some("My search"));
+    }
+
+    #[test]
+    fn a_trusted_request_on_a_status_that_is_not_input_required_is_not_read() {
+        let mut message =
+            trusted_message("m-7", json!({"component": "McpCredential", "hints": {}}));
+        message.task_id = Some(T.into());
+        message.context_id = Some(C.into());
+        let envs =
+            ok(StreamMapper::default().map(status_update(TaskState::Working, Some(message))));
+        assert!(
+            !envs
+                .iter()
+                .any(|e| matches!(e.update, Some(AgentUpdate::TrustedRequest(_)))),
+            "{envs:?}"
+        );
     }
 
     #[test]

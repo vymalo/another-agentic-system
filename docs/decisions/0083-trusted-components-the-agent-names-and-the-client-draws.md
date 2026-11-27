@@ -136,3 +136,27 @@ the sealed store holds today. This note fixes the form those two will use, not t
 "the contract says so" would later be trusted without being enforced. It gets its own issue rather than a silent fix here.
 
 Edited 2026-11-24: a private repository's name, paths and issue numbers were removed from the sources above (privacy); no decision changed.
+
+### Amended (2026-11-27): the request may ride the `input-required` status message
+
+The owner's choice of option A (ANR-895, 2026-11-26) settles the transport the first version of this
+record left too narrow. **The request may ride the status message of an `input-required` task**, not
+only an agent `Message` in the stream — and for adam it has to: adam parks a turn only through its
+question (`ToolError::NeedsInput`, `crates/adam-llm-agent/src/tool.rs`), which
+`crates/adam-a2a-runtime/src/convert.rs` turns into the **status message** of an `input-required`
+task. A contract that refused that carrier could not be served by the agent it was written for.
+
+- **Exactly one request per task state.** The same status seen twice — a reconnect, a re-read of the
+  task — is the same request, keyed by the task and the state; it is never a second one. The
+  orchestrator's mapping does this (`orchestrator/crates/a2a-mapping/src/lib.rs`, the
+  `input-required` branch of `status_envelopes`), and a unit test pins it.
+- **What the orchestrator checks is unchanged**: the card read, the component, the hints and their
+  bounds, and a component this build does not draw. The `trusted_request` event and the
+  `vymalo.trustedRequest` card are the same, so the web needed nothing.
+- On **any other state** a status message is still not a carrier, and the page says so.
+
+- *Verified 2026-11-27:* the mapping's unit tests (a request on an `input-required` status is one
+  `TrustedRequest` envelope, on a `working` status it is none) run in CI's Orchestrator workflow.
+- *Unverified:* the proof on a real adam is ANR-896 (after ANR-895): an agent's `input-required`
+  status message names `McpCredential`, the web's form posts the receipt, and the agent's next turn
+  has the receipt and never a secret.
