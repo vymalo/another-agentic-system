@@ -1247,7 +1247,19 @@ async fn a_stop_is_answered_without_waking_a_suspended_own_agent() {
     );
     w.agent
         .set_extensions(&mine(), &[orch_core::KnownExtension::Steer]);
-    let (task, token) = spawn_over(&app);
+    // the listing retries never run out: a stop that waited for them would never be answered
+    let token = tokio_util::sync::CancellationToken::new();
+    let task = tokio::spawn(
+        Dispatcher::new(
+            Arc::clone(&app),
+            orch_app::DispatcherConfig {
+                own_agent_listing_attempts: u32::MAX,
+                ..fast()
+            },
+            "d1",
+        )
+        .run(token.clone()),
+    );
     let id = new_coder_thread(&app, "gate refactor the parser").await;
     wait_in(&w, id, ThreadState::Working).await;
     // the platform suspends the agent and stops listing it
@@ -1266,6 +1278,56 @@ async fn a_stop_is_answered_without_waking_a_suspended_own_agent() {
             .unwrap(),
         Some(AgentState::Suspended),
         "a stop does not wake the agent"
+    );
+    token.cancel();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn a_helper_of_a_routed_thread_is_routed_to_the_same_own_agent() {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let app = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            listing(&registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let (task, token) = spawn_over(&app);
+    // the parent's agent says it has a session (kept open), whose round is the child thread's
+    let id = new_coder_thread(&app, "sessions planner keep").await;
+    wait_in(&w, id, ThreadState::Done).await;
+    let kid = eventually("the child thread", || async {
+        w.store
+            .child_threads(&alice(), id)
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+    })
+    .await;
+    wait_in(&w, kid.id, ThreadState::Done).await;
+    let kid = w.store.get_thread(None, kid.id).await.unwrap().unwrap();
+    assert_eq!(
+        kid.job.route,
+        Some(AgentId::new(mine())),
+        "the helper keeps its parent's route"
+    );
+    // what the person says in the helper's thread goes to their agent, never to the shared one
+    app.post_message(&alice(), kid.id, "echo again".to_owned())
+        .await
+        .unwrap();
+    eventually("the helper's message", || async {
+        (sends_to(&w, &mine()) == 2).then_some(())
+    })
+    .await;
+    assert_eq!(
+        sends_to(&w, "coder"),
+        0,
+        "nothing of the helper reaches the shared agent"
     );
     token.cancel();
     let _ = task.await;

@@ -756,42 +756,62 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 row.payload,
                 OutboxPayload::Cancel { .. } | OutboxPayload::Observe { .. }
             );
-        if wakes
-            && let Err(e) = self
+        // whether the platform answered that the person's agent is up (a `Some`): the reason of a
+        // row given up for want of a listing says so only then
+        let mut woke = false;
+        if wakes {
+            match self
                 .app
                 .ensure_own_agent(&thread.owner, &binding.agent_id)
                 .await
-        {
-            tracing::warn!(id = %row.id, agent = %lookup, attempt = row.attempts, error = %report(&e), "the person's own agent could not be made ready for the row");
-            if row.attempts < self.cfg.max_attempts {
-                self.retry(
-                    row,
-                    self.backoff(row.attempts),
-                    format!("your agent could not be made ready: {}", report(&e)),
-                )
-                .await?;
-                return Ok(None);
+            {
+                Ok(agent) => woke = agent.is_some(),
+                Err(e) => {
+                    tracing::warn!(id = %row.id, agent = %lookup, attempt = row.attempts, error = %report(&e), "the person's own agent could not be made ready for the row");
+                    if row.attempts < self.cfg.max_attempts {
+                        self.retry(
+                            row,
+                            self.backoff(row.attempts),
+                            format!("your agent could not be made ready: {}", report(&e)),
+                        )
+                        .await?;
+                        return Ok(None);
+                    }
+                    self.apply_quiet(
+                        row,
+                        Input::DeliveryFailed {
+                            reason: "your agent could not be made ready".to_owned(),
+                            retryable: false,
+                        },
+                        format!("dead:{}", row.id),
+                    )
+                    .await?;
+                    self.finish(
+                        row,
+                        OutboxFinal::Dead {
+                            error: "own agent not ready".to_owned(),
+                        },
+                    )
+                    .await?;
+                    return Ok(None);
+                }
             }
-            self.apply_quiet(
-                row,
-                Input::DeliveryFailed {
-                    reason: "your agent could not be made ready".to_owned(),
-                    retryable: false,
-                },
-                format!("dead:{}", row.id),
-            )
-            .await?;
-            self.finish(
-                row,
-                OutboxFinal::Dead {
-                    error: "own agent not ready".to_owned(),
-                },
-            )
-            .await?;
-            return Ok(None);
         }
         let entry = match self.app.resolve_agent(lookup).await {
             Ok(Some(entry)) => entry,
+            // a stop is answered here, at the first look and before any retry: an agent the
+            // platform does not list holds no task to stop
+            Ok(None) if route.is_some() && matches!(row.payload, OutboxPayload::Cancel { .. }) => {
+                tracing::warn!(id = %row.id, agent = %lookup, "the stop is answered without the person's own agent: it is not listed");
+                self.apply_quiet(
+                    row,
+                    Input::CancelledBeforeStart,
+                    format!("cancelstart:{}", row.id),
+                )
+                .await?;
+                self.finish(row, OutboxFinal::Delivered).await?;
+                return Ok(None);
+            }
             // ready on the platform and not listed yet: the registry reads the platform live, so
             // the row is tried again `own_agent_listing_attempts` times, and then given up with
             // its own reason
@@ -805,24 +825,16 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 .await?;
                 return Ok(None);
             }
-            // a stop is answered here: an agent the platform does not list holds no task to stop
-            Ok(None) if route.is_some() && matches!(row.payload, OutboxPayload::Cancel { .. }) => {
-                tracing::warn!(id = %row.id, agent = %lookup, "the stop is answered without the person's own agent: it is not listed");
-                self.apply_quiet(
-                    row,
-                    Input::CancelledBeforeStart,
-                    format!("cancelstart:{}", row.id),
-                )
-                .await?;
-                self.finish(row, OutboxFinal::Delivered).await?;
-                return Ok(None);
-            }
             Ok(None) => {
                 if route.is_some() {
                     tracing::warn!(id = %row.id, agent = %lookup, attempts = row.attempts, "the person's own agent was never listed; giving up");
                 }
-                let reason = if route.is_some() {
+                let reason = if route.is_some() && woke {
                     format!("your agent '{lookup}' is ready but is not listed yet")
+                } else if route.is_some() {
+                    format!(
+                        "the person's own agent '{lookup}' is not listed, and nothing made it ready for this row (provisioning is not on for it)"
+                    )
                 } else {
                     format!("agent '{lookup}' is no longer listed")
                 };
