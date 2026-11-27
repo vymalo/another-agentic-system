@@ -165,7 +165,7 @@ The notes below say how the core runs embedded, how the web reaches the orchestr
   origin from its own (`tauri://localhost`, `http://tauri.localhost`), which the orchestrator answers with CORS for the origins
   of `server.cors.allowedOrigins` only, never with credentials (a preflight before identity; `apps/tauri/README.md`). There are no Next.js API routes, no server-side fetches and no secrets in the web
   (`web/README.md`). Its settings, when it has any, are the public `ui` section of the orchestrator's configuration
-  file, read from `GET /api/config` (built with S9 and S18, [ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md)). *Accepted (2026-10-05, [ADR 0045](decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)), not built:* an `/admin` area whose one route handler forwards the edge's bearer to the platform's API, the web's only server-side call, and its one setting, `PLATFORM_API_URL`. SSE goes browser → edge → orchestrator, unbuffered.
+  file, read from `GET /api/config` (built with S9 and S18, *verified 2026-11-27* against `orchestrator/crates/api/src/lib.rs:332`, [ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md)). *Accepted (2026-10-05, [ADR 0045](decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)), not built:* an `/admin` area whose one route handler forwards the edge's bearer to the platform's API, the web's only server-side call, and its one setting, `PLATFORM_API_URL`. SSE goes browser → edge → orchestrator, unbuffered.
 
 :::
 
