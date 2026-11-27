@@ -3,6 +3,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineMd3Config } from "@vaam-apps/vitepress-md3/config";
 import { withMermaid } from "vitepress-plugin-mermaid";
+import { useSidebar } from "vitepress-openapi";
+import { DEFAULT_TAG, loadSpec } from "./openapi/spec";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -33,7 +35,16 @@ const sidebar = [
   {
     text: "Reference",
     collapsed: true,
-    items: [{ text: "Chat API (OpenAPI)", link: "/api/chat-api" }, { text: "API index", link: "/api/" }, ...pages("api", ["chat-api.md"])],
+    items: [
+      { text: "Chat API reference", link: "/api/reference" },
+      {
+        text: "Chat API operations",
+        collapsed: true,
+        items: useSidebar({ spec: loadSpec(), defaultTag: DEFAULT_TAG, linkPrefix: "/api/operations/", tagLinkPrefix: "/api/tags/" }).generateSidebarGroups({ tags: [DEFAULT_TAG] }),
+      },
+      { text: "API index", link: "/api/" },
+      ...pages("api", ["reference.md"]),
+    ],
   },
   { text: "Architecture", items: [{ text: "Architecture", link: "/architecture" }, { text: "Orchestrator", link: "/orchestrator" }] },
   { text: "Decisions", collapsed: true, items: [{ text: "ADR index", link: "/decisions/" }, ...pages("decisions")] },
@@ -42,8 +53,9 @@ const sidebar = [
 
 // Prose writes <agent> or <ThreadShare> meaning a placeholder; Vue would read it as a component and fail the build.
 // Only real HTML elements pass through, everything else is shown as the text it is.
+// The API pages (api/reference.md, api/tags/, api/operations/) use `script` and the components of vitepress-openapi.
 const HTML = new Set(
-  "a abbr blockquote br code details dd div dl dt em figcaption figure h1 h2 h3 h4 h5 h6 hr i img kbd li ol p picture pre small source span strong sub summary sup table tbody td tfoot th thead tr u ul video".split(" "),
+  "oaspec oaoperation script a abbr blockquote br code details dd div dl dt em figcaption figure h1 h2 h3 h4 h5 h6 hr i img kbd li ol p picture pre small source span strong sub summary sup table tbody td tfoot th thead tr u ul video".split(" "),
 );
 export function escapeUnknownTags(md: any) {
   // `{{` is a Vue expression to the compiler; the docs mean the characters.

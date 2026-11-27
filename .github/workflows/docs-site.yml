@@ -31,6 +31,8 @@ jobs:
         run: npm --prefix docs ci --no-fund --no-audit
       - name: Build the site
         run: npm --prefix docs run build
+      - name: Every operation of the chat API has a page
+        run: npm --prefix docs run check:api
       - uses: actions/upload-pages-artifact@v4
         with:
           path: docs/.vitepress/dist
