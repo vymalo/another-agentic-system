@@ -18,7 +18,7 @@ pub fn chat() -> AgentId {
 }
 
 /// The person whose identity-provider `sub` is `4f2a9c1e-0b7d-4c55-9e1a-6d3f8a2b7c10`: the one
-/// kind of person a lease or the meter is answered an account for (ADR 0107).
+/// kind of person a lease or the meter is answered an account for (ADR 0108).
 pub fn person() -> UserId {
     UserId::new("4f2a9c1e-0b7d-4c55-9e1a-6d3f8a2b7c10")
 }
@@ -382,7 +382,7 @@ pub async fn an_ended_run_is_not_found_after_the_bound(broker: &impl RunLeases) 
 /// An ended run is not handed to another person or agent: the run id is the agent's to choose, so a
 /// bind of an ended run id by someone else is refused `Conflict`, the tombstone is dropped (the run
 /// is then unattributed: `NotBound` to the meter, never misattributed), and the same binding again
-/// makes the run live (ADR 0107 decision 6).
+/// makes the run live (ADR 0108 decision 6).
 pub async fn an_ended_run_is_not_rebound_to_another_person_or_agent(broker: &impl RunLeases) {
     let other_person = UserId::new("9c8b7a65-4d3e-4f21-8a0b-1c2d3e4f5a6b");
     // Another person.

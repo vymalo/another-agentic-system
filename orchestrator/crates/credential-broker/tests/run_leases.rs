@@ -1,4 +1,4 @@
-//! The run-lease broker's conformance (ADR 0084, ADR 0107) over the in-memory binding store and
+//! The run-lease broker's conformance (ADR 0084, ADR 0108) over the in-memory binding store and
 //! credentials.
 
 use std::collections::BTreeMap;

@@ -16,7 +16,7 @@ use crate::{
 /// The longest a lease lives (ADR 0084 decision 3).
 pub const LEASE_TTL: Duration = Duration::from_secs(30);
 
-/// A binding and, once its run ended, when: the tombstone of ADR 0107 decision 6.
+/// A binding and, once its run ended, when: the tombstone of ADR 0108 decision 6.
 #[derive(Clone, Debug)]
 struct Entry {
     binding: RunBinding,
@@ -25,7 +25,7 @@ struct Entry {
 
 /// Whether `binding` may not replace the entry `held` for its run: a live run is bound to one
 /// agent, person and model (ADR 0084 decision 1), but an ended run is attributed by agent and
-/// person alone, so the same person may pick another model on a reused task id (ADR 0107).
+/// person alone, so the same person may pick another model on a reused task id (ADR 0108).
 fn differs(held: &Entry, binding: &RunBinding) -> bool {
     held.binding.agent != binding.agent
         || held.binding.person != binding.person
@@ -34,7 +34,7 @@ fn differs(held: &Entry, binding: &RunBinding) -> bool {
 
 /// What binding `binding` does to the entry already held for its run, if any: `Ok(())` to write it
 /// (a new run, the same binding again, an ended run bound again by the same agent and person), or
-/// `Err(Conflict)` after dropping an ended run's tombstone (ADR 0107 decision 6: the run id is the
+/// `Err(Conflict)` after dropping an ended run's tombstone (ADR 0108 decision 6: the run id is the
 /// agent's to choose, so a tombstone is never handed to another person; the run is then unattributed
 /// and the new binding fails closed).
 fn admit(bindings: &mut BTreeMap<RunId, Entry>, binding: &RunBinding) -> Result<(), RunLeaseError> {

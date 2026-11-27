@@ -147,7 +147,7 @@ spec:
         "Authorization":
           plain:
             selector: "Bearer {auth.metadata.lease.token}"
-        # The lease's accountId is the person's `sub`, an AccountId (ADR 0107), never an e-mail address or a provider account.
+        # The lease's accountId is the person's `sub`, an AccountId (ADR 0108), never an e-mail address or a provider account.
         # A selector like the token, so a client cannot choose whose usage it is.
         "x-account-id":
           plain:

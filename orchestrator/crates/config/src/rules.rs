@@ -91,7 +91,7 @@ pub struct Secrets {
     pub internal_token: Option<Secret>,
     /// `server.internal.agents`: each agent's bearer token on the run routes, by agent id.
     pub internal_agent_tokens: BTreeMap<String, Secret>,
-    /// `server.internal.meter`: the operator's meter bearer token on the account route (ADR 0107).
+    /// `server.internal.meter`: the operator's meter bearer token on the account route (ADR 0108).
     pub internal_meter_token: Option<Secret>,
     /// `webhooks.generic.secrets`; empty when the section is absent or this process serves no
     /// routes (a worker is not asked for secrets it would never use).
@@ -750,7 +750,7 @@ impl Checker<'_> {
                 }
             }
         }
-        // ADR 0107: the meter is answered the person's `sub`, and only a deployment that reads `sub`
+        // ADR 0108: the meter is answered the person's `sub`, and only a deployment that reads `sub`
         // has one. An e-mail is not an account id (the platform's alphabet has no `@`), so a meter
         // token with any other claim could only ever be refused at the route: it is refused here.
         if internal.meter.is_some() {
@@ -765,7 +765,7 @@ impl Checker<'_> {
                 self.invalid(
                     "server.internal.meter",
                     "needs auth.mode jwt with auth.jwt.userClaim: sub: the meter is answered the \
-                     identity provider's sub, never an e-mail address (ADR 0107)",
+                     identity provider's sub, never an e-mail address (ADR 0108)",
                 );
             }
         }

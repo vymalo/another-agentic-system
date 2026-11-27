@@ -1060,7 +1060,7 @@ macro_rules! bearer_token_conformance {
 /// `glm-5.3` is [`run_leases::token`](crate::testkit::run_leases::token); `None` skips the suite. The
 /// tombstone bound is the default (24 hours).
 ///
-/// `$make_unkept` is the same, **built with a tombstone bound of zero** (ADR 0107 decision 6: where no
+/// `$make_unkept` is the same, **built with a tombstone bound of zero** (ADR 0108 decision 6: where no
 /// meter can read it, an ended run keeps nothing): the case
 /// [`an_ended_run_is_not_found_after_the_bound`](crate::testkit::run_leases::an_ended_run_is_not_found_after_the_bound)
 /// runs on it, so an adapter cannot forget the bound.

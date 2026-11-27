@@ -1,5 +1,5 @@
 //! [`RunBindingStore`] over Postgres: the run leases of B1 (ADR 0084), one row per run. A run that
-//! ends keeps its row as a tombstone (`ended_at`, migration `0035`, ADR 0107 decision 6).
+//! ends keeps its row as a tombstone (`ended_at`, migration `0035`, ADR 0108 decision 6).
 
 use jiff::Timestamp;
 use orch_core::{AgentId, UserId};
@@ -76,7 +76,7 @@ impl RunBindingStore for PgRunBindings {
         };
         if written.is_none() {
             // A different binding for a run that ended: the run id is the agent's to choose, so the
-            // tombstone is never handed to another person (ADR 0107 decision 6). It is dropped, the
+            // tombstone is never handed to another person (ADR 0108 decision 6). It is dropped, the
             // run is unattributed and the bind is refused: fail closed. A live row is not touched.
             let dropped = query("DELETE FROM run_leases WHERE run = $1 AND ended_at IS NOT NULL")
                 .bind(binding.run.as_str())

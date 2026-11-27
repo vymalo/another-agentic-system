@@ -676,7 +676,7 @@ async fn run_routes(
 }
 
 /// Who may call the run routes: the orchestrator, each agent and, when the deployment runs the
-/// operator's meter, the meter (ADR 0107; the configuration only reads its token under
+/// operator's meter, the meter (ADR 0108; the configuration only reads its token under
 /// `auth.jwt.userClaim: sub`). The injector's token has no key in the configuration yet, so no
 /// caller presents as `RunCaller::Injector` today: the lease is the orchestrator's until it has.
 fn run_route_tokens(settings: &crate::config::InternalSettings) -> SharedTokens {
@@ -691,7 +691,7 @@ fn run_route_tokens(settings: &crate::config::InternalSettings) -> SharedTokens 
     }
 }
 
-/// How long an ended run's person is kept for the meter (ADR 0107 decision 6): the default bound when
+/// How long an ended run's person is kept for the meter (ADR 0108 decision 6): the default bound when
 /// the deployment runs a meter, and **nothing** otherwise, so that where no caller can read it no
 /// person's id outlives the run.
 fn tombstone_retention(settings: &crate::config::InternalSettings) -> Duration {
@@ -1081,7 +1081,7 @@ mod tests {
         assert_eq!(
             tombstone_retention(&settings(None)),
             std::time::Duration::ZERO,
-            "with no meter: nothing is kept, as before ADR 0107"
+            "with no meter: nothing is kept, as before ADR 0108"
         );
     }
 }

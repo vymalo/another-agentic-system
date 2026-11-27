@@ -26,7 +26,7 @@ const CODER: &str = "coder-token";
 const CHAT: &str = "chat-token";
 const MODEL: &str = "model-x";
 /// The person: an identity provider's `sub`, the only kind of person the routes answer an account for
-/// (ADR 0107).
+/// (ADR 0108).
 const PERSON: &str = "4f2a9c1e-0b7d-4c55-9e1a-6d3f8a2b7c10";
 /// A person that is an e-mail address, as under `userClaim: email`.
 const EMAIL: &str = "person@example.com";

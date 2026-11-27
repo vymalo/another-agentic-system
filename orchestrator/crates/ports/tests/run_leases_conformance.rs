@@ -1,4 +1,4 @@
-//! The run-lease conformance (ADR 0084, ADR 0107) over `MemoryRunLeases`, the in-memory
+//! The run-lease conformance (ADR 0084, ADR 0108) over `MemoryRunLeases`, the in-memory
 //! implementation of `RunLeases`.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 

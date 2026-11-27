@@ -1,5 +1,5 @@
 # Layered over examples/netcup.values.yaml and internal.values.yaml by the checks (render-check.sh): the operator's
-# pod-minute meter (ADR 0107) on the run routes, with its token's AWS property and its pods admitted to the port. The meter
+# pod-minute meter (ADR 0108) on the run routes, with its token's AWS property and its pods admitted to the port. The meter
 # is answered the identity provider's `sub`, so the layer reads it. Not a deployment's values: see README.md, "The run routes".
 auth:
   userClaim: sub

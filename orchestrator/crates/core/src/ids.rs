@@ -60,7 +60,7 @@ impl fmt::Display for UserId {
 /// The longest [`AccountId`], in bytes: the platform's own bound for an identifier it meters.
 pub const MAX_ACCOUNT_ID_LEN: usize = 128;
 
-/// The account a run's spending is charged to (ADR 0107): the person's [`UserId`] (under
+/// The account a run's spending is charged to (ADR 0108): the person's [`UserId`] (under
 /// `auth.jwt.userClaim: sub`, the identity provider's `sub` claim **trimmed and lower-cased**, which
 /// is what [`UserId::new`] makes of it), and only when it is of the platform's closed alphabet.
 ///

@@ -1,4 +1,4 @@
--- The run -> account tombstone (ADR 0107 decision 6). A run that ends keeps its row, marked ended,
+-- The run -> account tombstone (ADR 0108 decision 6). A run that ends keeps its row, marked ended,
 -- so the operator's meter can still ask whom a run pod's last minutes are charged to: a pod lives up
 -- to 900 s idle after its job and the meter backfills up to 24 hours. Only the account route reads an
 -- ended row; the lease and the live binding never do, so no credential outlives the job. The broker

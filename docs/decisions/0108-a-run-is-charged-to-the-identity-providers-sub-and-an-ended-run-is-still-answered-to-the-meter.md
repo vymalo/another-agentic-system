@@ -1,8 +1,8 @@
 ---
-sidebarTitle: "0107 · A run is charged to the sub"
+sidebarTitle: "0108 · A run is charged to the sub"
 ---
 
-# ADR 0107 — A run is charged to the identity provider's `sub`, and an ended run is still answered to the meter
+# ADR 0108 — A run is charged to the identity provider's `sub`, and an ended run is still answered to the meter
 
 - **Status:** **Accepted (2026-11-27)** by the owner (card ANR-1099, security): *the account id is the identity provider's
   `sub`, enforced; the lease carries the same id; the e-mail shape gets no meter; a run that ended is still answered for 24
@@ -10,7 +10,7 @@ sidebarTitle: "0107 · A run is charged to the sub"
   (decision 6 and the two status notes of 2026-11-24 on `accountId`). **Open: ANR-Q139** (the owner's, on the board): whether the account
   is to be the `sub` exactly as the provider issues it rather than the orchestrator's trimmed, lower-cased `UserId`; this record
   states what holds today.
-- **Numbering (2026-11-27):** written as 0106 and renumbered to 0107 the same day, because an open pull request (#616) already took 0106.
+- **Numbering (2026-11-27):** written as 0106, renumbered to 0107 because an open pull request (#616) took 0106, and to 0108 because #620 (the SQL adapters' ADR) landed 0107.
 
 ## Context
 

@@ -1,4 +1,4 @@
-//! The run-lease broker's conformance over `PgRunBindings` (ADR 0084, ADR 0107): the same cases as
+//! The run-lease broker's conformance over `PgRunBindings` (ADR 0084, ADR 0108): the same cases as
 //! the in-memory broker, against the real table of migrations `0030` and `0035`. Skipped unless
 //! `ORCH_TEST_DATABASE_URL` is set.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
