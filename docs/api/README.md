@@ -86,14 +86,14 @@ Every JSON body of `chat-api.yaml` is also offered as `application/cbor` with th
 
 ## Status icons
 
-One legend for every status table of the documentation. The word stays beside the icon, so nothing is carried by the icon alone.
+One legend for every status table of the documentation (the same table is in the structure file the sites share). The word stays beside the icon, so nothing is carried by the icon alone.
 
 | Icon | Word | Means |
 |---|---|---|
 | ✅ | built | fully supported or built |
 | ⚠️ | partial | partially: the cell says what is missing |
 | ❌ | not supported | not supported |
-| 🚧 | planned | in progress or planned: nothing, or not all, is built |
+| 🚧 | planned | in progress or planned |
 | 🧪 | experimental | works, and may change or be removed |
-| ➖ | n/a | not applicable (or retired) |
+| ➖ | n/a · retired | not applicable, or retired |
 | 🔒 | needs a role | needs a permission or a role |

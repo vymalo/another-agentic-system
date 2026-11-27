@@ -107,7 +107,6 @@ const HTML = new Set(
 export function escapeUnknownTags(md: any) {
   // `{{` is a Vue expression to the compiler; the docs mean the characters.
   const render = md.render.bind(md);
-  md.use(inDepth);
   md.render = (src: string, env: unknown) => render(src, env).replace(/\{\{/g, "&#123;&#123;");
   for (const rule of ["html_inline", "html_block"]) {
     const original = md.renderer.rules[rule];
@@ -150,7 +149,7 @@ export default withMermaid(
       search: { provider: "local" },
       socialLinks: [{ icon: "github", link: "https://github.com/vymalo/another-agentic-system" }],
     },
-    markdown: { config: escapeUnknownTags, attrs: { disable: true } },
+    markdown: { config: (md) => { md.use(inDepth); escapeUnknownTags(md); }, attrs: { disable: true } },
     mermaid: {},
   }),
 );

@@ -15,7 +15,7 @@ it, by `transition(&state, &event)`. [Thread state](orchestrator.md#thread-state
 
 ## Job
 
-The work a message starts on a thread.
+The work a message starts on a thread that has no open job.
 
 ::: in-depth More on the job
 A job is started by a message on a thread that has no open job. It is kept on the thread as its job ledger (the attempt,
@@ -35,12 +35,16 @@ invariant 3 of the agent guide, each kept beside the log, not in it.
 
 ## Agent
 
-Something the orchestrator hands work to, reached by an A2A agent-card URL.
+Something the orchestrator hands work to: a remote agent, reached by an A2A agent-card URL, or one hosted in-process.
 
 ::: in-depth Hosts, and the in-process option
-Remote agents are reached by an A2A agent-card URL; behind the off-by-default feature `agent-local` a worker may host
-adam agents in-process ([ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md)). The orchestrator has no code
-path of its own for any one agent. [Agent hosts](architecture.md#agent-hosts)
+Remote agents are reached by an A2A agent-card URL. The orchestrator has no code path of its own for any one agent.
+[Agent hosts](architecture.md#agent-hosts)
+
+::: in-depth The in-process option
+Behind the off-by-default feature `agent-local` a worker may host adam agents in-process
+([ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md)).
+:::
 :::
 
 ## Dispatcher
@@ -49,12 +53,7 @@ The worker loop that carries a command to an agent and brings back what the agen
 
 ::: in-depth What it does, step by step
 It claims a row of the outbox, talks to the agent over A2A and turns what the agent reports into events applied to the
-thread. Any replica may run it. [Event flow](orchestrator.md#event-flow)
-
-::: in-depth Why a dying row is never lost
-This is the outbox's side of the same loop. A row that dies re-enters the core as a delivery failure, so the thread goes
-`blocked` (retryable) or `failed`, never on as if it was sent. See **Outbox** below.
-:::
+thread. Any replica may run it. [Event flow](orchestrator.md#event-flow) What it claims is the [Outbox](#outbox).
 :::
 
 ## Outbox

@@ -1,13 +1,13 @@
 // The `::: in-depth [title]` container: a native <details>, closed by default, that holds the part of a page
 // a reader may skip. Self-contained (no plugin): copy this file and `extras.css` to another VitePress site,
-// then `md.use(inDepth)` in `markdown.config`. See docs/.vitepress/STRUCTURE.md, "Writing pages".
+// then `md.use(inDepth)` in `markdown.config`. See STRUCTURE.md, "Writing pages".
+// An unclosed block warns at build, naming the file and line; tools/docs-check fails on it.
 //
 //   ::: in-depth The whole lifecycle
-//   Text, tables, code, and another `::: in-depth` block (nesting works at the same marker length).
+//   Text, tables, code, and a `::: tip` or another `::: in-depth` block (they nest, each closed by its own `:::`).
 //   :::
 //
 // Rendered: <details class="in-depth"><summary>title</summary><div class="in-depth-body">…</div></details>
-const NAME = "in-depth";
 const DEFAULT_TITLE = "In depth";
 
 export function inDepth(md: any) {
@@ -30,29 +30,37 @@ export function inDepth(md: any) {
       if (!head) return false;
       if (silent) return true;
 
-      // Find the closing line: a bare marker at least as long as the opening one, past any nested opener.
+      // Find the closing line. Any `:::` line with a name after it opens a container (an `::: in-depth`, a
+      // `::: tip`, a `::: details`) and each bare `:::` closes the innermost one. A fenced code block is code:
+      // it opens on a run of backticks or tildes and closes on the same character, at least as long, with
+      // nothing after it.
       let depth = 1;
       let next = startLine + 1;
       let closed = false;
-      let fence: string | null = null; // inside a fenced code block, `:::` is code
+      let fence: { ch: string; len: number } | null = null;
       for (; next < endLine; next++) {
         const s = state.bMarks[next] + state.tShift[next];
         const line = state.src.slice(s, state.eMarks[next]);
-        const f = /^(`{3,}|~{3,})/.exec(line);
-        if (f) {
-          if (fence === null) fence = f[1][0];
-          else if (f[1][0] === fence) fence = null;
+        const f = /^(`{3,}|~{3,})(.*)$/.exec(line);
+        if (fence) {
+          if (f && f[1][0] === fence.ch && f[1].length >= fence.len && f[2].trim() === "") fence = null;
           continue;
         }
-        if (fence !== null) continue;
+        if (f && !(f[1][0] === "`" && f[2].includes("`"))) {
+          fence = { ch: f[1][0], len: f[1].length };
+          continue;
+        }
         const p = parse(state, next);
         if (!p) continue;
-        if (p.rest === "") {
-          if (p.marks >= open.marks && --depth === 0) {
-            closed = true;
-            break;
-          }
-        } else if (/^in-depth(\s|$)/.test(p.rest)) depth++;
+        if (p.rest !== "") depth++;
+        else if (--depth === 0) {
+          closed = true;
+          break;
+        }
+      }
+      if (!closed) {
+        const where = state.env?.relativePath ?? "a page";
+        console.warn(`[in-depth] unclosed "::: in-depth" at ${where}:${startLine + 1}`);
       }
 
       const openTok = state.push("in_depth_open", "details", 1);
