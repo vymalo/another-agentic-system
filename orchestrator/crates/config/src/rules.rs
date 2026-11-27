@@ -1880,13 +1880,13 @@ impl Checker<'_> {
                     "a kind that is provisioned needs its agent form",
                 ),
                 Some(form) => {
-                    if let Some(key) = ["name", "owner", "suspend"]
+                    if let Some(key) = ["name", "owner", "account", "suspend"]
                         .into_iter()
                         .find(|key| form.contains_key(*key))
                     {
                         self.invalid(
                             format!("provisioner.forms.{}.{key}", kind.as_str()),
-                            "the orchestrator sets name, owner and suspend: leave it out",
+                            "the orchestrator sets name, owner, account and suspend: leave it out",
                         );
                     }
                 }

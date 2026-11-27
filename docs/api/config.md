@@ -452,11 +452,20 @@ referent not made yet passes), except for a reason that waiting cannot clear (`N
 which is a 500 `code: agent_blocked`, "your coder agent is blocked: NameConflict". The shared `chat` agent and any other agent never go through it. A binary built without the Cargo feature `provisioner-platform` refuses
 the section (exit 78).
 
+**The account** (ADR 0108): the form the orchestrator sends carries `account`, which the platform charges the agent's pods
+to. It is the person's id under the identity provider's `sub` (trimmed and lower-cased, `[A-Za-z0-9._:/-]{1,128}`), so
+**provisioning needs `auth.jwt.userClaim: sub`**. A person who is not such an id (an e-mail address, under
+`userClaim: email`, which is the default, or from an identity header) gets a **500** for a message to a provisioned kind:
+the platform is not asked, nothing is written, and the cause is logged (`account_not_opaque`), without the person.
+**Startup does not check the claim.** Moving a deployment to `sub` re-keys its people (their threads and their agents
+belong to the id the claim gives), so it is the deployment's own decision. The platform takes the account from the write,
+so an agent made before this gets it the next time it is resumed or suspended; one that is `ready` is only read.
+
 | Key | Meaning |
 |---|---|
 | `url` | The Platform API's base URL: `http` or `https`, a host, no user name or password. |
 | `kinds` | The kinds made for each person: `coder`, `workspace`, each once, at least one. The shared chat agent is never provisioned. |
-| `forms.<kind>` | The agent form of each kind in `kinds` (the platform's form without `name`, `owner` and `suspend`, which the orchestrator sets). One per kind, and none for a kind that is not listed. |
+| `forms.<kind>` | The agent form of each kind in `kinds` (the platform's form without `name`, `owner`, `account` and `suspend`, which the orchestrator sets). One per kind, and none for a kind that is not listed. |
 | `credentials` | What the orchestrator presents. Two types. `dev-oidc`, the OAuth `client_credentials` grant for the local stack's `mock-oidc`: `tokenUrl`, `clientId`, `clientSecret` (a `{ env }` or `{ file }` reference), and optionally `user`, `audience`, `roles` (the token must carry `platform:agents.own`); a development adapter. `openbao-pki`, **the orchestrator's workload certificate** (ANR-809, [ADR 0110](../decisions/0110-the-orchestrator-presents-its-workload-certificate-to-the-platform.md)), presented on the TLS connection with no `Authorization` header: see below. |
 | `credentials.address` | `openbao-pki`, required. OpenBao: an `https` URL with a host and no user name, password, query or fragment. The pod's service-account token goes to it. |
 | `credentials.caFile` | `openbao-pki`, none. A file of PEM certificates OpenBao's certificate is also checked against, besides the system's roots; read at startup, relative to the file's directory. |

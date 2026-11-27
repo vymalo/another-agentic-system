@@ -16,15 +16,23 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use orch_core::AccountId;
 use orch_ports::testkit::provisioner::ProvisionerFixture;
 use orch_ports::{
     AgentKind, AgentOwner, AgentProvisioner, AgentState, BlockedReason, ProvisionError,
 };
-use orch_provisioner_platform::{PlatformConfig, PlatformProvisioner};
+use orch_provisioner_platform::{BuildError, PlatformConfig, PlatformProvisioner};
 use secrecy::SecretString;
 use serde_json::{Value, json};
 
 const TOKEN: &str = "orchestrator-token";
+
+/// The account of the person in these tests: the shape of an identity provider's `sub`.
+const ACCOUNT: &str = "3b1d7e52-6a40-4c18-9f0e-a1c2d3e4f501";
+
+fn account() -> AccountId {
+    AccountId::parse(ACCOUNT).unwrap()
+}
 
 struct Agent {
     owner: String,
@@ -64,6 +72,9 @@ struct Platform {
     /// When set, a read answers this state and these `conditions` (the shape of the platform's
     /// detail: `{type, status, reason}`) for every agent that exists.
     forced_state: Mutex<Option<(&'static str, Vec<Value>)>>,
+    /// When set, a write answers this status with a problem of this slug that **quotes the whole
+    /// request body** (a platform that echoes what it was sent, the account included).
+    echo: Mutex<Option<(StatusCode, &'static str)>>,
 }
 
 type Shared = Arc<Platform>;
@@ -129,6 +140,14 @@ async fn write(
         .push(format!("PUT {owner}/{name}"));
     if !authorised(&headers) {
         return problem(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+    if let Some((status, slug)) = *p.echo.lock().unwrap() {
+        return (
+            status,
+            [(header::CONTENT_TYPE, "application/problem+json")],
+            json!({"type": format!("urn:vymalo:agents:problem:{slug}"), "title": body, "detail": body, "status": status.as_u16()}).to_string(),
+        )
+            .into_response();
     }
     let Ok(form) = serde_json::from_str::<Value>(&body) else {
         return problem(StatusCode::BAD_REQUEST, "invalid-request");
@@ -289,7 +308,7 @@ async fn a_wrong_token_is_refused_and_makes_nothing() {
     let (url, platform) = serve().await;
     let p = PlatformProvisioner::new(config(&url, "wrong")).unwrap();
     let err = p
-        .ensure_ready(&owner("a"), AgentKind::Coder)
+        .ensure_ready(&owner("a"), AgentKind::Coder, &account())
         .await
         .unwrap_err();
     assert!(matches!(err, ProvisionError::Refused), "{err:?}");
@@ -313,11 +332,13 @@ async fn an_agent_of_another_owner_with_the_same_name_is_never_touched() {
     );
     let p = PlatformProvisioner::new(config(&url, TOKEN)).unwrap();
     let err = p
-        .ensure_ready(&owner("x"), AgentKind::Coder)
+        .ensure_ready(&owner("x"), AgentKind::Coder, &account())
         .await
         .unwrap_err();
     assert!(matches!(err, ProvisionError::Invalid), "{err:?}");
-    p.suspend(&owner("x"), AgentKind::Coder).await.unwrap();
+    p.suspend(&owner("x"), AgentKind::Coder, &account())
+        .await
+        .unwrap();
     p.delete(&owner("x"), AgentKind::Coder).await.unwrap();
     let agents = platform.agents.lock().unwrap();
     let theirs = &agents["coder-x"];
@@ -329,15 +350,128 @@ async fn an_agent_of_another_owner_with_the_same_name_is_never_touched() {
 async fn the_platform_gets_the_form_of_the_kind_with_the_owner_and_no_suspend() {
     let (url, platform) = serve().await;
     let p = PlatformProvisioner::new(config(&url, TOKEN)).unwrap();
-    p.ensure_ready(&owner("zed"), AgentKind::Workspace)
+    p.ensure_ready(&owner("zed"), AgentKind::Workspace, &account())
         .await
         .unwrap();
     let agents = platform.agents.lock().unwrap();
     let form = &agents["workspace-zed"].form;
     assert_eq!(form["owner"], "zed");
     assert_eq!(form["name"], "workspace-zed");
+    assert_eq!(form["account"], ACCOUNT);
     assert_eq!(form["suspend"], false);
     assert_eq!(form["agent"]["kind"], "folder");
+}
+
+#[tokio::test]
+async fn every_replace_carries_the_persons_account_beside_name_owner_and_suspend() {
+    let (url, platform) = serve().await;
+    let p = PlatformProvisioner::new(config(&url, TOKEN)).unwrap();
+    p.ensure_ready(&owner("yan"), AgentKind::Coder, &account())
+        .await
+        .unwrap();
+    // The stand-in keeps the last form written. It is emptied before each replace, so what is
+    // read after it is what that replace sent and nothing of the create.
+    let forget = || {
+        platform
+            .agents
+            .lock()
+            .unwrap()
+            .get_mut("coder-yan")
+            .unwrap()
+            .form = json!({});
+    };
+    let sent = || platform.agents.lock().unwrap()["coder-yan"].form.clone();
+    let check = |form: Value, suspend: bool| {
+        assert_eq!(form["account"], ACCOUNT, "{suspend}");
+        assert_eq!(form["name"], "coder-yan");
+        assert_eq!(form["owner"], "yan");
+        assert_eq!(form["suspend"], suspend);
+    };
+
+    forget();
+    p.suspend(&owner("yan"), AgentKind::Coder, &account())
+        .await
+        .unwrap();
+    check(sent(), true);
+
+    forget();
+    p.ensure_ready(&owner("yan"), AgentKind::Coder, &account())
+        .await
+        .unwrap();
+    check(sent(), false);
+}
+
+#[test]
+fn a_configured_form_that_carries_an_account_is_refused_at_build() {
+    // a form of the deployment's cannot say who is charged: every person would be charged to it
+    let cfg = config("http://localhost:1", TOKEN).with_form(
+        AgentKind::Coder,
+        json!({"agent": {"kind": "coder"}, "account": ACCOUNT}),
+    );
+    let err = PlatformProvisioner::new(cfg).unwrap_err();
+    assert!(
+        matches!(err, BuildError::BadForm(AgentKind::Coder)),
+        "{err:?}"
+    );
+    assert!(!format!("{err} {err:?}").contains(ACCOUNT), "{err:?}");
+}
+
+/// No error, `Display` or `Debug`, its causes included, holds the account, whatever the platform
+/// answers, even when it quotes the request that carried it. The crate has no logging dependency,
+/// so it writes no log line: errors and `Debug` are all that can leave it.
+#[tokio::test]
+async fn no_error_or_debug_text_of_the_adapter_holds_the_account() {
+    let clean = |what: &str, text: String| {
+        assert!(!text.contains(ACCOUNT), "{what}: {text}");
+    };
+    let shown = |e: &ProvisionError| format!("{} {e:?}", orch_core::report(e));
+    for (status, slug) in [
+        (StatusCode::UNPROCESSABLE_ENTITY, "invalid"),
+        (StatusCode::BAD_REQUEST, "invalid-request"),
+        (StatusCode::FORBIDDEN, "forbidden"),
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+        (StatusCode::CONFLICT, "managed-by-gitops"),
+        (StatusCode::CONFLICT, "deleting"),
+        (StatusCode::CONFLICT, "conflict"),
+    ] {
+        // a create
+        let (url, platform) = serve().await;
+        *platform.echo.lock().unwrap() = Some((status, slug));
+        let p = PlatformProvisioner::new(config(&url, TOKEN)).unwrap();
+        let err = p
+            .ensure_ready(&owner("quiet"), AgentKind::Coder, &account())
+            .await
+            .unwrap_err();
+        assert_eq!(put_count(&platform).await, 1, "{status}: the form was sent");
+        clean(slug, shown(&err));
+        clean(slug, shown(&err.duplicate()));
+        clean(slug, format!("{p:?}"));
+
+        // a replace
+        *platform.echo.lock().unwrap() = None;
+        p.ensure_ready(&owner("quiet"), AgentKind::Coder, &account())
+            .await
+            .unwrap();
+        *platform.echo.lock().unwrap() = Some((status, slug));
+        // a `409` on a replace is read again until the races run out; every status errs
+        let err = p
+            .suspend(&owner("quiet"), AgentKind::Coder, &account())
+            .await
+            .unwrap_err();
+        clean(slug, shown(&err));
+    }
+
+    // a wait that runs out, after a create that carried the account
+    let (url, platform) = serve().await;
+    platform.delay_ms.store(60_000, Ordering::SeqCst);
+    let cfg = config(&url, TOKEN).with_ready_timeout(Duration::from_millis(100));
+    clean("config", format!("{cfg:?}"));
+    let p = PlatformProvisioner::new(cfg).unwrap();
+    let err = p
+        .ensure_ready(&owner("slow"), AgentKind::Coder, &account())
+        .await
+        .unwrap_err();
+    clean("not ready", shown(&err));
 }
 
 #[tokio::test]
@@ -349,7 +483,7 @@ async fn an_agent_that_never_becomes_ready_gives_not_ready() {
     )
     .unwrap();
     let err = p
-        .ensure_ready(&owner("slow"), AgentKind::Coder)
+        .ensure_ready(&owner("slow"), AgentKind::Coder, &account())
         .await
         .unwrap_err();
     assert!(
@@ -408,7 +542,7 @@ async fn a_blocked_agent_whose_store_is_not_ready_is_waited_for_until_it_is_read
     let (p, platform) = platform_reading("blocked", conditions, Duration::from_secs(10)).await;
     clear_after(&platform, Duration::from_millis(300));
     let agent = p
-        .ensure_ready(&owner("fresh"), AgentKind::Coder)
+        .ensure_ready(&owner("fresh"), AgentKind::Coder, &account())
         .await
         .unwrap();
     assert_eq!(agent.state, AgentState::Ready);
@@ -420,7 +554,7 @@ async fn refused_at_once(conditions: Vec<Value>, reason: BlockedReason) {
     let (p, platform) = platform_reading("blocked", conditions, Duration::from_secs(10)).await;
     let started = Instant::now();
     let err = p
-        .ensure_ready(&owner("blocked"), AgentKind::Coder)
+        .ensure_ready(&owner("blocked"), AgentKind::Coder, &account())
         .await
         .unwrap_err();
     assert!(
@@ -467,7 +601,7 @@ async fn a_blocked_agent_whose_condition_is_not_false_or_not_of_the_right_type_i
     ];
     let (p, _platform) = platform_reading("blocked", conditions, Duration::from_millis(200)).await;
     let err = p
-        .ensure_ready(&owner("lookalike"), AgentKind::Coder)
+        .ensure_ready(&owner("lookalike"), AgentKind::Coder, &account())
         .await
         .unwrap_err();
     assert!(
@@ -487,7 +621,7 @@ async fn a_blocked_agent_with_an_invalid_config_is_still_waited_for() {
     let conditions = vec![condition("ConfigResolved", "False", "ConfigInvalid")];
     let (p, _platform) = platform_reading("blocked", conditions, Duration::from_millis(200)).await;
     let err = p
-        .ensure_ready(&owner("invalid"), AgentKind::Coder)
+        .ensure_ready(&owner("invalid"), AgentKind::Coder, &account())
         .await
         .unwrap_err();
     assert!(
@@ -508,7 +642,7 @@ async fn a_degraded_agent_is_waited_for_until_it_is_ready() {
     let (p, platform) = platform_reading("degraded", vec![], Duration::from_secs(10)).await;
     clear_after(&platform, Duration::from_millis(300));
     let agent = p
-        .ensure_ready(&owner("degraded"), AgentKind::Coder)
+        .ensure_ready(&owner("degraded"), AgentKind::Coder, &account())
         .await
         .unwrap();
     assert_eq!(agent.state, AgentState::Ready);
@@ -519,7 +653,7 @@ async fn a_degraded_agent_is_waited_for_until_it_is_ready() {
 async fn a_degraded_agent_that_stays_so_gives_not_ready_at_the_bound() {
     let (p, _platform) = platform_reading("degraded", vec![], Duration::from_millis(200)).await;
     let err = p
-        .ensure_ready(&owner("stuck"), AgentKind::Coder)
+        .ensure_ready(&owner("stuck"), AgentKind::Coder, &account())
         .await
         .unwrap_err();
     assert!(
@@ -540,7 +674,7 @@ async fn the_deployment_must_give_a_form_for_the_kind() {
         PlatformConfig::new(&url, SecretString::from(TOKEN.to_owned())).without_system_proxy();
     let p = PlatformProvisioner::new(cfg).unwrap();
     let err = p
-        .ensure_ready(&owner("a"), AgentKind::Coder)
+        .ensure_ready(&owner("a"), AgentKind::Coder, &account())
         .await
         .unwrap_err();
     assert!(matches!(err, ProvisionError::Invalid), "{err:?}");
@@ -584,7 +718,7 @@ async fn a_409_that_is_not_already_exists_is_not_made() {
         *platform.conflict.lock().unwrap() = Some(slug);
         let p = PlatformProvisioner::new(config(&url, TOKEN)).unwrap();
         let err = p
-            .ensure_ready(&owner("gita"), AgentKind::Coder)
+            .ensure_ready(&owner("gita"), AgentKind::Coder, &account())
             .await
             .unwrap_err();
         let got = match err {

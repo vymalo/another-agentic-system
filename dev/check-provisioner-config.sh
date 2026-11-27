@@ -25,7 +25,7 @@ else
   bad "orchestrator.provisioner.yaml differs from orchestrator.yaml outside its markers (above): change both, or only the marked blocks"
 fi
 
-for key in 'provisioner:' '  url: http://mock-platform:8080' '  kinds: [coder]' '  readyTimeoutSecs: 6'; do
+for key in '    userClaim: sub' 'provisioner:' '  url: http://mock-platform:8080' '  kinds: [coder]' '  readyTimeoutSecs: 6'; do
   if grep -Fxq "$key" "$derived"; then ok "the derived file has '$key'"; else bad "the derived file lacks '$key'"; fi
 done
 if grep -Eq '^provisioner:' "$default"; then

@@ -1,5 +1,5 @@
 # provisioner:begin
-# The configuration of the provisioner stack (ANR-806): dev/orchestrator.yaml, character for character, plus the two blocks between the
+# The configuration of the provisioner stack (ANR-806): dev/orchestrator.yaml, character for character, plus the blocks between the
 # `provisioner:begin` and `provisioner:end` markers (dev/check-provisioner-config.sh asserts that nothing else differs). dev/compose.provisioner.yaml
 # mounts it in place of dev/orchestrator.yaml, so `docker compose --profile app up` is what it was until you ask for the override.
 #
@@ -209,6 +209,12 @@ auth:
     issuer: http://mock-oidc:8080
     audiences: [dev-chat]
     rolesClaim: roles
+# provisioner:begin
+    # A person's own agent is charged to their account, which is the issuer's `sub` (ADR 0108, ANR-1321): with the default claim
+    # (`email`) every message to the coder would be refused. mock-oidc's `sub` is `mock-<16 hex of the SHA-256 of the e-mail>`. The
+    # users of `mcp.tokensFile` must then be subs too: dev/compose.provisioner.yaml mounts dev/mcp-tokens.provisioner.yaml.
+    userClaim: sub
+# provisioner:end
   defaultRole: user
   roles:
     user: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read], scope: own, agents: ["*"] }

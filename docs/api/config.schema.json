@@ -942,7 +942,7 @@
             "type": "object"
           },
           "default": {},
-          "description": "The agent form of each kind (the platform's form without `name`, `owner` and `suspend`), one for every kind in `kinds`.",
+          "description": "The agent form of each kind (the platform's form without `name`, `owner`, `account` and `suspend`), one for every kind in `kinds`.",
           "type": "object"
         },
         "kinds": {

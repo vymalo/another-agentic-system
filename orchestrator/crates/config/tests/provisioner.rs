@@ -103,6 +103,21 @@ provisioner:
 }
 
 #[test]
+fn a_form_that_names_who_is_charged_is_refused_at_that_key() {
+    // the account is the person's, set per agent: one in the file would charge everybody to it
+    let charged = GOOD.replace(
+        "    workspace: { kind: workspace }\n",
+        "    workspace: { kind: workspace, account: acct-from-the-file }\n",
+    );
+    let text = lines(load(&with(&charged), &env())).join("\n");
+    assert!(
+        text.contains("provisioner.forms.workspace.account"),
+        "{text}"
+    );
+    assert!(!text.contains("acct-from-the-file"), "{text}");
+}
+
+#[test]
 fn a_kind_needs_its_form_and_unknown_things_are_refused() {
     let no_form = GOOD.replace("    workspace: { kind: workspace }\n", "");
     let text = lines(load(&with(&no_form), &env())).join("\n");

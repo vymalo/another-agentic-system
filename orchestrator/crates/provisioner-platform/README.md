@@ -18,13 +18,13 @@ sequenceDiagram
   participant O as Orchestrator
   participant P as PlatformProvisioner
   participant A as Platform API
-  O->>P: ensure_ready(owner, kind)
+  O->>P: ensure_ready(owner, kind, account)
   P->>A: GET /v1/owners/{owner}/agents/{name}
   alt 404
-    P->>A: PUT If-None-Match: * (the kind's form + name, owner, suspend false)
+    P->>A: PUT If-None-Match: * (the kind's form + name, owner, account, suspend false)
     A-->>P: 201, or 409 when another call made it first
   else suspended
-    P->>A: PUT If-Match: etag, suspend false
+    P->>A: PUT If-Match: etag (the whole form, account too), suspend false
     A-->>P: 200 (412: read again)
   end
   loop until ready or ready_timeout
@@ -69,8 +69,13 @@ stateDiagram-v2
   adapter cannot read, suspend or delete one, and a name held by another owner is
   `ProvisionError::Invalid`.
 * The agent's **form** (model, image, secrets) is the deployment's, given per kind to
-  `PlatformConfig::with_form`; the adapter adds `name`, `owner` and `suspend` and refuses a form
-  that sets them.
+  `PlatformConfig::with_form`; the adapter adds `name`, `owner`, `account` and `suspend` and refuses a form
+  that sets them (`BuildError::BadForm`).
+* **The account** (ANR-1321, [ADR 0108](../../../docs/decisions/0108-a-run-is-charged-to-the-identity-providers-sub-and-an-ended-run-is-still-answered-to-the-meter.md))
+  is the `orch_core::AccountId` the caller passes to `ensure_ready` and `suspend`, the two methods that write the agent
+  (`AgentService.spec.account`). It is not the owner key. Every create and replace sends it; an agent that is `ready` is only
+  read, so one made without it gets it at its next resume or suspend. It names a person: it is in the request body and in no
+  error and no `Debug`, and the crate logs nothing.
 * A wait that ends before `ready` is `NotReady { last }` (transient); a `Deleting` agent is
   `Deleting`. `Saving`, `Degraded` (applied, not ready: a rollout or a crash loop, which returns to
   `ready` by itself) and `Blocked` are polled until `ready_timeout`: a fresh database cluster or a
@@ -122,7 +127,9 @@ The message path of `orch-app` calls it: before a message to the agent the deplo
 written from the OpenAPI document (bearer, `ETag`, `If-None-Match: *`, `If-Match`, `404` for
 another owner). It is a stateful axum server and not a WireMock stub, because the cases make an
 agent and then read it back. It also checks: a wrong token makes nothing, an agent of another owner
-with the same name is never written, the form that is sent, a wait that times out, and an
+with the same name is never written, the form that is sent (the account beside `name`, `owner` and `suspend`, on a create,
+a suspend and a resume), a configured form with an `account` refused at build, the account in no error or `Debug` text even
+when the stand-in quotes the request back in its problem (create and replace, each status), a wait that times out, and an
 unreachable platform, and the platform's states: a `Blocked` agent (a store not ready) waited for until
 it is ready; `Blocked` for `NameConflict` and for `CNPGNotInstalled` refused at once (`Blocked`, a
 time bound and two reads); look-alike conditions (`RuntimeReady` `True` with `NameConflict`, `Ready`
