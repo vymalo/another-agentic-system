@@ -924,7 +924,7 @@ as one more turn after the history of every request of a run whose context names
 ### Status note, 2026-11-26: model pick, reasoning and the prompt statement on the real adam (adam-rs 9f90f1e6)
 
 The pin moves from `945208e` to `9f90f1e6`, 99 commits of adam-rs `main`, and it is deliberately **not** adam-rs's head:
-#399 moved adam's own workspace to Rust 1.98, while this repository is on 1.94.1. `9f90f1e6` is the newest commit of
+#399 moved adam's own workspace to Rust 1.98, while this repository was on 1.94.1 (`this repository moved to 1.98 on 2026-11-27, ANR-1328`). `9f90f1e6` is the newest commit of
 adam-rs `main` before that move whose `coder` image exists, so this bump keeps the toolchain where it is and the next bump
 is the one that raises it (ANR-983 and ANR-1001 build on this).
 

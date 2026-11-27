@@ -12,6 +12,10 @@ sidebarTitle: "0015 · Control plane, workers on adam-rs"
   is embedded as a library in an application, a local agent runs adam in process through `adam-engine` on adam's
   SQLite store, not `adam-store-postgres`, and its run state is adam's file, not `orch_agent_*` tables; in a server
   build decision 6 stands.
+  *Amended (2026-11-27):* the two workspaces no longer share a Rust floor by accident — the system's workspace moved
+  from 1.94 to **1.98** (ANR-1328, `orchestrator/Cargo.toml` and every workflow that installs a toolchain), because
+  adam-rs raised its own to 1.98 on 2026-11-25 (`278b6999`, adam#399). The sentence below about "both Rust 1.94" is
+  the planning note of 2026-09-29 and stays as written.
 
 ## Context
 
