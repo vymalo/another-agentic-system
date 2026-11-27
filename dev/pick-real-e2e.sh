@@ -1,8 +1,9 @@
 #!/usr/bin/env sh
-# System-level test of a message's model pick against the REAL adam agent (model-pick/v1, ADR 0086,
-# docs/api/model-pick-v1.md): the `chat` agent's live card lists the choices `MODEL_ALIASES_FILE` gives it, the agent
-# list carries them, a thread's default and a message's pick both reach the model the alias names, and a pick the card
-# does not offer is refused before anything is written or sent.
+# System-level test of a message's model pick AND reasoning level against the REAL adam agent (model-pick/v1 and
+# reasoning/v1, ADR 0086, docs/api/model-pick-v1.md): the `chat` agent's live card lists the choices
+# `MODEL_ALIASES_FILE` gives it and the reasoning levels it declares, the agent list carries them, a thread's default and
+# a message's pick both reach the model the alias names and the wire the level names, and a pick the card does not offer
+# is refused before anything is written or sent.
 #
 #   dev/pick-real-e2e.sh
 #
@@ -14,25 +15,40 @@
 # (compose.yaml `x-adam-image`). compose.yaml mounts dev/model-profiles.json as its `MODEL_ALIASES_FILE`, which declares
 # the chat's own model `mock-persona` and two aliases it offers, `mock-persona-one` and `mock-persona-two`, each with an
 # endpoint label ("One", "Two"); adam's card therefore lists model-pick/v1 with those two choices, and the agent list
-# carries them (the endpoint labels stay on the card: the list is the aliases and their labels). The scripted model (dev/wiremock/model, ours) answers each alias with "I answered as <model>."
-# (dev/wiremock/model/mappings/persona-picked*.json), so the journal of `mock-model` says which model each run asked
-# for.
+# carries them (the endpoint labels stay on the card: the list is the aliases and their labels). The same file declares
+# the chat's reasoning levels (`low`, `medium`, `high`) and its default (`medium`) on the `mock-persona` profile, which
+# adam sends to that model as `reasoning_effort`: its card therefore also lists reasoning/v1 with those levels and that
+# default, and a message may name one. The scripted model (dev/wiremock/model, ours) answers each alias with "I answered
+# as <model>." (dev/wiremock/model/mappings/persona-picked*.json), so the journal of `mock-model` says which model each
+# run asked for, and its request bodies say which level it was sent.
 #
 # It prints one ok or FAIL line per check and exits 1 if any failed:
-#   * GET /api/agents lists chat with pick = the two aliases, and no default (adam names none), while an agent with
-#     no profiles file (researcher) has no pick member at all;
+#   * the chat's live card lists reasoning/v1 once, with `params.efforts` low, medium and high (lowest first, as adam
+#     orders them) and `params.default` medium, while the researcher's card (no profiles file) lists none;
+#   * GET /api/agents lists chat with pick = the two aliases and those three levels, and no model default (adam names
+#     none), while an agent with no profiles file (researcher) has no pick member at all;
 #   * a first message that names nothing is answered by the chat's own model (mock-persona);
 #   * PATCH /api/threads/{id} makes `mock-persona-one` the thread's default: the next message names nothing and is
 #     answered by mock-persona-one, and the log's `user_message` holds it as the resolved pick;
 #   * a message that names `mock-persona-two` on that same thread wins over the thread's default: it is answered by
 #     mock-persona-two, and its `user_message` names it;
 #   * a message that names an alias the card does not offer is a 422 `model_not_offered` with the offered list, no
-#     thread is created, and the model was sent nothing for it.
+#     thread is created, and the model was sent nothing for it;
+#   * a fresh thread's first message naming `high` reaches mock-model as `"reasoning_effort": "high"` on its
+#     `mock-persona` request, and the log's `user_message` holds `{"reasoningEffort":"high"}`;
+#   * PATCH /api/threads/{id} with `reasoningEffort: low` makes the thread's default, the next message naming nothing is
+#     sent as `"reasoning_effort": "low"`, and its `user_message` holds `{"reasoningEffort":"low"}`;
+#   * a message naming `max`, which the card does not offer, is a 422 `reasoning_not_offered` with the offered levels,
+#     no thread is created, and the model was sent nothing for it.
 # Exit status 0 when every check passed.
 #
 # Environment (defaults match compose.yaml on one machine):
 #   BASE_URL        http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge`: oauth2-proxy in front of the API (ADR 0033)
 #   AUTH_EMAIL      dev@example.com, the user: a token of the mock issuer (dev/auth-header.sh)
+#   CHAT_URL        http://127.0.0.1:${CHAT_PORT:-8097}        the chat agent (its live card)
+#   CHAT_TOKEN      dev-chat-token        CHAT_A2A_TOKEN of the chat service
+#   RESEARCHER_URL  http://127.0.0.1:${RESEARCHER_PORT:-8098} the agent whose card lists no reasoning/v1
+#   RESEARCHER_TOKEN dev-researcher-token RESEARCHER_A2A_TOKEN of the researcher
 #   MOCK_MODEL_URL  http://127.0.0.1:${MOCK_MODEL_PORT:-8094}   the scripted model (WireMock admin API)
 #   TIMEOUT         120    seconds to wait for a thread to stop
 #
@@ -48,7 +64,15 @@ email=${AUTH_EMAIL:-dev@example.com}
 id_header=$(sh "$(dirname "$0")/auth-header.sh" "$email")
 model=${MOCK_MODEL_URL:-http://127.0.0.1:${MOCK_MODEL_PORT:-8094}}
 model=${model%/}
+chated=${CHAT_URL:-http://127.0.0.1:${CHAT_PORT:-8097}}
+chated=${chated%/}
+chat_token=${CHAT_TOKEN:-dev-chat-token}
+researched=${RESEARCHER_URL:-http://127.0.0.1:${RESEARCHER_PORT:-8098}}
+researched=${researched%/}
+researcher_token=${RESEARCHER_TOKEN:-dev-researcher-token}
 timeout=${TIMEOUT:-120}
+
+reasoning_uri=https://agents.vymalo.com/a2a/extensions/reasoning/v1
 
 fail=0
 ok() { echo "ok   $1"; }
@@ -69,6 +93,10 @@ api() { # api METHOD PATH: the body on stdout, non-zero when the status is not 2
 }
 
 uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+
+card() { # card URL TOKEN: the agent's card, as its own service serves it
+  curl --fail-with-body -sS --max-time 30 "$1/.well-known/agent-card.json" -H "authorization: Bearer $2"
+}
 
 # run_agui AGENT THREAD TEXT [PROPS]: one run (one message) on THREAD, to its end, with forwardedProps PROPS ({ } by default).
 # Prints the HTTP status; the body is $tmp/run.out (the stream, or the problem).
@@ -103,6 +131,21 @@ models_sent() {
      | ($j.model // "-") | select(startswith("mock-persona"))] | reverse | .[]' 2>/dev/null || true
 }
 
+# bodies_of TEXT MODEL: the body of every model request whose messages hold TEXT and whose model is MODEL, one JSON
+# object a line, oldest first (the title and description tasks use the same mock with models of their own, and their
+# prompts hold the conversation too, so the model filters them out).
+bodies_of() {
+  curl -s --max-time 30 "$model/__admin/requests" | jq -c --arg t "$1" --arg m "$2" '
+    [.requests[] | (.request.body | fromjson? // {})
+     | select(((.messages // []) | tostring) | contains($t))
+     | select((.model // "-") == $m)] | reverse | .[]' 2>/dev/null || true
+}
+
+# effort_of REQUEST: the `reasoning_effort` adam sent with it ("-" when it sent none).
+effort_of() {
+  printf '%s' "$1" | jq -r '.reasoning_effort // "-"' 2>/dev/null || echo "-"
+}
+
 # last_words THREAD: the detail of the thread's last completed agent status ("" when none).
 last_words() {
   api GET "/api/threads/$1/export" 2>/dev/null \
@@ -127,13 +170,41 @@ _code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X DELETE "$model/_
 if [ "$_code" = 200 ]; then ok "journal reset: $model"; else bad "journal reset: $model answered HTTP $_code"; fi
 nonce=$(uuid)
 
+# --- the cards ---------------------------------------------------------------------------------------------------------
+echo "== the chat's live card lists reasoning/v1 with the levels and the default of dev/model-profiles.json"
+chat_card=$(card "$chated" "$chat_token" 2>"$tmp/err" || true)
+if [ -z "$chat_card" ]; then
+  bad "the chat's card was not read from $chated/.well-known/agent-card.json: $(cat "$tmp/err")"
+else
+  ok "the chat's card was read"
+fi
+expect "the chat's card lists reasoning/v1 exactly once" \
+  "$(printf '%s' "$chat_card" | jq -r --arg u "$reasoning_uri" '[.. | objects | select((.uri? // "") == $u)] | length')" \
+  "1"
+expect "its params.efforts are the three levels of the mock-persona profile, lowest first" \
+  "$(printf '%s' "$chat_card" | jq -c --arg u "$reasoning_uri" '[.. | objects | select((.uri? // "") == $u) | (.params.efforts? // [])] | first // []')" \
+  '["low","medium","high"]'
+expect "its params.default is the profile's own level, medium" \
+  "$(printf '%s' "$chat_card" | jq -r --arg u "$reasoning_uri" '[.. | objects | select((.uri? // "") == $u) | (.params.default? // "-")] | first // "-"')" \
+  "medium"
+echo "== an agent whose card declares no levels"
+researcher_card=$(card "$researched" "$researcher_token" 2>"$tmp/err" || true)
+if [ -z "$researcher_card" ]; then
+  bad "the researcher's card was not read from $researched/.well-known/agent-card.json: $(cat "$tmp/err")"
+else
+  ok "the researcher's card was read"
+fi
+expect "the researcher's card does not list reasoning/v1" \
+  "$(printf '%s' "$researcher_card" | jq -r --arg u "$reasoning_uri" '[.. | objects | select((.uri? // "") == $u)] | length')" \
+  "0"
+
 # --- what the web reads ------------------------------------------------------------------------------------------------
-echo "== the agent list carries the chat's choices from its live card"
+echo "== the agent list carries the chat's choices and levels from its live card"
 api GET /api/agents >"$tmp/agents.json" 2>/dev/null || echo '[]' >"$tmp/agents.json"
-expect "chat: the two aliases of MODEL_ALIASES_FILE, and no default (adam names none)" \
-  "$(jq -cS '[.[] | select(.id == "chat") | .pick][0]' "$tmp/agents.json")" \
-  '{"models":[{"id":"mock-persona-one","label":"mock-persona-one"},{"id":"mock-persona-two","label":"mock-persona-two"}]}'
-expect "researcher: it sets no MODEL_ALIASES_FILE, so its card lists no model-pick/v1 and the web draws no chip" \
+expect "chat: its whole pick — the two aliases of MODEL_ALIASES_FILE, no model default (adam names none), and the levels and default of the mock-persona profile" \
+  "$(jq -cS '[.[] | select(.id == "chat") | .pick] | first' "$tmp/agents.json")" \
+  '{"effortDefault":"medium","efforts":["low","medium","high"],"models":[{"id":"mock-persona-one","label":"mock-persona-one"},{"id":"mock-persona-two","label":"mock-persona-two"}]}'
+expect "researcher: it sets no MODEL_ALIASES_FILE, so its card lists neither extension and the web draws no chip" \
   "$(jq -r '[.[] | select(.id == "researcher")][0] | has("pick")' "$tmp/agents.json")" "false"
 
 # --- a first message names nothing: the chat's own model answers ------------------------------------------------------
@@ -183,5 +254,49 @@ expect "it carries the aliases the card does offer" "$(jq -cS '.offered // []' "
 expect "no thread was created" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$base/api/threads/$bad_thread" -H "$id_header")" "404"
 expect "the model was sent nothing for the refused pick" \
   "$(models_sent "$nonce" | grep -c 'mock-persona-three' || true)" "0"
+
+# --- a reasoning level the message names -------------------------------------------------------------------------------
+echo "== a message's reasoning level reaches the model"
+high_nonce=$(uuid)
+high_thread=$(uuid)
+code=$(run_agui chat "$high_thread" "think this through ($high_nonce)" '{"vymalo.reasoningEffort":"high"}')
+expect "a first message naming high answers 200" "$code" "200"
+expect "its thread ends done" "$(wait_state "$high_thread")" "done"
+expect "the model was called for that turn" \
+  "$([ -n "$(bodies_of "$high_nonce" mock-persona | head -1)" ] && echo yes || echo no)" "yes"
+expect "its request carries the level on the wire: reasoning_effort high" \
+  "$(effort_of "$(bodies_of "$high_nonce" mock-persona | head -1)")" "high"
+expect "the log: the message's pick is the level it named" "$(picks "$high_thread")" '[{"reasoningEffort":"high"}]'
+
+# --- the thread's default level -----------------------------------------------------------------------------------------
+echo "== the thread's default reasoning level reaches the model, and the log"
+code=$(curl -sS -o "$tmp/patch-effort.out" -w '%{http_code}' --max-time 60 -X PATCH "$base/api/threads/$high_thread" \
+  -H "$id_header" -H 'content-type: application/json' -d '{"reasoningEffort":"low"}')
+expect "PATCH /api/threads/{id} naming low answers 200" "$code" "200"
+expect "the thread's default level is what the PATCH named" "$(jq -r '.reasoningEffort // "-"' "$tmp/patch-effort.out")" "low"
+
+low_nonce=$(uuid)
+code=$(run_agui chat "$high_thread" "and now the thread's level ($low_nonce)")
+expect "a second message that names no level answers 200" "$code" "200"
+expect "the thread ends done again" "$(wait_state "$high_thread")" "done"
+expect "the model was called for that turn" \
+  "$([ -n "$(bodies_of "$low_nonce" mock-persona | head -1)" ] && echo yes || echo no)" "yes"
+expect "its request carries the thread's default: reasoning_effort low" \
+  "$(effort_of "$(bodies_of "$low_nonce" mock-persona | head -1)")" "low"
+expect "the log: the second message's pick is the thread's default level" "$(picks "$high_thread")" \
+  '[{"reasoningEffort":"high"},{"reasoningEffort":"low"}]'
+
+# --- a level the card does not offer ------------------------------------------------------------------------------------
+echo "== a reasoning level the card does not offer is refused, with the offered levels"
+max_nonce=$(uuid)
+max_thread=$(uuid)
+code=$(run_agui chat "$max_thread" "think as hard as you can ($max_nonce)" '{"vymalo.reasoningEffort":"max"}')
+expect "a level the card does not offer is a 422" "$code" "422"
+expect "its code is reasoning_not_offered" "$(jq -r '.code // ""' "$tmp/run.out")" "reasoning_not_offered"
+expect "it carries the levels the card does offer" "$(jq -cS '.offered // []' "$tmp/run.out")" '["low","medium","high"]'
+expect "no thread was created" \
+  "$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$base/api/threads/$max_thread" -H "$id_header")" "404"
+expect "the model was sent nothing for the refused level" \
+  "$(models_sent "$max_nonce" | wc -l | tr -d ' ')" "0"
 
 if [ "$fail" -eq 0 ]; then echo "pick (real adam) e2e passed"; else echo "pick (real adam) e2e FAILED"; exit 1; fi

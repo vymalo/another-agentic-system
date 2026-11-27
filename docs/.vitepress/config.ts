@@ -1,17 +1,21 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { slug as githubSlug } from "github-slugger";
 import { defineMd3Config } from "@vaam-apps/vitepress-md3/config";
 import { useSidebar } from "vitepress-openapi";
 import llmstxt from "vitepress-plugin-llms";
 import { groupIconMdPlugin, groupIconVitePlugin } from "vitepress-plugin-group-icons";
-import { DEFAULT_BASE } from "./openapi/shared";
+import { DEFAULT_BASE, rewriteDocLinks } from "./openapi/shared";
 import { loadSpec } from "./openapi/spec";
 import { llmsSidebar } from "./llms";
 import { inDepth } from "./theme/in-depth";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+// Files the build writes into the site beside the pages (buildEnd below), so docs/public/ has no copy of them: a relative link
+// to one is served, not the file on GitHub. The path is relative to docs/.
+const GENERATED_SERVED = new Set(["api/chat-api.yaml"]);
 
 // The label of a page in the sidebar: `sidebarTitle` of its front matter if it has one, else its first heading,
 // else the fallback. VitePress 1.6.4 has no key for it (verified 2026-11-27 in vitepress/dist/client/theme-default/
@@ -65,7 +69,7 @@ const chatApiOperations: SidebarItem = {
 // Reference > Extensions: the A2A extensions and the other contracts a tool server or an agent implements.
 const extensionPages = [
   "extensions", "access-tier-v1", "agent-mode-v1", "child-sessions-v1", "commands-v1", "locale-v1", "mentions-v1", "model-pick-v1", "model-relay-v1",
-  "network-tier-v1", "signed-tool-requests-v1", "steer-v1", "steps-v1", "text-stream-v1", "thread-tools-v1", "trusted-components-v1",
+  "network-tier-v1", "signed-tool-requests-v1", "signed-turns-v1", "steer-v1", "steps-v1", "text-stream-v1", "thread-tools-v1", "trusted-components-v1",
   "ui-catalog-v1", "ui-catalog-v2", "uploads-v1", "usage-v1",
 ].map((f) => page(`api/${f}`));
 // Reference > Configuration: what an operator sets or a deployment must honour.
@@ -92,7 +96,7 @@ const sidebar = [
       page("mvp", "MVP and build order"),
       page("lessons-from-agent-canvas", "Lessons as requirements"),
       page("open-questions", "Open questions"),
-      group("Plans and checks", [...pages("plans"), page("vendor-check-2026-11-24", "Vendor check")]),
+      group("Plans and checks", [page("vendor-check-2026-11-24", "Vendor check")]),
     ],
   },
   { text: "Get started", items: [page("getting-started", "Run it locally")] },
@@ -142,14 +146,62 @@ export function escapeUnknownTags(md: any) {
   }
 }
 
+// A relative link that leaves docs/ (or names a file of docs/ that is not a page: json, yaml, a page of examples/) is
+// the file on GitHub, not a page of the site; a link to a folder's README.md is that folder's index page. tools/docs-check
+// resolves the links as written, against the repository.
+const REPO = "https://github.com/vymalo/another-agentic-system";
+export function repoLinks(md: any) {
+  md.core.ruler.push("repo-links", (state: any) => {
+    // Dynamic routes (api/operations/) have no relativePath and no relative links; one that has a link to resolve fails.
+    const rel: string | undefined = state.env?.relativePath;
+    for (const block of state.tokens)
+      for (const t of block.children ?? [])
+        if (t.type === "link_open") {
+          const href = t.attrGet("href");
+          if (!href || href.startsWith("#") || href.startsWith("/") || /^[a-z][a-z0-9+.-]*:/i.test(href)) continue;
+          if (!rel) throw new Error(`repoLinks: ${href} on a page with no relativePath cannot be resolved`);
+          const [, path, rest = ""] = href.match(/^([^#?]*)(.*)$/)!;
+          const resolved = posix.normalize(posix.join(posix.dirname(rel), decodeURI(path)));
+          const outside = resolved === ".." || resolved.startsWith("../");
+          const ext = posix.extname(resolved);
+          const isFile = ext !== "" && !path.endsWith("/");
+          const inExamples = /(^|\/)examples(\/|$)/.test(resolved);
+          const served = !outside && (GENERATED_SERVED.has(resolved) || existsSync(join(root, "public", resolved)));
+          if (outside || inExamples || (isFile && ext !== ".md" && !served)) {
+            const repoPath = (outside ? posix.normalize(resolved.replace(/^\.\.\//, "")) : `docs/${resolved}`).replace(/\/$/, "");
+            if (repoPath === ".." || repoPath.startsWith("../")) throw new Error(`repoLinks: ${href} in ${rel} leaves the repository`);
+            if (repoPath === "" || repoPath === ".") {
+              t.attrSet("href", `${REPO}/tree/main${rest}`);
+              continue;
+            }
+            let dir = !isFile;
+            try {
+              dir = statSync(join(root, "..", repoPath)).isDirectory();
+            } catch {
+              // not on disk (a generated file): the extension's guess stands
+            }
+            t.attrSet("href", `${REPO}/${dir ? "tree" : "blob"}/main/${encodeURI(repoPath)}${rest}`);
+            continue;
+          }
+          t.attrSet("href", href.replace(/(^|\/)README\.md(?=#|\?|$)/, "$1index.md"));
+        }
+  });
+}
+
 export default defineMd3Config({
   title: "another-agentic-system",
   description: "A protocol-agnostic orchestration layer for multi-agent work.",
   base: process.env.DOCS_BASE ?? DEFAULT_BASE,
   cleanUrls: true,
   rewrites: { "api/README.md": "api/index.md" },
-  // Pages link to source files outside docs/ (checked by tools/docs-check); every other dead link fails the build.
-  ignoreDeadLinks: [/^\.\/(\.\.\/)+/, /(^|\/)examples\//],
+  // The chat API's machine-readable form, llms.txt links it: api/chat-api.yaml with its relative links rewritten as the pages
+  // of the API are (rewriteDocLinks), written into the built site. Nothing is committed under docs/public/, so it cannot go stale;
+  // check-api-pages.mjs compares the built file with the source.
+  buildEnd(siteConfig) {
+    const out = join(siteConfig.outDir, "api", "chat-api.yaml");
+    mkdirSync(dirname(out), { recursive: true });
+    writeFileSync(out, rewriteDocLinks(readFileSync(join(root, "api", "chat-api.yaml"), "utf8"), siteConfig.site.base));
+  },
   // Each operation and tag page has its own title, from the route's pageTitle.
   transformPageData(pageData) {
     const title = pageData.params?.pageTitle;
@@ -170,7 +222,7 @@ export default defineMd3Config({
     socialLinks: [{ icon: "github", link: "https://github.com/vymalo/another-agentic-system" }],
   },
   // Heading ids are GitHub's (github-slugger), so a link to #a-heading works on the site and on github.com (STRUCTURE.md). markdown-it-anchor adds -1, -2 to a repeat, as GitHub does.
-  markdown: { anchor: { slugify: githubSlug }, headers: { slugify: githubSlug }, toc: { slugify: githubSlug }, config: (md) => { md.use(inDepth); escapeUnknownTags(md); md.use(groupIconMdPlugin); }, attrs: { disable: true } },
+  markdown: { anchor: { slugify: githubSlug }, headers: { slugify: githubSlug }, toc: { slugify: githubSlug }, config: (md) => { md.use(inDepth); escapeUnknownTags(md); md.use(groupIconMdPlugin); repoLinks(md); }, attrs: { disable: true } },
   // llms.txt, llms-full.txt and a .md per page, for agents that read the docs (ANR-1088, STRUCTURE.md).
   vite: {
     plugins: [

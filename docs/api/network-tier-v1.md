@@ -1,12 +1,14 @@
 # A2A extension: network tier (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/network-tier/v1`
-- **Status:** **proposed (2026-10-11), at the owner's request; nothing is built.** The direction is the owner's (the quote below). Every name, status code and default
-  here is proposed, for the owner to confirm.
+- **Status:** **accepted (2026-11-26)**, with the ADR's two amendments; nothing is built. Proposed 2026-10-11, at the owner's request. Acceptance covers the ADR's
+  decisions 1 to 10 and the three tier words `offline`, `allow-list` and `open`; the status codes, the error texts and the
+  configuration keys here stay proposed, for the owner to confirm. The amendments:
+  **`allow-list` is the deployment's list, never the person's**, and **a tier the agent cannot enforce is not listed on its card**.
 - **Decided in:** [ADR 0062](../decisions/0062-the-person-picks-a-network-tier-for-each-message-the-agent-keeps-to-it.md); the optional-extension pattern is
   [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md). It is the sibling of the access tier ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), [`access-tier-v1.md`](access-tier-v1.md), *proposed; the
   orchestrator and the web are built against mocks*): the same shape, a different axis.
-- **Defined by:** the orchestrator. **Used by:** agents that run code or fetch from a network they control (adam-coder and `adam-agent` first, whose run pods can be limited;
+- **Defined by:** the orchestrator. **Used by:** agents that run code or fetch from a network they control (adam-coder and `adam-agent` first, whose run pods can be limited — and only where an egress proxy makes the tier a boundary, or they list no tier at all;
   their side is a pull request in adam-rs).
 
 ## Purpose
@@ -25,7 +27,7 @@ An agent whose card does not list the extension is unchanged: the same request a
 
 | Part | Does |
 |---|---|
-| **Agent** | Lists the extension with the tiers it honours and its default. Keeps what it runs to the tier a message names, says which tier it worked under, and says which tier a failed step needed. Decides alone what its own children may reach. |
+| **Agent** | Lists the extension with the tiers it **enforces** and its default. Keeps what it runs to the tier a message names, says which tier it worked under, and says which tier a failed step needed. Decides alone what its own children may reach. |
 | **Orchestrator** | Reads the card live. Checks the shape, the person's role cap and that the live card honours the tier. Logs the choice on the message, activates the extension and sends the choice on that message only. Sends nothing to any other task. Enforces nothing. |
 | **Web** | Shows a chip in the composer, only for an agent whose card lists the extension. Sends the choice with each message once the person has picked one. |
 
@@ -61,7 +63,7 @@ stateDiagram-v2
   [*] --> Hidden: the card does not list the extension, or lists it badly
   [*] --> Offered: the card lists it with tiers and a default
   Offered --> Unpicked: the person picks nothing
-  Offered --> Picked: the person picks a tier the agent honours and the role allows
+  Offered --> Picked: the person picks a tier the agent enforces and the role allows
   Unpicked --> PlainSent: no tier named, the extension is not activated, the agent works under its default
   Picked --> Refused: malformed (400), above the cap (422), not honoured by the live card (422), card unreadable (503)
   Picked --> Recorded: user_message.networkTier
@@ -83,13 +85,15 @@ stateDiagram-v2
 ```json
 {"uri": "https://agents.vymalo.com/a2a/extensions/network-tier/v1",
  "description": "Keeps what it runs to the network tier the person picks for each message.",
- "required": false,
- "params": {"tiers": ["offline", "allow-list", "open"], "default": "open"}}
+ "required": false, "params": {"tiers": ["offline", "allow-list", "open"], "default": "open"}}
 ```
+
+That card is the card of an agent **behind the egress proxy**, which can keep all three; `tiers` below says what an agent
+that cannot does.
 
 | Param | Meaning |
 |---|---|
-| `tiers` | Required. A non-empty list of the tiers the agent honours, each of the three at most once. An agent that cannot open the network lists `["offline", "allow-list"]`. |
+| `tiers` | Required. A non-empty list of the tiers the agent **enforces**, each of the three at most once. A tier the agent cannot enforce is **not listed** (the owner's amendment of 2026-11-26). Two consequences, said outright: an agent that can cut the network but cannot apply the deployment's list lists `["offline", "open"]`, not `["offline", "allow-list"]`; and an agent that can keep **no** tier — a laptop with no egress proxy, where `open` would also reach private ranges and the metadata address, refused at every tier — lists **no tier at all**, which means it does not list the extension and gets plain A2A with no chip, since `tiers` must be non-empty. |
 | `default` | Required. One of `tiers`: what the agent works under when no message names a tier. adam's is `open`, which is what its run pods allow today. A deployment may set it lower. |
 
 `required` stays `false`. The orchestrator reads the card on **every send**, never caches it, and fails closed: the extension is used when the URI is listed exactly **and** `params` are well-formed.
@@ -198,7 +202,7 @@ shows the tier it was sent under. No screenshot yet: the web's own screens (`pnp
 
 ## 9. Security
 
-- **A tier is a promise by the agent, not a boundary the orchestrator can check.** What makes it a boundary is where the agent runs: [adam's way](#adams-way-a-sketch) puts the network between the agent's code
+- **A listed tier is a boundary of the agent's deployment, not a promise — and still not something the orchestrator can check.** The card lists only tiers the agent enforces (the owner's amendment of 2026-11-26), so a tier it cannot keep is never offered; what the orchestrator cannot see is an agent that lists the extension and works above its tier. What makes it a boundary is where the agent runs: [adam's way](#adams-way-a-sketch) puts the network between the agent's code
   and the world. A deployment that needs a boundary gives the agent's pods no route.
 - **A tier only narrows.** It never grants what the deployment's network policy, the credentials or the forge's own rules withheld. The metadata address and private ranges are refused at every tier.
 - **Only the person's message sets it** ([section 4](#4-the-message), rule 4). The MCP surface, webhooks and timers send none.

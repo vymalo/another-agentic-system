@@ -9,6 +9,8 @@ sidebarTitle: "0085 · Interface language as a hint"
   **Amended 2026-11-22, the same day** (the coordinator's ruling): decision 4 — the hint **is logged** on the `user_message`
   and is not kept out of the log, because the log is the state and a hint that changes the agent's words must be replayable;
   the projection still shows nothing of it. The rest of the record stands.
+  **Amended 2026-11-27:** "no agent lists the extension yet" is out of date: adam lists `locale/v1` whenever `DEFAULT_LOCALE` is set, which
+  the stack's `chat` does (`compose.yaml`; `dev/locale-real-e2e.sh`).
 - **Contract:** [`docs/api/locale-v1.md`](../api/locale-v1.md). **Pattern:** [ADR 0008](0008-platform-integration-via-a2a-extension.md).
   **The extension this one is deliberately *not* shaped like:** [ADR 0061](0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md).
 
