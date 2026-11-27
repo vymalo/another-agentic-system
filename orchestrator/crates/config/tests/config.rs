@@ -26,8 +26,33 @@ fn documented_example() -> String {
     )
     .unwrap();
     let after = doc.split("## An example").nth(1).unwrap();
-    let block = after.split("```yaml\n").nth(1).unwrap();
-    block.split("```").next().unwrap().to_owned()
+    yaml_fences(after).into_iter().next().unwrap()
+}
+
+/// The bodies of the `yaml` fences of a Markdown text, in order. A fence may be indented and its
+/// info string is `yaml` alone or `yaml` and a space and a title (`yaml [orchestrator.yaml]`).
+fn yaml_fences(markdown: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut open: Option<String> = None;
+    for line in markdown.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        match open.as_mut() {
+            Some(body) if trimmed.starts_with("```") => {
+                blocks.push(std::mem::take(body));
+                open = None;
+            }
+            Some(body) => body.push_str(line),
+            None => {
+                let is_yaml = trimmed
+                    .strip_prefix("```yaml")
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\r', '\n']));
+                if is_yaml {
+                    open = Some(String::new());
+                }
+            }
+        }
+    }
+    blocks
 }
 
 #[test]
@@ -1893,9 +1918,8 @@ fn the_documented_dpop_example_is_valid() {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/api/config.md"),
     )
     .unwrap();
-    let block = doc
-        .split("```yaml\n")
-        .filter_map(|b| b.split("```").next())
+    let block = yaml_fences(&doc)
+        .into_iter()
         .find(|b| b.contains("publicOrigins"))
         .expect("config.md has a block that shows auth.dpop");
     let valid = load(&format!("{MINIMAL}{block}"), &minimal_env()).unwrap();
