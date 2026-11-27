@@ -14,6 +14,8 @@ webhooks, …). The way to get that without rewriting the core per protocol is
 Adding a protocol means adding an adapter crate. The state machine does not
 change.
 
+::: in-depth What is built, partly built and planned: the status note
+
 > **What is built.** Facts in this page are marked **Built** (present in
 > `orchestrator/` and checked against the code on 2026-09-30) or **Planned**
 > (design only). Today: the pure core, the Postgres store, the durable dispatcher,
@@ -36,6 +38,8 @@ change.
 > [`mvp.md`](mvp.md#the-slices-of-steps-2-3-and-6). Every passage below marked **Planned** describes that
 > design; none of it is in the code.
 
+:::
+
 ## It is symmetric
 
 The orchestrator is meant to be simultaneously a server and a client of each
@@ -43,12 +47,14 @@ protocol:
 
 | Protocol | As a server (input) | As a client (output) | Status |
 |---|---|---|---|
-| A2A | Other agents hand it jobs | Delegates each thread to a configured A2A agent, whatever hosts it | Client **built** (`orch-agent-a2a`); server **planned** (`orch-surface-a2a`, ADR 0012) |
-| MCP | Claude Code, opencode or any MCP client can `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job`, `list_agents` | Calls tools: GitHub, docs, search, … | Server: **built** (`orch-surface-mcp`: `start_job`, `get_job`, `wait_for_job` with progress notifications, `answer`, `cancel_job` and `list_agents`, over streamable HTTP, stateless, with bearer tokens, going straight to `App` and not through the inbox, [ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)); client: the port (`ToolServerClient`) and its MCP implementation (`orch-tools-mcp`) are **built** ([ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md)); the relay that calls the servers a person attached, for the agent, on the thread-tools endpoint is **not built yet** |
-| AG-UI | The web, or any AG-UI client, `POST`s a `RunAgentInput` (a message, an answer by `resume`, an A2UI action) and attaches to a thread's connect stream | Streams the event log as AG-UI events: text, activities (status, artifacts, A2UI surfaces), interrupts, subagent invocations, run outcomes | **Built** (`orch-surface-agui` over `orch-agui-projection` and `orch-agui-proto`; the default surface). See [Live updates](#live-updates) |
-| Chat API (legacy) | Old clients `POST` messages (`createThread`, `postMessage`) | Served the log as its own `Event` JSON over SSE (`listEvents`, `streamEvents`) | **Removed** on 2026-09-30 (`orch-surface-chat-api` and its feature are gone; naming `chat-api` in `ORCH_SURFACES` is a startup error). AG-UI is the one user-facing door |
-| Webhooks | CI results: GitHub (HMAC) and a generic signed shape, through the inbox; Slack events are not designed yet | Slack posts, outgoing webhooks | **Built** (`orch-surface-webhook`): the generic signed shape (`POST /webhooks/ci`, MVP slice 6) and the GitHub adapter (`POST /webhooks/github`, slice 9) ([ADR 0017](decisions/0017-ci-results-by-webhook.md), [`api/webhooks.md`](api/webhooks.md)). The route verifies the signature, calls `App::receive`, which stores the report, and the `InboxWorker` applies it |
-| Timers | Scheduled events: the CI and verifier deadlines first; reminders and cron later | Schedules new timers (`Schedule`) | **Built** (MVP slice 5): timers are inbox rows, armed by `Schedule` in the commit that asks for it and applied by the `InboxWorker` as `TimerFired` ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)). Only the CI and verifier deadlines exist; reminders and cron are not designed |
+| A2A | Other agents hand it jobs | Delegates each thread to a configured A2A agent, whatever hosts it | ⚠️ partial · Client **built** (`orch-agent-a2a`); server **planned** (`orch-surface-a2a`, ADR 0012) |
+| MCP | Claude Code, opencode or any MCP client can `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job`, `list_agents` | Calls tools: GitHub, docs, search, … | ⚠️ partial · Server: **built** (`orch-surface-mcp`: `start_job`, `get_job`, `wait_for_job` with progress notifications, `answer`, `cancel_job` and `list_agents`, over streamable HTTP, stateless, with bearer tokens, going straight to `App` and not through the inbox, [ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)); client: the port (`ToolServerClient`) and its MCP implementation (`orch-tools-mcp`) are **built** ([ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md)); the relay that calls the servers a person attached, for the agent, on the thread-tools endpoint is **not built yet** |
+| AG-UI | The web, or any AG-UI client, `POST`s a `RunAgentInput` (a message, an answer by `resume`, an A2UI action) and attaches to a thread's connect stream | Streams the event log as AG-UI events: text, activities (status, artifacts, A2UI surfaces), interrupts, subagent invocations, run outcomes | ✅ built · **Built** (`orch-surface-agui` over `orch-agui-projection` and `orch-agui-proto`; the default surface). See [Live updates](#live-updates) |
+| Chat API (legacy) | Old clients `POST` messages (`createThread`, `postMessage`) | Served the log as its own `Event` JSON over SSE (`listEvents`, `streamEvents`) | ➖ retired · **Removed** on 2026-09-30 (`orch-surface-chat-api` and its feature are gone; naming `chat-api` in `ORCH_SURFACES` is a startup error). AG-UI is the one user-facing door |
+| Webhooks | CI results: GitHub (HMAC) and a generic signed shape, through the inbox; Slack events are not designed yet | Slack posts, outgoing webhooks | ✅ built · **Built** (`orch-surface-webhook`): the generic signed shape (`POST /webhooks/ci`, MVP slice 6) and the GitHub adapter (`POST /webhooks/github`, slice 9) ([ADR 0017](decisions/0017-ci-results-by-webhook.md), [`api/webhooks.md`](api/webhooks.md)). The route verifies the signature, calls `App::receive`, which stores the report, and the `InboxWorker` applies it |
+| Timers | Scheduled events: the CI and verifier deadlines first; reminders and cron later | Schedules new timers (`Schedule`) | ✅ built · **Built** (MVP slice 5): timers are inbox rows, armed by `Schedule` in the commit that asks for it and applied by the `InboxWorker` as `TimerFired` ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)). Only the CI and verifier deadlines exist; reminders and cron are not designed |
+
+::: in-depth The mounted surfaces, and the event origin and reply (design)
 
 The chat's user-facing protocol is **AG-UI 1.0**, a pure projection of the event log, with a
 small REST resource API beside it (agents, threads, cancel, health: always mounted) ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md),
@@ -66,6 +72,8 @@ gets MCP progress notifications; one started in the chat gets chat messages. The
 older logs read as before; [ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)). Today every log event
 records an `Actor` (`user`, `agent` or `system`), and the only reply channel is the thread's own
 event log, which every surface reads.
+
+:::
 
 ## Crate layout
 
@@ -218,6 +226,8 @@ crate and the test crates.
 depend on each other ([ADR 0076](decisions/0076-the-orchestrator-as-a-library-in-an-application.md),
 decision 4).
 
+::: in-depth The two roots, how an application embeds it and what is not built
+
 | Root | What it is | What it chooses |
 |---|---|---|
 | `orchestrator` (`orchestrator/bin/orchestrator`) | **the server**: flags, `ORCH_CONFIG_FILE` and the environment over it, `AGENTS_FILE`, the surfaces, `/healthz` and `/readyz`, shutdown | `PgStore` and `PgWakeup` on Postgres, `A2aAgentClient` (and, behind `agent-local`, `ByTransport`), `PlatformRegistry` when `AGENT_REGISTRY_URL` is set, the authenticator the configuration names, the artifact stores, the credential broker and the user tool servers |
@@ -248,7 +258,11 @@ agent — CI's `embed` job runs it and fails when the crate's normal tree holds 
 What neither root does yet: the local agent adapter that runs `adam-engine` on adam's SQLite store (E4)
 and the compile check of the embedded set for iOS, Android, macOS and Linux (E5) are **not built**.
 
+:::
+
 Rules the graph enforces, each checkable in the manifests:
+
+::: in-depth The rules the dependency graph enforces
 
 - **`orch-core` and `orch-agui-projection` are pure.** Neither depends on `tokio`, `tokio-postgres`, `axum` or an
   HTTP client, so the compiler keeps the state machine and the AG-UI view a function of their
@@ -274,46 +288,52 @@ Rules the graph enforces, each checkable in the manifests:
 - **`orch-agui-proto` depends on nothing of ours**, so it can be checked against the vendored
   AG-UI schema and moved on its own.
 
+:::
+
+::: in-depth The crates, one row each: role and status
+
 | Crate (directory) | Role | Status |
 |---|---|---|
-| `orch-core` (`crates/core`) | Contract types and `transition`; and, pure, what a usage event changes in the ledger of the people (`usage_change`, `UsageRow::fold`, `UsageMonth`, `UsageMonthTotals`) and what a month costs (`PriceTable`, `price_month`, integers in millionths of the currency unit, [ADR 0065](decisions/0065-a-usage-ledger-per-person.md)) | **Built** |
-| `orch-ports` (`crates/ports`) | `ArtifactStore` (where the files agents hand over are kept, by the hash of their content; the log keeps the reference, [ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md); and, optional with defaults that say "not supported" so that no implementer breaks, `can_presign`, `presign_put` (a URL for one `PUT` of one key, with the headers to send), `presign_get` (a URL for one `GET` of one key whose answer carries the signed `response-*` overrides: the redirect of a download), `head` (size, type, name, stored checksum, arrival time, without reading the object) and `read_prefix` (the first bytes), [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md); the testkit macros `artifact_presign_conformance!` and `artifact_no_presign_conformance!`, and `MemoryArtifacts::presigning()` that plays a bucket), `ThreadStore` (with the provided `key_recorded(thread, key)`: whether a request's idempotency key is in the log already, so a replay can be told without writing; the default says no, the memory, SQLite and Postgres stores override it), `Wakeup` (hints, and live text that is never stored, [ADR 0027](decisions/0027-live-text-relayed-not-stored.md)), `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `ToolServerClient` (an MCP server as the orchestrator calls it: list the tools, call one with a timeout and a `_meta`, the result cut at 256 KiB, its text untrusted, its credentials `ToolSecret`s that never print, [ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md)), `AgentRegistry` (which agents exist right now, read live and failing closed, [ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)) with `FixedRegistry` (the static list) and `CompositeRegistry` (two registries as one, the first wins); each `RegistryEntry` says whom it is for, an `AgentAudience` (`Static` for the deployment's own agents, `AdminsOnly`, `Everyone` or `Roles`; `AgentAudience::from_values` is the platform contract's grammar, [ADR 0045](decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)), `Authenticator` (who is calling, from a bearer token or the proxy's identity header; `Principal`, `AuthError`: `Missing` and `Invalid` are refusals, `Unavailable` is not; `RefuseAll`, `ByCredential`; [ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `MemoryRegistry`, `MemoryAuth`, `ScriptedAgent` `MemoryToolServers` and the conformance macros `thread_store_conformance!`, `tool_server_conformance!`, `wakeup_conformance!`, `agent_client_conformance!`, `agent_registry_conformance!`, `authenticator_conformance!` and `bearer_token_conformance!`. **ADR 0046, slice 1 (built 2026-10-14):** the ports behind a person's own MCP servers, none wired into the binary yet. `UserToolServerStore` (the definitions by `(owner, id)`: `insert`, `get`, `list`, `delete`, and `replace` and `set_state` as compare and swap on a revision the store keeps, so an edit cannot revert what the broker wrote or bring a deleted server back; at most 8 per person, enforced by the store; a definition holds no secret and a URL the egress guard accepted; the closed enum `UserAuth` of `none`, `bearer`, `api_key { header }`, `oauth2 { scopes, client_id }`), `SecretStore` (opaque `SecretMaterial` of at most 16 KiB, zeroized and never printed, by `(owner, server)`: `put`, `get`, `delete`, and `rotate`, a compare and swap on a version that is never reissued for a key), `CredentialBroker` (the port only: `store`, `begin_oauth`, `complete_oauth`, `lease`, `revoke`; a `CredentialLease`, a closed enum, is lent for one call and only for the URL its credential was issued for) and the egress guard `EgressPolicy` (a pure function on a URL and on the addresses its host resolved to, so that the broker and the relay judge alike), with the testkit macros `secret_store_conformance!`, `user_tool_server_store_conformance!` and (slice 2) `credential_broker_conformance!`, and the in-memory `MemorySecretStore` and `MemoryUserToolServers`. **ADR 0065 (proposed; PR 1 built 2026-10-27): `UsageLedger`** (`month(owner, UsageMonth) -> UsageMonthTotals`, `thread_rows(owner, thread)`, `backfill(after, limit)`; **no method writes a row**: the `ThreadStore` that holds the log writes the ledger in the transaction that appends the usage event, and the testkit macro `usage_ledger_conformance!` holds every store to it, a fork's copied events, the erase and the catch-up included; the in-memory `MemoryStore` implements it too). **ADR 0068 (slice 7a built 2026-11-15): `ThreadSearch`**, a **supertrait of `ThreadStore`** (every implementer of the store must implement it: a breaking change, the in-memory and Postgres stores do): `search_threads(owner, &SearchRequest) -> SearchRows` (the owner's threads whose title, description or one message holds every term of `SearchTerms` as the start of a word; rank, then newest first; the newest three matching messages and the count of all) and `backfill_search(after, limit)`; **no method writes the index**, the store writes it in the transaction of the event, and `thread_search_conformance!` holds every implementation to the rules of `docs/api/thread-search-v1.md`; the in-memory store scans the log with the same `orch_core::search` functions. **`PromptStore` (ADR 0070, built 2026-11-15)** is the **third supertrait of `ThreadStore`** (a breaking change: every implementer, three in this workspace, implements it): `insert_prompt`, `get_prompt`, `list_prompts`, `replace_prompt` and `delete_prompt`, a person's saved prompts and the roles each is shared with, **beside the log, not in it**. The visibility rule lives behind the port on a `PromptViewer` (the roles claim as given; no administrator exception) and **no type of the port carries an owner**, so a handler cannot name an author; only the owner writes, by compare and swap on a `PromptRevision` that is never given twice; at most 100 per owner, kept by the store; `prompt_store_conformance!` holds every implementation to it. | **Built** |
-| `orch-store-postgres` (`crates/store-postgres`) | `ThreadStore` + `Wakeup` on Postgres (`LISTEN/NOTIFY`; live text on the channel `orch_live`). **ADR 0046, slice 4a (built 2026-10-14): `PgUserToolServers`**, the `UserToolServerStore` of a person's own MCP server definitions: the table `user_tool_servers` (migration `0021`, owner and id as the key, **no secret**: the kind, the state, the broker's opaque credential reference and a `revision` from a sequence) in the thread store's database and pool. **The limit of eight per person is kept under an advisory lock of the owner taken before the count** (`pg_advisory_xact_lock(class, hashtext(owner))`, the two-`int4` form, so it can be the same lock as no one-`bigint` key, and every other advisory lock the orchestrator or adam-rs takes in this database is one-`bigint`; `READ COMMITTED`, `lock_timeout` two seconds); `replace` and `set_state` are one `UPDATE … WHERE … AND revision = $expected` each; rows are read back through `UserToolServer::from_stored` (a failure is `Corrupt`). Passes `user_tool_server_store_conformance!`, the twenty-times race included, and tests of its own that hold the owner's lock in a transaction and see an insert wait and count after it. **Slice 4c (built 2026-10-15): `PgPendingAuthorizations`**, the `PendingAuthorizations` port: the table `user_tool_oauth_pending` (migration `0022`), one row per `(owner, server)` holding the SHA-256 of the OAuth `state` (never the text), the expiry and nothing else; `take` is one `DELETE … RETURNING` (a state that had ended is deleted and gives nothing), so a state is taken once under any race, and `put` replaces the server's row and sweeps what has ended; in the thread store's pool. Passes `pending_authorizations_conformance!` (32 takers of one state, one winner), with tests of its own for the row, the lock wait and an error that names no row. **ADR 0065 (PR 1 built 2026-10-27): `UsageLedger` on `PgStore`**, migration `0023` (`usage_tasks`, `usage_lines`, `usage_sandbox`, `threads.usage_through`): written in the transaction of `commit`, `create_thread` and `fork_thread`, the rows kept with `thread_id` cleared by `delete_threads`, the log caught up by the next commit of a thread (or `orchestrator usage backfill`) when a build without the ledger appended to it. **ADR 0068 (slice 7a built 2026-11-15): `ThreadSearch` on `PgStore`**, migration `0025` (`message_terms`, `threads.title_terms`, `description_terms`, `search_through`): the keys Rust made, stored with `array_to_tsvector`, written in the transaction of `commit`, `create_thread` and `fork_thread`, erased by the cascade of `delete_threads`, caught up by the next commit of a thread (or `orchestrator search backfill`), asked under `statement_timeout` of 2 s a `tsquery` made of the keys with `:*` and nothing else; passes `thread_search_conformance!` (run on PostgreSQL 16.15 on 2026-11-15). **ADR 0070 (built 2026-11-15): `PromptStore` on `PgStore`**, migration `0026` (`user_prompts`: the id alone is the primary key, a revision per write from one sequence, CHECKs for the shapes, the audience a `text[]` on a partial GIN index; no foreign key to `threads`), the limit of 100 kept under `pg_advisory_xact_lock(0x7072_6d70, hashtext(owner))` (class `prmp`, a key space of its own) with a 2 s `lock_timeout`, the shared query one overlap `audience && roles_plus_star` beside the partial index's own predicate, a row read back through `PromptDefinition::from_stored`; passes `prompt_store_conformance!` (26 cases, run on PostgreSQL 16.15 on 2026-11-15). Issue 294 (account erasure) must delete `user_prompts WHERE owner = $1`. | **Built** |
-| `orch-artifacts-fs` (`crates/artifacts-fs`) | `ArtifactStore` over a directory ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)): the bytes and a JSON meta beside them under `threads/<thread>/<sha256>`, each written to a temporary file, fsynced and renamed (the bytes last), mode `0600`; a copy is a hard link (else a hashed copy); for development and one node; read-only open, `scan` and `migrate` into any other store ([below](#moving-the-directory-store-into-the-bucket)) | **Built** (S10; the migration, ADR 0058 step 6d) |
-| `orch-artifacts-s3` (`crates/artifacts-s3`) | `ArtifactStore` over an S3 bucket (AWS or any compatible server) through the S3 backend of `object_store`: one object per file, the media type as its `Content-Type`, the hash and the file name as user metadata; a copy is a server-side `CopyObject`; static credentials; the production store. With `publicEndpoint` it also signs a `PUT` and a `GET` (with the `response-*` overrides) for the public host (a second signer; no request goes to that host from the orchestrator) and answers `head` with the stored checksum, type and name ([ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)) | **Built** (S10; uploads 6a; downloads 6b) |
-| `orch-auth-jwt` (`crates/auth-jwt`) | `Authenticator` over OAuth2 bearer tokens ([ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)): RS256, RS384, ES256 and EdDSA only, `iss`, `aud`, `exp`, `iat`, `nbf` and `email_verified` checked, the user and the roles read from configured claims; the issuer's JWKS from `jwksUrl` or its discovery document, held in the process only, fetched on a task of its own (one at a time, no lock held across it), refreshed after 10 minutes with the stale copy served meanwhile, fetched again for an unknown `kid` at most once in 30 s, failing closed (`Unavailable`, and `/readyz`); feature `auth-jwt` of the binary; feature `testkit`: `TestIdp`, a token issuer on a local port | **Built** (PR S14) |
-| `orch-auth-header` (`crates/auth-header`) | `Authenticator` over the identity header a proxy sets (`X-Auth-Request-Email`) and the optional development user: the behaviour `orch-api` had before ADR 0033, `auth.mode: proxy_header`; feature `auth-header` of the binary | **Built** (PR S14) |
-| `orch-registry-platform` (`crates/registry-platform`) | `AgentRegistry` over the platform's `agent-registry/v1` ([ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)): an RFC 9727-shaped linkset of agent cards read live over HTTP, honouring `Cache-Control`, `Age` and the validators, held in the process only, single flight, failing closed (a read that fails drops the copy and the source is unavailable); an item's `audience` is read into the entry's `AgentAudience` (absent, empty and malformed are *none*, for administrators only; a malformed one is logged, [ADR 0045](decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)); `linkset` and `freshness` are pure; feature `registry-platform` of the binary | **Built** (MVP slice 9) |
-| `orch-agent-a2a` (`crates/agent-a2a`) | `AgentClient` over A2A 1.0; mints the thread-tools grant a message carries (with `orch-thread-token`); reads a `url` part of an artifact from a host of `artifacts.fetchHosts` as if it had been sent as bytes ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)); lists `uploads/v1` and puts its limits in the message when the grant carries the offer ([ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)) | **Built** |
-| `orch-log-filter` (`crates/log-filter`) | **ADR 0046, slice 5a review:** the log filter of the processes. `RUST_LOG` as the operator wrote it, with `rmcp=off` added unless it names `rmcp`: the MCP library logs what the servers it talks to say and the URL of a failed request, so it is off by default and at the chart's `RUST_LOG=info`. The binary and the tests that search the logs for a secret build their filter with it | **Built** |
-| `orch-tools-mcp` (`crates/tools-mcp`) | `ToolServerClient` over MCP, `rmcp`'s client over streamable HTTP ([ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md), [`api/thread-tools-v1.md`](api/thread-tools-v1.md)): lists the tools of a server the deployment configured and calls one, one session per request (nothing kept, no cache), the endpoint's timeout over the whole request, the bearer and headers on that server's requests only (no redirect followed, values sensitive, none in an error or a `Debug`), a result cut at 256 KiB, a tool's `isError` passed through, a server's failure mapped to `Unreachable`, `Unauthenticated`, `TimedOut`, `Remote` or `Protocol`. **ADR 0046, slice 5a (built 2026-10-15): `McpToolClient::guarded(EgressPolicy)`** is the client for servers people name: the URL goes through `check_url` and the client connects to its normal form, an address written in it is judged at once, a name is resolved once by the client's own resolver hook and the answer judged (`EgressPolicy::check_connection`, which the broker's hook shares), no connection is kept, no redirect followed, no proxy, and a connector layer judges every connection before and after it is made; a refusal is `ToolServerError::EgressRefused` and nothing was sent. *Slice 5a review:* the client reads **at most 4 MiB of any one response on the wire** (a backend of its own under rmcp), lists at most 10 pages and 200 tools, cuts a lookup at 5 s, and keeps the URL out of every error; a 403 with no challenge is `ToolServerError::Forbidden`. The relay of the thread-tools endpoint (`orch-surface-thread-tools`, `RelayTools`) is its one user, composed by the binary behind the feature `tool-relay` (default). **ADR 0080:** a `toolServers` entry can say it speaks MCP `2026-07-28` (`protocol`: the session opens with `server/discover` and no fallback to `initialize`; `rmcp` 3.5.0's `ClientLifecycleMode::Discover`) and can take **signed requests** (`signing`: no bearer, one `Tool-Request-Claims` header on every HTTP request, signed over the very bytes sent, for the thread and its owner, which the relay adds to a copy of the endpoint for each request) | **Built** (slice 8; ADR 0080) |
-| `orch-credential-broker` (`crates/credential-broker`) | **ADR 0046, slice 2 (built 2026-10-14):** the one `CredentialBroker`, generic over a `SecretStore` and a `UserToolServerStore` and a clock, with the HTTP client it builds itself. `store` keeps a bearer token or an API key with the definition's normal-form URL, sealed; `begin_oauth` / `complete_oauth` run RFC 9728 and RFC 8414 discovery (refusing a server whose metadata lacks `S256`), take a client (the definition's client id, then a Client ID Metadata Document, then a client of its own registered within the hour for that issuer and redirect URI, then RFC 7591 registration), make the PKCE `S256` challenge and the `state`, send the `resource` (RFC 8707, the definition's own URL) with the authorization and the token request and the person's scopes or none, keep a pending flow that expires and is used once, and refuse a callback whose `iss` is not the issuer the flow began with (RFC 9207, the mix-up defence of RFC 9700; `complete_oauth` takes the `iss`); `lease` lends a fresh bearer or header lease for one call, only for the URL the credential was issued for, and refreshes an OAuth token that has under 30 s to live lazily, once per `(owner, server)` in a process (the callers that wait are told how it ended) and once across replicas: the replica that asks first **claims** the refresh in the store with `SecretStore::rotate`, the others lend the access token while it has not expired or wait for the tokens, so a rotating refresh token is presented once; `invalid_grant` is `NeedsReauth`, a failing authorization server `Unavailable`; `revoke` forgets and revokes upstream (RFC 7009) best effort. **Every URL it fetches goes through `EgressPolicy::check_url`, and a name is resolved once by a `reqwest::dns::Resolve` hook that calls `check_resolved`** (the address judged is the address connected to; no redirect, no proxy, timeouts, 64 KiB); no token, verifier or response body is in an error, a `Debug` or a log line. Proven by `credential_broker_conformance!` (36 cases), egress, registration, behaviour and log tests against an authorization server of its own on the loopback; no live authorization server. **Wired into the binary** since slice 4a (built when `userToolServers.enabled` and the file has `secrets`, over the sealed Postgres store; `NoBroker` otherwise), **used by the authorize route and the OAuth callback** since slice 4c (`begin_oauth`, `complete_oauth`, `revoke`), **by no relay yet** (slice 5: the lease) | **Built** (slice 2), **composed** (slice 4a), **used** (slice 4c) |
-| `orch-pg-connect` (`crates/pg-connect`) | **ADR 0076, sys#382 E1 (2026-11-21):** connects to Postgres on `tokio-postgres` as sqlx did: the same connection string, read as sqlx read it (the `PG*` variables, the URL and its query key by key with sqlx's aliases, then `PGPASSFILE` or `~/.pgpass`; a client certificate refused), the same TLS (rustls on aws-lc-rs, the Mozilla roots and `sslrootcert`; `prefer` and `require` check no certificate, `verify-ca` its chain, `verify-full` its chain and name), a `deadpool-postgres` pool that checks a connection before handing it out, whose `wait` is sqlx's `acquire_timeout` and whose dropped connections end with `Terminate` within a second (`deadpool-postgres`' own connector aborts them; `pool_tracked` lets a caller wait for them at shutdown), and a direct connection; the session parameters sqlx set at startup and its connection lifetimes are not kept (the crate's README lists the differences). Proven against what sqlx 0.9 read from 21 URLs, and from six more in seven environments, recorded by sqlx itself before it left the workspace (`tests/sqlx-0.9-reads.tsv`), and by hand against a server with TLS on, every mode (CI has no TLS server). `orch-secrets-pg`, `orch-store-postgres` (E1c) and `orch-agent-adam` (the pools of adam-rs's store and notifier, the last step of E1) use it | **Built** (E1a) |
-| `orch-pg-migrate` (`crates/pg-migrate`) | **ADR 0076, sys#382 E1 (2026-11-21):** applies a crate's Postgres migrations on `tokio-postgres` and continues the history sqlx kept: the same history table, the SHA-384 of each file, the same advisory lock (`0x3d32ad9e * crc32(current_database())`) and the same refusals (`Dirty`, `VersionMissing`, `VersionMismatch`), so an existing database migrates as a no-op and an old process and a new one never migrate at once. Proven against sqlx itself until sqlx left the workspace, and since against what it recorded (`tests/sqlx_history.rs`: every migration sqlx read has the version, description, checksum and transaction sqlx gave it, `tests/sqlx-0.9-history.txt`; a history written by sqlx's own statements is continued; sqlx's lock holds it back). `orch-secrets-pg` (the first) and `orch-store-postgres` (E1c) use it; adam-rs migrates the local agents' journal itself | **Built** (E1a) |
-| `orch-secrets-pg` (`crates/secrets-pg`) | **ADR 0046, slice 3 (built 2026-10-14):** the default `SecretStore`: one row per `(owner, server)` of `user_secrets` in the orchestrator's own Postgres, the material sealed with **AES-256-GCM** (RustCrypto `aes-gcm`) under a key of the configuration (`Keyring`, an id and 32 bytes each, any opens what it sealed, `current` seals), a random 96-bit nonce per seal, and the associated data `v ‖ owner ‖ server ‖ version ‖ kid` (eight-byte lengths), so a row moved to another person, server or version does not open. **Versions come from one sequence, taken inside a per-key advisory lock** that every write holds from lock to commit, so the writers of a key are serialized and a key holds the greatest version it was given; its own migrations in its own history table (`_orch_secrets_pg_migrations`). `rewrap` re-seals every row not under the current key **in place at the version it has** (not through `rotate`: the broker's refresh claim would lose the rotated refresh token), counting rewrapped, already current, changed and failed. Proven by `secret_store_conformance!` with a breaker that closes the pool, and by tests against Postgres (a moved row does not open, the table holds no plaintext, sixteen writers of a key land in order, a rewrap racing a rotate loses nothing); no secret in an error or a `Debug`. Used by the binary's **`orchestrator secrets rewrap`** and, **when `userToolServers.enabled`, by the service** (slice 4a: a pool of four connections of its own, `migrate()` at boot in the roles that serve routes, the broker over it, which holds the only handle on the store), which no route uses yet. *After the review of the same day:* every write is `READ COMMITTED` and waits at most two seconds for its key's lock (`Unavailable` after, so a lock that is held for long does not take the pool from the other keys), `rewrap` also opens the rows already under the current key (a key id whose bytes changed shows as `failed`), and a key of 64 zeros is refused (ADR 0046, departures 57 to 60). *Off sqlx (ADR 0076, sys#382 E1, 2026-11-21):* it speaks `tokio-postgres` on a `deadpool-postgres` pool, connects through `orch-pg-connect` (the connection string and TLS as sqlx read them) and migrates with `orch-pg-migrate`, which continues the history in `_orch_secrets_pg_migrations`; public items unchanged but `from_pool`, which takes a deadpool pool, and the few differences its README lists (no connection closed for its age or idleness, `close()` does not wait, a client-side authentication error is a refusal); no `sqlx` in the crate or its tests | **Built** (slice 3) |
-| `orch-model-openai` (`crates/model-openai`) | `ChatModel` over OpenAI-compatible `POST {base}/chat/completions` endpoints, one client configuration per endpoint name (`ChatRequest.endpoint`): the orchestrator's own model calls, the title and the description of a thread ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md), [ADR 0035](decisions/0035-utility-model-tasks.md)); `reqwest` only, no vendor SDK, a key never in an error or a `Debug` | **Built** |
-| `orch-agent-adam` (`crates/agent-adam`) | `AgentClient` over adam-rs agents hosted in the orchestrator's own process: `LocalAgents`, `LocalAgentClient`, the closed `LocalKind` (`Echo`); journal in the orchestrator's Postgres under `orch_agent_`, adam-rs's store and notifier (on `tokio-postgres` since adam-rs `7ac3281`) over `deadpool-postgres` pools that `orch-pg-connect` builds (ADR 0076, sys#382 E1, 2026-11-21); feature `testkit` | **Built** (ADR 0015) |
-| `orch-a2a-mapping` (`crates/a2a-mapping`) | Pure mapping of A2A stream items and tasks to `AgentEnvelope`s and idempotency keys (a `raw` part of an artifact is `AgentUpdate::File`, [ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md); a `data` part that names an upload under the `uploads/v1` URI is `AgentUpdate::FileUploaded`, [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)); no I/O, no async | **Built** |
-| `orch-svg-clean` (`crates/svg-clean`) | A pure allow-list sanitizer for SVG on `quick-xml` ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)): the API sends an SVG inline only through it | **Built** (S11) |
-| `orch-store-sqlite` (`crates/store-sqlite`) | **ADR 0076, sys#382 E2 (built):** `ThreadStore` and the three supertraits it builds (`UsageLedger`, `ThreadSearch`, `PromptStore`), plus `Wakeup` (`SqliteWakeup`, in process), `UserToolServerStore` and `PendingAuthorizations`, on one SQLite file with bundled SQLite, WAL, one connection behind a semaphore and an exclusive lock that refuses a second process; every conformance testkit green, with no skip. Its README states what its schema changes from the Postgres one | **Built** |
-| `orch-embed` (`crates/embed`) | **ADR 0076, sys#382 E3 (built):** the library composition root: `App` and `Dispatcher` over `orch-store-sqlite`, the caller's `AgentClient` and static `AgentDirectory`, no authenticator, model, artifact store or servers of the person's own, and no HTTP server. It offers `create_thread`, `post_message`, `read_thread`, `events`, `stream_agui` and `collect_agui` as Rust calls; the AG-UI stream is `orch-agui-projection`'s fold of the log. Its example runs one thread on the scripted agent and asserts the events; CI's `embed` job runs it and fails when the normal tree holds `axum`, `sqlx`, `tokio-postgres` or `hyper`. The local agent adapter (E4) and the target compile check (E5) are not built | **Built** |
-| `orch-app` (`crates/app`) | **a person's own agent on the message path (ANR-806, part 2):** `Provisioning` (`AppConfig.provisioning`, off by default) makes the port `AgentProvisioner` part of accepting a message. Before a request that starts the work of the agent the deployment calls `coder` or `workspace` (id or alias, a kind listed in `provisioner.kinds`) is written, `App` calls `ensure_ready(owner, kind)`: it makes the person's agent on a first message, resumes a suspended one, and **waits until it is `Ready`**. It does so in `create_thread_as`, `submit` (a message, Stop & send, an action on a card), a fork that carries a message and `start_child_session`, after the checks that cost nothing and before the commit, and **not for a replay** (a recorded idempotency key, an existing thread or fork), which writes nothing and asks nothing. **Routed (ANR-1061):** the first message that provisions the person's agent **records it as the thread's route** (`Job.route`, an additive optional field of the job ledger, kept by every later job, no migration), the thread's target stays the configured agent, and `Dispatcher::load` sends **every row kind** of that thread to the recorded agent, looked up in the registry; a thread with no route (it began before provisioning was on) keeps the agent and the A2A context it has, and a fork records its owner's own agent. A row the dispatcher claims for a routed thread calls `ensure_ready` first (a re-delegation, a redelivery, a session start, a steer find a suspended agent resumed); a stop and a follow never wake an agent, and a stop never wakes the agent: when the agent is not listed and no task runs at it and no delegation is in flight, the thread is cancelled locally; a delegation in flight is waited for (for a routed thread beyond `max_cancel_attempts`, for as many retries as fit in `readyTimeoutSecs` plus `OUTER_SLACK`) and the stop then cancels the task it started at the agent (the listing and `CancelTask` caps stay plain and share the stop's attempt counter, so after a long wait they may be spent: a known gap, ADR 0103); a task running at an agent that stays unlisted is given up after `own_agent_listing_attempts` attempts of the row, and the thread is cancelled without stopping it. An agent ready but not yet listed is tried for up to `DispatcherConfig.own_agent_listing_attempts` attempts of the row in all (default 5, not that many extra retries) and then fails with its own reason, never at the shared agent; a helper session's thread inherits its parent's route. The tier and cap come from the own agent's card. An `@mention` or `ask_agent` to a coder asks the platform nothing ([ADR 0103](decisions/0103-a-persons-own-agent-is-made-and-kept-ready-before-their-message-is-accepted.md)). A wait that ends in `ProvisionError::NotReady` (or that the provisioner does not end by `provisioner.readyTimeoutSecs` plus a 10 s backstop) is `AppError::AgentNotReady`, a 503 `agent_not_ready` that names **the wait-ready bound, not the dispatch's**, with nothing written; the other refusals are `AppError::Provisioning`. Two concurrent messages for one owner and kind make one agent (the port's promise, held to it by `tests/provisioning.rs` and the port's conformance suite). The shared `chat` agent is never provisioned. The core is untouched (`transition` stays pure), the port and its adapters stay as they were, and the composition root only builds the adapter and hands it to `AppConfig` (`dev/provisioner-e2e.sh` proves it on the dev stack's mocks). `App`, `Dispatcher` (and, before it commits an agent's file, the ingest: [Files from agents](#files-from-agents), and the ingest of an upload, [Uploads](#uploads-adr-0058)); **ADR 0046, slice 4a:** the permission `tools.user.add` (held by no role by default, `admin` does not imply it) and `App::user_tools()`, the ports of people's own MCP servers the bundle holds; **slice 4b (built 2026-10-15):** the operations the routes call, `add_user_tool_server`, `list_own_tool_servers`, `edit_user_tool_server` and `delete_user_tool_server`, with the permission and owner checks inside and no port given to a handler (add and edit need `tools.user.add`, list and delete none; a listing asks the broker for nothing; a failed `store` takes the definition back; a new URL, kind, scopes or client revokes the credential first; delete is revoke, then delete, and in a deployment that keeps no credentials just delete) | **Built** |
-| `orch-api` (`crates/api`) | HTTP edge, resource API (with `GET /api/threads/{id}/artifacts/{sha256}`, the files agents handed over), `SurfaceRoutes` (`plain`, `streaming` and `machine` routes); **ADR 0046, slice 4b (built 2026-10-15):** `POST`, `GET`, `PATCH` and `DELETE` of `/api/user-tool-servers` (people's own MCP servers; a 404 while `userToolServers` is off; the body of a route that carries a secret is read without echoing a value, and the secret is write-only) and a person's own servers in `GET /api/tool-servers`; **slice 4c (built 2026-10-15):** `POST /api/user-tool-servers/{id}/authorize` (the URL to open at the server's authorization server, a per-person rate limit), the **OAuth callback** `GET /api/user-tool-servers/oauth/callback` (outside sign-in: the person is found by the `state` alone; a fixed page, never the query; run to its end in a task of its own) and the Client ID Metadata Document at the path of `oauth.clientMetadataUrl` | **Built** |
-| `orch-agui-proto` (`crates/agui-proto`) | AG-UI 1.0 wire types, conformance testkit | **Built** |
-| `orch-agui-projection` (`crates/agui-projection`) | `Projector`, `translate`, `Connect` (the connect fold), `agent_capabilities` | **Built** |
-| `orch-surface-agui` (`crates/surface-agui`) | The run route `POST /agui/agents/{agentId}`, the connect stream `GET /agui/threads/{threadId}/connect` and the capabilities document `GET /agui/agents/{agentId}/capabilities`, over the projection | **Built** ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md)) |
-| `orch-surface-a2a` | A2A inbound | **Planned** (ADR 0012) |
-| `orch-surface-webhook` (`crates/surface-webhook`) | `POST /webhooks/ci` (slice 6) and `POST /webhooks/github` (slice 9): HMAC on the raw body, normalise to a `CiReport`, `App::receive`; machine routes; feature `surface-webhook`, on by default | **Built** ([ADR 0017](decisions/0017-ci-results-by-webhook.md)) |
-| `orch-surface-mcp` (`crates/surface-mcp`) | The MCP server at `/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind static bearer tokens): `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` | **Built** ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)), slices 11 and 12 |
-| `orch-signed-request` (`crates/signed-request`) | The signed requests to a tool server ([`api/signed-tool-requests-v1.md`](api/signed-tool-requests-v1.md), [ADR 0080](decisions/0080-requests-to-a-tool-server-are-signed-for-the-person.md)): `Signer` writes the header `Tool-Request-Claims` for one HTTP request, a tagged `COSE_Sign1` (Ed25519) in the claim-object profile of `cratestack-cose` 0.17.2 whose payload binds the method, the path, the SHA-256 of the exact body bytes, the thread and its owner; `SigningKey` reads a PKCS#8 PEM and derives the `kid`; with the feature `verify`, the reference of the receiving side (checks 1 to 5). Pure, no clock, a known-answer vector made by the real `sign_claims`; `interop/` runs the real `open_claims` on its bytes | **Built** (proven on mocks; no tool server verifies it yet) |
-| `orch-prompt-statement` (`crates/prompt-statement`) | **ADR 0087, the note of 2026-11-25:** pure. The prompt statement the orchestrator signs on the cloud path (`Statement`, `UserClaims`), RFC 8785, the integrity rule (`attest`: `user` against the AG-UI request, else `403 prompt_signature_invalid` and no `AttestedPayload`) and the JWS with `x5c`; never verifies a signature. The PKI signer, the intake check and the carriage to the agent are not built | **Built** |
-| `orch-prompt-signer-static` (`crates/prompt-signer-static`) | **ADR 0087, the note of 2026-11-25:** a `PromptSigner` for tests: an Ed25519 key and its leaf's chain from PEM files, never renewed, `set_unavailable` as the stand-in of an expired certificate; held to `prompt_signer_conformance!` and to the shared vector V2. Not for a deployment | **Built** (test-only) |
-| `orch-thread-token` (`crates/thread-token`) | The token of the thread tools: an HS256 JWS with ten claims (the caller a closed `main` \| `ask:<n>`), the current and the previous key, `mint`, `verify`, the issuer that gives an agent `{url, token, expiresAt}`; the id of an upload slot (`mint_upload_id`, `verify_upload_id`: a MAC over the thread, job, hash, size, type and expiry, with its own domain line); pure, no clock, known-answer vectors | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md)) |
-| `orch-config` (`crates/config`) | The configuration file of the binary ([ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md), keys in [`api/config.md`](api/config.md)): the typed keys (`version: 1`, closed), the JSON Schema generated from them and committed at [`api/config.schema.json`](api/config.schema.json) (a test fails on drift), the three passes (syntax, shape, rules) that list every error naming a key path and never a value, reserved keys named by the change that brings them, and secrets only as `{ env }` or `{ file }` references resolved through a `Resolve` the caller passes; pure, no file, no environment. Configuration is the composition root's input, not a port: no trait, no testkit. **ADR 0046, slice 4a:** the `userToolServers` section (`enabled`, `egress.allow`, `egress.deny`, `egress.allowHttp`, `oauth.clientName`, `oauth.clientMetadataUrl`; absent is off, `allowHttp` is refused in production, and with the feature on a `toolServers[].id` may not start with `u-`) and the permission `tools.user.add`; **slice 4c:** `oauth.callbackUrl` (an `https` address, or `http` on a loopback IP literal outside production; by default `server.publicUrl` and the callback's path; required when the sealed store is kept), and the rule that `clientMetadataUrl` is on the callback's origin and under none of the reserved paths | **Built** (S9) |
-| `orch-surface-thread-tools` (`crates/surface-thread-tools`) | The per-thread MCP endpoint `/thread-tools/{threadId}/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind that token and a check that the thread is the token's): the built-in `get_ui_catalog` and `turn_output` (an agent announces its answer: `App::record_answer`, [ADR 0031](decisions/0031-working-text-and-the-turns-answer.md)), and the `ThreadToolProvider` seam later slices add their tools through, with its first provider, the **relay** `RelayTools` (the tools of the MCP servers attached to the thread, `<server>__<tool>`, each call one step with the server's icon, through the `ToolServerClient` port: [architecture](architecture.md#the-relay-of-an-attached-mcp-servers-tools); **ADR 0046, slice 5a (built 2026-10-15):** also the thread owner's own `u-` servers, `RelayTools::with_user_servers`, a fresh `CredentialBroker::lease` for every list and every call, through the guarded client, a server whose credential cannot be had left out and failing a call as a step, a 401 or 403 marking the definition `needs_reauth`); the tool `request_upload` as a provider (`UploadTools`, [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)); feature `surface-thread-tools`, on by default | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md), [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
-| Slack adapters | The Slack rows of the table above | **Planned**, not designed |
-| `orch-testsupport`, `orch-e2e` (`crates/testsupport`, `crates/e2e`) | Test-only | **Built** |
-| `orchestrator` (`bin/orchestrator`) | The composition root: reads the configuration file (`ORCH_CONFIG_FILE`) and the variables over it, `--print-config`; and one command, `artifacts migrate` ([below](#moving-the-directory-store-into-the-bucket)), which reads the store of the file and nothing else. **ADR 0046, slice 4a:** `src/user_tools.rs` composes people's own MCP servers when `userToolServers.enabled`: the definitions in Postgres, the sealed secret store in a pool of its own and the credential broker over both (or, with no `secrets` section, a broker and a store that refuse every call, so only servers that need no authentication can be added), the refusing bundle and nothing opened when it is off; **slice 4c:** the pending-authorization store (Postgres, in the thread store's pool), the callback address and the Client ID Metadata Document handed to the router | **Built** (the command: ADR 0058 step 6d) |
+| `orch-core` (`crates/core`) | Contract types and `transition`; and, pure, what a usage event changes in the ledger of the people (`usage_change`, `UsageRow::fold`, `UsageMonth`, `UsageMonthTotals`) and what a month costs (`PriceTable`, `price_month`, integers in millionths of the currency unit, [ADR 0065](decisions/0065-a-usage-ledger-per-person.md)) | ✅ built · **Built** |
+| `orch-ports` (`crates/ports`) | `ArtifactStore` (where the files agents hand over are kept, by the hash of their content; the log keeps the reference, [ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md); and, optional with defaults that say "not supported" so that no implementer breaks, `can_presign`, `presign_put` (a URL for one `PUT` of one key, with the headers to send), `presign_get` (a URL for one `GET` of one key whose answer carries the signed `response-*` overrides: the redirect of a download), `head` (size, type, name, stored checksum, arrival time, without reading the object) and `read_prefix` (the first bytes), [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md); the testkit macros `artifact_presign_conformance!` and `artifact_no_presign_conformance!`, and `MemoryArtifacts::presigning()` that plays a bucket), `ThreadStore` (with the provided `key_recorded(thread, key)`: whether a request's idempotency key is in the log already, so a replay can be told without writing; the default says no, the memory, SQLite and Postgres stores override it), `Wakeup` (hints, and live text that is never stored, [ADR 0027](decisions/0027-live-text-relayed-not-stored.md)), `AgentClient`, `ByTransport` (one `AgentClient` from two, routed by `AgentTransport`), `ToolServerClient` (an MCP server as the orchestrator calls it: list the tools, call one with a timeout and a `_meta`, the result cut at 256 KiB, its text untrusted, its credentials `ToolSecret`s that never print, [ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md)), `AgentRegistry` (which agents exist right now, read live and failing closed, [ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)) with `FixedRegistry` (the static list) and `CompositeRegistry` (two registries as one, the first wins); each `RegistryEntry` says whom it is for, an `AgentAudience` (`Static` for the deployment's own agents, `AdminsOnly`, `Everyone` or `Roles`; `AgentAudience::from_values` is the platform contract's grammar, [ADR 0045](decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)), `Authenticator` (who is calling, from a bearer token or the proxy's identity header; `Principal`, `AuthError`: `Missing` and `Invalid` are refusals, `Unavailable` is not; `RefuseAll`, `ByCredential`; [ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)), `Clock`, `IdGen`, the `Ports` bundle; feature `testkit`: `MemoryStore`, `MemoryWakeup`, `MemoryRegistry`, `MemoryAuth`, `ScriptedAgent` `MemoryToolServers` and the conformance macros `thread_store_conformance!`, `tool_server_conformance!`, `wakeup_conformance!`, `agent_client_conformance!`, `agent_registry_conformance!`, `authenticator_conformance!` and `bearer_token_conformance!`. **ADR 0046, slice 1 (built 2026-10-14):** the ports behind a person's own MCP servers, none wired into the binary yet. `UserToolServerStore` (the definitions by `(owner, id)`: `insert`, `get`, `list`, `delete`, and `replace` and `set_state` as compare and swap on a revision the store keeps, so an edit cannot revert what the broker wrote or bring a deleted server back; at most 8 per person, enforced by the store; a definition holds no secret and a URL the egress guard accepted; the closed enum `UserAuth` of `none`, `bearer`, `api_key { header }`, `oauth2 { scopes, client_id }`), `SecretStore` (opaque `SecretMaterial` of at most 16 KiB, zeroized and never printed, by `(owner, server)`: `put`, `get`, `delete`, and `rotate`, a compare and swap on a version that is never reissued for a key), `CredentialBroker` (the port only: `store`, `begin_oauth`, `complete_oauth`, `lease`, `revoke`; a `CredentialLease`, a closed enum, is lent for one call and only for the URL its credential was issued for) and the egress guard `EgressPolicy` (a pure function on a URL and on the addresses its host resolved to, so that the broker and the relay judge alike), with the testkit macros `secret_store_conformance!`, `user_tool_server_store_conformance!` and (slice 2) `credential_broker_conformance!`, and the in-memory `MemorySecretStore` and `MemoryUserToolServers`. **ADR 0065 (proposed; PR 1 built 2026-10-27): `UsageLedger`** (`month(owner, UsageMonth) -> UsageMonthTotals`, `thread_rows(owner, thread)`, `backfill(after, limit)`; **no method writes a row**: the `ThreadStore` that holds the log writes the ledger in the transaction that appends the usage event, and the testkit macro `usage_ledger_conformance!` holds every store to it, a fork's copied events, the erase and the catch-up included; the in-memory `MemoryStore` implements it too). **ADR 0068 (slice 7a built 2026-11-15): `ThreadSearch`**, a **supertrait of `ThreadStore`** (every implementer of the store must implement it: a breaking change, the in-memory and Postgres stores do): `search_threads(owner, &SearchRequest) -> SearchRows` (the owner's threads whose title, description or one message holds every term of `SearchTerms` as the start of a word; rank, then newest first; the newest three matching messages and the count of all) and `backfill_search(after, limit)`; **no method writes the index**, the store writes it in the transaction of the event, and `thread_search_conformance!` holds every implementation to the rules of `docs/api/thread-search-v1.md`; the in-memory store scans the log with the same `orch_core::search` functions. **`PromptStore` (ADR 0070, built 2026-11-15)** is the **third supertrait of `ThreadStore`** (a breaking change: every implementer, three in this workspace, implements it): `insert_prompt`, `get_prompt`, `list_prompts`, `replace_prompt` and `delete_prompt`, a person's saved prompts and the roles each is shared with, **beside the log, not in it**. The visibility rule lives behind the port on a `PromptViewer` (the roles claim as given; no administrator exception) and **no type of the port carries an owner**, so a handler cannot name an author; only the owner writes, by compare and swap on a `PromptRevision` that is never given twice; at most 100 per owner, kept by the store; `prompt_store_conformance!` holds every implementation to it. | ✅ built · **Built** |
+| `orch-store-postgres` (`crates/store-postgres`) | `ThreadStore` + `Wakeup` on Postgres (`LISTEN/NOTIFY`; live text on the channel `orch_live`). **ADR 0046, slice 4a (built 2026-10-14): `PgUserToolServers`**, the `UserToolServerStore` of a person's own MCP server definitions: the table `user_tool_servers` (migration `0021`, owner and id as the key, **no secret**: the kind, the state, the broker's opaque credential reference and a `revision` from a sequence) in the thread store's database and pool. **The limit of eight per person is kept under an advisory lock of the owner taken before the count** (`pg_advisory_xact_lock(class, hashtext(owner))`, the two-`int4` form, so it can be the same lock as no one-`bigint` key, and every other advisory lock the orchestrator or adam-rs takes in this database is one-`bigint`; `READ COMMITTED`, `lock_timeout` two seconds); `replace` and `set_state` are one `UPDATE … WHERE … AND revision = $expected` each; rows are read back through `UserToolServer::from_stored` (a failure is `Corrupt`). Passes `user_tool_server_store_conformance!`, the twenty-times race included, and tests of its own that hold the owner's lock in a transaction and see an insert wait and count after it. **Slice 4c (built 2026-10-15): `PgPendingAuthorizations`**, the `PendingAuthorizations` port: the table `user_tool_oauth_pending` (migration `0022`), one row per `(owner, server)` holding the SHA-256 of the OAuth `state` (never the text), the expiry and nothing else; `take` is one `DELETE … RETURNING` (a state that had ended is deleted and gives nothing), so a state is taken once under any race, and `put` replaces the server's row and sweeps what has ended; in the thread store's pool. Passes `pending_authorizations_conformance!` (32 takers of one state, one winner), with tests of its own for the row, the lock wait and an error that names no row. **ADR 0065 (PR 1 built 2026-10-27): `UsageLedger` on `PgStore`**, migration `0023` (`usage_tasks`, `usage_lines`, `usage_sandbox`, `threads.usage_through`): written in the transaction of `commit`, `create_thread` and `fork_thread`, the rows kept with `thread_id` cleared by `delete_threads`, the log caught up by the next commit of a thread (or `orchestrator usage backfill`) when a build without the ledger appended to it. **ADR 0068 (slice 7a built 2026-11-15): `ThreadSearch` on `PgStore`**, migration `0025` (`message_terms`, `threads.title_terms`, `description_terms`, `search_through`): the keys Rust made, stored with `array_to_tsvector`, written in the transaction of `commit`, `create_thread` and `fork_thread`, erased by the cascade of `delete_threads`, caught up by the next commit of a thread (or `orchestrator search backfill`), asked under `statement_timeout` of 2 s a `tsquery` made of the keys with `:*` and nothing else; passes `thread_search_conformance!` (run on PostgreSQL 16.15 on 2026-11-15). **ADR 0070 (built 2026-11-15): `PromptStore` on `PgStore`**, migration `0026` (`user_prompts`: the id alone is the primary key, a revision per write from one sequence, CHECKs for the shapes, the audience a `text[]` on a partial GIN index; no foreign key to `threads`), the limit of 100 kept under `pg_advisory_xact_lock(0x7072_6d70, hashtext(owner))` (class `prmp`, a key space of its own) with a 2 s `lock_timeout`, the shared query one overlap `audience && roles_plus_star` beside the partial index's own predicate, a row read back through `PromptDefinition::from_stored`; passes `prompt_store_conformance!` (26 cases, run on PostgreSQL 16.15 on 2026-11-15). Issue 294 (account erasure) must delete `user_prompts WHERE owner = $1`. | ✅ built · **Built** |
+| `orch-artifacts-fs` (`crates/artifacts-fs`) | `ArtifactStore` over a directory ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)): the bytes and a JSON meta beside them under `threads/<thread>/<sha256>`, each written to a temporary file, fsynced and renamed (the bytes last), mode `0600`; a copy is a hard link (else a hashed copy); for development and one node; read-only open, `scan` and `migrate` into any other store ([below](#moving-the-directory-store-into-the-bucket)) | ✅ built · **Built** (S10; the migration, ADR 0058 step 6d) |
+| `orch-artifacts-s3` (`crates/artifacts-s3`) | `ArtifactStore` over an S3 bucket (AWS or any compatible server) through the S3 backend of `object_store`: one object per file, the media type as its `Content-Type`, the hash and the file name as user metadata; a copy is a server-side `CopyObject`; static credentials; the production store. With `publicEndpoint` it also signs a `PUT` and a `GET` (with the `response-*` overrides) for the public host (a second signer; no request goes to that host from the orchestrator) and answers `head` with the stored checksum, type and name ([ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)) | ✅ built · **Built** (S10; uploads 6a; downloads 6b) |
+| `orch-auth-jwt` (`crates/auth-jwt`) | `Authenticator` over OAuth2 bearer tokens ([ADR 0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md)): RS256, RS384, ES256 and EdDSA only, `iss`, `aud`, `exp`, `iat`, `nbf` and `email_verified` checked, the user and the roles read from configured claims; the issuer's JWKS from `jwksUrl` or its discovery document, held in the process only, fetched on a task of its own (one at a time, no lock held across it), refreshed after 10 minutes with the stale copy served meanwhile, fetched again for an unknown `kid` at most once in 30 s, failing closed (`Unavailable`, and `/readyz`); feature `auth-jwt` of the binary; feature `testkit`: `TestIdp`, a token issuer on a local port | ✅ built · **Built** (PR S14) |
+| `orch-auth-header` (`crates/auth-header`) | `Authenticator` over the identity header a proxy sets (`X-Auth-Request-Email`) and the optional development user: the behaviour `orch-api` had before ADR 0033, `auth.mode: proxy_header`; feature `auth-header` of the binary | ✅ built · **Built** (PR S14) |
+| `orch-registry-platform` (`crates/registry-platform`) | `AgentRegistry` over the platform's `agent-registry/v1` ([ADR 0022](decisions/0022-platform-provisions-agents-system-discovers-them.md)): an RFC 9727-shaped linkset of agent cards read live over HTTP, honouring `Cache-Control`, `Age` and the validators, held in the process only, single flight, failing closed (a read that fails drops the copy and the source is unavailable); an item's `audience` is read into the entry's `AgentAudience` (absent, empty and malformed are *none*, for administrators only; a malformed one is logged, [ADR 0045](decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md)); `linkset` and `freshness` are pure; feature `registry-platform` of the binary | ✅ built · **Built** (MVP slice 9) |
+| `orch-agent-a2a` (`crates/agent-a2a`) | `AgentClient` over A2A 1.0; mints the thread-tools grant a message carries (with `orch-thread-token`); reads a `url` part of an artifact from a host of `artifacts.fetchHosts` as if it had been sent as bytes ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)); lists `uploads/v1` and puts its limits in the message when the grant carries the offer ([ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)) | ✅ built · **Built** |
+| `orch-log-filter` (`crates/log-filter`) | **ADR 0046, slice 5a review:** the log filter of the processes. `RUST_LOG` as the operator wrote it, with `rmcp=off` added unless it names `rmcp`: the MCP library logs what the servers it talks to say and the URL of a failed request, so it is off by default and at the chart's `RUST_LOG=info`. The binary and the tests that search the logs for a secret build their filter with it | ✅ built · **Built** |
+| `orch-tools-mcp` (`crates/tools-mcp`) | `ToolServerClient` over MCP, `rmcp`'s client over streamable HTTP ([ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md), [`api/thread-tools-v1.md`](api/thread-tools-v1.md)): lists the tools of a server the deployment configured and calls one, one session per request (nothing kept, no cache), the endpoint's timeout over the whole request, the bearer and headers on that server's requests only (no redirect followed, values sensitive, none in an error or a `Debug`), a result cut at 256 KiB, a tool's `isError` passed through, a server's failure mapped to `Unreachable`, `Unauthenticated`, `TimedOut`, `Remote` or `Protocol`. **ADR 0046, slice 5a (built 2026-10-15): `McpToolClient::guarded(EgressPolicy)`** is the client for servers people name: the URL goes through `check_url` and the client connects to its normal form, an address written in it is judged at once, a name is resolved once by the client's own resolver hook and the answer judged (`EgressPolicy::check_connection`, which the broker's hook shares), no connection is kept, no redirect followed, no proxy, and a connector layer judges every connection before and after it is made; a refusal is `ToolServerError::EgressRefused` and nothing was sent. *Slice 5a review:* the client reads **at most 4 MiB of any one response on the wire** (a backend of its own under rmcp), lists at most 10 pages and 200 tools, cuts a lookup at 5 s, and keeps the URL out of every error; a 403 with no challenge is `ToolServerError::Forbidden`. The relay of the thread-tools endpoint (`orch-surface-thread-tools`, `RelayTools`) is its one user, composed by the binary behind the feature `tool-relay` (default). **ADR 0080:** a `toolServers` entry can say it speaks MCP `2026-07-28` (`protocol`: the session opens with `server/discover` and no fallback to `initialize`; `rmcp` 3.5.0's `ClientLifecycleMode::Discover`) and can take **signed requests** (`signing`: no bearer, one `Tool-Request-Claims` header on every HTTP request, signed over the very bytes sent, for the thread and its owner, which the relay adds to a copy of the endpoint for each request) | ✅ built · **Built** (slice 8; ADR 0080) |
+| `orch-credential-broker` (`crates/credential-broker`) | **ADR 0046, slice 2 (built 2026-10-14):** the one `CredentialBroker`, generic over a `SecretStore` and a `UserToolServerStore` and a clock, with the HTTP client it builds itself. `store` keeps a bearer token or an API key with the definition's normal-form URL, sealed; `begin_oauth` / `complete_oauth` run RFC 9728 and RFC 8414 discovery (refusing a server whose metadata lacks `S256`), take a client (the definition's client id, then a Client ID Metadata Document, then a client of its own registered within the hour for that issuer and redirect URI, then RFC 7591 registration), make the PKCE `S256` challenge and the `state`, send the `resource` (RFC 8707, the definition's own URL) with the authorization and the token request and the person's scopes or none, keep a pending flow that expires and is used once, and refuse a callback whose `iss` is not the issuer the flow began with (RFC 9207, the mix-up defence of RFC 9700; `complete_oauth` takes the `iss`); `lease` lends a fresh bearer or header lease for one call, only for the URL the credential was issued for, and refreshes an OAuth token that has under 30 s to live lazily, once per `(owner, server)` in a process (the callers that wait are told how it ended) and once across replicas: the replica that asks first **claims** the refresh in the store with `SecretStore::rotate`, the others lend the access token while it has not expired or wait for the tokens, so a rotating refresh token is presented once; `invalid_grant` is `NeedsReauth`, a failing authorization server `Unavailable`; `revoke` forgets and revokes upstream (RFC 7009) best effort. **Every URL it fetches goes through `EgressPolicy::check_url`, and a name is resolved once by a `reqwest::dns::Resolve` hook that calls `check_resolved`** (the address judged is the address connected to; no redirect, no proxy, timeouts, 64 KiB); no token, verifier or response body is in an error, a `Debug` or a log line. Proven by `credential_broker_conformance!` (36 cases), egress, registration, behaviour and log tests against an authorization server of its own on the loopback; no live authorization server. **Wired into the binary** since slice 4a (built when `userToolServers.enabled` and the file has `secrets`, over the sealed Postgres store; `NoBroker` otherwise), **used by the authorize route and the OAuth callback** since slice 4c (`begin_oauth`, `complete_oauth`, `revoke`), **by no relay yet** (slice 5: the lease) | ✅ built · **Built** (slice 2), **composed** (slice 4a), **used** (slice 4c) |
+| `orch-pg-connect` (`crates/pg-connect`) | **ADR 0076, sys#382 E1 (2026-11-21):** connects to Postgres on `tokio-postgres` as sqlx did: the same connection string, read as sqlx read it (the `PG*` variables, the URL and its query key by key with sqlx's aliases, then `PGPASSFILE` or `~/.pgpass`; a client certificate refused), the same TLS (rustls on aws-lc-rs, the Mozilla roots and `sslrootcert`; `prefer` and `require` check no certificate, `verify-ca` its chain, `verify-full` its chain and name), a `deadpool-postgres` pool that checks a connection before handing it out, whose `wait` is sqlx's `acquire_timeout` and whose dropped connections end with `Terminate` within a second (`deadpool-postgres`' own connector aborts them; `pool_tracked` lets a caller wait for them at shutdown), and a direct connection; the session parameters sqlx set at startup and its connection lifetimes are not kept (the crate's README lists the differences). Proven against what sqlx 0.9 read from 21 URLs, and from six more in seven environments, recorded by sqlx itself before it left the workspace (`tests/sqlx-0.9-reads.tsv`), and by hand against a server with TLS on, every mode (CI has no TLS server). `orch-secrets-pg`, `orch-store-postgres` (E1c) and `orch-agent-adam` (the pools of adam-rs's store and notifier, the last step of E1) use it | ✅ built · **Built** (E1a) |
+| `orch-pg-migrate` (`crates/pg-migrate`) | **ADR 0076, sys#382 E1 (2026-11-21):** applies a crate's Postgres migrations on `tokio-postgres` and continues the history sqlx kept: the same history table, the SHA-384 of each file, the same advisory lock (`0x3d32ad9e * crc32(current_database())`) and the same refusals (`Dirty`, `VersionMissing`, `VersionMismatch`), so an existing database migrates as a no-op and an old process and a new one never migrate at once. Proven against sqlx itself until sqlx left the workspace, and since against what it recorded (`tests/sqlx_history.rs`: every migration sqlx read has the version, description, checksum and transaction sqlx gave it, `tests/sqlx-0.9-history.txt`; a history written by sqlx's own statements is continued; sqlx's lock holds it back). `orch-secrets-pg` (the first) and `orch-store-postgres` (E1c) use it; adam-rs migrates the local agents' journal itself | ✅ built · **Built** (E1a) |
+| `orch-secrets-pg` (`crates/secrets-pg`) | **ADR 0046, slice 3 (built 2026-10-14):** the default `SecretStore`: one row per `(owner, server)` of `user_secrets` in the orchestrator's own Postgres, the material sealed with **AES-256-GCM** (RustCrypto `aes-gcm`) under a key of the configuration (`Keyring`, an id and 32 bytes each, any opens what it sealed, `current` seals), a random 96-bit nonce per seal, and the associated data `v ‖ owner ‖ server ‖ version ‖ kid` (eight-byte lengths), so a row moved to another person, server or version does not open. **Versions come from one sequence, taken inside a per-key advisory lock** that every write holds from lock to commit, so the writers of a key are serialized and a key holds the greatest version it was given; its own migrations in its own history table (`_orch_secrets_pg_migrations`). `rewrap` re-seals every row not under the current key **in place at the version it has** (not through `rotate`: the broker's refresh claim would lose the rotated refresh token), counting rewrapped, already current, changed and failed. Proven by `secret_store_conformance!` with a breaker that closes the pool, and by tests against Postgres (a moved row does not open, the table holds no plaintext, sixteen writers of a key land in order, a rewrap racing a rotate loses nothing); no secret in an error or a `Debug`. Used by the binary's **`orchestrator secrets rewrap`** and, **when `userToolServers.enabled`, by the service** (slice 4a: a pool of four connections of its own, `migrate()` at boot in the roles that serve routes, the broker over it, which holds the only handle on the store), which no route uses yet. *After the review of the same day:* every write is `READ COMMITTED` and waits at most two seconds for its key's lock (`Unavailable` after, so a lock that is held for long does not take the pool from the other keys), `rewrap` also opens the rows already under the current key (a key id whose bytes changed shows as `failed`), and a key of 64 zeros is refused (ADR 0046, departures 57 to 60). *Off sqlx (ADR 0076, sys#382 E1, 2026-11-21):* it speaks `tokio-postgres` on a `deadpool-postgres` pool, connects through `orch-pg-connect` (the connection string and TLS as sqlx read them) and migrates with `orch-pg-migrate`, which continues the history in `_orch_secrets_pg_migrations`; public items unchanged but `from_pool`, which takes a deadpool pool, and the few differences its README lists (no connection closed for its age or idleness, `close()` does not wait, a client-side authentication error is a refusal); no `sqlx` in the crate or its tests | ✅ built · **Built** (slice 3) |
+| `orch-model-openai` (`crates/model-openai`) | `ChatModel` over OpenAI-compatible `POST {base}/chat/completions` endpoints, one client configuration per endpoint name (`ChatRequest.endpoint`): the orchestrator's own model calls, the title and the description of a thread ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md), [ADR 0035](decisions/0035-utility-model-tasks.md)); `reqwest` only, no vendor SDK, a key never in an error or a `Debug` | ✅ built · **Built** |
+| `orch-agent-adam` (`crates/agent-adam`) | `AgentClient` over adam-rs agents hosted in the orchestrator's own process: `LocalAgents`, `LocalAgentClient`, the closed `LocalKind` (`Echo`); journal in the orchestrator's Postgres under `orch_agent_`, adam-rs's store and notifier (on `tokio-postgres` since adam-rs `7ac3281`) over `deadpool-postgres` pools that `orch-pg-connect` builds (ADR 0076, sys#382 E1, 2026-11-21); feature `testkit` | ✅ built · **Built** (ADR 0015) |
+| `orch-a2a-mapping` (`crates/a2a-mapping`) | Pure mapping of A2A stream items and tasks to `AgentEnvelope`s and idempotency keys (a `raw` part of an artifact is `AgentUpdate::File`, [ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md); a `data` part that names an upload under the `uploads/v1` URI is `AgentUpdate::FileUploaded`, [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)); no I/O, no async | ✅ built · **Built** |
+| `orch-svg-clean` (`crates/svg-clean`) | A pure allow-list sanitizer for SVG on `quick-xml` ([ADR 0032](decisions/0032-files-from-agents-live-in-an-artifact-store.md)): the API sends an SVG inline only through it | ✅ built · **Built** (S11) |
+| `orch-store-sqlite` (`crates/store-sqlite`) | **ADR 0076, sys#382 E2 (built):** `ThreadStore` and the three supertraits it builds (`UsageLedger`, `ThreadSearch`, `PromptStore`), plus `Wakeup` (`SqliteWakeup`, in process), `UserToolServerStore` and `PendingAuthorizations`, on one SQLite file with bundled SQLite, WAL, one connection behind a semaphore and an exclusive lock that refuses a second process; every conformance testkit green, with no skip. Its README states what its schema changes from the Postgres one | ✅ built · **Built** |
+| `orch-embed` (`crates/embed`) | **ADR 0076, sys#382 E3 (built):** the library composition root: `App` and `Dispatcher` over `orch-store-sqlite`, the caller's `AgentClient` and static `AgentDirectory`, no authenticator, model, artifact store or servers of the person's own, and no HTTP server. It offers `create_thread`, `post_message`, `read_thread`, `events`, `stream_agui` and `collect_agui` as Rust calls; the AG-UI stream is `orch-agui-projection`'s fold of the log. Its example runs one thread on the scripted agent and asserts the events; CI's `embed` job runs it and fails when the normal tree holds `axum`, `sqlx`, `tokio-postgres` or `hyper`. The local agent adapter (E4) and the target compile check (E5) are not built | ✅ built · **Built** |
+| `orch-app` (`crates/app`) | **a person's own agent on the message path (ANR-806, part 2):** `Provisioning` (`AppConfig.provisioning`, off by default) makes the port `AgentProvisioner` part of accepting a message. Before a request that starts the work of the agent the deployment calls `coder` or `workspace` (id or alias, a kind listed in `provisioner.kinds`) is written, `App` calls `ensure_ready(owner, kind)`: it makes the person's agent on a first message, resumes a suspended one, and **waits until it is `Ready`**. It does so in `create_thread_as`, `submit` (a message, Stop & send, an action on a card), a fork that carries a message and `start_child_session`, after the checks that cost nothing and before the commit, and **not for a replay** (a recorded idempotency key, an existing thread or fork), which writes nothing and asks nothing. **Routed (ANR-1061):** the first message that provisions the person's agent **records it as the thread's route** (`Job.route`, an additive optional field of the job ledger, kept by every later job, no migration), the thread's target stays the configured agent, and `Dispatcher::load` sends **every row kind** of that thread to the recorded agent, looked up in the registry; a thread with no route (it began before provisioning was on) keeps the agent and the A2A context it has, and a fork records its owner's own agent. A row the dispatcher claims for a routed thread calls `ensure_ready` first (a re-delegation, a redelivery, a session start, a steer find a suspended agent resumed); a stop and a follow never wake an agent, and a stop never wakes the agent: when the agent is not listed and no task runs at it and no delegation is in flight, the thread is cancelled locally; a delegation in flight is waited for (for a routed thread beyond `max_cancel_attempts`, for as many retries as fit in `readyTimeoutSecs` plus `OUTER_SLACK`) and the stop then cancels the task it started at the agent (the listing and `CancelTask` caps stay plain and share the stop's attempt counter, so after a long wait they may be spent: a known gap, ADR 0103); a task running at an agent that stays unlisted is given up after `own_agent_listing_attempts` attempts of the row, and the thread is cancelled without stopping it. An agent ready but not yet listed is tried for up to `DispatcherConfig.own_agent_listing_attempts` attempts of the row in all (default 5, not that many extra retries) and then fails with its own reason, never at the shared agent; a helper session's thread inherits its parent's route. The tier and cap come from the own agent's card. An `@mention` or `ask_agent` to a coder asks the platform nothing ([ADR 0103](decisions/0103-a-persons-own-agent-is-made-and-kept-ready-before-their-message-is-accepted.md)). A wait that ends in `ProvisionError::NotReady` (or that the provisioner does not end by `provisioner.readyTimeoutSecs` plus a 10 s backstop) is `AppError::AgentNotReady`, a 503 `agent_not_ready` that names **the wait-ready bound, not the dispatch's**, with nothing written; the other refusals are `AppError::Provisioning`. Two concurrent messages for one owner and kind make one agent (the port's promise, held to it by `tests/provisioning.rs` and the port's conformance suite). The shared `chat` agent is never provisioned. The core is untouched (`transition` stays pure), the port and its adapters stay as they were, and the composition root only builds the adapter and hands it to `AppConfig` (`dev/provisioner-e2e.sh` proves it on the dev stack's mocks). `App`, `Dispatcher` (and, before it commits an agent's file, the ingest: [Files from agents](#files-from-agents), and the ingest of an upload, [Uploads](#uploads-adr-0058)); **ADR 0046, slice 4a:** the permission `tools.user.add` (held by no role by default, `admin` does not imply it) and `App::user_tools()`, the ports of people's own MCP servers the bundle holds; **slice 4b (built 2026-10-15):** the operations the routes call, `add_user_tool_server`, `list_own_tool_servers`, `edit_user_tool_server` and `delete_user_tool_server`, with the permission and owner checks inside and no port given to a handler (add and edit need `tools.user.add`, list and delete none; a listing asks the broker for nothing; a failed `store` takes the definition back; a new URL, kind, scopes or client revokes the credential first; delete is revoke, then delete, and in a deployment that keeps no credentials just delete) | ✅ built · **Built** |
+| `orch-api` (`crates/api`) | HTTP edge, resource API (with `GET /api/threads/{id}/artifacts/{sha256}`, the files agents handed over), `SurfaceRoutes` (`plain`, `streaming` and `machine` routes); **ADR 0046, slice 4b (built 2026-10-15):** `POST`, `GET`, `PATCH` and `DELETE` of `/api/user-tool-servers` (people's own MCP servers; a 404 while `userToolServers` is off; the body of a route that carries a secret is read without echoing a value, and the secret is write-only) and a person's own servers in `GET /api/tool-servers`; **slice 4c (built 2026-10-15):** `POST /api/user-tool-servers/{id}/authorize` (the URL to open at the server's authorization server, a per-person rate limit), the **OAuth callback** `GET /api/user-tool-servers/oauth/callback` (outside sign-in: the person is found by the `state` alone; a fixed page, never the query; run to its end in a task of its own) and the Client ID Metadata Document at the path of `oauth.clientMetadataUrl` | ✅ built · **Built** |
+| `orch-agui-proto` (`crates/agui-proto`) | AG-UI 1.0 wire types, conformance testkit | ✅ built · **Built** |
+| `orch-agui-projection` (`crates/agui-projection`) | `Projector`, `translate`, `Connect` (the connect fold), `agent_capabilities` | ✅ built · **Built** |
+| `orch-surface-agui` (`crates/surface-agui`) | The run route `POST /agui/agents/{agentId}`, the connect stream `GET /agui/threads/{threadId}/connect` and the capabilities document `GET /agui/agents/{agentId}/capabilities`, over the projection | ✅ built · **Built** ([ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md)) |
+| `orch-surface-a2a` | A2A inbound | 🚧 planned · **Planned** (ADR 0012) |
+| `orch-surface-webhook` (`crates/surface-webhook`) | `POST /webhooks/ci` (slice 6) and `POST /webhooks/github` (slice 9): HMAC on the raw body, normalise to a `CiReport`, `App::receive`; machine routes; feature `surface-webhook`, on by default | ✅ built · **Built** ([ADR 0017](decisions/0017-ci-results-by-webhook.md)) |
+| `orch-surface-mcp` (`crates/surface-mcp`) | The MCP server at `/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind static bearer tokens): `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` | ✅ built · **Built** ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)), slices 11 and 12 |
+| `orch-signed-request` (`crates/signed-request`) | The signed requests to a tool server ([`api/signed-tool-requests-v1.md`](api/signed-tool-requests-v1.md), [ADR 0080](decisions/0080-requests-to-a-tool-server-are-signed-for-the-person.md)): `Signer` writes the header `Tool-Request-Claims` for one HTTP request, a tagged `COSE_Sign1` (Ed25519) in the claim-object profile of `cratestack-cose` 0.17.2 whose payload binds the method, the path, the SHA-256 of the exact body bytes, the thread and its owner; `SigningKey` reads a PKCS#8 PEM and derives the `kid`; with the feature `verify`, the reference of the receiving side (checks 1 to 5). Pure, no clock, a known-answer vector made by the real `sign_claims`; `interop/` runs the real `open_claims` on its bytes | 🧪 experimental · **Built** (proven on mocks; no tool server verifies it yet) |
+| `orch-prompt-statement` (`crates/prompt-statement`) | **ADR 0087, the note of 2026-11-25:** pure. The prompt statement the orchestrator signs on the cloud path (`Statement`, `UserClaims`), RFC 8785, the integrity rule (`attest`: `user` against the AG-UI request, else `403 prompt_signature_invalid` and no `AttestedPayload`) and the JWS with `x5c`; never verifies a signature. The PKI signer, the intake check and the carriage to the agent are not built | ✅ built · **Built** |
+| `orch-prompt-signer-static` (`crates/prompt-signer-static`) | **ADR 0087, the note of 2026-11-25:** a `PromptSigner` for tests: an Ed25519 key and its leaf's chain from PEM files, never renewed, `set_unavailable` as the stand-in of an expired certificate; held to `prompt_signer_conformance!` and to the shared vector V2. Not for a deployment | ✅ built · **Built** (test-only) |
+| `orch-thread-token` (`crates/thread-token`) | The token of the thread tools: an HS256 JWS with ten claims (the caller a closed `main` \| `ask:<n>`), the current and the previous key, `mint`, `verify`, the issuer that gives an agent `{url, token, expiresAt}`; the id of an upload slot (`mint_upload_id`, `verify_upload_id`: a MAC over the thread, job, hash, size, type and expiry, with its own domain line); pure, no clock, known-answer vectors | ✅ built · **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md)) |
+| `orch-config` (`crates/config`) | The configuration file of the binary ([ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md), keys in [`api/config.md`](api/config.md)): the typed keys (`version: 1`, closed), the JSON Schema generated from them and committed at [`api/config.schema.json`](api/config.schema.json) (a test fails on drift), the three passes (syntax, shape, rules) that list every error naming a key path and never a value, reserved keys named by the change that brings them, and secrets only as `{ env }` or `{ file }` references resolved through a `Resolve` the caller passes; pure, no file, no environment. Configuration is the composition root's input, not a port: no trait, no testkit. **ADR 0046, slice 4a:** the `userToolServers` section (`enabled`, `egress.allow`, `egress.deny`, `egress.allowHttp`, `oauth.clientName`, `oauth.clientMetadataUrl`; absent is off, `allowHttp` is refused in production, and with the feature on a `toolServers[].id` may not start with `u-`) and the permission `tools.user.add`; **slice 4c:** `oauth.callbackUrl` (an `https` address, or `http` on a loopback IP literal outside production; by default `server.publicUrl` and the callback's path; required when the sealed store is kept), and the rule that `clientMetadataUrl` is on the callback's origin and under none of the reserved paths | ✅ built · **Built** (S9) |
+| `orch-surface-thread-tools` (`crates/surface-thread-tools`) | The per-thread MCP endpoint `/thread-tools/{threadId}/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind that token and a check that the thread is the token's): the built-in `get_ui_catalog` and `turn_output` (an agent announces its answer: `App::record_answer`, [ADR 0031](decisions/0031-working-text-and-the-turns-answer.md)), and the `ThreadToolProvider` seam later slices add their tools through, with its first provider, the **relay** `RelayTools` (the tools of the MCP servers attached to the thread, `<server>__<tool>`, each call one step with the server's icon, through the `ToolServerClient` port: [architecture](architecture.md#the-relay-of-an-attached-mcp-servers-tools); **ADR 0046, slice 5a (built 2026-10-15):** also the thread owner's own `u-` servers, `RelayTools::with_user_servers`, a fresh `CredentialBroker::lease` for every list and every call, through the guarded client, a server whose credential cannot be had left out and failing a call as a step, a 401 or 403 marking the definition `needs_reauth`); the tool `request_upload` as a provider (`UploadTools`, [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)); feature `surface-thread-tools`, on by default | ✅ built · **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md), [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
+| Slack adapters | The Slack rows of the table above | 🚧 planned · **Planned**, not designed |
+| `orch-testsupport`, `orch-e2e` (`crates/testsupport`, `crates/e2e`) | Test-only | ✅ built · **Built** |
+| `orchestrator` (`bin/orchestrator`) | The composition root: reads the configuration file (`ORCH_CONFIG_FILE`) and the variables over it, `--print-config`; and one command, `artifacts migrate` ([below](#moving-the-directory-store-into-the-bucket)), which reads the store of the file and nothing else. **ADR 0046, slice 4a:** `src/user_tools.rs` composes people's own MCP servers when `userToolServers.enabled`: the definitions in Postgres, the sealed secret store in a pool of its own and the credential broker over both (or, with no `secrets` section, a broker and a store that refuse every call, so only servers that need no authentication can be added), the refusing bundle and nothing opened when it is off; **slice 4c:** the pending-authorization store (Postgres, in the thread store's pool), the callback address and the Client ID Metadata Document handed to the router | ✅ built · **Built** (the command: ADR 0058 step 6d) |
+
+:::
 
 ### Cargo features
 
@@ -369,6 +389,8 @@ sequenceDiagram
 **Built today** differs in four places, all consequences of having one input path a person can use (the chat, over AG-UI) and one output (an A2A
 agent):
 
+::: in-depth Design against built: four differences, and the inbox row lifecycle
+
 | Design | Built |
 |---|---|
 | Inbound adapters write an `inbox` row; a worker claims it and runs the transition | Machine input does: `App::receive` writes the row (the webhook surface calls it, slice 6) and timers are written by the commit that schedules them; the `InboxWorker` claims them and applies them. A person's request does not: the request handler runs `transition` itself inside `App::apply` and commits state, events and outbox rows in one transaction, so a redelivery cannot happen on this path. MCP does not use the inbox |
@@ -381,6 +403,8 @@ their own state diagram in [ADR 0017](decisions/0017-ci-results-by-webhook.md#di
 rows that become due at `available_at`, so the core never reads a clock
 ([ADR 0016](decisions/0016-inbox-timers-and-job-ledger-on-the-thread.md)). The `InboxWorker` lives in
 `orch-app` and runs wherever the dispatcher runs (`worker`, `all`).
+
+:::
 
 ### Inbox, timers and watches
 
@@ -433,6 +457,8 @@ stateDiagram-v2
 
 What the diagrams do not say:
 
+::: in-depth Time as data, fences, parking, attempts, receive, dedupe and wakeups
+
 - **Time is data.** The core asks for a delay with `Schedule`; the store adds it to the commit's
   `now`. A timer that is not due is not claimed, and the worker learns of a due timer by polling
   (`INBOX_POLL_SECS`), not by a notification. `TimerFired` for a verification that has moved on
@@ -472,6 +498,8 @@ What the diagrams do not say:
   are kept, which keeps that true and makes retention an open question (#29).
 - **Wakeups.** `NOTIFY orch_inbox` (`Topic::Inbox`) on a received or re-armed row; the worker also
   polls, so a lost notification costs latency only.
+
+:::
 
 ### The webhook surface (MVP slices 6 and 9)
 
@@ -527,6 +555,8 @@ stateDiagram-v2
   Accepted202 --> [*]: a worker matches it to a job by the watch on the commit
 ```
 
+::: in-depth The GitHub webhook, what a 202 means and where the turn is drawn
+
 `POST /webhooks/github` (slice 9) is the same machine route with GitHub's own scheme: the guard checks
 `X-Hub-Signature-256` over the raw body (401), the size (413, 5 MiB), the read timeout (408, 10 s) and the HMAC, and the
 handler answers `ping` with 204, stores a `check_run` or `workflow_run` with `action` = `completed` as a `CiReport` under a key
@@ -545,6 +575,8 @@ report, a rework and a deadline.
 
 The turn as the code runs it, step by step, is a sequence diagram in
 [Architecture: a chat turn](architecture.md#a-chat-turn).
+
+:::
 
 ## Command (outbox) lifecycle
 
@@ -567,6 +599,8 @@ stateDiagram-v2
   Delivered --> [*]
   Skipped --> [*]
 ```
+
+::: in-depth Per-thread order, fair share, resume, redelivery, defaults and shutdown
 
 `Dead → DeliveryFailed` is the fail-closed edge: a delegation that could not be delivered re-enters
 the state machine as `Input::DeliveryFailed { reason, retryable }`, so the thread goes `blocked` (a
@@ -620,6 +654,8 @@ What the diagrams cannot say:
 - **Shutdown.** The dispatcher stops its workers and sets `lease_until = now` on its rows, so another
   replica takes them at once ([`orchestrator/README.md`](../orchestrator/README.md#shutdown)).
 
+:::
+
 ### Steering a running task (ADR 0036)
 
 A message a person writes while a job runs is logged at once (`user_message { delivery: steer }`) and written as an outbox row of
@@ -660,6 +696,8 @@ stateDiagram-v2
   Skipped --> [*]
 ```
 
+::: in-depth A steer that falls back, open question 33 and Stop & send
+
 - **The row falls back, never dies.** A steer the agent did not take becomes the delegation it stands for
   (`ThreadStore::requeue_as_delegate`, in place: same position, same creation time, `attempts` kept), so a message is never lost and
   its delivery is today's. Retryable errors are retried first.
@@ -669,7 +707,13 @@ stateDiagram-v2
 - A `steer` row is skipped with the unsent delegations when a Stop & send starts the next job
   (`Commit.skip_unsent_delegates`).
 
+:::
+
 ### Asked agents (ADR 0026)
+
+The agent a job runs on may ask an agent the person mentioned to do part of the work and wait for the answer. The core, the stores, the ledger, the dispatcher's ask path and the `ask_agent` tool are built.
+
+::: in-depth The ask in full: the ledger, the dispatcher and the tool
 
 **Built: the core, the stores and the ledger (PR-19), the dispatcher's ask path that sends it (PR-20, `orch-app`'s `dispatcher/ask.rs`) and
 the tool that makes an ask (PR-21: [`ask_agent`](#the-ask_agent-tool-pr-21), `App::ask`, the `asks.*` configuration and the projection).** The agent a job runs on may ask one of the
@@ -681,6 +725,8 @@ a context of its own: the first ask of an agent in a job names none and the agen
 `<thread>-ask-<agent>` is what an older build sent). What this build has is the **ledger and its rules**:
 `Job.asks`, the inputs, the events `ask_started` and `ask_finished`, the `ask` outbox row and the deadline timer; and the dispatcher
 that sends the row to the asked agent and puts its answer in the log; the tool that makes an ask is below.
+
+:::
 
 ```mermaid
 sequenceDiagram
@@ -729,6 +775,8 @@ stateDiagram-v2
 
 The rules, all in `orch-core` (`ask.rs`, applied by `transition`; `crates/core/tests/asks.rs` has a test for each and a property test):
 
+::: in-depth The ask rules and the decisions where the plans were silent (PR-19)
+
 | Rule | What the core does |
 |---|---|
 | **Only while the job runs** | `Input::Ask` is accepted in `queued` or `working` (the agent can call before its `working` is read) and refused (`AskRefusal::TaskOver`) in every other state and while the job is being stopped (`after_stop`). Plan 05 said `working` only; `queued` is added because the token exists from the send |
@@ -761,6 +809,8 @@ Decisions where the plans were silent (PR-19):
   rejected stop (`CancelRejected`) that goes on with a steer goes on without them.
 - **The projection ignores the two events** (AG-UI draws nothing yet) and the MCP wait reports them as one line without the
   agents' words; goldens are unchanged.
+
+:::
 
 ### The dispatcher's ask path (PR-20)
 
@@ -805,6 +855,8 @@ stateDiagram-v2
   Dead --> [*]
   Skipped --> [*]
 ```
+
+::: in-depth What is sent and returned, crash safety, cancel and the PR-20 decisions
 
 - **What is sent.** The ask's text, as a message with the row's id as `messageId`, in the context the asked agent assigned to its earlier asks of the job (none for the first) and never the thread's
   binding. `continue_task` is the task of the agent's last ask when that ended `input_required` or `auth_required`; otherwise a new
@@ -851,6 +903,8 @@ Decisions where the plans were silent (PR-20):
 - **On a polled snapshot** (no `resubscribe`), a continued task's earlier artifacts and messages are in the snapshot too; the answer prefers
   the latest words, so the text taken from artifacts (the last choice) can include an earlier turn's.
 
+:::
+
 ### The `ask_agent` tool (PR-21)
 
 The thread tool [`ask_agent`](api/thread-tools-v1.md#ask_agent) is what makes an ask. It is a provider of the thread-tools endpoint
@@ -896,6 +950,8 @@ stateDiagram-v2
   Failed --> [*]
 ```
 
+::: in-depth What App::ask checks, repeats, waits for, and its configuration
+
 - **`App::ask` writes nothing until every check passed**, then one commit (`ask_started`, the row, the deadline), exactly as an
   `Input::Ask` applied by anyone else would. Its checks are the token against the ledger, the registry and the roles (below), and then the
   core's rules; a refusal comes back as `AppError` of the class that says what it is (`Forbidden` 403 for an agent no role may
@@ -916,7 +972,13 @@ stateDiagram-v2
   passes them in `Input::Ask.limits`, the timeout lowered by the call's `timeout_secs` and never raised.
 - **The A2A adapter** says `coordinate: {tool: ask_agent}` in `mentions/v1` when its `asks` switch is on, which the binary does whenever it mints grants.
 
+:::
+
 ### Fenced commits
+
+A lease is a promise that lapses, not a lock, so the store fences every write of a worker with a token that grows on each claim.
+
+::: in-depth Why a lease is not enough, and what the fencing token is
 
 A lease is a promise that lapses, not a lock: a worker paused past its lease (a stopped process, a
 long GC or network stall) resumes believing it still owns the row, while another worker has claimed
@@ -929,6 +991,8 @@ thread `commit` that records what the agent reported (`Commit.lease`). A commit 
 writes nothing and answers `CommitOutcome::Fenced`; `App::apply` reports it as
 `ApplyOutcome::Fenced` without retrying, and the worker logs `lease lost; the late agent result was
 dropped` and stops.
+
+:::
 
 ```mermaid
 sequenceDiagram
@@ -961,6 +1025,8 @@ stateDiagram-v2
 
 What the diagrams cannot say:
 
+::: in-depth Expiry, owner names, Postgres, API commits and what is not fenced
+
 - **Expiry alone does not fence.** A lapsed lease that nobody claimed again is still the current
   claim, so the worker's late result is kept: throwing it away would only redo work. What revokes a
   lease is a later claim, and a row that left `inflight` (delivered, dead, retried, skipped).
@@ -978,7 +1044,13 @@ What the diagrams cannot say:
 - **What is not fenced.** `skip_unsent_delegates` and `release_leases` take no lease; they act on
   the thread's rows by status and time.
 
+:::
+
 ## Local agents
+
+A local agent runs in the orchestrator's own process behind the feature `agent-local`, which is off by default; the orchestrator can also be embedded as a library, and the local adam adapter and the mobile compile check are not built.
+
+::: in-depth Local agents and the embedded library in full
 
 **Built** (`orch-agent-adam`, behind the binary's Cargo feature `agent-local`, off by default; [ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md)).
 [ADR 0076](decisions/0076-the-orchestrator-as-a-library-in-an-application.md) (2026-11-19): the
@@ -1000,6 +1072,8 @@ adam type. `LocalAgentClient` drives the runtime through the same seam an A2A se
 `orch-a2a-mapping`, so an envelope has the idempotency key it would have from a remote agent. A task is a run
 of the journal; its caller is `orch:<agent id>`, and its id is derived from the agent kind, the caller, the
 context the message names (none for a thread's first message, ADR 0055) and the message id, so sending the same outbox row twice reaches one task.
+
+:::
 
 ```mermaid
 sequenceDiagram
@@ -1047,6 +1121,8 @@ stateDiagram-v2
 
 What the diagrams cannot say:
 
+::: in-depth The journal, the state machine under the thread, refusals, roles and what is not built
+
 - **The journal is the orchestrator's Postgres** (the owner's decision of 2026-09-30). The store is
   `adam-store-postgres` on a pool of its own, with the table prefix `orch_agent_`: `orch_agent_runs`,
   `orch_agent_journal`, `orch_agent_meta`, and since adam-rs's schema version 6 `orch_agent_push`, `orch_agent_blob`,
@@ -1075,11 +1151,15 @@ What the diagrams cannot say:
 - **Not built yet**: retention of the `orch_agent_*` tables (open question 28), and the coder kind, an agent
   with tools and a workspace, which is the next change of step 12.
 
+:::
+
 ## Thread state and transitions
 
 **Built.** The states, the events they append and the pure function that decides both are in
 `orch-core`. The state diagram is in [Architecture: thread state](architecture.md#thread-state);
 this is the same machine as a table (`crates/core/tests/transition_table.rs` has one test per row):
+
+::: in-depth Transition tables, jobs, the UI catalog, steps and the gate rows
 
 | Input | `queued` / `working` | `blocked` | `done` / `failed` / `cancelled` |
 |---|---|---|---|
@@ -1291,6 +1371,8 @@ goes straight to `done`. There is no `reworking` state: a rework is `queued` or 
 diagram is in [ADR 0018](decisions/0018-verification-gate-and-rework-loop.md#diagrams) and the job
 lifecycle in [Architecture](architecture.md#job-lifecycle).
 
+:::
+
 ### The gate's configuration and its projection (MVP slice 3)
 
 **Built** (2026-09-30). The policy a job runs under is resolved once, when the thread is created, from three layers
@@ -1298,11 +1380,15 @@ and then copied into `Job` ([ADR 0018](decisions/0018-verification-gate-and-rewo
 resolution is one set of rules, `GateRules` in `orch-app` (`gate_config.rs`), used by the binary at startup and by `App`
 for a request, so the same thing is refused in the same words everywhere.
 
+::: in-depth The layers of the gate policy
+
 | Layer | Where | Members |
 |---|---|---|
 | Deployment | `ORCH_GATE` (comma list of `ci`, `agent-checks`, `verifier`; default none: today's behaviour), `ORCH_MAX_ATTEMPTS` (3), `ORCH_MAX_ATTEMPTS_CAP` (10, at most 100), `ORCH_VERIFIER`, `ORCH_VERIFIER_TIMEOUT_SECS` (1800) | the base policy |
 | Target | the `gate` key of an `AGENTS_FILE` entry, `deny_unknown_fields` | `require`, `maxAttempts`, `verifier`, `ci: {required, timeoutSecs}` |
 | Thread | AG-UI `forwardedProps["vymalo.gate"]` on the run that creates the thread | `require`, `maxAttempts` |
+
+:::
 
 ```mermaid
 sequenceDiagram
@@ -1330,6 +1416,8 @@ stateDiagram-v2
   Refused --> [*]: exit 78 at startup, HTTP 400 for a request
 ```
 
+::: in-depth What the build honours, how layers add, the projection and a rework
+
 - **What this build honours is listed in one place, and is checked in two.** `pending_reason` (a `match` over `CheckSource`,
   no wildcard) says why a source cannot be honoured yet; `GateRules::new` honours the rest. The binary applies the rules
   at startup and `App::new` applies them again to whatever gate its composition root hands it, so no root can bypass them. A source
@@ -1352,6 +1440,8 @@ stateDiagram-v2
 - **A rework is a new A2A task in the same context.** The first task is `completed` and cannot be continued, so the
   dispatcher delegates the rework prompt without a task id (it continues a task only while it waits for the user); the
   agent sees the same `contextId`. `orch-e2e` (`verify.rs`) pins it.
+
+:::
 
 ### The verifier's dispatch (MVP slice 10)
 
@@ -1402,6 +1492,8 @@ stateDiagram-v2
   Dead --> [*]
 ```
 
+::: in-depth The verify row, one input out, crash safety, time, context and the chat
+
 - **The row.** `OutboxPayload::Verify` carries the attempt, the verification, the verifier's id, what was pushed and the
   prompt. It is claimed like any row (a lease, renewed by a heartbeat, fenced) but is **not ordered** behind the thread's
   delegations: the delegate whose completion caused it is still being finished when it becomes due.
@@ -1430,6 +1522,8 @@ stateDiagram-v2
 - **The chat.** The verifier is a subagent of its own (`sub-verify-<n>`, named after the agent); its verdict is a
   `vymalo.check` card with source `verifier` ([`api/agui.md`](api/agui.md#verification-the-gate)).
 
+:::
+
 ### Thread titles (MVP slice 6)
 
 *Since PR S18 ([ADR 0035](decisions/0035-utility-model-tasks.md)) the title is one of the utility model tasks, with its own
@@ -1437,11 +1531,15 @@ endpoint, model, guidance, token limit and language rule from the configuration 
 [`api/config.md`](api/config.md)); with no `tasks:` section it behaves as it always did (`ORCH_TITLE_MODEL`). The request
 is built by `orch_core::task_prompt` (below) and the settings are `orch_app::TaskSettings`.*
 
+::: in-depth Where the title is built and its contract
+
 **Built** ([ADR 0005](decisions/0005-openai-compatible-model-endpoint.md) status note; the contract is `thread_titled`
 and `patchThread` in [`api/chat-api.yaml`](api/chat-api.yaml), the projection is [`agui.md`](api/agui.md#titles)). A thread
 is created with the first words of its first message as its title. Two things change it, and both are one commit of
 the event, the stored title (`Commit.title`) and the ledger (`Job.title`: whose title it is, how many times the model was
 asked, which ask was answered, whether the reply that is going on has asked):
+
+:::
 
 ```mermaid
 sequenceDiagram
@@ -1470,6 +1568,8 @@ stateDiagram-v2
   Model --> User: Rename
   User --> User: Rename (the last one is the title)
 ```
+
+::: in-depth When the title is asked, what the model sees, language, clean-up and failure
 
 - **When it asks.** `Input::Agent` appends a final `agent_message`, or a `completed`, `input_required` or `auth_required`
   status with words, and the ledger says the thread still has the first words (`TitleSource::FirstMessage`), has used
@@ -1515,6 +1615,8 @@ stateDiagram-v2
   makes the ledger say `User`; nothing the model writes afterwards is logged, and the model is not asked again.
   `Job::next()` keeps the ledger: a title is the conversation's, not a job's.
 
+:::
+
 ### Thread descriptions (ADR 0035)
 
 **Built** (PR S18, 2026-10-02: the core, the store with migration `0011`, the application, `patchThread` and the export, the AG-UI
@@ -1556,6 +1658,8 @@ stateDiagram-v2
   User --> User: SetDescription (the last one stands, empty included)
 ```
 
+::: in-depth The description ledger, the worker, what is configurable, edits and where it is said
+
 - **The ledger** (`orch_core::DescriptionLedger`, `Job.description`): `source` (`none | model | user`), `askedJob` (the job that
   last asked) and whether that ask is in flight. `Job::next()` keeps it; a fork keeps the source and forgets the job and the
   ask. `transition` appends `RequestDescription { job }` last when the state **changed** to `done` or `blocked` and
@@ -1585,12 +1689,16 @@ stateDiagram-v2
   and a snapshot where `thread_described` is read, exactly as the title's ([`agui.md`](api/agui.md#descriptions)).
   `ui.showDescriptions` (`GET /api/config`) hides it in the web; the API returns it either way.
 
+:::
+
 ### Child sessions: the core's half and the application's (ADR 0072, slices S2a to S2d)
 
 **Built** (S2a, `crates/core/src/child_sessions.rs`; applied by S2d, [below](#child-sessions-the-applications-half-slice-s2d)). An agent that lists
 [`child-sessions/v1`](api/child-sessions-v1.md) runs a helper as a **session**; the core decides what the
 parent's log says about it and what a child thread starts as. It never reads the wire: an adapter hands it a
 `SessionReport` (strict, bounded, checked again at the door by `SessionReport::check`) and the core decides.
+
+::: in-depth The core inputs, the first decision of a child, usage and the store
 
 | Input | Thread | What it does |
 |---|---|---|
@@ -1622,6 +1730,8 @@ An observed job sends nothing, so it has no delegation row, task or binding of i
 application from S2d. `ThreadRecord.child_of` (`ChildOf { thread, session }`, serialised as `Thread.childOf` from S2d) is a column pair
 ([Data model](#data-model)); `ThreadStore::open_child_thread` makes the child thread once per `(parent, session)` and
 `child_threads` lists a parent's; `delete_threads` erases a parent's children with it and refuses a set that leaves one.
+
+:::
 
 ```mermaid
 sequenceDiagram
@@ -1667,11 +1777,15 @@ The store for all of this is built (S2b: migration `0027`, `ThreadRecord.child_o
 what an agent says of its sessions to `App::child_sessions_news(thread, lease, news)`, which acts on the
 **kind of thread** the stream belongs to:
 
+::: in-depth Which news opens, reports or closes a session
+
 | News | On the stream of | The application |
 |---|---|---|
 | `Listed(reports)` or `Event(_, report)` | a parent's task | For each report: **the child thread first**, then `Input::ChildSession` on the parent. The child thread is made by `ThreadStore::open_child_thread` (the parent's owner and agent, the report's context, nested under the parent's row of the list, the first commit from `start_child`: no event, a `queued` thread with the order to follow the report's round); a session whose thread exists (`Existing`: a repeat, or a crash between the two writes) is told the report with `Input::ChildSessionSaid` instead. The parent's ledger names the child: one it names that was deleted is skipped and counted (`child_deleted`), a parent that notes 256 sessions gets no thread for the 257th (`ledger_full`), a report that fails the core's bounds is `malformed`, a child asked to have children is `refused` |
 | `OfRound(report)` | a child's followed round | `Input::ChildSessionSaid` on the child under the row's claim (a round it was not told to follow is ordered, once), then `Input::ChildSession` on the parent, so the parent hears of the round's end whatever way the child learned of it |
 | `ChildSessionsRejected` | any | counted (`rejected`), the task goes on |
+
+:::
 
 Every drop is counted in `child_sessions_dropped_total{reason}` (a closed set, no thread, session or agent in a label) and
 none fails a task. The writes are idempotent by the ledgers, not by a key: the same news said twice, by two workers or after a
@@ -1714,6 +1828,8 @@ stateDiagram-v2
   Reported --> Delivered: the row is finished
 ```
 
+::: in-depth Following a round: limits, hostile rounds, refollow, rest, reads, closing and deletion
+
 - **`Dispatcher::observe(row)`** loads the child with the parent's agent (the registry is read now, as for any row). A row with no
   `sent_at` applies `RoundStarted` under the claim (key `observe:<row id>`; the round's `by` is the report's, carried on the row
   and `None` when the report said none, then taken for the agent's), then `mark_sent` with the round's task, then
@@ -1749,11 +1865,15 @@ stateDiagram-v2
 - **The API.** `Thread.childOf { threadId, session, agent, state }` and `nestedUnder` (the parent's row); the child's events and
   the parent's three are in the log's contract ([`api/chat-api.yaml`](api/chat-api.yaml)).
 
+:::
+
 ### Forking a thread (MVP-plan item F, ADR 0029)
 
 **Built** (2026-10-01): the core, the store, the API and the AG-UI projection (the marker `vymalo.fork` and `thread.forkedFrom`, [`agui.md`](api/agui.md#forks)); the transcript on the wire (`SendRequest.history`, below); the web is the next step. A fork is a new thread that starts with a
 copy of its parent's events up to a cut, then a `thread_forked` event ([ADR 0029](decisions/0029-forking-a-thread-copies-its-log.md)).
 `orch_core::fork` holds the pure rules; nothing in it reads a store:
+
+::: in-depth The decisions, the store, the application and the API of a fork
 
 | Function | What it decides |
 |---|---|
@@ -1794,6 +1914,8 @@ and `id`; 201 with the new thread and a `Location`, 200 for a repeat, 400, 404, 
 family, 422 for a point that is not in the log or not a person's message), `GET /api/threads/{id}/branches`
 (`{root, points: [{seq, index, siblings: [{threadId, seq, title}]}]}`) and `GET /api/threads?branches=include`. Problems carry an
 optional `code`.
+
+:::
 
 ### The owner's list: pin, archive, order and nesting (ADR 0042)
 
@@ -1844,6 +1966,8 @@ stateDiagram-v2
   Top --> Top: move (top, before or after another)
 ```
 
+::: in-depth Order, nesting, ranks, refusals and permission
+
 - **Order.** `ThreadListing { before, limit, include_edits, order, archived }`. `Recent` is `id` descending, a flat list, the archived
   filter applied to each row. `Rail` is the owner's order: the top-level threads (`rail_parent IS NULL`) by section (**pinned**, the
   rest, **archived** last), by `rail_rank` and, on a tie, `id` descending; the archived by `archived_at` descending; each followed by
@@ -1869,11 +1993,15 @@ stateDiagram-v2
   allow-list and a test asserts that `pinned`, `archived` and `nestedUnder` are absent from a shared view. Archiving does not touch a
   share. The owner's routes and the export say `pinned`, `archived` and `nestedUnder` where they hold.
 
+:::
+
 ### Sharing a thread (ADR 0040)
 
 **Built** ([ADR 0040](decisions/0040-thread-sharing-by-revocable-link.md), the backend; the web and the edge are the next two pull
 requests). A thread is `private` until its owner shares it as `internal` (signed-in people with the link) or `public` (anybody),
 under the deployment's cap `sharing.mode`; what is served is `min(visibility, cap)`, computed when a link is opened. The layers, bottom up:
+
+::: in-depth Core, port, application, API and surface of sharing
 
 - **Core (pure).** `Input::Share { user, level, nonce }` and `Input::Unshare { user }`, valid in every state, give an `Append` of
   `thread_shared { visibility, nonce_sha256 }` or `thread_unshared {}` and `Command::SetSharing` or `ClearSharing`. The nonce
@@ -1894,6 +2022,8 @@ under the deployment's cap `sharing.mode`; what is served is `min(visibility, ca
   `X-Robots-Tag: noindex`, one 404 for every dead link, the per-link and total token buckets and the stream ceiling
   (`orch_api::limiter`), and a request span that redacts the token (`orch_api::trace`). [`chat-api.yaml`](api/chat-api.yaml),
   [`agui.md`](api/agui.md#reading-a-shared-thread), [`config.md`](api/config.md#sharing).
+
+:::
 
 ### Files from agents
 
@@ -1933,6 +2063,8 @@ stateDiagram-v2
   Logged --> [*]: the turn goes on
 ```
 
+::: in-depth The adapter file report, serving it and what a fork copies
+
 The adapter reports a file as `AgentUpdate::File`: the mapper makes one per `raw` part (`a2a:<task>:artifact:<id>:file:<part>`), and
 the adapter turns a `url` part into one when, and only when, its host is on `artifacts.fetchHosts` (no redirect followed, no
 credential sent, stopped at the cap). **The dispatcher keeps the file before anything is committed** (`src/dispatcher/files.rs`):
@@ -1956,6 +2088,8 @@ copied events reference (`orch_core::file_refs`) from `threads/<parent>/<sha256>
 `ArtifactStore::copy` (idempotent, same hash, the copy outlives the source) **before** the fork's transaction commits: files first, then
 the reference, as the ingest does. A copy that fails fails the fork and nothing is committed; a copy left by a fork that then fails
 to commit is an orphan nothing refers to (a sweep is future work). A file the parent's store does not have is skipped.
+
+:::
 
 ### Uploads (ADR 0058)
 
@@ -2011,6 +2145,8 @@ stateDiagram-v2
 
 What the code does that the diagrams do not say:
 
+::: in-depth The upload id, the offer, deletion, the log and what is not built
+
 * **The id is a token that carries its claims** (`orch-thread-token`, `upload.rs`): the artifact part holds no hash or size, so a bare MAC could not be checked without a table, and the process stays
   stateless. It is signed under the thread-tools key (a rotation reads old ids), with a domain line that a thread-tools token never has.
 * **The offer is part of the grant** (`ToolsGrant.uploads`): only the delegation and the steer of the thread's addressed agent carry it, so an asked agent (`ask_agent`) is neither told the limits nor
@@ -2024,6 +2160,8 @@ What the code does that the diagrams do not say:
 * **The log never holds the id, the URL or a signature.** A refused or kept upload is an `artifact` (with `file`, or without it and an `error`), exactly as for a `raw` file; the serving of the kept file is
   unchanged ([Files from agents](#files-from-agents)).
 * **Not built:** the rollout (A5), the web's upload surface and its policy for the files host (A3) and the orphan sweep. The chart's public files host and its `NetworkPolicy` are built (6c, `rustfs.ingress`, off by default; [`deploy/chart/README.md`](../deploy/chart/README.md#the-files-host-adr-0058)). The redirect of downloads (A1) is built, below.
+
+:::
 
 ### Downloads by a redirect (ADR 0058 A1)
 
@@ -2066,6 +2204,8 @@ stateDiagram-v2
   Refused --> [*]
 ```
 
+::: in-depth One function decides, the headers, no read, the lifetime and what is not built
+
 * **One function decides** (`orch_api::artifacts::deliver`), called by the three routes after their checks, which are `App::readable_artifact`, `readable_shared_artifact` and `readable_public_artifact`: exactly the checks of the
   `open_*` calls (which are now those plus `open_readable`), returning a `ReadableFile`, the proof that they passed. A refusal is never a redirect.
 * **The headers are decided by one pure function** (`redirect_overrides`), from the same rules as the streamed response (`content_type`, `disposition_text`, the text of `disposition_header`): `inline` for a preview type without `?download=1`, the kept type
@@ -2075,6 +2215,8 @@ stateDiagram-v2
   by another road.
 * **The lifetime** is `artifacts.s3.presignTtlSecs` (`DownloadMode::Redirect { ttl }`, 30 to 3600, 300), and `min(ttl, 60)` for the two link routes. The file's rules check it whatever `downloads` is; the loader builds the mode and refuses (exit 78) a lifetime the application cannot sign.
 * **Not built:** the web's policy (A3). The files host's Ingress and CORS are the chart's (6c).
+
+:::
 
 ### Moving the directory store into the bucket
 
@@ -2182,6 +2324,8 @@ stateDiagram-v2
   Finished --> [*]
 ```
 
+::: in-depth The transaction, the purge row, refusals, streams, late input and counters
+
 * **One transaction** (`ThreadStore::delete_threads`). The rows are locked `FOR UPDATE` in `id` order (a fork, which holds the parent
   `FOR KEY SHARE`, and a commit wait, and find the row gone or its version moved), each must be the owner's (`NotFound` otherwise,
   and for a thread deleted already) at the version the caller read (`VersionConflict`), and an edit of one that goes that is not
@@ -2207,6 +2351,8 @@ stateDiagram-v2
 * **What it does not reach** (ADR 0043, decision 7): the A2A agent's own store of its context, the model provider, backups until they expire,
   and an `agent-local` build's journal rows for the context. Tracing keeps only thread ids.
 * **Counters:** `threads_deleted_total`, `late_input_dropped_total{source}` (per process) and `thread_purges_pending` (read from the store on a scrape).
+
+:::
 
 ### Exporting a thread
 
@@ -2235,6 +2381,8 @@ sequenceDiagram
 ```
 
 The document (`format` `another-agentic-system/thread-export`, `version` 1, built in `orch-api`'s `export` module; `versions` was added without moving the version):
+
+::: in-depth The members of the document, its bounds, the ledger and authorisation
 
 | Member | What |
 |---|---|
@@ -2271,10 +2419,14 @@ of their messages (`ThreadRecord.owner` itself is never serialised). The owner i
 `the_export_holds_the_log_in_order_and_no_credential_of_the_orchestrator` fails if the agent's configured token ever appears.
 The web's **Export JSON** button and [`dev/export-thread.sh`](../dev/export-thread.sh) call this route.
 
+:::
+
 ## Core types
 
 **Built.** A separate crate with no async, no database driver and no HTTP, so purity is enforced by the
 compiler, not by convention. The public surface that matters, as in `crates/core/src`:
+
+::: in-depth The types, the agent endpoint, the job and the gate fields
 
 ```rust
 // crate `orch-core` — types + one function. No I/O.
@@ -2405,12 +2557,16 @@ timer; MCP's is `user_message.origin`, above), inputs for `Approval` and `ToolRe
 `TimerFired` and `Schedule` are the ones above. They arrive with the later steps ([MVP](mvp.md)); the
 closed enums make the compiler list every `match` that must handle them (ADR 0004). The AG-UI work has added `ui_surface` and `ui_action` events ([ADR 0013](decisions/0013-a2ui-generative-ui.md), built), with the agent update `AgentUpdate::Ui` / `UiRejected`, the input `Input::UiAction` and the command `DelegateAction`.
 
+:::
+
 ## Process roles
 
 **Built** (checked against `bin/orchestrator/src/boot.rs` on 2026-09-29). One binary, one image. What a
 process runs is its **role**, `ORCH_ROLE` or `--role` ([ADR 0015](decisions/0015-control-plane-and-workers-on-adam-rs.md)).
 The enum, `Role`, and the supervisor, `Host`, come from the `adam-host` crate of adam-rs (a git
 dependency pinned to a commit sha); this repository adds no role and no supervisor of its own.
+
+::: in-depth What each role runs and serves
 
 | Role | Runs | Serves on `LISTEN_ADDR` |
 |---|---|---|
@@ -2424,6 +2580,8 @@ compare-and-swap and `LISTEN/NOTIFY`, all in Postgres, so there is no new protoc
 `queued` until a worker claims its outbox row; a control plane never calls an agent. Wake-ups
 between processes are the ones the replicas already use (Postgres `LISTEN/NOTIFY`, backed up by the
 dispatcher's and the streams' own polling), so a lost notification costs latency, not correctness.
+
+:::
 
 ```mermaid
 sequenceDiagram
@@ -2466,6 +2624,8 @@ ends after the dispatcher, so a draining worker answers 503 rather than refusing
 **Built** (checked against `orchestrator/bin/orchestrator/src/logging.rs` and
 `orchestrator/crates/api/src/metrics.rs` on 2026-09-29).
 
+::: in-depth Logs, metrics, run-pod quota use and the queue to scale on
+
 **Logs.** Every log line carries the process's `role` and `instance` (the id that owns its outbox
 leases): the first two keys of the JSON object, or a `role=worker instance=w1 ` prefix in text
 format. The event formatter adds them, not a root span, because the dispatcher runs each outbox
@@ -2507,6 +2667,8 @@ The same for `resource="requests.cpu"`, `"requests.memory"` or `"limits.cpu"`, w
 sets. *Unverified:* the exact `resource` names depend on what `runPods.quota` sets in the deployed
 chart; list them with `kube_resourcequota{type="hard"}`.
 
+:::
+
 The queue that matters for scaling is `due + leased`: rows waiting for a worker plus rows workers
 are busy with. Because the values are global, an aggregation across the replicas that report them
 takes `max`, never `sum` (three replicas would triple the count).
@@ -2543,6 +2705,8 @@ stateDiagram-v2
   Leased --> [*]: complete_outbox (delivered, dead, skipped)
 ```
 
+::: in-depth KEDA and Prometheus (unverified), the split profile, trace context and testing
+
 *Unverified* (KEDA and Prometheus behaviour from memory of their documentation, not checked
 against a running cluster): a `prometheus` trigger with the query
 `max(orch_outbox_rows{state="due"}) + max(orch_outbox_rows{state="leased"})` and a threshold equal to
@@ -2568,7 +2732,13 @@ health-only router; the binary's smoke tests read it from a control plane (one d
 worker exists, none after) and from a worker, and parse every JSON log line of a worker for its
 `role` and `instance`.
 
+:::
+
 ## Design choices
+
+The design choices are closed enums, authentication at the edge with authorization in the core, immediate answers, capability-detected extensions, idempotency, optimistic concurrency, at-least-once outbound delivery and one error model.
+
+::: in-depth The eight design choices, each with its status
 
 - **Closed enums + `match`, not a `dyn Adapter` registry. Built.** The set of
   channels is compiled in; nothing is loaded at runtime. Adding a channel adds
@@ -2613,6 +2783,8 @@ worker exists, none after) and from a worker, and parse every JSON log line of a
   the message id makes a repeat harmless where the agent records it.
 - **One error model. Built.** Every error enum implements `orch_core::Classify`; retry, HTTP status
   and exit code decide by `ErrorClass`, never by variant ([`orchestrator/README.md`](../orchestrator/README.md#errors)).
+
+:::
 
 ## Data model
 
@@ -2673,6 +2845,8 @@ erDiagram
   }
 ```
 
+::: in-depth The tables, and the migrations 0003 to 0023
+
 | Table | Holds | Key points |
 |---|---|---|
 | `threads` | Owner, title, description, target agent and release, current state, `version`, `last_seq` | The snapshot; the state is also implied by the log. `last_seq` is the per-thread counter row: it is bumped in the transaction that inserts the events, under the row lock, so `seq` has no gaps and no duplicates |
@@ -2730,6 +2904,8 @@ so that parallel slices do not collide:
   Postgres scan `threads` under an exclusive lock), and `sandbox_environment` is checked for its shape, not against today's three words, so a new `SandboxEnvironment`
   needs no migration. A catch-up folds the events of each task in memory and writes each changed row once; the backfill waits at most 5 s for a thread's lock (a thread
   it cannot lock is skipped and counted, exit `75`) and its first page detaches the rows of threads an older build erased.
+
+:::
 
 ```mermaid
 erDiagram
@@ -2805,6 +2981,8 @@ erDiagram
   }
 ```
 
+::: in-depth The tables and columns of the ledger and the store methods
+
 | Table or column | Holds | Key points |
 |---|---|---|
 | `threads.job` | The job ledger: the gate policy copied at creation, the attempt, the pushed commit, the check results, a hold | One thread, one job for steps 2 to 6; step 4's child jobs get a separate table later |
@@ -2826,7 +3004,13 @@ erDiagram
 one transaction; the conformance cases are in `thread_store_conformance!`. `user_message` gains an `origin`
 field (no column; it is in the event's `data`; **built** with the MCP surface). The chat needs none of this when the gate is empty.
 
+:::
+
 ### Live updates
+
+Postgres `LISTEN/NOTIFY` carries hints, never stored data, with live text as the one exception.
+
+::: in-depth LISTEN/NOTIFY, live text, what the words are for and the announced answer
 
 Postgres `LISTEN/NOTIFY` carries hints, never stored data (the one exception is live text, below). `PgStore` sends
 `pg_notify` inside the writing transaction (channels `orch_thread` with the thread id as payload,
@@ -2877,6 +3061,8 @@ says is the answer**: a message is written `working`, one that repeats the last 
 status that ends the turn that no message said are written as a `working` message (`out-<jti>-words-<n>`) ahead of the
 status. A later announcement replaces the earlier one by a rule, not by a rewrite: **the answer of a turn is the last
 message marked `answer` in it**.
+
+:::
 
 ```mermaid
 sequenceDiagram
@@ -2954,6 +3140,8 @@ stateDiagram-v2
   Waiting --> [*]: the client closes
 ```
 
+::: in-depth The migrations 0025 to 0029, and how a stream behaves
+
 - **`0025` (the search index, built, [ADR 0068](decisions/0068-a-person-searches-their-own-threads.md)):** `threads` gains `title_terms` and `description_terms` (`tsvector`, nullable: the folded keys of the title and the description, `NULL` until the thread is indexed) and `search_through bigint NOT NULL DEFAULT 0` (the `seq` up to which the index has been through the log; a fork's starts at its last `seq`, because the events it copied are indexed from its own log in the transaction that creates it); and a table `message_terms (thread_id, seq, owner, message_id, terms tsvector)` with a foreign key to `events` **`ON DELETE CASCADE`** (an erase leaves no word), a GIN index on `terms`, a btree on `owner` and one on `(thread_id, message_id)`. The keys are made in Rust (`orch_core::search`) and stored with `array_to_tsvector`: no parser, no dictionary, no extension. `insert_events` indexes a person's `user_message` and an agent's final `agent_message` that is not working text in the transaction of the event (a later final message with the same `messageId` deletes the earlier row), each commit first indexes `(search_through, last_seq]`, and `orchestrator search backfill` indexes the logs that predate it.
 - **`0026` (the prompt library, built, [ADR 0070](decisions/0070-a-persons-prompt-library.md)):** `user_prompts` and the sequence `user_prompt_revisions`; nothing is rewritten and no large table is locked. The header of the migration says what each column is, why there is no event and no foreign key, and the lock of the limit.
 - **`0027` (child sessions, built, [ADR 0072](decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), S2b):** `threads` gains `child_of uuid REFERENCES threads (id)` (**no `ON DELETE`**: a parent is never deleted from under its children, which `delete_threads` erases with it or refuses to) and `child_session text` (the session's id, opaque), the constraints `threads_child_pair` (`(child_of IS NULL) = (child_session IS NULL)`) and `threads_child_not_self`, and the partial **unique** index `threads_child (child_of, child_session) WHERE child_of IS NOT NULL`: at most one child of a parent for a session, which is what makes two replicas that learn of the same session at once make one thread (the loser of the race reads the winner's, `ChildThread::Existing`). `events.kind` gains `child_session_opened`, `child_session_reported` and `child_session_closed` (the constraint rebuilt with every kind, `NOT VALID` and then validated, as `0020` did), and `child_session` is bounded to 1 to 512 characters. **Locks:** the migrator runs the file in one transaction (sqlx did, and `orch-pg-migrate` does), so `events` and `threads` are locked ACCESS EXCLUSIVE until it commits, through the validation scan and the index build; acceptable at this stage, and on a large database run it in a maintenance window. No table: what a parent knows of its sessions (`Job.sessions`) and what a child knows of its own (`Job.child`) live inside `threads.job`. **Rollout order:** every replica on the build that has this migration **before** an agent that lists `child-sessions/v1` is deployed: an older build cannot decode a log that has one of the kinds, and its `delete_threads` does not know to take a parent's children (the foreign key refuses the delete). Nothing writes a child or a kind until such an agent does. A `ThreadStore` implementation: `open_child_thread` and `child_threads` ([ports README](../orchestrator/crates/ports/README.md)).
@@ -2990,6 +3178,8 @@ The routes, statuses and mapping tables are [`api/agui.md`](api/agui.md); the co
 [`orch-agui-projection`](../orchestrator/crates/agui-projection/README.md) and the streaming code in
 [`orch-surface-agui`](../orchestrator/crates/surface-agui/README.md).
 
+:::
+
 ### The database behind a pooler (issue 290)
 
 **Built (PR 1 of the issue is the orchestrator; PR 2 is the chart's pooler, [`deploy/chart/README.md`](../deploy/chart/README.md#scaling-the-database-issue-290)).** With `database.directUrl` set, `database.url` is the address of a
@@ -3022,6 +3212,8 @@ stateDiagram-v2
   Listening --> [*]: SIGTERM
 ```
 
+::: in-depth What must stay direct, and how it is proven
+
 **What must stay direct, and why.**
 
 | Construct | Where | Scope | So |
@@ -3044,9 +3236,13 @@ because a pooler cannot carry a `search_path`). The routing is proven from the d
 are told apart by `application_name`, an event trigger records the session of every DDL statement, and `pg_stat_activity` says
 which session listens.
 
+:::
+
 ## Testing
 
 **Built.**
+
+::: in-depth The kinds of test, from replay to goldens
 
 - **Replay and determinism:** because `transition` is pure, folding the same inputs twice gives the
   same state and the same commands (`replay_is_deterministic`).
@@ -3091,19 +3287,21 @@ which session listens.
 
 **Planned:** contract tests per further protocol against recorded fixtures.
 
+:::
+
 ## Libraries
 
 Versions are from `orchestrator/Cargo.toml` (*verified* 2026-09-29, from the repository).
 
 | Need | Choice | Status |
 |---|---|---|
-| A2A client | [`a2aproject/a2a-rs`](https://github.com/a2aproject/a2a-rs): `a2a-lf` 0.3.1, `a2a-client-lf` 0.2.5 (`a2a-server-lf` 0.4.4 in the test fake agent only) | In use since MVP step 2. Protocol notes in `orch-agent-a2a` are *verified* against the SDK sources on 2026-09-29 by that crate's author; not re-checked for this page. Maturity: open question 4 |
-| A2A server | Not chosen yet | **Planned** (`orch-surface-a2a`). The SDK's server crate, `a2a-server-lf`, is used today only by the test fake agent |
-| Postgres | `tokio-postgres` 0.7 and `deadpool-postgres` 0.14: through `orch-pg-connect` and `orch-pg-migrate` in `orch-secrets-pg` and `orch-store-postgres`, through `orch-pg-connect` in `orch-agent-adam`, whose adam-rs store and notifier are on them too (ADR 0076, sys#382 E1). No `sqlx` anywhere in the workspace: `tools/sqlx-out-check.sh` fails CI's `check` on a lockfile that holds one | In use; sqlx out since 2026-11-21 |
-| HTTP | `axum` 0.8, `tower-http` | In use |
-| Configuration | `clap` 4 with environment fallback | In use (`bin/orchestrator`) |
-| Errors | `thiserror` in library crates, `anyhow` in the binary | House rule, in use |
-| Time | `jiff`; no `f64` durations | In use |
-| AG-UI schema validation | `jsonschema` 0.58, test-only, against the vendored 1.0 schema | In use (tests) |
-| Model endpoint | Any OpenAI-compatible endpoint (ADR 0005) | **Planned**: nothing in the workspace calls a model yet |
+| A2A client | [`a2aproject/a2a-rs`](https://github.com/a2aproject/a2a-rs): `a2a-lf` 0.3.1, `a2a-client-lf` 0.2.5 (`a2a-server-lf` 0.4.4 in the test fake agent only) | ✅ built · In use since MVP step 2. Protocol notes in `orch-agent-a2a` are *verified* against the SDK sources on 2026-09-29 by that crate's author; not re-checked for this page. Maturity: open question 4 |
+| A2A server | Not chosen yet | 🚧 planned · **Planned** (`orch-surface-a2a`). The SDK's server crate, `a2a-server-lf`, is used today only by the test fake agent |
+| Postgres | `tokio-postgres` 0.7 and `deadpool-postgres` 0.14: through `orch-pg-connect` and `orch-pg-migrate` in `orch-secrets-pg` and `orch-store-postgres`, through `orch-pg-connect` in `orch-agent-adam`, whose adam-rs store and notifier are on them too (ADR 0076, sys#382 E1). No `sqlx` anywhere in the workspace: `tools/sqlx-out-check.sh` fails CI's `check` on a lockfile that holds one | ✅ built · In use; sqlx out since 2026-11-21 |
+| HTTP | `axum` 0.8, `tower-http` | ✅ built · In use |
+| Configuration | `clap` 4 with environment fallback | ✅ built · In use (`bin/orchestrator`) |
+| Errors | `thiserror` in library crates, `anyhow` in the binary | ✅ built · House rule, in use |
+| Time | `jiff`; no `f64` durations | ✅ built · In use |
+| AG-UI schema validation | `jsonschema` 0.58, test-only, against the vendored 1.0 schema | ✅ built · In use (tests) |
+| Model endpoint | Any OpenAI-compatible endpoint (ADR 0005) | 🚧 planned · **Planned**: nothing in the workspace calls a model yet |
 | Durable execution engine | none — Postgres state machine | Restate considered; BSL server + extra stateful system. Revisit only if waits/timers get complex. |
