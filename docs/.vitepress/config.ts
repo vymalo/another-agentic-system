@@ -4,8 +4,10 @@ import { fileURLToPath } from "node:url";
 import { defineMd3Config } from "@vaam-apps/vitepress-md3/config";
 import { withMermaid } from "vitepress-plugin-mermaid";
 import { useSidebar } from "vitepress-openapi";
+import llmstxt from "vitepress-plugin-llms";
 import { DEFAULT_BASE, DEFAULT_TAG } from "./openapi/shared";
 import { loadSpec } from "./openapi/spec";
+import { llmsSidebar } from "./llms";
 import { inDepth } from "./theme/in-depth";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -91,7 +93,7 @@ const sidebar = [
     group("Errors", []),
   ]),
   { text: "Architecture", items: [page("concepts", "Concepts"), page("architecture", "Architecture"), page("orchestrator", "Orchestrator")] },
-  { text: "Decisions", collapsed: true, items: [{ text: "ADR index", link: "/decisions/" }, ...pages("decisions")] },
+  { text: "Decisions", collapsed: true, items: [{ text: "ADR index", link: "/decisions/" }, ...pages("decisions", ["index.md"])] },
   { text: "Contributing", items: [{ text: "How to contribute", link: "/contributing" }] },
 ].filter((s) => s.items.length > 0);
 
@@ -151,5 +153,18 @@ export default withMermaid(
     },
     markdown: { config: (md) => { md.use(inDepth); escapeUnknownTags(md); }, attrs: { disable: true } },
     mermaid: {},
+    // llms.txt, llms-full.txt and a .md per page, for agents that read the docs (ANR-1088, STRUCTURE.md).
+    vite: {
+      plugins: [
+        llmstxt({
+          title: "another-agentic-system",
+          description: "A protocol-agnostic orchestration layer for multi-agent work: a chat surface and a stateless orchestrator over one Postgres event log.",
+          details: "The chat API's machine-readable form is the OpenAPI file [chat-api.yaml](" + (process.env.DOCS_BASE ?? DEFAULT_BASE) + "api/chat-api.yaml).",
+          ignoreFiles: ["api/reference.md", "api/operations/*", "api/tags/*", "tester-note.md"],
+          injectLLMHint: false,
+          sidebar: (s) => llmsSidebar(s as never) as never,
+        }),
+      ],
+    },
   }),
 );

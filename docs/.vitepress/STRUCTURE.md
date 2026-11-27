@@ -78,6 +78,11 @@ Optional, and worth copying with them: `in-depth.test.mjs` (`node --test`, run b
 one variable, so they move together. Under 960px the sidebar is a drawer and is not changed. At 1280px and 1303px the
 content column and the outline sit side by side, the outline ending inside the viewport.
 
+**For agents that read the site:** it publishes `llms.txt`, `llms-full.txt` and a `.md` per page with
+`vitepress-plugin-llms` 1.15.0 (pinned, `docs/package.json`; a Vite plugin in `vite.plugins`, no network at build time).
+Copy the plugin call in `config.ts` and `llms.ts` (it lifts the sidebar's nested groups so that the links keep `base`, and
+leaves out the dynamic routes of the API). The plugin throws if the site has no index page.
+
 ## Sites
 
 | Repository | Site | State |
