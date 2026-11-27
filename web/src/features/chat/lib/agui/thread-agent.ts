@@ -17,6 +17,7 @@ import {
   USAGE_TOTAL_EVENT,
   usageFromCarry,
 } from "@/features/chat/lib/usage";
+import { interfaceTag, localeProps } from "@/features/locale/lib/locale";
 import { parseMentions } from "@/features/mentions/lib/mentions";
 import { type Effort, pickProps } from "@/features/pick/lib/pick";
 import {
@@ -103,6 +104,11 @@ import {
  *   `{catalogId, version, digest, catalog}`) when the thread's last `STATE_SNAPSHOT` says it has
  *   none, or an older one, or another digest at the same version; the snapshot's
  *   `thread.uiCatalog` is kept in `ThreadSnapshot` for the renderer's "newer version" rule.
+ * - The interface language (ADR 0085, `locale/v1`): a run that carries a message sends the tag of
+ *   the page the person reads (`document.documentElement.lang`) as
+ *   `forwardedProps["vymalo.locale"]`, read when the run goes out and only when it is a tag this
+ *   build sends (`features/locale`). An action, a cancel or an answer to an interrupt carries none,
+ *   and a page whose `lang` is not a tag sends none rather than risk a 400.
  * - Live text (ADR 0027, docs/api/agui.md "Live text"): a frame marked `metadata["vymalo.live"]`
  *   that is not the log's own is a piece of a reply still being written. It has no `id:` (never a
  *   resume point), so it is read when it arrives, not held in a group, and it never reaches the
@@ -1611,6 +1617,9 @@ export class ThreadAgent extends AbstractAgent {
     const sentTier = message && tier ? tier : undefined;
     if (message && sentTier) this.options.tiers?.remember(message.id, sentTier);
     const sentPick = message ? pickProps({ model, effort }) : {};
+    // the language of the page the person reads (ADR 0085, locale/v1) rides with the message too,
+    // read when the run goes out: an action, a cancel or an answer to an interrupt carries none
+    const sentLocale = message ? localeProps(interfaceTag()) : {};
     const refused = () => {
       if (message) {
         this.options.mentions?.refused(message.id);
@@ -1643,6 +1652,8 @@ export class ThreadAgent extends AbstractAgent {
             ...(sentTier ? { [TIER_PROP]: sentTier } : {}),
             // the model and the effort of this message (ADR 0086); no member for an axis left alone
             ...sentPick,
+            // the language of the page this message was written on (ADR 0085); no member when the page names no tag
+            ...sentLocale,
             ...this.catalogProps(),
           },
           ...(resume && !action ? { resume } : {}),

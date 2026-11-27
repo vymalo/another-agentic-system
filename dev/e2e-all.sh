@@ -95,7 +95,9 @@
 #                     card lists locale/v1 with the deployment's tag (DEFAULT_LOCALE of
 #                     compose.yaml), a message naming de-DE reaches the model as one more turn
 #                     after the history and never in `system`, a thread that names none gets no
-#                     line, and a tag for the researcher (whose card lists nothing) changes nothing
+#                     line, and a tag for the researcher (whose card lists nothing) changes nothing;
+#                     the run body is the web's own (web/scripts/run-forwarded-props.mjs), which
+#                     puts an interface tag under vymalo.locale and refuses one it would not send
 #   locale            the interface locale (ADR 0085): mock-locale (a WireMock agent    locale-e2e.sh
 #                     that lists locale/v1) is sent the tag a message names, with the
 #                     extension activated and the tag in its metadata, and answers in it;
