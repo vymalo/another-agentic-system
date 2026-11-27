@@ -4,13 +4,19 @@ sidebarTitle: "0062 · A network tier for each message"
 
 # ADR 0062 — The person picks a network tier for each message; the agent keeps to it, and nothing is passed down
 
-- **Status:** proposed (2026-10-11), at the owner's request (the quote in *Context*). **The owner's own, 2026-10-11:** the direction (more concepts like
+- **Status:** **accepted (2026-11-26), with two amendments** (the note below). Proposed 2026-10-11, at the owner's request (the quote in *Context*). **The owner's own, 2026-10-11:** the direction (more concepts like
   `thread-tools/v1`, one for the network), the three tiers `offline`, `allow-list` (package registries and the forge) and `open`, that the agent enforces
   it, adam's way (run pods that reach only an egress proxy that applies the tier), that nothing is passed to children, a role cap `maxNetworkTier`, and what the
   orchestrator checks. **Proposed**, for the owner to confirm: every name, status code, default and shape below, and the open questions at the end. **Nothing of
   this is built.** Extends [ADR 0008](0008-platform-integration-via-a2a-extension.md) (the optional-extension pattern) and
   [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md) (roles). It is the sibling of the access tier ([ADR 0061](0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), *proposed; the orchestrator and the web are built against mocks*):
   the same shape on another axis. The wire contract is [`api/network-tier-v1.md`](../api/network-tier-v1.md).
+- **Accepted (2026-11-26), with two amendments.** The owner's decision of 2026-11-26 accepts this ADR with two amendments:
+  1. **`allow-list` is the deployment's list, not the person's.** The hosts of the tier are the agent's deployment's; no person and no message adds or removes one.
+  2. **A tier the agent cannot enforce is not listed on its card.** An agent with no egress proxy (a laptop, for example) leaves that tier out of `tiers`. The card lists only tiers the agent keeps.
+
+  The text of 2026-10-11 below stays as it was written. Where it differs from an amendment, a dated note (*Amended 2026-11-26*) says so and the amendment holds. The scenario that proves the
+  accepted text is **not built yet** (*Proof*, below). The per-run identity at the proxy (ANR-108) is not decided here: it stays open.
 
 ## Context
 
@@ -36,9 +42,11 @@ What exists, and what the design rests on:
 
 1. **An optional extension, `network-tier/v1`**, URI `https://agents.vymalo.com/a2a/extensions/network-tier/v1`. An agent lists it in its card with `params: {tiers, default}`: the tiers it honours and what it
    works under when a message names none. The orchestrator reads the card on every send, uses the extension only when it is listed exactly with well-formed params, and an agent that lists nothing gets plain A2A.
+   *Amended 2026-11-26 (the owner's amendment 2):* **`tiers` holds only the tiers the agent can enforce.** An agent that has no egress proxy (a laptop) leaves out each tier it cannot enforce. `default` is one of the listed tiers, and an agent that can enforce no tier lists no extension and gets plain A2A.
 2. **Three tiers, a closed list** ([ADR 0004](0004-closed-enums-over-dyn-registry.md)): `offline` < `allow-list` < `open`.
    - `offline`: what the agent runs reaches nothing but the agent's own channels (its model endpoint, the orchestrator's thread tools and relay, the files host).
    - `allow-list`: also the hosts of the deployment's list, **the package registries and the forge**. The list is the agent's deployment's, never the person's and never the orchestrator's.
+     *Amended 2026-11-26 (the owner's amendment 1):* this is a decision, no longer a proposal. The list is the deployment's list; the person picks a tier, never a host.
    - `open`: the public internet as the deployment allows. Private ranges and the cloud metadata address are refused at every tier.
 3. **The tier rides on the message**: one member, `tier`, in the message's metadata under the URI, with the URI in the `A2A-Extensions` header and `message.extensions`. From the web it is
    `forwardedProps["vymalo.networkTier"]`, per message. **Absent, the agent works under its own `default`** (adam's is `open`, what its run pods allow today), and the extension is not activated.
@@ -51,7 +59,7 @@ What exists, and what the design rests on:
 7. **A role may cap the tier**: `auth.roles.<role>.maxNetworkTier`, optional, one of the three; absent means no cap. `GET /api/me` says it as a hint.
 8. **The web** shows a network chip in the composer **only when** the selected agent's capabilities document carries the extension; hidden otherwise, never a disabled or invented control. It sends a tier once the
    person has picked one.
-9. **A tier only narrows**, and it is **a promise by the agent unless the deployment makes it a boundary**. It never grants what the deployment's network policy, credentials or the forge withheld. It does not govern the servers a
+9. **A tier only narrows**, and it is **a promise by the agent unless the deployment makes it a boundary** (*amended 2026-11-26*: an agent promises only the tiers it lists, and it lists only those it can enforce). It never grants what the deployment's network policy, credentials or the forge withheld. It does not govern the servers a
    person attached to the thread (the orchestrator calls those, [ADR 0024](0024-mcp-tools-attached-per-conversation.md)); open question 78 asks whether it should.
 10. **Independent of the access tier.** A person may pick `edits` and `offline`. Neither implies nor widens the other.
 
@@ -100,17 +108,22 @@ The state diagram of one message's tier is in [the contract](../api/network-tier
 
 adam-rs designs and builds its side in its own ADR. The shape, so the contract can be seen to be implementable (the contract page has the diagram):
 
-- **The card** lists the extension with `tiers: [offline, allow-list, open]` and `default: open` in `adam-coder` and `adam-agent` (an agent folder may list fewer).
+- **The card** lists the extension with `tiers: [offline, allow-list, open]` and `default: open` in `adam-coder` and `adam-agent` (an agent folder may list fewer; *amended 2026-11-26*: an adam with no egress proxy, on a laptop, lists none of what it cannot enforce).
 - **The run pod's NetworkPolicy** allows egress **only to an egress proxy** and to the agent's own channels, and no DNS: the proxy resolves names. The proxy applies the tier per run, set by the coder when a message names
   one: `offline` refuses every `CONNECT`, `allow-list` accepts the targets on the deployment's list, `open` accepts any target whose resolved address is not private.
 - **The message:** read `tier` from a message that activated the extension, from the next step on, newest first, never in the middle of a tool call. A task never keeps a tier from another task.
 - **The echo:** `{"tier": ...}` in the task's metadata on its first `Task`, and in the words of an answer that says which tier a step needed.
 - **Facts:** the run pods and their NetworkPolicy are in the pin (above). That the tools in the image (cargo, npm, pip, git over https) read a proxy setting, and which hosts the deployment's list needs, are *unverified*.
 
+## Proof (not built yet)
+
+**ANR-911 adds the scenario; it does not exist today.** On the stack, a message with `offline` sent to the real coder makes a command that fetches a URL fail, and the run says so (the tier it needed, duty 3).
+The same message with `open` makes the same command succeed. Until that scenario passes in CI, nothing of this decision is proven, and the contract stays unbuilt.
+
 ## Open questions
 
 1. **A default of `open` for adam** keeps today's behaviour. Should the chart's default be `allow-list`, with `open` something a person picks?
-2. **Who edits the list?** The deployment (a chart value). Should an administrator be able to add a host for one agent without a deploy? Not decided.
+2. **Who edits the list?** The deployment (a chart value). *Amended 2026-11-26: the list is the deployment's, decided (the owner's amendment 1).* Whether an administrator may add a host for one agent without a deploy is still not decided.
 3. **Other doors.** The MCP surface, webhooks and timers send no tier. Should `start_job` take one?
 4. **No cap is the default.** `maxNetworkTier` absent means a person may pick `open` on any agent that honours it.
 5. **The servers a person attached under `offline`** (decision 9): hide them from the agent, or leave them? [`open-questions.md`](../open-questions.md), question 78.

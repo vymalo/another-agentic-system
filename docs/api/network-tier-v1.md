@@ -1,8 +1,8 @@
 # A2A extension: network tier (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/network-tier/v1`
-- **Status:** **proposed (2026-10-11), at the owner's request; nothing is built.** The direction is the owner's (the quote below). Every name, status code and default
-  here is proposed, for the owner to confirm.
+- **Status:** **accepted (2026-11-26), with two amendments; nothing is built.** Proposed 2026-10-11 at the owner's request (the quote below). The owner's decision of 2026-11-26 accepts it with
+  two amendments: the `allow-list` is the deployment's list, not the person's (section 3), and a tier the agent cannot enforce is not listed on its card (section 1). The proof is the scenario ANR-911 adds, **not built yet** (*Conformance*).
 - **Decided in:** [ADR 0062](../decisions/0062-the-person-picks-a-network-tier-for-each-message-the-agent-keeps-to-it.md); the optional-extension pattern is
   [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md). It is the sibling of the access tier ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), [`access-tier-v1.md`](access-tier-v1.md), *proposed; the
   orchestrator and the web are built against mocks*): the same shape, a different axis.
@@ -89,8 +89,8 @@ stateDiagram-v2
 
 | Param | Meaning |
 |---|---|
-| `tiers` | Required. A non-empty list of the tiers the agent honours, each of the three at most once. An agent that cannot open the network lists `["offline", "allow-list"]`. |
-| `default` | Required. One of `tiers`: what the agent works under when no message names a tier. adam's is `open`, which is what its run pods allow today. A deployment may set it lower. |
+| `tiers` | Required. A non-empty list of the tiers the agent honours, each of the three at most once. Only the tiers the agent can **enforce**: an agent with no egress proxy (a laptop) does not list a tier it cannot keep, and one that can enforce none lists no extension (*amended 2026-11-26*). An agent that cannot open the network lists `["offline", "allow-list"]`. |
+| `default` | Required. One of `tiers`: what the agent works under when no message names a tier. adam's is `open`, which is what its run pods allow today. A deployment may set it lower. It is one of `tiers`, so it is never a tier the agent cannot enforce. |
 
 `required` stays `false`. The orchestrator reads the card on **every send**, never caches it, and fails closed: the extension is used when the URI is listed exactly **and** `params` are well-formed.
 The AG-UI capabilities document carries `custom[<uri>] = {tiers, default}` so the web can draw the chip before anything is sent ([`agui.md`](agui.md#capabilities-document), updated by the pull request that builds this).
@@ -107,7 +107,7 @@ A closed list ([ADR 0004](../decisions/0004-closed-enums-over-dyn-registry.md)),
 | Tier | What the agent's code may reach |
 |---|---|
 | `offline` | Nothing but the agent's own channels. No package registry, no forge, no web. A step that needs one fails. Local work (reading, editing, building from what is already on disk, committing) is unaffected. |
-| `allow-list` | `offline`, plus the hosts of **the deployment's list**: the package registries and the forge the work needs. The list is the agent's deployment's, not the orchestrator's and not the person's. For example (the deployment's choice, **not** a contract, hostnames *unverified*): `crates.io`, `registry.npmjs.org`, `pypi.org`, `github.com`. |
+| `allow-list` | `offline`, plus the hosts of **the deployment's list**: the package registries and the forge the work needs. The list is **the deployment's** (the owner's decision of 2026-11-26): not the orchestrator's and not the person's. A person picks a tier, never a host. For example (the deployment's choice, **not** a contract, hostnames *unverified*): `crates.io`, `registry.npmjs.org`, `pypi.org`, `github.com`. |
 | `open` | The public internet, as the agent's deployment allows. **Private and link-local ranges and the cloud metadata address stay refused at every tier.** |
 
 What is outside a tier, the agent does **not** reach by another route: no mirror it was not given, no tunnel, no tool that fetches for it. The step fails, and the agent says which tier it needed
@@ -256,7 +256,11 @@ What a build is tested for (the orchestrator's fake agent plays the agent side):
 - the dispatcher refuses to send when the card stopped honouring the tier, and fails the job;
 - no tier on an `ask_agent` child task, a verifier task, an MCP, webhook or timer message;
 - the agent echoes the tier, refuses an unhonoured one, never inherits one across tasks, and says which tier a failed step needed;
-- `dev/kagent-e2e.sh` passes unchanged.
+- `dev/kagent-e2e.sh` passes unchanged;
+- a card that lists a tier its agent cannot enforce is a defect of the agent, not of the orchestrator, which cannot see it.
+
+**Proof (not built yet):** ANR-911 adds a scenario on the stack. A message with `offline` to the real coder makes a command that fetches a URL fail, and the run says so. The same message with `open`
+makes it succeed. Until it passes in CI, nothing here is proven against a real agent.
 
 ## Verified and unverified (2026-10-11)
 
