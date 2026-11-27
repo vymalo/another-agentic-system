@@ -118,8 +118,9 @@ impl TokenTable {
                     second: user.to_string(),
                 });
             }
-            // The user is an e-mail address, or, where the deployment's people are not (the IdP's
-            // `sub` under `userClaim: sub`, ANR-1186), something that is not one to show as such.
+            // The email is set only for an e-mail address (an `@`). A `sub` principal (ANR-1163, a
+            // tokens-file user under `userClaim: sub`) therefore has none, a change from the
+            // earlier `Some(user)`; harmless, the only reader being `/api/me` (ANR-1186).
             let email = user.as_str().contains('@').then(|| user.to_string());
             entries.push(Entry {
                 principal: Principal {

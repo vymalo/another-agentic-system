@@ -135,10 +135,10 @@ stateDiagram-v2
   `preferred_username` or `oid` with no way to belong to the person signed in by JWT, whose `UserId` is that claim. The rule is now by
   claim: `email` (and any mode that reads an identity header) keeps the `@`; `sub` keeps the `AccountId` rule; **any other claim** takes
   what the JWT path takes of it, a user that is not blank after trimming, has no control character and is at most 256 bytes after
-  `UserId::new` (the JWT path has no bound; 256 holds an e-mail address). The meter still answers an
-  `AccountId` only, so a job under such a claim is metered when the id is one (a lower-case `oid` GUID is) and not when it is not (an e-mail,
-  a non-ASCII name); this amendment is about who owns the job. The MCP principal's `email` is
-  now set only when the user has an `@`. **Rollout:** a deployment on another claim whose tokens file holds e-mail users keeps working
+  `UserId::new` (the JWT path has no bound; 256 holds an e-mail address). A job under such a claim is leased when the id is an
+  `AccountId` (a lower-case `oid` GUID is; an e-mail or a non-ASCII name is not) and is never metered, since the meter requires
+  `userClaim: sub` (`crates/config/src/rules.rs`); this amendment is about who owns the job. The MCP principal's `email` is
+  now set only when the user has an `@`. Every refusal of the tokens file names an entry by position and none shows a user, a `tokenEnv` that is not shaped like a variable name or a token (a pasted secret cannot reach an error). **Rollout:** a deployment on another claim whose tokens file holds e-mail users keeps working
   where the claim yields an e-mail and silently names nobody otherwise: check the file against the claim.
 - An older build ignores `ended_at`, but its `DELETE` removes the binding with no tombstone: roll the build out on every replica
   before the meter is turned on.
