@@ -34,14 +34,19 @@ jobs:
           sudo docker image prune --all --force >/dev/null
           df -h /
       - name: Install kind, kubectl and helm at pinned versions (checksums checked)
-        # The versions of the kagent job: kind v0.33.0 and helm v3.18.0, kubectl the newest 1.35.
+        # The versions of the kagent job: kind v0.33.0 and helm v4.3.2. kubectl stays at v1.35.9 here, the version the
+        # spike last passed with (2026-11-25), because its `kubectl port-forward` is the one this scenario needs: 1.36.7
+        # and 1.37.3 both enter the pod's network namespace and dial 127.0.0.1 inside it, where Envoy Gateway's proxy does
+        # not listen (it binds the pod's address), so every tunnel answers "failed to connect to localhost:10080 inside
+        # namespace" (runs 45946481869 and 45948777930). ADR 0103 records the exception; re-pin when the proxy listens on
+        # loopback or the spike reaches the gateway another way.
         env:
           KIND_VERSION: v0.33.0
           KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
           KUBECTL_VERSION: v1.35.9
           KUBECTL_SHA256: 3cfeaf80be482b435b0aa214aff6e0b2c312ee23c0ff20810c75517b6004c6eb
-          HELM_VERSION: v3.18.0
-          HELM_SHA256: 961e587fc2c03807f8a99ac25ef063fa9e6915f1894729399cbb95d2a79af931
+          HELM_VERSION: v4.3.2
+          HELM_SHA256: d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/helm"

@@ -28,15 +28,15 @@
 #   ghcr.io/kagent-dev/substrate/agentgateway:50999825cb55   index sha256:f1907a50b2e74a071da53fcd2008d585b6a63d31b4e1ba3ee46cf22b342cf04b  (the Substrate chart's own digest pin)
 #   wiremock/wiremock:3.13.2                                 index sha256:0d4ecb3e4dc8213fd7a4d37d6a78f6e6b553a6d2e15bd51b0999781282ac61b3  (dev/kagent/manifests.yaml; compose.yaml pins the tag only)
 # (the Substrate chart also pins postgres:18-alpine, rustfs/rustfs:1.0.0-beta.3 and amazon/aws-cli:2.17.0 by digest itself.)
-# The tools CI installs (.github/workflows/kagent-e2e.yml, each checked against its checksum): kind v0.33.0 (kagent's CI version), kubectl v1.35.9
-# (the newest 1.35, the node's minor), helm v3.18.0 (kagent's CI version); their checksums are in the workflow.
+# The tools CI installs (.github/workflows/kagent-e2e.yml, each checked against its checksum): kind v0.33.0 (kagent's CI version), kubectl v1.37.3
+# (the node's minor) and helm v4.3.2 (this repository's floor, ADR 0103); their checksums are in the workflow.
 kagent_version=1.0.0-alpha8
 kagent_crds_digest=sha256:d2266799687fc827a93eace5f637b7e051b3aa1c6f0ad21f3c46fa6047eb3b48
 kagent_digest=sha256:ef33e82cd7cbf5dda0ef2b6f44c535b157f49e400063b9c206bd74b95705ed3c
 substrate_version=0.4.0-alpha1
 substrate_crds_digest=sha256:4a36b9f83ce83b94382da607fbcebb315f76e16b90775aaf3068cfa9db81ceea
 substrate_digest=sha256:53367acd25d65af35e487de63777b64656fa2a8e90b7d06044d2057086ebe6bb
-kind_node_image=kindest/node:v1.35.0@sha256:4613778f3cfcd10e615029370f5786704559103cf27bef934597ba562b269661
+kind_node_image=kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 kubectl_ate_sha256=81e60a6dfd9691ff1c41c8ffafb1042db05bfd0a94f8e0ec466a853284956faf
 
 # ======================================================================================================================================

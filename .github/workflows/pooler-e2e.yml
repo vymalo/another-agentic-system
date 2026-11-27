@@ -47,15 +47,15 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install kind, kubectl and helm at pinned versions (checksums checked)
-        # kind v0.33.0 and kubectl v1.35.9 are the versions of kagent-e2e.yml (checksums recomputed on 2026-10-17: kind's .sha256sum, dl.k8s.io's .sha256);
-        # helm v3.19.0 is the version deploy.yml checks the chart with (get.helm.sh's .sha256sum). The node image is the pin of UPSTREAM, read below.
+        # kind v0.33.0 and kubectl v1.37.3 are the versions of kagent-e2e.yml (checksums recomputed on 2026-10-17: kind's .sha256sum, dl.k8s.io's .sha256);
+        # helm v4.3.2 is the version deploy.yml checks the chart with (get.helm.sh's .sha256sum). The node image is the pin of UPSTREAM, read below.
         env:
           KIND_VERSION: v0.33.0
           KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
-          KUBECTL_VERSION: v1.35.9
-          KUBECTL_SHA256: 3cfeaf80be482b435b0aa214aff6e0b2c312ee23c0ff20810c75517b6004c6eb
-          HELM_VERSION: v3.19.0
-          HELM_SHA256: a7f81ce08007091b86d8bd696eb4d86b8d0f2e1b9f6c714be62f82f96a594496
+          KUBECTL_VERSION: v1.37.3
+          KUBECTL_SHA256: 9a1b55af2795b25dd288dbef62387db9b5530087ab918d28c6ad067f2e3cb07c
+          HELM_VERSION: v4.3.2
+          HELM_SHA256: d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/helm"

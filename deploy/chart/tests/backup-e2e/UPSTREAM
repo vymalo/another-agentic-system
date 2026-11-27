@@ -26,9 +26,10 @@
 #     digest), as the chart's own RustFS (templates/rustfs.yaml) and the S3 artifact store's tests run it. backup-e2e.sh refuses a pin that is not compose.yaml's.
 #     Run on 2026-10-17 from its image's layers as a process (uid 10001, `RUSTFS_VOLUMES=/data`): `/health/ready` answers 200; a bucket is made with the image's
 #     own curl (8.22.0, SigV4, path style), a second PUT of it answers 200, and ListObjectsV2 with `prefix` and `delimiter` answers the XML backup-e2e.sh reads.
-#   * kind v0.33.0, kubectl v1.35.9 and helm v3.19.0: the release assets' checksums, recomputed on 2026-10-17 (kind's .sha256sum, dl.k8s.io's .sha256, get.helm.sh's
-#     .sha256sum). kind and kubectl are the versions dev/kagent/UPSTREAM pins; helm is the version of deploy.yml, the one the chart is checked with.
-#   * the node image kindest/node:v1.35.0 is the one dev/kagent/UPSTREAM pins: Docker Hub answers the tag with the digest below (Docker-Content-Digest, 2026-10-17).
+#   * kind v0.33.0, kubectl v1.37.3 and helm v4.3.2: the release assets' checksums, recomputed on 2026-11-27 (kind's .sha256sum, dl.k8s.io's .sha256,
+#     get.helm.sh's .sha256sum), when the owner's floor moved to Kubernetes 1.37 and Helm 4 (ADR 0103). kind and kubectl are the versions
+#     dev/kagent/UPSTREAM pins; helm is the version of deploy.yml, the one the chart is checked with.
+#   * the node image kindest/node:v1.37.0 is the one dev/kagent/UPSTREAM pins: Docker Hub answers the tag with the digest below (Docker-Content-Digest, 2026-11-27).
 #   * the facts the assertions rest on are from the operator's and the plugin's sources at the tags above (module zips from proxy.golang.org):
 #       - `ContinuousArchiving` is set on the Cluster by the instance manager's `wal-archive` command after each archive, plugin or not (cloudnative-pg
 #         internal/cmd/manager/walarchive/cmd.go, pkg/management/postgres/webserver/local.go): the plugin sets no condition of its own, and the condition is True
@@ -55,8 +56,8 @@ cert_manager_chart_sha256=9ec67938b2981d8b333af61b3fcf53e26b4f6f5deb7ccda3de4ea1
 # By tag and digest, the pin of compose.yaml (`rustfs`):
 rustfs_image=rustfs/rustfs:1.0.1-preview.17@sha256:662587e2bdb0262fbb570cd2e7d34467e601ff32b8256e3203dbde40557e0cd2
 # The cluster the workflow makes (the pin of dev/kagent/UPSTREAM):
-kind_node_image=kindest/node:v1.35.0@sha256:4613778f3cfcd10e615029370f5786704559103cf27bef934597ba562b269661
+kind_node_image=kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 # The tools the workflow installs (each checked against its checksum, which is in the workflow):
 #   kind v0.33.0    sha256 aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
-#   kubectl v1.35.9 sha256 3cfeaf80be482b435b0aa214aff6e0b2c312ee23c0ff20810c75517b6004c6eb
-#   helm v3.19.0    sha256 a7f81ce08007091b86d8bd696eb4d86b8d0f2e1b9f6c714be62f82f96a594496
+#   kubectl v1.37.3 sha256 9a1b55af2795b25dd288dbef62387db9b5530087ab918d28c6ad067f2e3cb07c
+#   helm v4.3.2    sha256 d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983
