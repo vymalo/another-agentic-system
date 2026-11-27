@@ -1235,8 +1235,7 @@ async fn the_dispatcher_wakes_the_routed_agent_and_waits_for_the_registry_to_lis
 }
 
 #[tokio::test]
-async fn a_stop_for_a_running_task_at_an_unlisted_own_agent_cancels_locally_after_the_listing_attempts_without_waking_it()
- {
+async fn a_stop_for_a_task_at_an_unlisted_own_agent_cancels_locally_after_the_listing_attempts() {
     let w = World::new();
     let registry = MemoryRegistry::new();
     let provisioner = listing(&registry, 1);
@@ -1259,6 +1258,16 @@ async fn a_stop_for_a_running_task_at_an_unlisted_own_agent_cancels_locally_afte
     registry.remove(&AgentId::new(mine()));
 
     app.cancel(&alice(), id).await.unwrap();
+    let stop = eventually("the stop's row", || async {
+        w.store
+            .list_open_outbox(id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.kind == orch_ports::OutboxKind::Cancel)
+            .map(|r| r.id)
+    })
+    .await;
     wait_in(&w, id, ThreadState::Cancelled).await;
     assert_eq!(
         memory
@@ -1267,6 +1276,19 @@ async fn a_stop_for_a_running_task_at_an_unlisted_own_agent_cancels_locally_afte
             .unwrap(),
         Some(AgentState::Suspended),
         "a stop does not wake the agent"
+    );
+    assert!(
+        !w.agent
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::Cancel { .. })),
+        "the unlisted agent was not asked to cancel"
+    );
+    let row = w.store.get_outbox(stop).await.unwrap().unwrap();
+    assert_eq!(
+        row.attempts,
+        fast().own_agent_listing_attempts,
+        "the stop waited for the listing, once per attempt, and then cancelled locally"
     );
     token.cancel();
     let _ = task.await;
@@ -1327,6 +1349,8 @@ async fn a_helper_of_a_routed_thread_is_routed_to_the_same_own_agent() {
 struct Gated {
     inner: MemoryProvisioner,
     open: tokio::sync::watch::Receiver<bool>,
+    /// How many calls reached the gate.
+    entered: Arc<AtomicUsize>,
 }
 
 impl AgentProvisioner for Gated {
@@ -1335,6 +1359,7 @@ impl AgentProvisioner for Gated {
         owner: &AgentOwner,
         kind: AgentKind,
     ) -> Result<ProvisionedAgent, ProvisionError> {
+        self.entered.fetch_add(1, Ordering::SeqCst);
         let mut open = self.open.clone();
         let _ = open.wait_for(|v| *v).await;
         self.inner.ensure_ready(owner, kind).await
@@ -1354,8 +1379,12 @@ impl AgentProvisioner for Gated {
     }
 }
 
-#[tokio::test]
-async fn a_stop_does_not_cancel_a_thread_whose_delegation_waits_for_the_agent_to_wake() {
+/// A stop pressed while a delegation waits for the person's agent to wake is not answered behind
+/// the delegation's back and is not given up: it is tried again (`max_cancel_attempts` of the
+/// dispatcher, plus what fits in the wake bound for a routed thread) until the delegation has
+/// been sent, and then stops the task it started. `min_attempts` is how many claims the stop must
+/// have had while the delegation still waited.
+async fn a_stop_waits_for_a_waking_delegation(max_cancel_attempts: u32, min_attempts: u32) {
     let w = World::new();
     let registry = MemoryRegistry::new();
     // the request path (one application) makes the thread and lists the agent at once; the
@@ -1370,6 +1399,7 @@ async fn a_stop_does_not_cancel_a_thread_whose_delegation_waits_for_the_agent_to
         )),
     );
     let (open_tx, open_rx) = tokio::sync::watch::channel(false);
+    let entered = Arc::new(AtomicUsize::new(0));
     let dispatching = app_over(
         &w,
         &registry,
@@ -1377,6 +1407,7 @@ async fn a_stop_does_not_cancel_a_thread_whose_delegation_waits_for_the_agent_to
             Gated {
                 inner: MemoryProvisioner::new(),
                 open: open_rx,
+                entered: Arc::clone(&entered),
             },
             [AgentKind::Coder],
             BOUND,
@@ -1384,13 +1415,39 @@ async fn a_stop_does_not_cancel_a_thread_whose_delegation_waits_for_the_agent_to
     );
     w.agent
         .set_extensions(&mine(), &[orch_core::KnownExtension::Steer]);
-    let (task, token) = spawn_over(&dispatching);
+    let token = tokio_util::sync::CancellationToken::new();
+    let task = tokio::spawn(
+        Dispatcher::new(
+            Arc::clone(&dispatching),
+            orch_app::DispatcherConfig {
+                max_cancel_attempts,
+                ..fast()
+            },
+            "d1",
+        )
+        .run(token.clone()),
+    );
     let id = new_coder_thread(&requests, "gate refactor the parser").await;
     // the delegation is claimed and waits in `ensure_ready`; the agent then goes unlisted
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    eventually("the delegation at the gate", || async {
+        (entered.load(Ordering::SeqCst) >= 1).then_some(())
+    })
+    .await;
     registry.remove(&AgentId::new(mine()));
     requests.cancel(&alice(), id).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // the stop has been claimed again and again, the delegation is still in flight
+    eventually("the stop retried behind the delegation", || async {
+        let rows = w.store.list_open_outbox(id).await.unwrap();
+        let stop_attempts = rows
+            .iter()
+            .find(|r| r.kind == orch_ports::OutboxKind::Cancel)
+            .map(|r| r.attempts)?;
+        let delegating = rows
+            .iter()
+            .any(|r| r.kind == orch_ports::OutboxKind::Delegate);
+        (delegating && stop_attempts >= min_attempts).then_some(())
+    })
+    .await;
     let thread = w.store.get_thread(None, id).await.unwrap().unwrap();
     assert_ne!(
         thread.state,
@@ -1412,6 +1469,17 @@ async fn a_stop_does_not_cancel_a_thread_whose_delegation_waits_for_the_agent_to
     );
     token.cancel();
     let _ = task.await;
+}
+
+#[tokio::test]
+async fn a_stop_does_not_cancel_a_thread_whose_delegation_waits_for_the_agent_to_wake() {
+    a_stop_waits_for_a_waking_delegation(10_000, 2).await;
+}
+
+#[tokio::test]
+async fn a_stop_outlasts_max_cancel_attempts_while_a_routed_delegation_waits_for_the_agent() {
+    // two attempts would end the stop; the wake bound (30 s plus the backstop) is what it may wait
+    a_stop_waits_for_a_waking_delegation(2, 5).await;
 }
 
 #[tokio::test]

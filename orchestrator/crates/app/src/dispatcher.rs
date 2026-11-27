@@ -192,6 +192,8 @@ struct Loaded {
     /// (ANR-1061): `ctx.endpoint` is then a placeholder that nothing may call, and `cancel` decides
     /// the stop locally. Never set for another row.
     own_unlisted: bool,
+    /// The thread is routed to a person's own agent (ANR-1061).
+    routed: bool,
 }
 
 /// A delegation that opens a task of its own: what [`Dispatcher::consume`] needs to tell, from the
@@ -736,7 +738,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     // ---------------------------------------------------------------- delegate
 
     async fn load(&self, row: &OutboxItem) -> Result<Option<Loaded>, DispatchError> {
-        let Some(thread) = self.store().get_thread(None, row.thread_id).await? else {
+        let Some(mut thread) = self.store().get_thread(None, row.thread_id).await? else {
             self.finish(row, OutboxFinal::Skipped).await?;
             return Ok(None);
         };
@@ -770,7 +772,18 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 .ensure_own_agent(&thread.owner, &binding.agent_id)
                 .await
             {
-                Ok(agent) => woke = agent.is_some(),
+                Ok(agent) => {
+                    woke = agent.is_some();
+                    // the wait may have lasted seconds: what is acted on is the thread as it is
+                    // now, not as it was before (a stop may have ended it meanwhile)
+                    thread = match self.store().get_thread(None, row.thread_id).await? {
+                        Some(now) => now,
+                        None => {
+                            self.finish(row, OutboxFinal::Skipped).await?;
+                            return Ok(None);
+                        }
+                    };
+                }
                 Err(e) => {
                     tracing::warn!(id = %row.id, agent = %lookup, attempt = row.attempts, error = %report(&e), "the person's own agent could not be made ready for the row");
                     if row.attempts < self.cfg.max_attempts {
@@ -914,6 +927,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             is_child: thread.child_of.is_some(),
             forked_at: thread.forked_from.map(|origin| origin.seq),
             own_unlisted,
+            routed: route.is_some(),
         }))
     }
 
@@ -1024,6 +1038,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             is_child,
             forked_at,
             own_unlisted: _,
+            routed: _,
         }) = self.load(&row).await?
         else {
             return Ok(());
@@ -1524,6 +1539,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             is_child: _,
             forked_at: _,
             own_unlisted: _,
+            routed: _,
         }) = self.load(&row).await?
         else {
             return Ok(());
@@ -2089,6 +2105,18 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
 
     // ------------------------------------------------------------------ cancel
 
+    /// How many attempts a stop makes while a delegation is in flight: `max_cancel_attempts`, and
+    /// for a routed thread that many more than the retries that fit in the wake bound.
+    fn in_flight_cancel_budget(&self, routed: bool) -> u32 {
+        let base = self.cfg.max_cancel_attempts;
+        let Some(bound) = routed.then(|| self.app.own_agent_wake_bound()).flatten() else {
+            return base;
+        };
+        let delay = self.cfg.cancel_retry_delay.as_millis().max(1);
+        let extra = u32::try_from(bound.as_millis().div_ceil(delay)).unwrap_or(u32::MAX);
+        base.saturating_add(extra)
+    }
+
     async fn cancel(&self, row: OutboxItem) -> Done {
         let Some(Loaded {
             ctx,
@@ -2099,6 +2127,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             is_child: _,
             forked_at: _,
             own_unlisted,
+            routed,
         }) = self.load(&row).await?
         else {
             return Ok(());
@@ -2202,7 +2231,9 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             return self.finish(&row, OutboxFinal::Delivered).await;
         }
         // A delegation is being sent right now; once it has a task id the next attempt cancels it.
-        if row.attempts < self.cfg.max_cancel_attempts {
+        // For a routed thread that can take as long as the person's agent needs to wake, so the
+        // budget covers the wake bound too: a stop is not lost while the agent is coming up.
+        if row.attempts < self.in_flight_cancel_budget(routed) {
             return self
                 .retry(
                     &row,

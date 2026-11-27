@@ -706,6 +706,18 @@ impl<P: Ports> App<P> {
         Ok(())
     }
 
+    /// How long a person's own agent may take to wake for a row (ANR-1061): the wait-ready bound
+    /// plus the backstop of [`ensure_own_agent`](Self::ensure_own_agent). `None` when provisioning
+    /// is off.
+    pub(crate) fn own_agent_wake_bound(&self) -> Option<std::time::Duration> {
+        let provisioning = self.cfg.provisioning.as_ref()?;
+        Some(
+            provisioning
+                .ready_timeout()
+                .saturating_add(crate::provisioning::OUTER_SLACK),
+        )
+    }
+
     /// The id under which `user`'s own agent for a thread bound to `agent` would be listed, when the
     /// deployment provisions that kind (ANR-1061). Nothing is asked of the platform: a fork that
     /// has no `ensure_own_agent` answer (it carries no message) records this as its route; one that

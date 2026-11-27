@@ -70,8 +70,10 @@ This amendment replaces its first version, which recomputed the route from the c
   or provisioning no longer covers the kind, "your agent ... is not listed and provisioning is not on for it", and for a follow,
   which never wakes the agent, "your agent ... is not listed (following a task does not wake it)". A row on a thread that has
   ended does not wake the agent either. It is never sent to the shared agent in its place, and the retry applies to the thread's own
-  agent only. A stop whose agent is not listed is decided by `cancel`, which never wakes the agent: with no task running at it the thread is cancelled locally
-  (`CancelledBeforeStart`) at once; a delegation in flight is waited for as for any thread; and with a task running at the
+  agent only. A stop whose agent is not listed is decided by `cancel`, which never wakes the agent: with no task running at it and nothing in flight the thread
+  is cancelled locally (`CancelledBeforeStart`) at once; a delegation in flight is waited for, and the stop then stops the task it
+  started (for a routed thread the wait's budget is `max_cancel_attempts` plus the retries that fit in `readyTimeoutSecs` plus
+  `OUTER_SLACK`, so a stop pressed while the agent wakes is not lost); and with a task running at the
   unlisted agent the stop is tried for up to `own_agent_listing_attempts` attempts of the row in all and then ends the thread
   locally with a warning that the task at the agent could not be stopped.
 - **The tier and the cap come from the own agent's card.** The request checks a tier against the thread's agent, the send against
@@ -98,6 +100,7 @@ This amendment replaces its first version, which recomputed the route from the c
   - **A rollback past this change is one-way.** An older binary drops `route` from `job_json` on its next write, and the next
     message then goes to the shared agent carrying the person's agent's context. Do not roll back past it while provisioning is
     on.
+  - The dispatcher re-reads the thread after a row's wake (`ensure_ready`), so it never acts on state from before the wait.
   - Turning provisioning off, or removing a kind from `provisioner.kinds`, **strands the routed threads**: they never return to
     the shared agent (a row for one that is not listed ends with the reason above).
   - The request-time checks of tier, model pick, uploads and child sessions read the **shared agent's** card and are
