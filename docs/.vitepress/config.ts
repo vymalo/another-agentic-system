@@ -1,5 +1,5 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { slug as githubSlug } from "github-slugger";
 import { defineMd3Config } from "@vaam-apps/vitepress-md3/config";
@@ -142,14 +142,43 @@ export function escapeUnknownTags(md: any) {
   }
 }
 
+// A relative link that leaves docs/ (or names a file of docs/ that is not a page: json, yaml, a page of examples/) is
+// the file on GitHub, not a page of the site; a link to a folder's README.md is that folder's index page. tools/docs-check
+// resolves the links as written, against the repository.
+const REPO = "https://github.com/vymalo/another-agentic-system";
+export function repoLinks(md: any) {
+  md.core.ruler.push("repo-links", (state: any) => {
+    const from = posix.dirname(state.env?.relativePath ?? "index.md");
+    for (const block of state.tokens)
+      for (const t of block.children ?? [])
+        if (t.type === "link_open") {
+          const href = t.attrGet("href");
+          if (!href || href.startsWith("#") || href.startsWith("/") || /^[a-z][a-z0-9+.-]*:/i.test(href)) continue;
+          const [, path, rest = ""] = href.match(/^([^#?]*)(.*)$/)!;
+          const resolved = posix.normalize(posix.join(from, decodeURI(path)));
+          const outside = resolved === ".." || resolved.startsWith("../");
+          const ext = posix.extname(resolved);
+          const isFile = ext !== "" && !path.endsWith("/");
+          const inExamples = /(^|\/)examples(\/|$)/.test(resolved);
+          const served = !outside && existsSync(join(root, "public", resolved));
+          if (outside || inExamples || (isFile && ext !== ".md" && !served)) {
+            const repoPath = outside ? posix.normalize(resolved.replace(/^\.\.\//, "")) : `docs/${resolved}`;
+            t.attrSet("href", `${REPO}/${isFile ? "blob" : "tree"}/main/${repoPath.replace(/\/$/, "")}${rest}`);
+            continue;
+          }
+          t.attrSet("href", href.replace(/(^|\/)README\.md(?=#|\?|$)/, "$1index.md"));
+        }
+  });
+}
+
 export default defineMd3Config({
   title: "another-agentic-system",
   description: "A protocol-agnostic orchestration layer for multi-agent work.",
   base: process.env.DOCS_BASE ?? DEFAULT_BASE,
   cleanUrls: true,
   rewrites: { "api/README.md": "api/index.md" },
-  // Pages link to source files outside docs/ (checked by tools/docs-check); every other dead link fails the build.
-  ignoreDeadLinks: [/^\.\/(\.\.\/)+/, /(^|\/)examples\//],
+  // A link that leaves docs/ is rewritten to GitHub below (markdown.config), so every dead link left fails the build.
+  // The one exception: a link into docs/**/examples/, which is not on the site and is rewritten to GitHub as well.
   // Each operation and tag page has its own title, from the route's pageTitle.
   transformPageData(pageData) {
     const title = pageData.params?.pageTitle;
@@ -170,7 +199,7 @@ export default defineMd3Config({
     socialLinks: [{ icon: "github", link: "https://github.com/vymalo/another-agentic-system" }],
   },
   // Heading ids are GitHub's (github-slugger), so a link to #a-heading works on the site and on github.com (STRUCTURE.md). markdown-it-anchor adds -1, -2 to a repeat, as GitHub does.
-  markdown: { anchor: { slugify: githubSlug }, headers: { slugify: githubSlug }, toc: { slugify: githubSlug }, config: (md) => { md.use(inDepth); escapeUnknownTags(md); md.use(groupIconMdPlugin); }, attrs: { disable: true } },
+  markdown: { anchor: { slugify: githubSlug }, headers: { slugify: githubSlug }, toc: { slugify: githubSlug }, config: (md) => { md.use(inDepth); escapeUnknownTags(md); md.use(groupIconMdPlugin); repoLinks(md); }, attrs: { disable: true } },
   // llms.txt, llms-full.txt and a .md per page, for agents that read the docs (ANR-1088, STRUCTURE.md).
   vite: {
     plugins: [
