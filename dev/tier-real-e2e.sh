@@ -148,12 +148,14 @@ expect "the model was called for that run" "$([ -n "$plan_first" ] && echo yes |
 expect "the model's first request was not offered write_file (held back at plan)" "$(offered "$plan_first" write_file)" "false"
 expect "the model's first request was offered a read tool (the tier narrows, it does not empty the list)" "$(offered "$plan_first" read_file)" "true"
 plan_results=$(tool_results "$plan_last")
+# shellcheck disable=SC2016 # the backticks are literal: adam's refusal text quotes the tool's name
 case $plan_results in
-  *'`write_file` needs the edits access tier'*) ok "the coder refused the write_file call: its result says it needs the edits tier" ;;
+  *"\`write_file\` needs the edits access tier"*) ok "the coder refused the write_file call: its result says it needs the edits tier" ;;
   *) bad "the last model request does not carry the refusal of write_file as a tool result: ${plan_results:-no tool result}" ;;
 esac
+# shellcheck disable=SC2016 # the backticks are literal: adam's refusal text quotes the tool's name
 case $plan_results in
-  *'`start_scratch` needs the edits access tier'*) ok "the coder refused start_scratch too" ;;
+  *"\`start_scratch\` needs the edits access tier"*) ok "the coder refused start_scratch too" ;;
   *) bad "the last model request does not carry the refusal of start_scratch as a tool result: ${plan_results:-no tool result}" ;;
 esac
 
