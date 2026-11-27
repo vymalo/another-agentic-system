@@ -93,7 +93,7 @@ The owner's decisions of 2026-11-20 (one container per app, on SQLite) and 2026-
 
 | Decision | Now |
 |---|---|
-| 1. The board is outside the orchestrator | **Stands.** The board lives in this repository, beside the threads, as a **separate component outside `orch-core`**: it is neither an operator's service nor part of another-backend. The orchestrator is still never told what a repository, a card or a store is. |
+| 1. The board is outside the orchestrator | **Stands.** The board lives in this repository, beside the threads, as a **separate component outside `orch-core`**: it is neither an operator's service nor part of an operator's backend. The orchestrator is still never told what a repository, a card or a store is. |
 | 2. Plain containers, Compose, Caddy, Postgres | **Replaced.** A generated app's backend is **one container**: CrateStack on SQLite, with Authkestra OP and devsig, run by the platform operator as a new kind of workload (a platform AD, to come). The factory itself is not a Compose stack. Neither `compose.factory.yaml` nor a per-app Postgres is built from this ADR. |
 | 3. Model choice by model-pinned agent containers | **Replaced.** The model for a card is picked as [ADR 0086](0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md) says (`model-pick/v1`, the orchestrator's side built). No agent container is pinned to a model. |
 | 4. Specialists by `@mention` of separate agents | **Replaced.** Specialists are child sessions of the lead agent ([ADR 0072](0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md); adam-rs ADR 0045, whose slices 7 part 1 and 8 are built, the coder lists `child-sessions/v1`). |
