@@ -1,7 +1,7 @@
 # A2A extension: model pick (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/model-pick/v1`
-- **Status:** **proposed 2026-11-23; the orchestrator's side is built** (slice 2 of ANR-14: the card read, the activation, the checks and the typed `422`s, the log, the thread default and its `PATCH`), **the web's chips are built** (slice 3b, 2026-11-24: `web/src/features/pick`, drawn from `AgentInfo.pick` while the live card lists each axis) and **a `dev/` mock lists both** (`dev/wiremock/pick`, `dev/pick-e2e.sh`); **adam serves it** (since adam-rs `9f90f1e6` an adam agent whose deployment profiles its model lists `model-pick/v1` on its card), and the local stack proves the whole chain on the real image (`dev/model-profiles.json` as the chat's `MODEL_ALIASES_FILE`, `dev/pick-real-e2e.sh`). Decided in [ADR 0086](../decisions/0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md).
+- **Status:** **proposed 2026-11-23; the orchestrator's side is built** (slice 2 of ANR-14: the card read, the activation, the checks and the typed `422`s, the log, the thread default and its `PATCH`), **the web's chips are built** (slice 3b, 2026-11-24: `web/src/features/pick`, drawn from `AgentInfo.pick` while the live card lists each axis) and **a `dev/` mock lists both** (`dev/wiremock/pick`, `dev/pick-e2e.sh`); **adam serves it** (since adam-rs `9f90f1e6` an adam agent whose deployment profiles its model lists `model-pick/v1` on its card), and the local stack proves the whole chain on the real image (`dev/model-profiles.json` as the chat's `MODEL_ALIASES_FILE`, `dev/pick-real-e2e.sh`: the model aliases and the reasoning levels with their default, a run's level on the model request, and an unlisted level's `422`). Decided in [ADR 0086](../decisions/0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md).
 - **Served by:** an agent whose card lists it (adam-rs does, since `9f90f1e6`, when its profiles name models: *verified 2026-11-27*, `dev/pick-real-e2e.sh`). **Used by:** the orchestrator and the web.
 - **Effort** is not this extension: it is adam's `reasoning/v1` (`https://agents.vymalo.com/a2a/extensions/reasoning/v1`, `params {efforts, default?}`, `metadata[URI] = {"effort": "<level>"}`), used as it stands.
 
@@ -43,3 +43,12 @@ The `user_message` holds the resolved pick as `pick: {model?, reasoningEffort?}`
 ## Conformance (mock agent)
 
 1. a pick arrives in the metadata, with the URI activated; 2. an unlisted pick is `422` and writes nothing; 3. no pick sends no member and activates nothing; 4. the message's pick beats the thread's; 5. a redelivery carries the recorded pick.
+
+## Conformance (real agent)
+
+`dev/pick-real-e2e.sh` proves both extensions on the pinned adam image (adam-rs `9f90f1e6`), the `chat` agent whose `MODEL_ALIASES_FILE` is `dev/model-profiles.json`:
+
+1. its live card lists `model-pick/v1` with the two aliases and `reasoning/v1` with `params.efforts` `["low","medium","high"]` and `params.default` `"medium"` (the profile's `reasoningEffort`), and `GET /api/agents` carries both axes in `pick` (`models`, `efforts`, `effortDefault`);
+2. a message that names `high` is answered, its `user_message` records `{"reasoningEffort":"high"}`, and the model's request carries `reasoning_effort: "high"`;
+3. a thread whose default level is `low` sends `reasoning_effort: "low"` on a message that names nothing;
+4. a level the card does not offer (`max`) is a `422 reasoning_not_offered` with `offered: ["low","medium","high"]`, no thread is written, and the model is sent nothing.
