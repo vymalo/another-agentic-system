@@ -10,7 +10,7 @@ sidebarTitle: "0063 · A model endpoint per thread"
   are carried by [ADR 0084](0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md) (the run lease and the injector) and
   [ADR 0101](0101-a-cloud-runs-model-calls-are-signed-for-the-run-and-the-injector-stays-for-custom-cases.md) (signed calls). **Not built, and not proven:** the proof to come is ANR-912's
   scenario (the real adam with no model key of its own answers through the thread's endpoint, and `mock-model`'s journal shows the orchestrator's key, never one from A2A). Of the text below,
-  only the status and this note changed on 2026-11-26. (Original status, kept:)
+  only the status, this note and the amendment note after decision 11 changed on 2026-11-26. (Original status, kept:)
   **Proposed (2026-10-11).** **The owner's own, 2026-10-11:** the direction and its shape (the card declares the extension, the message
   carries `{url, token, expiresAt, models}`, the agent calls `POST {url}/v1/chat/completions` and `/v1/models`, the orchestrator forwards to the configured model server with its own key, records usage
   per call, enforces a per-thread or per-person budget, the person picks the model per thread in the UI through a chip shown only for agents that declare the extension, SSE passes through, no model
