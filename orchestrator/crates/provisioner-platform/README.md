@@ -100,7 +100,10 @@ local stack's `mock-oidc` (`user`, `audience`, `roles`), the token cached until 
 [`orch-platform-credentials-openbao`](../platform-credentials-openbao/README.md), ANR-809,
 [ADR 0110](../../../docs/decisions/0110-the-orchestrator-presents-its-workload-certificate-to-the-platform.md)). In that mode
 the adapter asks `current()` **first** at every request and **sends nothing if it errors**, or if the certificate it
-answers has a `not_after` at or before now (`Unavailable`: the port should never answer one, the provisioner does not rely on it) (`Refused` stays `Refused`, anything
+answers has a `not_after` at or before now (`Unavailable`: the port should never answer one, the provisioner does not rely on it). "Now" for that guard is
+`PlatformConfig.clock` (`with_clock`, the system clock by default): in a deployment it is the system clock the
+certificate source also uses (`OpenBaoClientCertificates::new`), so the two cannot disagree, and a test gives one
+`FixedClock` to both (`Refused` stays `Refused`, anything
 else is `Unavailable`; no connection is opened), presents the chain on the TLS connection and sends **no `Authorization` header**.
 It keeps one `reqwest::Client` per certificate **serial** and builds a new one (a new pool, so a new handshake) exactly when the
 serial changes, with the same redirect and proxy settings as the bearer mode (the identity goes to the configured URL only).
@@ -132,7 +135,7 @@ leaf and its intermediate are what the listener sees and **no `Authorization` he
 (`Refused` or `Unavailable`) makes `ensure_ready` fail with the matching error and the listener **accepts zero connections**;
 the same serial reuses its connection and a **new serial opens a new one** that presents the new leaf; a certificate of another
 authority is stopped by the listener (and the listener's own refused-handshake count moves); a certificate that is
-over is not presented and not one connection is opened; and the build refuses an `http` URL or an unreadable CA.
+over (on the one clock given to the provisioner, moved past the certificate's end) is not presented and not one new connection is opened; and the build refuses an `http` URL or an unreadable CA.
 
 The testkit itself is proven able to fail: `crates/ports/tests/provisioner_kit_catches.rs` builds
 fakes that each break one rule (a create that races, a resume that does not wait, a suspend that

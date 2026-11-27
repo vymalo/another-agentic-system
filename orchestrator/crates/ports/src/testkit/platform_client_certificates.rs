@@ -6,6 +6,15 @@
 //! implementation supplies a [`PlatformClientCertificatesFixture`]: the source under test, the clock
 //! it judges "now" by (and a way to move it), how long a certificate it issues lives, and a way to
 //! make the issuer behind it fail.
+//!
+//! **A source may remember a failure for a bounded pause.** An adapter that is asked again while
+//! its issuer is down may answer the error it already has, without asking the issuer, for a pause
+//! of its own (the OpenBao adapter keeps one of at most a minute), so that a burst of callers does
+//! not hammer an issuer that is down. A case is written for such a source: each time it changes what
+//! the issuer does, it calls [`set_issuer_failing`](PlatformClientCertificatesFixture::set_issuer_failing),
+//! and **that call must take the source past any pause it keeps** (a fixture moves the clock the
+//! source judges by past the longest one), so that the next answer is a real attempt and a step that
+//! says "the issuer is back" means it.
 
 use std::time::Duration;
 
@@ -34,6 +43,10 @@ pub trait PlatformClientCertificatesFixture: Send + Sync + 'static {
     /// Makes the issuer behind the source fail with `error` (`Some`), or work again (`None`). A
     /// source that holds a certificate that is still valid may keep answering it while the issuer is
     /// down; it never answers one that is over.
+    ///
+    /// **Every call, `Some` or `None`, must also take the source past any pause it keeps after a
+    /// failure** (see the module's note): move the clock the source judges by forward by more than
+    /// the longest pause, or do whatever else makes the next `current()` a real attempt.
     fn set_issuer_failing(&self, error: Option<PlatformCredentialsError>);
 }
 

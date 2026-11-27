@@ -49,7 +49,8 @@ pub const DEFAULT_TTL_SECS: u64 = 86_400;
 pub const DEFAULT_RENEWAL_MARGIN_SECS: u64 = 28_800;
 /// How long after a failed issue (an OpenBao that is down, a leaf that is refused) nothing is tried
 /// again, whether or not a leaf is still held: the callers that come meanwhile are answered the
-/// same error, or the old leaf, and OpenBao is left alone when it is down.
+/// same error, or the old leaf, and OpenBao is left alone when it is down. The pause ends early
+/// when the held leaf lapses, and is not waited for when the clock steps back.
 const RETRY_AFTER: SignedDuration = SignedDuration::from_secs(30);
 /// The same after a **refusal** (a 400, 401 or 403): a fault of the deployment's setup that a retry
 /// does not mend, so it is tried less often than a fault that passes by itself.
@@ -164,8 +165,21 @@ pub enum BuildError {
 struct State {
     held: Option<PlatformClientCertificate>,
     retry_not_before: Option<Timestamp>,
-    /// What the last issue failed with; kept while `retry_not_before` is in the future.
+    /// How long the pause that ends at `retry_not_before` is: a pause that is longer than this
+    /// from now means the clock stepped back, and is not waited for.
+    pause: SignedDuration,
+    /// What the last issue failed with; kept while the pause lasts.
     failure: Option<PlatformCredentialsError>,
+}
+
+impl State {
+    /// Whether a failed issue is still being waited out at `now`.
+    fn backing_off(&self, now: Timestamp) -> bool {
+        match self.retry_not_before {
+            Some(until) if now < until => until.duration_since(now) <= self.pause,
+            _ => false,
+        }
+    }
 }
 
 /// [`PlatformClientCertificates`] from an OpenBao PKI role, over the pod's service-account login.
@@ -234,12 +248,19 @@ impl OpenBaoClientCertificates {
         // fresh leaf, so a burst of requests makes one login and one signing.
         let mut state = self.state.lock().await;
         let now = self.clock.now();
-        let valid = state
+        // A leaf that has lapsed is dropped with its key, and a pause begun while it was good ends
+        // with it: the next caller may try again at once.
+        if state
             .held
             .as_ref()
-            .filter(|held| now < held.not_after())
-            .cloned();
-        let backing_off = state.retry_not_before.is_some_and(|until| now < until);
+            .is_some_and(|held| now >= held.not_after())
+        {
+            state.held = None;
+            state.retry_not_before = None;
+            state.failure = None;
+        }
+        let valid = state.held.clone();
+        let backing_off = state.backing_off(now);
         if let Some(held) = &valid {
             if !renewal_due(held.not_after(), self.margin, now) || backing_off {
                 return Ok(held.clone());
@@ -274,15 +295,18 @@ impl OpenBaoClientCertificates {
                     RETRY_AFTER
                 };
                 state.retry_not_before = now.checked_add(pause).ok();
+                state.pause = pause;
                 state.failure = Some(error);
                 match valid {
-                    // Inside the margin, and the old leaf is still good: keep serving it.
-                    Some(held) => Ok(held),
-                    // None, or past its end: no identity. The old key is dropped with it.
-                    None => {
+                    // Inside the margin, and the old leaf was good before the issue began: it is
+                    // judged again now, for the issue can take two requests of the timeout each.
+                    Some(held) if self.clock.now() < held.not_after() => Ok(held),
+                    Some(_) => {
                         state.held = None;
-                        Err(error)
+                        Err(PlatformCredentialsError::Unavailable)
                     }
+                    // None: no identity.
+                    None => Err(error),
                 }
             }
         }

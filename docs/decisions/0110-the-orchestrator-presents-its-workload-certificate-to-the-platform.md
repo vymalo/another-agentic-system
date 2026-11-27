@@ -47,10 +47,15 @@ header, so it does not fit the token port: the HTTP client must be **built with 
    deployment's setup that a retry does not mend, so it is tried at half the cadence, not never: a role that is fixed is seen within
    a minute). During the pause nothing is asked of OpenBao. A caller that comes meanwhile gets the old leaf if it is still valid
    (inside the margin), and otherwise **the recorded error**, so a burst of callers with no leaf makes one login and one signing and
-   not one each in turn while OpenBao is down. Past `not_after` a failed renewal is an error and there is no identity. A 400, 401
+   not one each in turn while OpenBao is down. **The pause is bounded and cannot outlive the leaf it began beside:** it ends early when the held leaf lapses (the next caller may try
+   again at once, and the lapsed leaf and its key are dropped), and a pause that would run longer from now than the pause itself
+   (the wall clock stepped back) is not waited for. A renewal that fails is judged again after the failure: the issue can take two
+   requests of the timeout each, so the old leaf is served only if it is still valid at the end of it, and otherwise the answer is
+   `Unavailable`. Past `not_after` a failed renewal is an error and there is no identity. A 400, 401
    or 403 is `Refused`; a 5xx, a network error, an unreadable answer, a missing token file and every refused leaf are
    `Unavailable`. **The provisioner is a second check:** a certificate whose `not_after` is at or before now is answered as
-   unavailable and nothing is sent, whatever the port said.
+   unavailable and nothing is sent, whatever the port said, judged on the clock the provisioner is given (`PlatformConfig::with_clock`;
+   the system clock, the same one the adapter uses, in a deployment).
 5. **No key, CSR, certificate or token in a log, an error or a `Debug`.** An error is a stage and a class; a log line is a serial and
    a time; the key and the tokens are in `zeroize` buffers.
 6. **Defaults.** `ttlSecs` 86 400 and `renewalMarginSecs` 28 800 (less than the life, enforced), key P-256, the Kubernetes mount
@@ -89,9 +94,13 @@ stateDiagram-v2
   [*] --> NoIdentity
   NoIdentity --> Valid: issued and checked
   Valid --> Valid: renewed inside the margin (new key, new serial)
-  Valid --> Valid: renewal failed, old leaf still valid (served, retried after 30 s)
-  Valid --> NoIdentity: past not_after
-  NoIdentity --> NoIdentity: issue failed (nothing is sent)
+  Valid --> Valid: renewal failed, old leaf still valid (served; a pause begins)
+  Valid --> NoIdentity: past not_after (the leaf and its key are dropped, a pause ends)
+  NoIdentity --> Paused: issue failed (the error and a pause are recorded)
+  Valid --> NoIdentity: renewal failed and the leaf lapsed meanwhile
+  Paused --> Paused: callers get the recorded error, OpenBao is not asked
+  Paused --> NoIdentity: the pause is over, or the clock stepped back
+  Paused --> Valid: (after the pause) issued and checked
 ```
 
 ## What is verified, and what is not
@@ -120,6 +129,8 @@ stateDiagram-v2
   the `provisioner-platform` feature, and the workspace gains `tokio-rustls` for the tests.
 - Rotation of the leaf needs no restart; rotation of the service-account token needs none either (it is read at each login).
 - A role whose `max_ttl` is not above the renewal margin makes every issue fail as unusable: the operator sees it in the log at once.
+- The testkit's fixture contract says a source may remember a failure for a bounded pause and that the fixture's
+  `set_issuer_failing` takes the source past it; the kit also runs against the real adapter over the fake PKI.
 - `orch-ports` gains the conformance testkit `platform_client_certificates_conformance!` (valid now and complete; an error means no
   identity and is classified; a lapsed certificate is never answered; a renewal is a new serial and key; no key in a `Debug`) and the
   in-memory `MemoryPlatformClientCertificates` it runs against, with fakes that each break one rule.

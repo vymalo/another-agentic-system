@@ -33,7 +33,7 @@ pub use entitlement::MemoryEntitlement;
 pub use fixtures::{FixedClock, SeqIds, sample_releases};
 pub use model::{ModelStep, ScriptedModel};
 pub use pending::MemoryPendingAuthorizations;
-pub use platform_certificates::MemoryPlatformClientCertificates;
+pub use platform_certificates::{FAILURE_PAUSE_PASSED, MemoryPlatformClientCertificates};
 pub use provisioner::MemoryProvisioner;
 pub use registry::{MEMORY_SOURCE, MemoryRegistry};
 pub use run_leases::{MemoryModelCredentials, MemoryRunBindingStore, MemoryRunLeases};

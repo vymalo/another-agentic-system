@@ -46,9 +46,12 @@ stateDiagram-v2
   None --> Held: issue
   Held --> Held: outside the margin, no call
   Held --> Held: inside the margin, renewed (a new key)
-  Held --> Held: inside the margin, renewal failed, old leaf served, retried after 30 s
-  Held --> None: past not_after, renewal failed: no identity
-  None --> None: issue failed, error (nothing is sent)
+  Held --> Held: inside the margin, renewal failed, old leaf served, a pause begins
+  Held --> None: past not_after (leaf and key dropped, a pause ends), or lapsed during a failed renewal
+  None --> Paused: issue failed, the error and a pause (30 s, 60 s after a refusal) recorded
+  Paused --> Paused: callers get the recorded error, OpenBao is not asked
+  Paused --> None: pause over, or the clock stepped back
+  None --> Held: issue
 ```
 
 ## What it does
@@ -73,6 +76,11 @@ stateDiagram-v2
   `Unavailable` and **60 s after a `Refused`** (a setup fault a retry does not mend, so half the cadence, but
   a fixed role is seen within a minute). Meanwhile a caller gets the old leaf if it is still valid, and
   otherwise the recorded error: a burst with no leaf makes one login and one signing, not one each in turn.
+  **The pause cannot outlive the leaf it began beside:** it ends early when the held leaf lapses (the next
+  caller may try again at once; the lapsed leaf and its key are dropped), and a pause that would run longer
+  from now than the pause itself (the wall clock stepped back) is not waited for. A renewal that fails is
+  judged again after the failure (an issue can take two requests of the timeout each): the old leaf is served
+  only if it is still valid then, otherwise the answer is `Unavailable`.
   Past `not_after`, a failed renewal is an error: **there is no identity, and the provisioner sends nothing**.
 * **Errors carry a class** (`PlatformCredentialsError`, `Classify`): a 400, 401 or 403 from OpenBao is
   `Refused` (`Unauthenticated`: the deployment's setup, not a transient fault); a 5xx, a network error, an
@@ -139,6 +147,11 @@ refused as unusable; a chain of eight is presented and one of nine refused; a `n
 after a failure and after a refusal; a back-off that runs past the end of the leaf is an error without a new try; the token file
 is read again at each login; **no sentinel, `BEGIN`, token or key bytes in a `Debug`, an error or a captured
 log**; and the settings are checked when the adapter is built.
+
+**The port's own conformance kit runs against this adapter** (`mod conformance` of `tests/fake_pki.rs`,
+`orch_ports::platform_client_certificates_conformance!`) with a fixture whose `set_issuer_failing` moves the
+fake clock 61 s forward, past the longest pause: the kit's contract lets a source remember a failure for a
+bounded pause and requires the fixture to take it past that.
 
 The provisioner side of the same port is proven against a real TLS listener in
 [`orch-provisioner-platform`](../provisioner-platform/README.md) (`tests/mtls.rs`).

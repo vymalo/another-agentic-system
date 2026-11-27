@@ -10,7 +10,6 @@ readme = "README.md"
 
 [dependencies]
 base64.workspace = true
-jiff.workspace = true
 orch-core.workspace = true
 orch-ports.workspace = true
 reqwest.workspace = true
@@ -25,6 +24,7 @@ zeroize.workspace = true
 [dev-dependencies]
 orch-ports = { workspace = true, features = ["testkit"] }
 axum.workspace = true
+jiff.workspace = true
 # The mTLS test: a real TLS listener that checks client certificates against a root minted in the test.
 rcgen.workspace = true
 time = { version = "0.3", default-features = false }

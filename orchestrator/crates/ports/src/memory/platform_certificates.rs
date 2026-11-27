@@ -4,10 +4,15 @@ use std::time::Duration;
 use jiff::{SignedDuration, Timestamp};
 use zeroize::Zeroizing;
 
+use crate::memory::FixedClock;
 use crate::{
     Clock, PlatformCertificateFuture, PlatformClientCertificate, PlatformClientCertificates,
     PlatformCredentialsError,
 };
+
+/// How far [`MemoryPlatformClientCertificates::set_failing`] moves the clock: past the longest
+/// pause an adapter keeps after a failure (a minute).
+pub const FAILURE_PAUSE_PASSED: Duration = Duration::from_secs(61);
 
 #[derive(Default)]
 struct State {
@@ -24,7 +29,7 @@ struct State {
 /// Clones share the same state.
 #[derive(Clone)]
 pub struct MemoryPlatformClientCertificates {
-    clock: Arc<dyn Clock>,
+    clock: FixedClock,
     lifetime: SignedDuration,
     state: Arc<Mutex<State>>,
 }
@@ -39,9 +44,9 @@ impl std::fmt::Debug for MemoryPlatformClientCertificates {
 
 impl MemoryPlatformClientCertificates {
     /// A source whose certificates live `lifetime` on `clock`.
-    pub fn new(clock: impl Clock, lifetime: Duration) -> Self {
+    pub fn new(clock: FixedClock, lifetime: Duration) -> Self {
         Self {
-            clock: Arc::new(clock),
+            clock,
             lifetime: SignedDuration::try_from(lifetime)
                 .unwrap_or(SignedDuration::from_secs(86_400)),
             state: Arc::default(),
@@ -52,8 +57,13 @@ impl MemoryPlatformClientCertificates {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Makes the issuer fail with `error` (`Some`) or work again (`None`).
+    /// Makes the issuer fail with `error` (`Some`) or work again (`None`), **and moves its clock
+    /// forward by [`FAILURE_PAUSE_PASSED`]** (every call, in either direction): the testkit's
+    /// contract is that a change of what the issuer does takes a source past any pause it keeps
+    /// after a failure, and the clock is this source's own. It keeps no pause itself, so for it the
+    /// move is only a few seconds of a life of hours.
     pub fn set_failing(&self, error: Option<PlatformCredentialsError>) {
+        self.clock.advance(FAILURE_PAUSE_PASSED);
         self.state().failing = error;
     }
 

@@ -32,9 +32,10 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use orch_core::BoxError;
 use orch_ports::{
-    AgentKind, AgentOwner, AgentProvisioner, AgentState, BlockedReason, PlatformClientCertificate,
-    PlatformClientCertificates, PlatformCredentials, PlatformCredentialsError, PlatformToken,
-    PlatformTokenFuture, ProvisionError, ProvisionedAgent,
+    AgentKind, AgentOwner, AgentProvisioner, AgentState, BlockedReason, Clock,
+    PlatformClientCertificate, PlatformClientCertificates, PlatformCredentials,
+    PlatformCredentialsError, PlatformToken, PlatformTokenFuture, ProvisionError, ProvisionedAgent,
+    SystemClock,
 };
 use reqwest::header::{AUTHORIZATION, ETAG, HeaderValue, IF_MATCH, IF_NONE_MATCH};
 use reqwest::{Method, StatusCode};
@@ -91,6 +92,10 @@ pub struct PlatformConfig {
     pub poll_interval: Duration,
     /// Whether to honour `HTTP(S)_PROXY` from the environment.
     pub use_system_proxy: bool,
+    /// What "now" is for the one thing the provisioner judges itself: a client certificate whose
+    /// end of validity has passed is not presented. The system clock; the same one the certificate
+    /// source is given in a deployment, and one clock in a test ([`with_clock`](Self::with_clock)).
+    pub clock: Arc<dyn Clock>,
 }
 
 impl PlatformConfig {
@@ -127,6 +132,7 @@ impl PlatformConfig {
             ready_timeout: Duration::from_secs(120),
             poll_interval: Duration::from_secs(2),
             use_system_proxy: true,
+            clock: Arc::new(SystemClock),
         }
     }
 
@@ -155,6 +161,13 @@ impl PlatformConfig {
     #[must_use]
     pub fn with_server_ca_pem(mut self, pem: impl Into<String>) -> Self {
         self.server_ca_pem = Some(pem.into());
+        self
+    }
+
+    /// Judges the end of a client certificate's validity on `clock` (the system clock by default).
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
         self
     }
 
@@ -311,6 +324,7 @@ pub struct PlatformProvisioner {
     mtls: Arc<Mutex<Option<(String, reqwest::Client)>>>,
     base: Url,
     auth: PlatformAuth,
+    clock: Arc<dyn Clock>,
     forms: HashMap<AgentKind, Value>,
     ready_timeout: Duration,
     poll_interval: Duration,
@@ -367,6 +381,7 @@ impl PlatformProvisioner {
             mtls: Arc::new(Mutex::new(None)),
             base,
             auth: cfg.auth,
+            clock: cfg.clock,
             forms: cfg.forms,
             ready_timeout: cfg.ready_timeout,
             poll_interval: cfg.poll_interval,
@@ -417,7 +432,7 @@ impl PlatformProvisioner {
                 let certificate = certificates.current().await.map_err(credentials_error)?;
                 // The port answers a certificate that is valid now; the platform would refuse one
                 // that is not, but it is not the only check: nothing is sent with a lapsed one.
-                if certificate.not_after() <= jiff::Timestamp::now() {
+                if certificate.not_after() <= self.clock.now() {
                     return Err(ProvisionError::unavailable(
                         "the platform client certificate is over",
                     ));

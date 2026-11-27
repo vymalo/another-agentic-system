@@ -23,7 +23,7 @@ use jiff::Timestamp;
 use orch_core::{Classify, ErrorClass};
 use orch_platform_credentials_openbao::{BuildError, OpenBaoClientCertificates, OpenBaoPkiConfig};
 use orch_ports::memory::FixedClock;
-use orch_ports::{PlatformClientCertificates, PlatformCredentialsError};
+use orch_ports::{Clock, PlatformClientCertificates, PlatformCredentialsError};
 use rcgen::{
     BasicConstraints, CertificateParams, CertificateSigningRequestParams, DnType,
     ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose, PublicKeyData, SanType,
@@ -158,6 +158,9 @@ struct Fake {
     sign_delay_ms: AtomicU64,
     /// Answer the root in `ca_chain` whatever the request says about `remove_roots_from_chain`.
     always_send_root: AtomicBool,
+    /// Seconds the fake clock moves forward while a signing request is being answered (an issue
+    /// that takes its time).
+    advance_during_sign_secs: AtomicU64,
     /// How many of the authority's extra intermediates to append to `ca_chain`.
     extra_chain: AtomicUsize,
     /// Answer `"ca_chain": null`.
@@ -211,6 +214,10 @@ async fn sign(State(fake): State<Shared>, headers: HeaderMap, Json(body): Json<V
     let delay = fake.sign_delay_ms.load(Ordering::SeqCst);
     if delay > 0 {
         tokio::time::sleep(Duration::from_millis(delay)).await;
+    }
+    let moves = fake.advance_during_sign_secs.load(Ordering::SeqCst);
+    if moves > 0 {
+        fake.clock.advance(Duration::from_secs(moves));
     }
     let token = headers.get("x-vault-token").and_then(|v| v.to_str().ok());
     if token != Some(CLIENT_TOKEN) {
@@ -379,6 +386,7 @@ async fn start_with(tweak: impl FnOnce(&mut OpenBaoPkiConfig)) -> Harness {
         serial: AtomicU64::new(0),
         sign_delay_ms: AtomicU64::new(0),
         always_send_root: AtomicBool::new(false),
+        advance_during_sign_secs: AtomicU64::new(0),
         extra_chain: AtomicUsize::new(0),
         null_chain: AtomicBool::new(false),
         jwts: Mutex::new(Vec::new()),
@@ -827,9 +835,9 @@ async fn the_settings_are_checked_when_the_adapter_is_built() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_burst_with_no_leaf_asks_openbao_once_and_every_caller_gets_the_same_error() {
-    for (mode, error, pause) in [
-        (Mode::SignDown, PlatformCredentialsError::Unavailable, 30),
-        (Mode::LoginRefused, PlatformCredentialsError::Refused, 60),
+    for (mode, error, pause, signs) in [
+        (Mode::SignDown, PlatformCredentialsError::Unavailable, 30, 1),
+        (Mode::LoginRefused, PlatformCredentialsError::Refused, 60, 0),
     ] {
         let h = start().await;
         h.fake.set(mode);
@@ -849,7 +857,11 @@ async fn a_burst_with_no_leaf_asks_openbao_once_and_every_caller_gets_the_same_e
             1,
             "{mode:?}: one login for the whole burst"
         );
-        assert!(h.fake.signs() <= 1, "{mode:?}: one signing at most");
+        assert_eq!(
+            h.fake.signs(),
+            signs,
+            "{mode:?}: one signing, or none when the login is refused"
+        );
 
         // Nothing more is asked while the pause lasts, and it is asked again when it is over.
         h.clock.advance(secs(pause - 1));
@@ -866,30 +878,105 @@ async fn a_burst_with_no_leaf_asks_openbao_once_and_every_caller_gets_the_same_e
 }
 
 #[tokio::test]
-async fn a_back_off_that_runs_past_the_end_of_the_leaf_is_an_error_without_a_new_try() {
+async fn a_pause_that_runs_past_the_end_of_the_leaf_ends_with_it() {
     let h = start().await;
     h.adapter.current().await.unwrap();
     h.fake.set(Mode::SignDown);
-    // Ten seconds before the end: due, tried, failed; the old leaf is still served.
+    // Ten seconds before the end: due, tried, failed; the old leaf is still served, and a pause of
+    // 30 s begins that would run twenty seconds past the end.
     h.clock.advance(secs(24 * 3600 - 10));
     h.adapter.current().await.unwrap();
     assert_eq!(h.fake.logins(), 2);
-    // The leaf lapses inside the pause: no identity, the last error, and OpenBao is not asked.
+    h.adapter.current().await.unwrap();
+    assert_eq!(
+        h.fake.logins(),
+        2,
+        "inside the pause the old leaf is served, nothing is asked"
+    );
+
+    // The leaf lapses inside the pause: the pause ends with it, and the very next caller tries
+    // again at once (and, OpenBao still being down, is answered an error).
     h.clock.advance(secs(15));
     assert_eq!(
         h.adapter.current().await.unwrap_err(),
         PlatformCredentialsError::Unavailable
     );
-    assert_eq!(h.fake.logins(), 2);
-    // Past the pause it is asked again.
-    h.clock.advance(secs(30));
+    assert_eq!(h.fake.logins(), 3, "the pause ended with the leaf");
+    // That try began a pause of its own, with no leaf: the next callers are answered without asking.
     assert_eq!(
         h.adapter.current().await.unwrap_err(),
         PlatformCredentialsError::Unavailable
     );
     assert_eq!(h.fake.logins(), 3);
+    h.clock.advance(secs(31));
+    assert_eq!(
+        h.adapter.current().await.unwrap_err(),
+        PlatformCredentialsError::Unavailable
+    );
+    assert_eq!(h.fake.logins(), 4);
 }
 
+#[tokio::test]
+async fn a_leaf_that_lapses_during_a_failed_renewal_is_not_served() {
+    let h = start().await;
+    h.adapter.current().await.unwrap();
+    h.fake.set(Mode::SignDown);
+    // Inside the margin, five seconds before the end; the signing request takes ten.
+    h.clock.advance(secs(24 * 3600 - 5));
+    h.fake.advance_during_sign_secs.store(10, Ordering::SeqCst);
+    assert_eq!(
+        h.adapter.current().await.unwrap_err(),
+        PlatformCredentialsError::Unavailable,
+        "the old leaf was over by the time the renewal failed"
+    );
+    assert_eq!(h.fake.logins(), 2);
+    h.fake.advance_during_sign_secs.store(0, Ordering::SeqCst);
+    // And it is not kept: once the PKI is back the adapter issues anew.
+    h.clock.advance(secs(31));
+    h.fake.set(Mode::Ok);
+    assert!(h.adapter.current().await.unwrap().not_after() > h.clock.now());
+}
+
+/// A clock a test sets, backwards too.
+struct StepClock(Mutex<Timestamp>);
+
+impl Clock for StepClock {
+    fn now(&self) -> Timestamp {
+        *self.0.lock().unwrap()
+    }
+}
+
+#[tokio::test]
+async fn a_clock_that_steps_back_does_not_stretch_the_pause() {
+    let h = start().await;
+    h.fake.set(Mode::SignDown);
+    let t0: Timestamp = START.parse().unwrap();
+    let clock = Arc::new(StepClock(Mutex::new(t0)));
+    let mut config =
+        OpenBaoPkiConfig::new(h.address.clone(), AUTH_ROLE, PKI_MOUNT, PKI_ROLE, SPIFFE);
+    config.service_account_token_file = h.token_file.clone();
+    let adapter = OpenBaoClientCertificates::with_clock(config, clock.clone()).unwrap();
+
+    let error = PlatformCredentialsError::Unavailable;
+    assert_eq!(adapter.current().await.unwrap_err(), error);
+    assert_eq!(h.fake.logins(), 1);
+    // A little later, inside the pause: not asked.
+    *clock.0.lock().unwrap() = t0.checked_add(secs(10)).unwrap();
+    assert_eq!(adapter.current().await.unwrap_err(), error);
+    assert_eq!(h.fake.logins(), 1);
+    // The wall clock steps back an hour: the pause would be an hour and thirty seconds from now,
+    // which is longer than any pause, so it is not waited for.
+    *clock.0.lock().unwrap() = t0.checked_sub(secs(3_600)).unwrap();
+    assert_eq!(adapter.current().await.unwrap_err(), error);
+    assert_eq!(
+        h.fake.logins(),
+        2,
+        "a pause longer than itself is not waited for"
+    );
+    // The new pause is the real one, measured from the new time.
+    assert_eq!(adapter.current().await.unwrap_err(), error);
+    assert_eq!(h.fake.logins(), 2);
+}
 #[tokio::test]
 async fn a_chain_of_at_most_eight_is_presented_and_a_longer_one_is_refused() {
     let h = start().await;
@@ -917,4 +1004,51 @@ async fn a_null_chain_falls_back_to_the_issuing_ca() {
             h.fake.authority.inter_der.clone()
         ]
     );
+}
+
+/// The port's conformance kit, run against the real adapter over the fake PKI. The fixture's
+/// `set_issuer_failing` moves the fake clock past the longest pause the adapter keeps after a
+/// failure (the kit's contract: a source may remember a failure for a bounded pause), so that each
+/// step of a case is a real attempt and not the remembered answer of the one before.
+mod conformance {
+    use super::*;
+    use orch_ports::testkit::platform_client_certificates::PlatformClientCertificatesFixture;
+
+    struct OpenBao(Harness);
+
+    impl PlatformClientCertificatesFixture for OpenBao {
+        type Source = OpenBaoClientCertificates;
+
+        fn source(&self) -> &OpenBaoClientCertificates {
+            &self.0.adapter
+        }
+
+        fn now(&self) -> Timestamp {
+            self.0.clock.now()
+        }
+
+        fn advance(&self, by: Duration) {
+            self.0.clock.advance(by);
+        }
+
+        fn lifetime(&self) -> Duration {
+            secs(86_400)
+        }
+
+        fn set_issuer_failing(&self, error: Option<PlatformCredentialsError>) {
+            // Past the longest pause (60 s after a refusal), on every call, in either direction.
+            self.0.clock.advance(secs(61));
+            self.0.fake.set(match error {
+                None => Mode::Ok,
+                Some(PlatformCredentialsError::Refused) => Mode::SignRefused,
+                Some(_) => Mode::SignDown,
+            });
+        }
+    }
+
+    async fn make() -> Option<OpenBao> {
+        Some(OpenBao(start().await))
+    }
+
+    orch_ports::platform_client_certificates_conformance!(make);
 }

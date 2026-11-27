@@ -16,9 +16,11 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use jiff::{SignedDuration, Timestamp};
+use orch_ports::memory::FixedClock;
 use orch_ports::{
-    AgentKind, AgentOwner, AgentProvisioner, PlatformCertificateFuture, PlatformClientCertificate,
-    PlatformClientCertificates, PlatformCredentialsError, ProvisionError,
+    AgentKind, AgentOwner, AgentProvisioner, Clock, PlatformCertificateFuture,
+    PlatformClientCertificate, PlatformClientCertificates, PlatformCredentialsError,
+    ProvisionError,
 };
 use orch_provisioner_platform::{BuildError, PlatformConfig, PlatformProvisioner};
 use rcgen::{
@@ -398,14 +400,28 @@ async fn a_certificate_of_another_authority_is_refused_by_the_listener() {
 #[tokio::test]
 async fn a_certificate_that_is_over_is_not_presented_and_nothing_is_sent() {
     let server = serve().await;
-    // The port should never answer one, but if it does the provisioner is the second check: at
-    // or before now is over, and not one connection is opened.
-    for not_after in [
-        Timestamp::now() - SignedDuration::from_secs(1),
-        Timestamp::now() - SignedDuration::from_secs(3_600),
-    ] {
-        let stub = Stub::new(Ok(server.authority.client_until(0x0c, not_after)));
-        let provisioner = provisioner(&server, stub.clone());
+    // One clock for the certificate's end of validity and for the provisioner's guard, and it is the
+    // one that moves. The port should never answer a certificate that is over, but if it does the
+    // provisioner is the second check: at or before now is over, and not one new connection is opened.
+    let clock = FixedClock::new(Timestamp::now());
+    let end = clock.now() + SignedDuration::from_secs(10);
+    let stub = Stub::new(Ok(server.authority.client_until(0x0c, end)));
+    let config = PlatformConfig::with_client_certificate(server.url.clone(), stub.clone())
+        .with_server_ca_pem(server.authority.root_pem.clone())
+        .with_clock(Arc::new(clock.clone()))
+        .without_system_proxy();
+    let provisioner = PlatformProvisioner::new(config).unwrap();
+
+    // Before its end it is presented.
+    provisioner
+        .ensure_ready(&owner(), AgentKind::Coder)
+        .await
+        .unwrap();
+    assert_eq!(server.seen.tcp.load(Ordering::SeqCst), 1);
+
+    // Exactly at its end, and after it, nothing is sent.
+    for past in [10, 3_600] {
+        clock.advance(std::time::Duration::from_secs(past));
         let error = provisioner
             .ensure_ready(&owner(), AgentKind::Coder)
             .await
@@ -414,10 +430,18 @@ async fn a_certificate_that_is_over_is_not_presented_and_nothing_is_sent() {
             matches!(error, ProvisionError::Unavailable { .. }),
             "{error:?}"
         );
-        assert_eq!(stub.asked.load(Ordering::SeqCst), 1, "it was asked");
     }
-    assert_eq!(server.seen.tcp.load(Ordering::SeqCst), 0);
-    assert!(server.seen.authorization.lock().unwrap().is_empty());
+    assert_eq!(
+        stub.asked.load(Ordering::SeqCst),
+        3,
+        "it was asked each time"
+    );
+    assert_eq!(
+        server.seen.tcp.load(Ordering::SeqCst),
+        1,
+        "no connection after the end"
+    );
+    assert_eq!(server.seen.authorization.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
