@@ -27,6 +27,7 @@ orch-a2a-mapping = { path = "crates/a2a-mapping" }
 orch-agent-a2a = { path = "crates/agent-a2a" }
 orch-agent-adam = { path = "crates/agent-adam" }
 orch-provisioner-platform = { path = "crates/provisioner-platform" }
+orch-platform-credentials-openbao = { path = "crates/platform-credentials-openbao" }
 orch-registry-platform = { path = "crates/registry-platform" }
 orch-auth-header = { path = "crates/auth-header" }
 orch-auth-jwt = { path = "crates/auth-jwt" }
@@ -148,3 +149,10 @@ base64 = "0.22"
 aws-lc-rs = "1.18"
 # RFC 8785 numbers as ECMAScript prints them (`orch-prompt-statement`); already in the lock through adam-a2a.
 ryu-js = "1"
+# The orchestrator's workload certificate (`orch-platform-credentials-openbao`, ANR-809): an ECDSA P-256 key and a CSR made
+# in memory, on aws-lc-rs (no `ring`: the one crypto backend of this process), and the issued leaf read to check it. The
+# fake PKI of the tests, and the TLS server of the provisioner's mTLS test, are built with the same crates.
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+x509-cert = { version = "0.2", default-features = false }
+# A TLS listener for the provisioner's mTLS test only, on the workspace's rustls (aws-lc-rs).
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs"] }

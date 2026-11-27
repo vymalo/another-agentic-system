@@ -983,7 +983,7 @@
       "type": "object"
     },
     "ProvisionerCredentials": {
-      "description": "What the orchestrator presents to the Platform API. One variant, for the local stack.",
+      "description": "What the orchestrator presents to the Platform API: a bearer token from a development issuer, or its workload certificate on the TLS connection.",
       "oneOf": [
         {
           "additionalProperties": false,
@@ -1026,6 +1026,96 @@
             "tokenUrl",
             "clientId",
             "clientSecret"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The orchestrator's **workload certificate**, presented on the TLS connection to the platform (ANR-809): a client-authentication certificate signed by an OpenBao PKI role over the pod's Kubernetes service-account login, its key made in memory and renewed before it expires. Nothing is sent without it, and no `Authorization` header is. Needs an `https` `provisioner.url` and no secret: the service-account token is read from its file at each login.",
+          "properties": {
+            "address": {
+              "description": "OpenBao's address: an `https` URL with a host and no user name, password, query or fragment (the service-account token goes to it).",
+              "maxLength": 2048,
+              "minLength": 1,
+              "type": "string"
+            },
+            "authRole": {
+              "description": "The role of that method the pod's service account logs in as.",
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "caFile": {
+              "description": "A file of PEM certificates OpenBao's certificate is checked against, besides the system's own roots (a private authority). Absent: the system's roots alone. Relative to the configuration file's directory, read at startup.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            "kubernetesMount": {
+              "default": "kubernetes",
+              "description": "The Kubernetes auth method's mount (default `kubernetes`).",
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "pkiMount": {
+              "description": "The PKI secrets engine's mount: parts of `A-Z a-z 0-9 . _ -` joined by `/`.",
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "pkiRole": {
+              "description": "The PKI role that signs this certificate: its own, for this one use, with client authentication only (ADR 0110).",
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "renewalMarginSecs": {
+              "default": 28800,
+              "description": "A certificate is renewed once it has this many seconds left (default 28800); less than `ttlSecs`.",
+              "format": "uint64",
+              "maximum": 604799,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "serverCaFile": {
+              "description": "A file of PEM certificates the platform's listener is checked against, besides the system's own roots (a private authority). Absent: the system's roots alone. Relative to the configuration file's directory, read at startup.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            "serviceAccountTokenFile": {
+              "description": "The file the pod's service-account token is read from, at each login (an absolute path; default `/var/run/secrets/kubernetes.io/serviceaccount/token`).",
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            "spiffeId": {
+              "description": "The SPIFFE id the certificate must carry as its one name, `spiffe://<trust domain>/<path>` in the plain form (lower-case host, no port, query or fragment).",
+              "maxLength": 2048,
+              "minLength": 1,
+              "type": "string"
+            },
+            "ttlSecs": {
+              "default": 86400,
+              "description": "The life asked of each certificate in seconds, 60 to 604800 (default 86400): with no revocation list, a certificate's life is its revocation window. The role's `max_ttl` may cut it.",
+              "format": "uint64",
+              "maximum": 604800,
+              "minimum": 60,
+              "type": "integer"
+            },
+            "type": {
+              "const": "openbao-pki",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "address",
+            "authRole",
+            "pkiMount",
+            "pkiRole",
+            "spiffeId"
           ],
           "type": "object"
         }
