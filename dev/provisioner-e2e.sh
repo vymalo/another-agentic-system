@@ -250,7 +250,7 @@ fi
 # The message went to the person's own agent (ANR-1061), and its answer is the thread's. The deployment's `adam` is the real coder image and keeps no
 # journal a script can read, so "it was not asked" is shown by the answer: the thread holds the stand-in's `Data: ...`, which `adam` never says.
 if [ "$(in_own_agent "$marker_a")" -ge 1 ]; then
-  ok "the message is in the journal of the person's own agent (coder-<owner>), not only at the shared one"
+  ok "the message is in the journal of the person's own agent (coder-<owner>), not only at the shared one, and the thread holds its answer, not the shared agent's"
 else
   bad "the person's own agent was sent no message that holds $marker_a"
 fi
@@ -296,6 +296,12 @@ else
   bad "the platform's agent of the holder did not reach ready"
 fi
 if [ "$(in_own_agent "$marker_b")" -ge 1 ]; then ok "the holder's message is in the journal of the holder's own agent"; else bad "the holder's own agent was sent no message that holds $marker_b"; fi
+api "$tmp/holder.h" GET "/api/threads/$thread_b/export" > "$tmp/export_b.json" 2>/dev/null || echo '{"events":[]}' > "$tmp/export_b.json"
+if jq -e '[.events[] | tostring | select(contains("Data: nine seasons"))] | length >= 1' "$tmp/export_b.json" >/dev/null 2>&1; then
+  ok "the holder's thread holds the person's own agent's answer (\"Data: ...\"), which the deployment's agent never gives"
+else
+  bad "the holder's thread does not hold the answer of the person's own agent"
+fi
 # Suspended again: the next message to the same thread resumes it again.
 admin POST /scenarios/reset >/dev/null
 marker_b2="own-agent-marker-b2-$(uuid)"
