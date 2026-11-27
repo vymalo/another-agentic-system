@@ -108,8 +108,16 @@ pub struct Secrets {
     /// `secrets.openbao.caFile`, read: the PEM text of the certificates. A certificate is public,
     /// but it is held as a `Secret` for the one reader that resolves a file the same way.
     pub openbao_ca: Option<Secret>,
-    /// `provisioner.credentials.clientSecret`; `None` without the section.
+    /// `provisioner.credentials.clientSecret`; `None` without the section, and for credentials
+    /// that need none (`openbao-pki`).
     pub provisioner_client_secret: Option<Secret>,
+    /// `provisioner.credentials.caFile` (`openbao-pki`), read: the PEM text of the certificates
+    /// OpenBao's certificate is checked against. A certificate is public, but it is held as a
+    /// `Secret` for the one reader that resolves a file the same way.
+    pub provisioner_openbao_ca: Option<Secret>,
+    /// `provisioner.credentials.serverCaFile` (`openbao-pki`), read: the PEM text of the
+    /// certificates the platform's listener is checked against.
+    pub provisioner_server_ca: Option<Secret>,
 }
 
 /// One key of `secrets.pg.keys`, resolved. `Debug` shows the reference, never the key.
@@ -1771,13 +1779,34 @@ impl Checker<'_> {
             Some(section) => self.user_secrets_openbao(section),
             None => (None, None),
         };
-        let provisioner_client_secret = match &cfg.provisioner {
-            Some(Provisioner {
-                credentials: ProvisionerCredentials::DevOidc { client_secret, .. },
-                ..
-            }) => self.resolve(client_secret, "provisioner.credentials.clientSecret", true),
-            None => None,
-        };
+        let (provisioner_client_secret, provisioner_openbao_ca, provisioner_server_ca) =
+            match &cfg.provisioner {
+                Some(Provisioner {
+                    credentials: ProvisionerCredentials::DevOidc { client_secret, .. },
+                    ..
+                }) => (
+                    self.resolve(client_secret, "provisioner.credentials.clientSecret", true),
+                    None,
+                    None,
+                ),
+                Some(Provisioner {
+                    credentials:
+                        ProvisionerCredentials::OpenbaoPki {
+                            ca_file,
+                            server_ca_file,
+                            ..
+                        },
+                    ..
+                }) => (
+                    None,
+                    self.pem_file(ca_file.as_deref(), "provisioner.credentials.caFile"),
+                    self.pem_file(
+                        server_ca_file.as_deref(),
+                        "provisioner.credentials.serverCaFile",
+                    ),
+                ),
+                None => (None, None, None),
+            };
         Some(Secrets {
             database_url: database_url?,
             database_direct_url,
@@ -1801,7 +1830,24 @@ impl Checker<'_> {
             openbao_token,
             openbao_ca,
             provisioner_client_secret,
+            provisioner_openbao_ca,
+            provisioner_server_ca,
         })
+    }
+
+    /// A file of PEM certificates, read: `None` when the key is absent, an error naming `path` when
+    /// the file cannot be read or holds no certificate.
+    fn pem_file(&mut self, file: Option<&str>, path: &str) -> Option<Secret> {
+        let secret = self.resolve(&SecretRef::File(file?.to_owned()), path, true)?;
+        if secret.expose().contains("-----BEGIN CERTIFICATE-----") {
+            Some(secret)
+        } else {
+            self.invalid(
+                path,
+                "the file holds no PEM certificate (-----BEGIN CERTIFICATE-----)",
+            );
+            None
+        }
     }
 
     /// `provisioner`: a URL the adapter can use, each kind once and with a form, and the
@@ -1868,6 +1914,97 @@ impl Checker<'_> {
                 }
                 if client_id.trim().is_empty() {
                     self.invalid("provisioner.credentials.clientId", "must not be blank");
+                }
+            }
+            ProvisionerCredentials::OpenbaoPki {
+                address,
+                kubernetes_mount,
+                auth_role,
+                service_account_token_file,
+                pki_mount,
+                pki_role,
+                spiffe_id,
+                ttl_secs,
+                renewal_margin_secs,
+                ..
+            } => {
+                // The workload certificate is presented on the TLS connection: an `http` URL has
+                // none, and a platform reached in the clear would be sent no identity at all.
+                if !url::Url::parse(section.url.trim()).is_ok_and(|u| u.scheme() == "https") {
+                    self.invalid(
+                        "provisioner.url",
+                        "must be an https:// URL when the credentials are openbao-pki: the \
+                         certificate is presented on the TLS connection",
+                    );
+                }
+                if !is_openbao_address(address) {
+                    self.invalid(
+                        "provisioner.credentials.address",
+                        "expected an https URL with a host, at most 2 KiB, with no user name, \
+                         password, query or fragment: the service-account token goes to it",
+                    );
+                }
+                if !is_openbao_mount(kubernetes_mount) {
+                    self.invalid(
+                        "provisioner.credentials.kubernetesMount",
+                        "parts of A-Z a-z 0-9 . _ - joined by single /, 1 to 128 characters",
+                    );
+                }
+                if !is_openbao_mount(pki_mount) {
+                    self.invalid(
+                        "provisioner.credentials.pkiMount",
+                        "parts of A-Z a-z 0-9 . _ - joined by single /, 1 to 128 characters",
+                    );
+                }
+                for (key, role) in [("authRole", auth_role), ("pkiRole", pki_role)] {
+                    if role.contains('/') || !is_openbao_mount(role) {
+                        self.invalid(
+                            format!("provisioner.credentials.{key}"),
+                            "1 to 128 characters of A-Z a-z 0-9 . _ -",
+                        );
+                    }
+                }
+                let is_spiffe = spiffe_id.len() <= 2048
+                    && url::Url::parse(spiffe_id).is_ok_and(|u| {
+                        u.scheme() == "spiffe"
+                            && u.host_str()
+                                .is_some_and(|h| !h.is_empty() && h == h.to_ascii_lowercase())
+                            && u.port().is_none()
+                            && u.username().is_empty()
+                            && u.password().is_none()
+                            && u.query().is_none()
+                            && u.fragment().is_none()
+                            && u.path().len() > 1
+                            && u.as_str() == spiffe_id
+                    });
+                if !is_spiffe {
+                    self.invalid(
+                        "provisioner.credentials.spiffeId",
+                        "expected spiffe://<trust domain>/<path> in its plain form (lower-case \
+                         host, a path, no user name, port, query or fragment)",
+                    );
+                }
+                if service_account_token_file
+                    .as_deref()
+                    .is_some_and(|file| !file.starts_with('/'))
+                {
+                    self.invalid(
+                        "provisioner.credentials.serviceAccountTokenFile",
+                        "must be an absolute path: it is read at each login, not at startup",
+                    );
+                }
+                if !(60..=604_800).contains(ttl_secs) {
+                    self.invalid(
+                        "provisioner.credentials.ttlSecs",
+                        "expected 60 to 604800 seconds",
+                    );
+                }
+                if renewal_margin_secs >= ttl_secs || *renewal_margin_secs == 0 {
+                    self.invalid(
+                        "provisioner.credentials.renewalMarginSecs",
+                        "must be at least 1 and less than ttlSecs, so that a certificate is \
+                         renewed before it expires and not at every call",
+                    );
                 }
             }
         }

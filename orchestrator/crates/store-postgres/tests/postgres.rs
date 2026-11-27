@@ -4318,3 +4318,31 @@ async fn a_session_in_another_zone_and_date_style_reads_and_writes_the_same_inst
     assert_eq!(claimed[0].next_attempt_at, t0());
     assert_eq!(claimed[0].lease_until, Some(t0() + Duration::from_secs(30)));
 }
+
+/// The same idempotency key twice in one commit is the caller's bug: the append's one statement
+/// meets `events_idempotency`, the commit is `Corrupt` and nothing of it is written (ADR 0107 P1).
+#[tokio::test]
+async fn the_same_idempotency_key_twice_in_one_commit_is_corrupt_and_writes_nothing() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let id = create(&store, vec![]).await;
+    let before = store.get_thread(None, id).await.unwrap().unwrap();
+    let err = store
+        .commit(
+            id,
+            before.version,
+            commit(
+                ThreadState::Working,
+                vec![
+                    event("a", Some("same".to_owned())),
+                    event("b", Some("same".to_owned())),
+                ],
+                vec![],
+            ),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::Corrupt, "{err:?}");
+    let after = store.get_thread(None, id).await.unwrap().unwrap();
+    assert_eq!(after, before, "the thread is as it was");
+}

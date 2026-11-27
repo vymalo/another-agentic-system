@@ -829,6 +829,12 @@ else
     _t=$((_t + 1))
   done
 
+  # The `[mock:commands]` script (dev/wiremock/coder-commands, ours): one plain answer to a first turn, for dev/commands-e2e.sh.
+  commands_user=$(user '/explain acme/app [mock:commands] nonce')
+  check "mock-coder [mock:commands]: a first turn is answered in words and stops, no tool is called" \
+    "$(completion mock-coder "[$share_system, $commands_user]" | jq -r '[.finish_reason, (.message.content | startswith("Done:") | tostring), (.message.tool_calls // [] | length | tostring)] | join(" | ")')" \
+    "stop | true | 0"
+  twin "mock-coder [mock:commands]" mock-coder "[$share_system, $commands_user]" 2
   check "the coder's mock matched every request of these checks" \
     "$(curl -fsS "$CODER/__admin/requests/unmatched" | jq -r '.requests | length')" "0"
   curl -sS -X DELETE "$CODER/__admin/requests" -o /dev/null

@@ -11,7 +11,16 @@ sidebarTitle: "0107 · Rules in SQL, PostgreSQL 18 floor"
   chart's refusal below 18). Two details differ from the text below, and the text is amended where they are said: the
   floor's CI is a job of its own, `store-floor`, and not a matrix of `check` (decision 4); and the store's first
   migration of a function is `0036_…`, since `0034` and `0035` were taken by other changes after this ADR was written
-  (decision 6). No function exists yet; P1 is next.
+  (decision 6). No function existed then.
+  *Status note (2026-11-27): slice P1 is built* (the log's append: `orch_commit_open` and `orch_usage_counted_through`, and the
+  append as one statement). Its migration is `0037_orch_commit_open.sql`, not `0036_…`: `0036` was taken on `main` by
+  `outbox_open_owner_due` (ANR-1175) before P1 landed, so the first function migration of the store is `0037`. No
+  function of P1 names a column in a SQL-standard body (`orch_commit_open` is PL/pgSQL, `orch_usage_counted_through`
+  reads only its arguments), so decision 6's rule that such a body freezes its columns is not met yet. The outcome word is
+  `conflict` (decision 2), and `orch_commit_open` carries `SET search_path FROM CURRENT` (decision 1), which
+  `tests/functions.rs` holds for every PL/pgSQL `orch_` function. For P2: a commit updates the `threads` row twice (the
+  append's CTE advances `last_seq`, then the final `UPDATE`), which leaves an extra row version; computing the append's
+  `base` from `cur_last_seq` and letting the final `UPDATE` write `last_seq` would avoid it. P2 is next.
   The owner decided on 2026-11-27 (the owner, 2026-11-27):
 
   > *"If something can be done in SQL, we better use SQL rather than rust."*

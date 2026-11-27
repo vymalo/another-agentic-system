@@ -120,3 +120,154 @@ fn a_kind_needs_its_form_and_unknown_things_are_refused() {
     let out_of_range = GOOD.replace("kinds:", "requestTimeoutSecs: 0\n  kinds:");
     assert!(load(&with(&out_of_range), &env()).is_err());
 }
+
+const PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+
+const PKI: &str = "\
+provisioner:
+  url: https://platform-api.internal
+  kinds: [coder]
+  forms:
+    coder: { kind: coder }
+  credentials:
+    type: openbao-pki
+    address: https://bao.internal:8200
+    caFile: bao-ca.pem
+    authRole: orchestrator-platform
+    pkiMount: pki-workload
+    pkiRole: orchestrator-platform-client
+    spiffeId: spiffe://example.org/ns/orchestrator/sa/orchestrator
+    serverCaFile: platform-ca.pem
+";
+
+fn pki_files() -> Fake {
+    env()
+        .file("/etc/orchestrator/bao-ca.pem", PEM)
+        .file("/etc/orchestrator/platform-ca.pem", PEM)
+}
+
+#[test]
+fn the_workload_certificate_is_read_with_its_defaults_and_needs_no_secret() {
+    let valid = load(&with(PKI), &pki_files()).unwrap();
+    let section = valid.config.provisioner.as_ref().unwrap();
+    let ProvisionerCredentials::OpenbaoPki {
+        kubernetes_mount,
+        ttl_secs,
+        renewal_margin_secs,
+        service_account_token_file,
+        ..
+    } = &section.credentials
+    else {
+        panic!("not the openbao-pki credentials: {:?}", section.credentials);
+    };
+    assert_eq!(kubernetes_mount, "kubernetes");
+    assert_eq!((*ttl_secs, *renewal_margin_secs), (86_400, 28_800));
+    assert!(service_account_token_file.is_none());
+    // No client secret is resolved, and the two authorities are read.
+    assert!(valid.secrets.provisioner_client_secret.is_none());
+    assert!(
+        valid
+            .secrets
+            .provisioner_openbao_ca
+            .as_ref()
+            .unwrap()
+            .expose()
+            .contains("BEGIN CERTIFICATE")
+    );
+    assert!(valid.secrets.provisioner_server_ca.is_some());
+}
+
+#[test]
+fn a_workload_certificate_without_authorities_uses_the_system_roots() {
+    let bare = PKI
+        .replace("    caFile: bao-ca.pem\n", "")
+        .replace("    serverCaFile: platform-ca.pem\n", "");
+    let valid = load(&with(&bare), &env()).unwrap();
+    assert!(valid.secrets.provisioner_openbao_ca.is_none());
+    assert!(valid.secrets.provisioner_server_ca.is_none());
+}
+
+#[test]
+fn every_mistake_of_the_workload_certificate_is_named_by_its_key() {
+    let bad = with(
+        "\
+provisioner:
+  url: http://platform-api.internal
+  kinds: [coder]
+  forms:
+    coder: { kind: coder }
+  credentials:
+    type: openbao-pki
+    address: http://bao.internal
+    caFile: missing.pem
+    kubernetesMount: a/../b
+    authRole: a/b
+    serviceAccountTokenFile: relative/token
+    pkiMount: a/../b
+    pkiRole: x y
+    spiffeId: spiffe://Example.org
+    ttlSecs: 60
+    renewalMarginSecs: 60
+    serverCaFile: not-pem.pem
+",
+    );
+    let text = lines(load(
+        &bad,
+        &env().file("/etc/orchestrator/not-pem.pem", "hello"),
+    ))
+    .join("\n");
+    for key in [
+        "provisioner.url",
+        "provisioner.credentials.address",
+        "provisioner.credentials.caFile",
+        "provisioner.credentials.kubernetesMount",
+        "provisioner.credentials.authRole",
+        "provisioner.credentials.serviceAccountTokenFile",
+        "provisioner.credentials.pkiMount",
+        "provisioner.credentials.pkiRole",
+        "provisioner.credentials.spiffeId",
+        "provisioner.credentials.renewalMarginSecs",
+        "provisioner.credentials.serverCaFile",
+    ] {
+        assert!(text.contains(key), "{key} not named in:\n{text}");
+    }
+}
+
+/// A number out of its range, or an empty name, is the shape pass's to refuse (the schema, which
+/// runs before the rules and stops the load), and the schema reports it at the variant of the
+/// credentials it is in (`oneOf`), not at the key: so these name `provisioner.credentials`, and the
+/// rules' own messages (the test above) are for what the schema cannot say.
+#[test]
+fn a_value_out_of_the_schemas_range_is_refused_at_the_credentials() {
+    for (from, to) in [
+        ("    pkiMount: pki-workload\n", "    pkiMount: \"\"\n"),
+        ("    serverCaFile:", "    ttlSecs: 30\n    serverCaFile:"),
+    ] {
+        let text = PKI.replace(from, to);
+        let shown = lines(load(&with(&text), &pki_files())).join("\n");
+        assert!(
+            shown.contains("provisioner.credentials"),
+            "{to:?} not refused at the credentials: {shown}"
+        );
+    }
+}
+
+#[test]
+fn the_margin_must_be_less_than_the_life() {
+    for margin in ["86400", "100000"] {
+        let text = PKI.replace(
+            "    serverCaFile:",
+            &format!("    renewalMarginSecs: {margin}\n    serverCaFile:"),
+        );
+        let shown = lines(load(&with(&text), &pki_files())).join("\n");
+        assert!(
+            shown.contains("provisioner.credentials.renewalMarginSecs"),
+            "{margin}: {shown}"
+        );
+    }
+    let just_under = PKI.replace(
+        "    serverCaFile:",
+        "    renewalMarginSecs: 86399\n    serverCaFile:",
+    );
+    load(&with(&just_under), &pki_files()).unwrap();
+}
