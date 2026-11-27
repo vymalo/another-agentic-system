@@ -93,7 +93,7 @@ const sidebar = [
     group("Errors", []),
   ]),
   { text: "Architecture", items: [page("concepts", "Concepts"), page("architecture", "Architecture"), page("orchestrator", "Orchestrator")] },
-  { text: "Decisions", collapsed: true, items: [{ text: "ADR index", link: "/decisions/" }, ...pages("decisions")] },
+  { text: "Decisions", collapsed: true, items: [{ text: "ADR index", link: "/decisions/" }, ...pages("decisions", ["index.md"])] },
   { text: "Contributing", items: [{ text: "How to contribute", link: "/contributing" }] },
 ].filter((s) => s.items.length > 0);
 
