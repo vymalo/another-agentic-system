@@ -5,7 +5,7 @@
 #     (`cnpg_chart_*`, `kind_node_image`; the tools are in .github/workflows/pooler-e2e.yml as in backup-e2e.yml);
 #   * the pinned `curl` image: deploy/chart/tests/ratelimit-e2e/UPSTREAM (`curl_image`);
 #   * the mock issuer's node image: the FROM line of dev/mock-oidc/Dockerfile (tag and digest);
-#   * WireMock: the tag compose.yaml pins (`wiremock/wiremock:3.13.2`), and below the digest of that tag, which compose.yaml does not carry.
+#   * WireMock: the tag and digest compose.yaml pins (`wiremock/wiremock:3.13.2@sha256:0d4e...`, `x-wiremock`), below.
 #
 # NOTHING OF THE CLUSTER HALF HAS RUN where this was written (no kind, no container daemon): the first run of the job `pooler-e2e` is the proof or the disproof.
 # What was run is `shellcheck`, `dash -n`, `helm template` of every object the script applies, and the orchestrator binary built at the commit that has
@@ -42,5 +42,5 @@
 #     `cnpg_pgbouncer_stats_total_xact_count{database}` and `cnpg_pgbouncer_stats_total_client_parse_count{database}`, on port 9127 of each pod.
 #   * WireMock 3.13.2: the index digest below, answered by mirror.gcr.io for the tag on 2026-10-28 (Docker Hub answered 429 to the same request).
 #
-# By tag and digest, the tag compose.yaml pins (`x-wiremock`):
+# By tag and digest, the same pin as compose.yaml (`x-wiremock`; pooler-e2e.sh compares the whole string):
 wiremock_image=wiremock/wiremock:3.13.2@sha256:0d4ecb3e4dc8213fd7a4d37d6a78f6e6b553a6d2e15bd51b0999781282ac61b3
