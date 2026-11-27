@@ -28,21 +28,50 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - name: Draw the screens in the image
-        # `write` is the only mode that writes the set, and it writes it from the image's own Chromium and fonts
-        run: sh web/scripts/screens-docker.sh write
+      - name: Draw the screens in the image and select what changed
+        # `update` draws the set in the image (its own Chromium and fonts), compares it with the committed one by the bound
+        # (scripts/screens-compare.sh --list-failing, in the same image) and changes the committed tree by only the stills
+        # beyond the bound, the new ones and the dropped ones: a still within the bound stays as committed, so the sub-pixel
+        # noise between two runs rewrites nothing. The report holds one line per still touched, with its pixel count and percentage.
+        env:
+          SCREENS_REPORT: ${{ runner.temp }}/screens-report.txt
+          SCREENS_KEEP: ${{ runner.temp }}/screens-drawn
+        run: sh web/scripts/screens-docker.sh update
       - name: Open a pull request with the set, when it changed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: screens/update-${{ github.run_id }}
+          SCREENS_REPORT: ${{ runner.temp }}/screens-report.txt
+          SCREENS_KEEP: ${{ runner.temp }}/screens-drawn
+          BASE: ${{ github.ref_name }}
         run: |
           set -eu
           if [ -z "$(git status --porcelain -- web/e2e/__screens__)" ]; then
-            echo "the committed set is what the image draws: nothing to update"
+            echo "nothing to update: every still is within the bound (at most 0.05 % of its pixels beyond 8/255) of the committed one"
             exit 0
           fi
           changed=$(git status --porcelain -- web/e2e/__screens__ | wc -l | tr -d ' ')
           echo "$changed files changed"
+          cat "$SCREENS_REPORT"
+          # one line per still, "<name>: <what>"; removals go in a section of their own
+          fmt() { sed 's/^/- \x60/; s/: /\x60: /'; }
+          list=$(grep -v ': removed, no longer drawn$' "$SCREENS_REPORT" | fmt || true)
+          removedlist=$(grep ': removed, no longer drawn$' "$SCREENS_REPORT" | sed 's/: removed, no longer drawn$//' | sed 's/^/- \x60/; s/$/\x60/' || true)
+          removed_section=""
+          if [ -n "$removedlist" ]; then
+            removed_section=$(printf 'Removed (no longer drawn):\n\n%s\n' "$removedlist")
+          fi
+          # A pull request opened with the default GITHUB_TOKEN starts no workflow (GitHub's rule), so its `screens` job never runs:
+          # the proof is made here, in the same image, before anything is pushed. The set the image drew is compared with the
+          # committed tree as it now stands; any still beyond the bound, new or missing fails the job and no pull request opens.
+          if ! verify=$(docker run --rm -v "$SCREENS_KEEP:/generated:ro" -v "$PWD/web/e2e/__screens__:/committed:ro" \
+            --entrypoint sh web-screens scripts/screens-compare.sh /generated /committed 2>&1); then
+            echo "$verify"
+            echo "the selected set does not match what the image drew: no pull request"
+            exit 1
+          fi
+          verdict=$(echo "$verify" | tail -n 1)
+          echo "$verdict"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$BRANCH"
@@ -54,7 +83,11 @@ jobs:
 
           This PR changes:
 
-          - \`web/e2e/__screens__\`: $changed image(s), drawn by \`web/scripts/screens-docker.sh write\` in the \`screens\` target of \`web/Dockerfile\`.
+          - \`web/e2e/__screens__\`: $changed image(s), drawn by \`web/scripts/screens-docker.sh update\` in the \`screens\` target of \`web/Dockerfile\`. Only the stills beyond the bound (more than 0.05 % of their pixels differ by more than 8/255, or other dimensions), the new ones and the dropped ones are touched; a still within the bound stays as committed. Each, with the comparison's pixel count and percentage:
+
+          $list
+
+          $removed_section
 
           It solves:
 
@@ -91,13 +124,15 @@ jobs:
           Commands run:
 
           \`\`\`bash
-          sh web/scripts/screens-docker.sh write   # in this workflow, in the image
+          sh web/scripts/screens-docker.sh update   # in this workflow, in the image
           \`\`\`
 
           Results:
 
           \`\`\`text
-          $changed file(s) written by the image; the \`screens\` job of this pull request compares them and is the proof.
+          $changed file(s) changed (copied or removed) by the selection.
+          Compared in this workflow, in the same image, with the set it drew: $verdict
+          This pull request was opened with the default token, which starts no workflow: its own \`screens\` job has not run. Close and reopen it, or push to it, to run the checks.
           \`\`\`
 
           ---
@@ -127,7 +162,7 @@ jobs:
 
           Mitigation:
 
-          * The \`screens\` job of this pull request re-draws the set in the same image and fails on any difference, so a still drawn elsewhere cannot land.
+          * This workflow compares the drawn set with the selected tree before it pushes, and the \`screens\` job re-draws it on the pull request once a person closes and reopens it (or pushes to it), so a still drawn elsewhere cannot land.
 
           ---
 
@@ -168,6 +203,6 @@ jobs:
           * [x] Product intent
           * [x] Edge cases
           EOF
-          gh pr create --base "${{ github.ref_name }}" --head "$BRANCH" \
+          gh pr create --base "$BASE" --head "$BRANCH" \
             --title "chore(web): re-baseline the screens from CI's own image" \
             --body-file /tmp/body.md

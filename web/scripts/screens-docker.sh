@@ -2,6 +2,8 @@
 # Generates the screenshots of e2e/__screens__/ in web/Dockerfile's `screens` target and compares them with the committed set.
 #   sh web/scripts/screens-docker.sh check    # exit 1 when a still is missing or new, has other dimensions, or has more than 0.05 % of its pixels beyond 8/255
 #   sh web/scripts/screens-docker.sh write    # rewrites the committed set from the image
+#   sh web/scripts/screens-docker.sh update   # changes the committed set by only the stills beyond the bound, the new ones and the dropped ones
+#                                             # (scripts/screens-select.sh; SCREENS_REPORT=<file> gets one line per still touched)
 set -eu
 mode="${1:-check}"
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -11,11 +13,15 @@ docker build -f "$root/web/Dockerfile" --target screens -t web-screens "$root"
 chmod 777 "$out"
 docker run --rm -v "$out:/app/web/e2e/__screens__" web-screens
 dir="$root/web/e2e/__screens__"
-# SCREENS_KEEP=<dir>: a copy of what the image drew, for CI to upload when the comparison fails (the set is still only ever written by `write`)
+# SCREENS_KEEP=<dir>: a copy of what the image drew, for CI to upload when the comparison fails (the committed set is still only ever written by `write` and `update`)
 if [ -n "${SCREENS_KEEP:-}" ]; then mkdir -p "$SCREENS_KEEP" && cp "$out"/*.png "$SCREENS_KEEP"/; fi
 if [ "$mode" = write ]; then
   cp "$out"/*.png "$dir"/
   echo "wrote $(ls "$out" | wc -l) images"
+  exit 0
+fi
+if [ "$mode" = update ]; then
+  SCREENS_IMAGE=web-screens sh "$root/web/scripts/screens-select.sh" "$out" "$dir" "${SCREENS_REPORT:-/dev/null}"
   exit 0
 fi
 # The comparison runs in the same image (ImageMagick is there, never rely on the host's): a still passes when at most 0.05 % of its
