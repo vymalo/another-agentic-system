@@ -1,8 +1,8 @@
 ---
-sidebarTitle: "0094 · An inspector; replay is a fork"
+sidebarTitle: "0104 · An inspector; replay is a fork"
 ---
 
-# ADR 0094 — An inspector reads a run, and "replay from a step" is a fork of the journal into a new run
+# ADR 0104 — An inspector reads a run, and "replay from a step" is a fork of the journal into a new run
 
 - **Status:** **proposed (2026-11-24)** (task ANR-261, issue [#404](https://github.com/vymalo/another-agentic-system/issues/404),
   ROADMAP M8, first gap of ANR-10). **Nothing is built.** Every name and shape below is the design's, for the owner to
@@ -10,6 +10,7 @@ sidebarTitle: "0094 · An inspector; replay is a fork"
   person's thread), [ADR 0053](0053-a-thread-export-says-which-builds-made-it.md) (the export) and
   [ADR 0025](0025-nested-steps-events-carry-their-source-path.md) (the step tree). The adam side is adam's own and gets its
   rows in the slice table, to be recorded as an adam-rs ADR by the same owner decision.
+- **Renumbered (2026-11-27):** from 0094 to 0104, because 0094 was also taken by "Retention is one sweep per class, one key each, and a default of 90 days"; the decision is unchanged.
 
 ## Context
 
