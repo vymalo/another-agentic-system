@@ -393,7 +393,8 @@ pub struct Server {
 }
 
 /// The internal listener the run routes are served on (ADR 0084 decision 5): its own address, the
-/// orchestrator's bearer token (the bind and the unbind) and one token per agent (the lease).
+/// orchestrator's bearer token (the bind and the unbind), one token per agent (the lease) and, when
+/// the deployment runs the operator's meter, the meter's (the account, ADR 0106).
 /// Every token is a reference; a value is never in the file. Only a process that serves routes
 /// binds it, so a worker that shares the file reads and checks the section and opens nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -410,6 +411,13 @@ pub struct ServerInternal {
     /// it may lease only the runs bound to it. At least 32 bytes each, and no two the same.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub agents: BTreeMap<String, SecretRef>,
+    /// The token of the operator's pod-minute meter: the one caller of
+    /// `GET /internal/runs/{run}/account`, which answers the person's identity-provider `sub`
+    /// (ADR 0106). **Refused unless `auth.jwt.userClaim` is `sub`** (exit 78 naming this key): a
+    /// deployment that keys its people by e-mail has no account to give the meter. At least 32
+    /// bytes, and not the token of another caller. Absent: nobody may ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meter: Option<SecretRef>,
 }
 
 /// The bounds of a page of a thread's history (`server.history`, ADR 0059): the route

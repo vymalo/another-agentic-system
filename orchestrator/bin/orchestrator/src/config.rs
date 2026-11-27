@@ -333,6 +333,10 @@ pub struct InternalSettings {
     /// `server.internal.agents`: each agent's token, by agent id, for
     /// `GET /internal/runs/{run}/lease`.
     pub agent_tokens: BTreeMap<AgentId, SecretString>,
+    /// `server.internal.meter`: the operator's meter token, for
+    /// `GET /internal/runs/{run}/account` (ADR 0106). Only read when `auth.jwt.userClaim` is `sub`,
+    /// which the configuration checks.
+    pub meter_token: Option<SecretString>,
 }
 
 impl fmt::Debug for InternalSettings {
@@ -340,6 +344,7 @@ impl fmt::Debug for InternalSettings {
         f.debug_struct("InternalSettings")
             .field("listen", &self.listen)
             .field("agents", &self.agent_tokens.keys().collect::<Vec<_>>())
+            .field("meter", &self.meter_token.is_some())
             .finish()
     }
 }

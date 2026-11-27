@@ -26,6 +26,9 @@ use crate::types::{
     SharingMode, Surface, ToolServer, ToolServerSigning, UrlRef, UserSecrets, UserToolServers,
 };
 
+/// The tokens of the run routes: the orchestrator's own, each agent's, the meter's.
+type InternalTokens = (Option<Secret>, BTreeMap<String, Secret>, Option<Secret>);
+
 /// What `gate.maxAttempts` is when it is not set and the cap allows it (the core's default).
 pub const DEFAULT_MAX_ATTEMPTS: u64 = 3;
 
@@ -88,6 +91,8 @@ pub struct Secrets {
     pub internal_token: Option<Secret>,
     /// `server.internal.agents`: each agent's bearer token on the run routes, by agent id.
     pub internal_agent_tokens: BTreeMap<String, Secret>,
+    /// `server.internal.meter`: the operator's meter bearer token on the account route (ADR 0106).
+    pub internal_meter_token: Option<Secret>,
     /// `webhooks.generic.secrets`; empty when the section is absent or this process serves no
     /// routes (a worker is not asked for secrets it would never use).
     pub webhook_generic: Vec<Secret>,
@@ -743,6 +748,25 @@ impl Checker<'_> {
                         "is server.listen: one process cannot serve two listeners on one address",
                     );
                 }
+            }
+        }
+        // ADR 0106: the meter is answered the person's `sub`, and only a deployment that reads `sub`
+        // has one. An e-mail is not an account id (the platform's alphabet has no `@`), so a meter
+        // token with any other claim could only ever be refused at the route: it is refused here.
+        if internal.meter.is_some() {
+            // A mode that also reads the identity header gives some people an e-mail for an id.
+            let reads_sub = !cfg.auth.mode.reads_header()
+                && cfg
+                    .auth
+                    .jwt
+                    .as_ref()
+                    .is_some_and(|jwt| jwt.user_claim.trim() == "sub");
+            if !reads_sub {
+                self.invalid(
+                    "server.internal.meter",
+                    "needs auth.mode jwt with auth.jwt.userClaim: sub: the meter is answered the \
+                     identity provider's sub, never an e-mail address (ADR 0106)",
+                );
             }
         }
         for agent in internal.agents.keys() {
@@ -1517,9 +1541,9 @@ impl Checker<'_> {
     /// The tokens of `server.internal` (ADR 0084 decision 5): the orchestrator's own and one per
     /// agent, each at least as long as a key, and no two callers sharing one. The door compares
     /// the orchestrator's token first, so a duplicate would silently make one caller another.
-    fn internal_tokens(&mut self, cfg: &Config) -> (Option<Secret>, BTreeMap<String, Secret>) {
+    fn internal_tokens(&mut self, cfg: &Config) -> InternalTokens {
         let Some(section) = &cfg.server.internal else {
-            return (None, BTreeMap::new());
+            return (None, BTreeMap::new(), None);
         };
         let token = self.resolve(&section.token, "server.internal.token", true);
         if let Some(token) = &token {
@@ -1533,9 +1557,24 @@ impl Checker<'_> {
                 agents.insert(agent.clone(), secret);
             }
         }
+        let meter = section.meter.as_ref().and_then(|reference| {
+            let secret = self.resolve(reference, "server.internal.meter", true)?;
+            self.at_least(&secret, "server.internal.meter");
+            Some(secret)
+        });
         let mut seen: Vec<(String, &str)> = Vec::new();
         if let Some(token) = &token {
             seen.push(("server.internal.token".to_owned(), token.expose()));
+        }
+        if let Some(meter) = &meter {
+            if seen.iter().any(|(_, value)| *value == meter.expose()) {
+                self.invalid(
+                    "server.internal.meter",
+                    "is the same token as another caller of the run routes: each caller has its own",
+                );
+            } else {
+                seen.push(("server.internal.meter".to_owned(), meter.expose()));
+            }
         }
         for (agent, secret) in &agents {
             let at = format!("server.internal.agents.{}", crate::tree::display_key(agent));
@@ -1548,7 +1587,7 @@ impl Checker<'_> {
                 seen.push((at, secret.expose()));
             }
         }
-        (token, agents)
+        (token, agents, meter)
     }
 
     /// Resolves every secret the process uses. `None` when `database.url` cannot be.
@@ -1663,7 +1702,8 @@ impl Checker<'_> {
                 }
             }
         }
-        let (internal_token, internal_agent_tokens) = self.internal_tokens(cfg);
+        let (internal_token, internal_agent_tokens, internal_meter_token) =
+            self.internal_tokens(cfg);
         let webhook_generic = match &cfg.webhooks.generic {
             Some(section) if serves => self.list(
                 &section.secrets,
@@ -1753,6 +1793,7 @@ impl Checker<'_> {
             model_base_urls,
             internal_token,
             internal_agent_tokens,
+            internal_meter_token,
             webhook_generic,
             webhook_github,
             tool_servers,

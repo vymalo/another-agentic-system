@@ -1706,6 +1706,11 @@ fn internal_settings(valid: &Validated) -> Result<Option<InternalSettings>, Conf
         listen,
         orchestrator_token: SecretString::from(token.expose().to_owned()),
         agent_tokens,
+        meter_token: valid
+            .secrets
+            .internal_meter_token
+            .as_ref()
+            .map(|secret| SecretString::from(secret.expose().to_owned())),
     }))
 }
 
