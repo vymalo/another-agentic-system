@@ -28,7 +28,7 @@
 # It prints one ok or FAIL line per check and exits 1 if any failed:
 #   (a) a first message makes the agent: the platform saw one `PUT If-None-Match: *` for `coder-<owner>` whose body names the agent, the
 #       owner, `suspend: false` and the deployment's form of the coder, with a bearer token; it polled until ready; the thread ends
-#       `blocked` or `done` (the coder answered); the thread's first event is later than the last poll of the platform (the message was written
+#       `blocked` or `done` (the coder answered); the thread's first event is later than the platform's first `ready` answer (the message was written
 #       after the agent was ready); and a message to `chat`, an agent that is not provisioned, makes no request to the platform;
 #   (b) a suspended agent is resumed: one `PUT If-Match: "s1"` with `suspend: false`, then polls until ready, the thread ends `blocked` or
 #       `done`; after the scenarios are reset (the agent is suspended again) a second message to the same thread does it again (two resumes);
@@ -235,17 +235,20 @@ if [ "$(admin GET /scenarios | jq -r '.scenarios[] | select(.name == "dev") | .s
 else
   bad "the platform's agent of dev did not reach ready: $(admin GET /scenarios | jq -c '.scenarios[] | select(.name == "dev")')"
 fi
-# The thread's first event is written after the platform's last answer about the agent: the message waited for ready.
+# The thread's first event is written after the first poll that answered `ready`: the message waited for ready. (Not after the LAST poll:
+# the dispatcher wakes a routed thread's agent again before it sends a row, ANR-1061, and that poll comes after the event.)
 # Both are compared in milliseconds: WireMock's loggedDate is epoch milliseconds, and an event's `at` carries its fraction.
-last_poll=$(find_requests GET "$dev_path" | jq -r 'last | .loggedDate // empty')
+last_poll=$(admin GET /requests | jq -r --arg p "$dev_path" '
+  [.requests[] | select(.request.method == "GET" and (.request.url | startswith($p)) and ((.response.body // "") | contains("\"state\":\"ready\"")))]
+  | sort_by(.request.loggedDate) | first | .request.loggedDate // empty')
 api "$tmp/dev.h" GET "/api/threads/$thread/export" > "$tmp/export.json" 2>/dev/null || echo '{"events":[]}' > "$tmp/export.json"
 first_event=$(jq -r '.events[0].at // empty' "$tmp/export.json")
 first_event_ms=""
 if [ -n "$first_event" ]; then first_event_ms=$(date -u -d "$first_event" +%s%3N 2>/dev/null || true); fi
 if [ -n "$last_poll" ] && [ -n "$first_event_ms" ] && [ "$first_event_ms" -ge "$last_poll" ]; then
-  ok "the thread's first event ($first_event, ${first_event_ms} ms) is not before the platform's last poll (${last_poll} ms)"
+  ok "the thread's first event ($first_event, ${first_event_ms} ms) is not before the platform's first ready answer (${last_poll} ms)"
 else
-  bad "the thread's first event ($first_event, ${first_event_ms:-?} ms) is before the platform's last poll (${last_poll:-?} ms), or one of them is missing"
+  bad "the thread's first event ($first_event, ${first_event_ms:-?} ms) is before the platform's first ready answer (${last_poll:-?} ms), or one of them is missing"
 fi
 # The message went to the person's own agent (ANR-1061), and its answer is the thread's. The deployment's `adam` is the real coder image and keeps no
 # journal a script can read, so "it was not asked" is shown by the answer: the thread holds the stand-in's `Data: ...`, which `adam` never says.
