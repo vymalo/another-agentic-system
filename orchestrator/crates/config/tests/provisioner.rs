@@ -203,11 +203,11 @@ provisioner:
     kubernetesMount: a/../b
     authRole: a/b
     serviceAccountTokenFile: relative/token
-    pkiMount: \"\"
+    pkiMount: a/../b
     pkiRole: x y
     spiffeId: spiffe://Example.org
-    ttlSecs: 30
-    renewalMarginSecs: 30
+    ttlSecs: 60
+    renewalMarginSecs: 60
     serverCaFile: not-pem.pem
 ",
     );
@@ -226,11 +226,29 @@ provisioner:
         "provisioner.credentials.pkiMount",
         "provisioner.credentials.pkiRole",
         "provisioner.credentials.spiffeId",
-        "provisioner.credentials.ttlSecs",
         "provisioner.credentials.renewalMarginSecs",
         "provisioner.credentials.serverCaFile",
     ] {
         assert!(text.contains(key), "{key} not named in:\n{text}");
+    }
+}
+
+/// A number out of its range, or an empty name, is the shape pass's to refuse (the schema, which
+/// runs before the rules and stops the load), and the schema reports it at the variant of the
+/// credentials it is in (`oneOf`), not at the key: so these name `provisioner.credentials`, and the
+/// rules' own messages (the test above) are for what the schema cannot say.
+#[test]
+fn a_value_out_of_the_schemas_range_is_refused_at_the_credentials() {
+    for (from, to) in [
+        ("    pkiMount: pki-workload\n", "    pkiMount: \"\"\n"),
+        ("    serverCaFile:", "    ttlSecs: 30\n    serverCaFile:"),
+    ] {
+        let text = PKI.replace(from, to);
+        let shown = lines(load(&with(&text), &pki_files())).join("\n");
+        assert!(
+            shown.contains("provisioner.credentials"),
+            "{to:?} not refused at the credentials: {shown}"
+        );
     }
 }
 
