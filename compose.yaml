@@ -945,8 +945,10 @@ services:
       DEFAULT_LOCALE: en-GB
       # The deployment's per-model profiles (adam-rs MODEL_ALIASES_FILE, ADR 0063/0064): the chat's own model
       # (`mock-persona`) plus two aliases it offers, so its live card lists `model-pick/v1` with them and a person can
-      # pick one per message (dev/pick-real-e2e.sh; docs/api/model-pick-v1.md). The other agents set no file, so their
-      # cards list no choices.
+      # pick one per message (dev/pick-real-e2e.sh; docs/api/model-pick-v1.md). The same file declares the reasoning
+      # levels of `mock-persona` and its default, so the card also lists `reasoning/v1` with them and a message may name
+      # one, which adam sends to the model as `reasoning_effort` (dev/pick-real-e2e.sh). The other agents set no file, so
+      # their cards list neither extension.
       MODEL_ALIASES_FILE: /etc/adam/model-profiles.json
       SEARCH_MCP_TOKEN: dev-search-token # the bearer token of mock-mcp-search, for the researcher helper
     ports:

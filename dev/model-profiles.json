@@ -1,7 +1,10 @@
 {
   "profiles": {
     "mock-persona": {
-      "endpoint": "Persona"
+      "endpoint": "Persona",
+      "reasoningEfforts": ["low", "medium", "high"],
+      "reasoningWire": "reasoning_effort",
+      "reasoningEffort": "medium"
     },
     "mock-persona-one": {
       "endpoint": "One"
