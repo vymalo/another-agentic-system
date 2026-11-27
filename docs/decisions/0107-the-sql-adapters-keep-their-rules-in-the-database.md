@@ -18,8 +18,8 @@ sidebarTitle: "0107 · Rules in SQL, PostgreSQL 18 floor"
   (inline, parameterized SQL), a read that carries a rule may be a **view**, and **a mutation that carries a rule calls a
   PostgreSQL function** from Rust in one statement (`SELECT … FROM fn($1, …)`); functions and not procedures, because a
   mutation returns its outcome; and a function only where one statement cannot hold the rule, not everywhere. The
-  survey's row-by-row forms, the error prefix, the slices and the open questions below are the planner's, for the owner
-  to confirm (*Open for the owner*).
+  survey's row-by-row forms, the error prefix, the slices and the questions below were the planner's, and the owner
+  confirmed them on 2026-11-27 (*Decided by the owner*).
 
 This is the orchestrator's half. adam-rs decided its own SQL adapters in its
 [ADR 0082, "the SQL adapters keep their rules in the database"](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0082-the-sql-adapters-keep-their-rules-in-the-database.md)
@@ -102,7 +102,7 @@ Categories, 18 documentation), which is what a read after another writer's commi
      reads the database's clock. Where a port method gives no time today (`retry_outbox`, `retry_inbox`, a tool
      server's `replace` and `set_state`, a secret's `put` and `rotate`, a pending authorization's `created_at`, and
      the column defaults of four migrations), the statement keeps `clock_timestamp()` for an `updated_at` or `created_at` that no rule
-     reads: adding a time would change the traits (*Open for the owner*, 1).
+     reads: adding a time would change the traits (*Decided by the owner*, 1).
    - The migrator's orchestration, the configuration, the decoding of rows, the error mapping, `LISTEN` and the
      notifications (decision 9).
 4. **The floor is PostgreSQL 18.** `BEGIN ATOMIC` needs 14; the owner set 18, which the community supports until
@@ -170,7 +170,7 @@ Categories, 18 documentation), which is what a read after another writer's commi
    adam-rs's store that runs inside the orchestrator under `agent-local` follows adam-rs's ADR 0082.
 9. **Notifications stay explicit statements.** A commit sends its `pg_notify` calls as today; a trigger could send them
    at commit, but a notification is never the truth (invariant 3's log is), so it is a question, not a slice
-   (*Open for the owner*, 3).
+   (*Decided by the owner*, 3).
 
 ### A commit through the functions
 
@@ -278,23 +278,23 @@ inline statement into a function unless decision 1 says it carries a rule.
   row is due, and the conformance suites drive time through the arguments.
 - **PostgreSQL 15 as the floor.** The owner set 18.
 
-## Open for the owner
+## Decided by the owner (2026-11-27)
 
-1. **Times where a port gives none.** `retry_outbox`, `retry_inbox`, a tool server's `replace` and `set_state`, a
-   secret's `put` and `rotate` and a pending authorization's `created_at` write the database's clock into an
-   `updated_at` or `created_at` that no rule reads. Keep it (recommended: the traits stay as they are), or add a time
-   to those methods, which breaks every implementer?
-2. **The rail's rank keys.** `orch_core::rank` stays in Rust, so an arrangement stays a Rust transaction over the view.
-   Moving the key arithmetic into PL/pgSQL would make an arrangement one function, with a second copy of the rule
-   beside the core's. Keep it in Rust (recommended), or move it?
-3. **Notifications from triggers.** Keep the explicit `pg_notify` calls (recommended), or send them from a trigger at
-   commit?
+The owner answered the six open questions on 2026-11-27: *"go with your recommendations"*. The sixth had no
+recommendation, so it is the one this ADR proposed and the owner's answer covers.
+
+1. **Times where a port gives none: the database's clock stays.** `retry_outbox`, `retry_inbox`, a tool server's
+   `replace` and `set_state`, a secret's `put` and `rotate` and a pending authorization's `created_at` keep writing the
+   database's clock into an `updated_at` or `created_at` that no rule reads. The traits do not change.
+2. **The rail's rank keys stay in Rust.** `orch_core::rank` keeps the key arithmetic, and an arrangement stays a Rust
+   transaction over the view `orch_rail`. There is no second copy of the rule in PL/pgSQL.
+3. **Notifications stay explicit.** The `pg_notify` calls stay where they are; no trigger sends one at commit.
 4. **The folds stay in Rust.** The usage fold and the search fold are the core's, shared by every store and the
-   in-memory reference. Confirm that "if it can be done in SQL" does not reach rules the core owns.
-5. **CI on two servers.** Run the store suites on 18.7 and 19.0 (recommended, the floor and the newest), or on 18.7
-   alone?
-6. **The error class.** `OR` here, `AD` in adam-rs; the platform's should be a third, so a code says which repository
-   raised it.
+   in-memory reference: "if it can be done in SQL" does not reach a rule the core owns.
+5. **CI runs the store suites on two servers:** 18.7 (the floor) and 19.0 (the newest), both pinned by digest (P0).
+6. **The platform's error class is `AP`.** `OR` is this repository's, `AD` adam-rs's and `AP`
+   another-agentic-platform's, so a code says which repository raised it. PostgreSQL 18 defines no `AP` class (its
+   error-code appendix). The platform's own decision records it when it gains a SQL adapter.
 
 ## Evidence
 
@@ -345,7 +345,7 @@ Rust computes for it today moves into it), **inline** (stays an inline statement
 | 25 | A fork: the parent kept, the cut within the parent's log, the log copied up to the cut | `store.rs:283`–`:300`, `:405`–`:425` | **function**: part of `orch_thread_open` |
 | 26 | The thread's row and its binding | `store.rs:330`, `:390` | **function**: part of `orch_thread_open`; the first commit's events go through row 2 |
 | 27 | What the list shows (top-level, unarchived, not an edit) and its section (pinned), repeated in five statements | `store.rs:610`, `:733`, `:801`, `:875`, `:896` | **view** `orch_rail` |
-| 28 | Rank keys between two neighbours, and one re-spread when none fits | `core/src/rank.rs:79`, `:148`; `store.rs:776`, `:801` | **stays**: the core's (*Open for the owner*, 2) |
+| 28 | Rank keys between two neighbours, and one re-spread when none fits | `core/src/rank.rs:79`, `:148`; `store.rs:776`, `:801` | **stays**: the core's (*Decided by the owner*, 2) |
 | 29 | An arrangement: the row locked, a nested row's pin or place refused, the anchor checked, the write | `store.rs:896`–`:984` | **stays**: it needs row 28 between its reads; its statements stay **inline**, over the view |
 | 30 | Erasing threads: locked in id order, every one the owner's (else `NotFound`), each at its version (else `VersionConflict`), an unnamed edit or child a conflict, the children take the parent's place, the timers found by their payload deleted, the purge promise written, the ledger told, the rows deleted with their cascades | `store.rs:985`–`:1088` | **function** `orch_threads_erase`, PL/pgSQL: nine statements that must agree, a lock order, outcomes |
 | 31 | Purges claimed under a lease, their order restored in Rust; finished; counted | `store.rs:1763`–`:1797`, `:1836`, `:1845` | **into the statement**: the order of the claim (`WITH claimed AS (UPDATE … RETURNING) SELECT … ORDER BY`); the rest **inline** |
@@ -391,7 +391,7 @@ Rust computes for it today moves into it), **inline** (stays an inline statement
 | 56 | Migrations: sqlx's history, its advisory lock, the checksums, the refusals | `pg-migrate/src/lib.rs:188`–`:300` | **stays**, and gains the floor (decision 4) |
 | 57 | SQLSTATE to class, written in two crates | `store-postgres/src/error.rs:76`, `:129`; `secrets-pg/src/store.rs` | **stays**, as one table in `orch-pg-connect` with the `OR` rows (decision 5) |
 | 58 | `LISTEN` and the wakeups | `store-postgres/src/wakeup.rs` | **stays** |
-| 59 | The database's clock where a port gives no time | `store.rs:2402`, `:2705`; `user_tool_servers.rs:278`, `:307`; `pending_authorizations.rs:115`; `secrets-pg/src/store.rs:352`, `:444`; the defaults of `0021`, `0022`, `0030` and `secrets-pg/migrations/0001` | **stays** (decision 3; *Open for the owner*, 1) |
+| 59 | The database's clock where a port gives no time | `store.rs:2402`, `:2705`; `user_tool_servers.rs:278`, `:307`; `pending_authorizations.rs:115`; `secrets-pg/src/store.rs:352`, `:444`; the defaults of `0021`, `0022`, `0030` and `secrets-pg/migrations/0001` | **stays** (decision 3; *Decided by the owner*, 1) |
 
 ### `orch-secrets-pg` (ADR 0046, 0083)
 
