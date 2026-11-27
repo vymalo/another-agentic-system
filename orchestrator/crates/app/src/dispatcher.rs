@@ -67,7 +67,8 @@ pub struct DispatcherConfig {
     pub heartbeat: Duration,
     /// Safety poll of the outbox when no wakeup arrives.
     pub poll_interval: Duration,
-    /// Send attempts before a delegation is dead-lettered.
+    /// Send attempts before a delegation is dead-lettered. Every cap of the row counts the claims
+    /// that tried something ([`OutboxItem::counted_attempts`]): one that only waited is not one.
     pub max_attempts: u32,
     /// First retry delay; doubles per attempt.
     pub backoff_base: Duration,
@@ -79,7 +80,9 @@ pub struct DispatcherConfig {
     pub poll_max: Duration,
     /// Consecutive failed polls before giving up.
     pub max_poll_failures: u32,
-    /// Attempts of a cancel row.
+    /// Attempts of a cancel row (the claims that tried something; a stop that waited for a
+    /// delegation in flight is refunded each time, except for the wait's own bound, which counts
+    /// them and adds the wake bound).
     pub max_cancel_attempts: u32,
     /// Times a row is tried again while the person's own agent, ready on the platform, is not
     /// listed in the registry yet (ANR-1061); then it is given up. With the backoff, 5 tries last
@@ -625,6 +628,21 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         Ok(())
     }
 
+    /// [`retry`](Self::retry) for a claim that did not fail: the row has to wait for something
+    /// else, and the claim is refunded ([`OutboxItem::counted_attempts`]), so the caps and the
+    /// backoff of the claims that follow see only the ones that tried something.
+    async fn wait(&self, row: &OutboxItem, after: Duration, note: String) -> Done {
+        let next = add(self.now(), after);
+        if !self
+            .store()
+            .wait_outbox(&self.lease(row), next, note)
+            .await?
+        {
+            tracing::warn!(id = %row.id, "row was no longer leased to us when scheduling a wait");
+        }
+        Ok(())
+    }
+
     // --------------------------------------------------------- the run's binding
 
     /// Binds the run whose task id the delegation's stream has just named (ADR 0084, the ruling of
@@ -793,10 +811,10 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 }
                 Err(e) => {
                     tracing::warn!(id = %row.id, agent = %lookup, attempt = row.attempts, error = %report(&e), "the person's own agent could not be made ready for the row");
-                    if row.attempts < self.cfg.max_attempts {
+                    if row.counted_attempts() < self.cfg.max_attempts {
                         self.retry(
                             row,
-                            self.backoff(row.attempts),
+                            self.backoff(row.counted_attempts()),
                             format!("your agent could not be made ready: {}", report(&e)),
                         )
                         .await?;
@@ -834,11 +852,14 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             // ready on the platform and not listed yet: the registry reads the platform live, so
             // the row is tried again `own_agent_listing_attempts` times, and then given up with
             // its own reason
-            Ok(None) if route.is_some() && row.attempts < self.cfg.own_agent_listing_attempts => {
+            Ok(None)
+                if route.is_some()
+                    && row.counted_attempts() < self.cfg.own_agent_listing_attempts =>
+            {
                 tracing::debug!(id = %row.id, agent = %lookup, attempt = row.attempts, "the person's own agent is not listed yet; will retry");
                 self.retry(
                     row,
-                    self.backoff(row.attempts),
+                    self.backoff(row.counted_attempts()),
                     format!("agent '{lookup}' is not listed yet"),
                 )
                 .await?;
@@ -895,7 +916,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 tracing::warn!(id = %row.id, agent = %lookup, attempt = row.attempts, error = %report(&source), "the agent registry cannot say where the agent is; will retry");
                 self.retry(
                     row,
-                    self.backoff(row.attempts),
+                    self.backoff(row.counted_attempts()),
                     format!("the agent registry is unreachable: {}", report(&source)),
                 )
                 .await?;
@@ -1340,7 +1361,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                     return self
                         .retry(
                             &row,
-                            self.backoff(row.attempts),
+                            self.backoff(row.counted_attempts()),
                             format!("{MAX_OBSERVED_PER_PARENT} rounds of its parent are followed already"),
                         )
                         .await;
@@ -1384,7 +1405,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 // written before, and its row not marked: mark it now
                 Ok(ApplyOutcome::Applied { .. } | ApplyOutcome::Duplicate) => {}
                 Err(AppError::Transition(TransitionError::InvalidInState { state, .. })) => {
-                    if row.attempts >= self.cfg.max_attempts {
+                    if row.counted_attempts() >= self.cfg.max_attempts {
                         return self
                             .finish(
                                 &row,
@@ -1399,7 +1420,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                     return self
                         .retry(
                             &row,
-                            self.backoff(row.attempts),
+                            self.backoff(row.counted_attempts()),
                             format!("the child thread is {state:?}"),
                         )
                         .await;
@@ -1569,10 +1590,10 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         // fails with the reason. A card that cannot be read is retried first.
         let sent_tier = match self.app.tier_for_send(&ctx.endpoint, tier, tier_cap).await {
             Ok(sent_tier) => sent_tier,
-            Err(e) if e.is_retryable() && row.attempts < self.cfg.max_attempts => {
+            Err(e) if e.is_retryable() && row.counted_attempts() < self.cfg.max_attempts => {
                 tracing::warn!(id = %row.id, attempt = row.attempts, error = %report(&e), "steer failed; will retry");
                 return self
-                    .retry(&row, self.delay(row.attempts, &e), report(&e))
+                    .retry(&row, self.delay(row.counted_attempts(), &e), report(&e))
                     .await;
             }
             Err(e) => {
@@ -1649,9 +1670,9 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 self.steer_falls_back(&row, "the agent answered with nothing")
                     .await
             }
-            Err(e) if e.is_retryable() && row.attempts < self.cfg.max_attempts => {
+            Err(e) if e.is_retryable() && row.counted_attempts() < self.cfg.max_attempts => {
                 tracing::warn!(id = %row.id, attempt = row.attempts, error = %report(&e), "steer failed; will retry");
-                self.retry(&row, self.delay(row.attempts, &e), report(&e))
+                self.retry(&row, self.delay(row.counted_attempts(), &e), report(&e))
                     .await
             }
             Err(e) => {
@@ -1688,10 +1709,10 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     async fn send_failed(&self, row: &OutboxItem, err: AgentError) -> Done {
         let retryable = err.is_retryable();
         let operator = report(&err);
-        if retryable && row.attempts < self.cfg.max_attempts {
+        if retryable && row.counted_attempts() < self.cfg.max_attempts {
             tracing::warn!(id = %row.id, attempt = row.attempts, error = %operator, class = ?err.class(), "delegation failed; will retry");
             return self
-                .retry(row, self.delay(row.attempts, &err), operator)
+                .retry(row, self.delay(row.counted_attempts(), &err), operator)
                 .await;
         }
         tracing::warn!(id = %row.id, error = %operator, class = ?err.class(), retryable, "delegation dead-lettered");
@@ -2121,9 +2142,10 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     }
 
     /// The attempts a stop may spend waiting for a routed delegation to wake its agent: the
-    /// retries that fit in the wake bound; none for a thread that is not routed. Only the wait
-    /// for the delegation uses it: the stop's one attempt counter is shared by the later phases
-    /// (the listing, the `CancelTask`), which keep their plain caps (a known gap, ADR 0103).
+    /// waits that fit in the wake bound; none for a thread that is not routed. Only the wait
+    /// for the delegation uses it, and it is still needed: the waits are refunded
+    /// ([`OutboxItem::counted_attempts`]) so the later phases (the listing, the `CancelTask`)
+    /// keep their plain caps, but the wait's own bound is the one cap that counts them (ANR-1078).
     fn wake_headroom(&self, routed: bool) -> u32 {
         let Some(bound) = routed.then(|| self.app.own_agent_wake_bound()).flatten() else {
             return 0;
@@ -2169,11 +2191,11 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         // agent is not woken for it: the stop waits for the listing as a row of the thread does,
         // then ends the thread locally (the task at the agent is not stopped)
         if running.is_some() && own_unlisted {
-            if row.attempts < self.cfg.own_agent_listing_attempts {
+            if row.counted_attempts() < self.cfg.own_agent_listing_attempts {
                 return self
                     .retry(
                         &row,
-                        self.backoff(row.attempts),
+                        self.backoff(row.counted_attempts()),
                         format!("agent '{}' is not listed yet", ctx.endpoint.id),
                     )
                     .await;
@@ -2201,8 +2223,11 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                     self.reject_cancel(&row, &ctx.agent, reason, false, OutboxFinal::Delivered)
                         .await
                 }
-                Err(e) if e.is_retryable() && row.attempts < self.cfg.max_cancel_attempts => {
-                    self.retry(&row, self.delay(row.attempts, &e), report(&e))
+                Err(e)
+                    if e.is_retryable()
+                        && row.counted_attempts() < self.cfg.max_cancel_attempts =>
+                {
+                    self.retry(&row, self.delay(row.counted_attempts(), &e), report(&e))
                         .await
                 }
                 Err(e) => {
@@ -2247,10 +2272,13 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         }
         // A delegation is being sent right now; once it has a task id the next attempt cancels it.
         // For a routed thread that can take as long as the person's agent needs to wake, so the
-        // budget covers the wake bound too: a stop is not lost while the agent is coming up.
+        // budget covers the wake bound too: a stop is not lost while the agent is coming up. The
+        // wait is not a failure, so it is refunded and the phases after it (the listing, the
+        // `CancelTask`) count only their own claims; the bound of the wait itself is the one thing
+        // that must count the waits, so it reads the raw claims.
         if row.attempts < self.in_flight_cancel_budget(routed) {
             return self
-                .retry(
+                .wait(
                     &row,
                     self.cfg.cancel_retry_delay,
                     "delegation in flight".to_owned(),

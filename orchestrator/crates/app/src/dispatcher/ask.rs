@@ -426,13 +426,13 @@ fn wanted(thread: &ThreadRecord, job: u32, ask: u32) -> bool {
     thread.job.number == job && thread.job.asks.iter().any(|a| a.n == ask && a.is_running())
 }
 
-/// How many times a send was tried: the claims of the row, but for the ones an earlier build made
-/// only to put it back.
+/// How many times a send was tried: the claims of the row that tried something
+/// ([`OutboxItem::counted_attempts`]), but for the ones an earlier build made only to put it back.
 fn send_attempts(row: &OutboxItem) -> u32 {
     if row.last_error.as_deref() == Some(PARKED) {
         1
     } else {
-        row.attempts
+        row.counted_attempts()
     }
 }
 
@@ -481,7 +481,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 return self
                     .retry(
                         &row,
-                        self.backoff(row.attempts),
+                        self.backoff(row.counted_attempts()),
                         format!("the agent registry is unreachable: {}", report(&source)),
                     )
                     .await;
@@ -592,8 +592,10 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// A cancel that could not be made: the row comes back after a while, until the budget of
     /// cancels is spent.
     async fn cancel_later(&self, row: &OutboxItem, error: String) -> Done {
-        if row.attempts < self.cfg.max_cancel_attempts {
-            return self.retry(row, self.backoff(row.attempts), error).await;
+        if row.counted_attempts() < self.cfg.max_cancel_attempts {
+            return self
+                .retry(row, self.backoff(row.counted_attempts()), error)
+                .await;
         }
         tracing::warn!(id = %row.id, %error, "the asked agent's task could not be cancelled; giving up");
         self.finish(row, OutboxFinal::Skipped).await
@@ -1058,7 +1060,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         if err.is_retryable() && send_attempts(&a.row) < self.cfg.max_attempts {
             tracing::warn!(id = %a.row.id, attempt = a.row.attempts, error = %operator, class = ?err.class(), "ask failed; will retry");
             return self
-                .retry(&a.row, self.delay(a.row.attempts, &err), operator)
+                .retry(&a.row, self.delay(a.row.counted_attempts(), &err), operator)
                 .await;
         }
         tracing::warn!(id = %a.row.id, error = %operator, class = ?err.class(), "ask dead-lettered");

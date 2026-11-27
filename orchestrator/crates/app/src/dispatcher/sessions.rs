@@ -90,10 +90,10 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// The agent refused, or could not be reached: a failure that can pass is tried again, the
     /// rest ends the start with the agent's words (or ours) and the row dead.
     async fn start_failed(&self, row: &OutboxItem, request: &str, err: AgentError) -> Done {
-        if err.is_retryable() && row.attempts < self.cfg.max_attempts {
+        if err.is_retryable() && row.counted_attempts() < self.cfg.max_attempts {
             tracing::warn!(id = %row.id, attempt = row.attempts, error = %report(&err), "starting a session failed; will retry");
             return self
-                .retry(row, self.delay(row.attempts, &err), report(&err))
+                .retry(row, self.delay(row.counted_attempts(), &err), report(&err))
                 .await;
         }
         tracing::info!(id = %row.id, error = %report(&err), class = ?err.class(), "starting a session ended");
@@ -306,19 +306,19 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         };
         let answer = match tokio::time::timeout(ANSWER_TIMEOUT, self.read_answer(req)).await {
             Ok(Ok(answer)) => answer,
-            Ok(Err(e)) if e.is_retryable() && row.attempts < self.cfg.max_attempts => {
+            Ok(Err(e)) if e.is_retryable() && row.counted_attempts() < self.cfg.max_attempts => {
                 tracing::warn!(id = %row.id, attempt = row.attempts, error = %report(&e), "closing a session failed; will retry");
                 return self
-                    .retry(&row, self.delay(row.attempts, &e), report(&e))
+                    .retry(&row, self.delay(row.counted_attempts(), &e), report(&e))
                     .await;
             }
             Ok(Err(e)) => return self.close_failed(&row, e.public_detail(), report(&e)).await,
             Err(_) => {
-                if row.attempts < self.cfg.max_attempts {
+                if row.counted_attempts() < self.cfg.max_attempts {
                     return self
                         .retry(
                             &row,
-                            self.backoff(row.attempts),
+                            self.backoff(row.counted_attempts()),
                             "the agent did not answer the close".to_owned(),
                         )
                         .await;
