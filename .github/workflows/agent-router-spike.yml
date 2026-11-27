@@ -34,12 +34,15 @@ jobs:
           sudo docker image prune --all --force >/dev/null
           df -h /
       - name: Install kind, kubectl and helm at pinned versions (checksums checked)
-        # The versions of the kagent job: kind v0.33.0 and helm v4.3.2, kubectl the newest 1.35.
+        # The versions of the kagent job: kind v0.33.0 and helm v4.3.2. kubectl stays at the newest 1.36 here, one minor
+        # under the node image (ADR 0103), because `kubectl port-forward` in 1.37 enters the pod's network namespace and
+        # connects to 127.0.0.1 inside it, where Envoy Gateway's proxy does not listen (it binds the pod's address):
+        # 1.37.3 answers "failed to connect to localhost:10080 inside namespace" for the whole spike (run 45946481869).
         env:
           KIND_VERSION: v0.33.0
           KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
-          KUBECTL_VERSION: v1.37.3
-          KUBECTL_SHA256: 9a1b55af2795b25dd288dbef62387db9b5530087ab918d28c6ad067f2e3cb07c
+          KUBECTL_VERSION: v1.36.7
+          KUBECTL_SHA256: b08f96b43904747897fe569b3c51056b00ddfc67847f6db1bf9fe0c9583a2d26
           HELM_VERSION: v4.3.2
           HELM_SHA256: d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983
         run: |
