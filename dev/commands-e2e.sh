@@ -83,12 +83,14 @@ echo "the commands of $agent_dir: $want"
 template=$(awk 'c >= 2 { print } /^---$/ { c++ }' "$agent_dir/commands/explain.md")
 first_line=$(printf '%s\n' "$template" | sed -n '1p')
 # The template's line that holds $ARGUMENTS, with the arguments put in: what the model must read.
-args_line=$(printf '%s\n' "$template" | sed -n '/\$ARGUMENTS/{p;q;}')
+# shellcheck disable=SC2016 # a literal $ARGUMENTS, the template's placeholder, not a shell variable
+args_line=$(printf '%s\n' "$template" | sed -n "/\\\$ARGUMENTS/{p;q;}")
 if [ -z "$first_line" ] || [ -z "$args_line" ]; then
   echo "FAIL could not read the template, or its \$ARGUMENTS line, of $agent_dir/commands/explain.md"
   exit 1
 fi
-want_line=$(printf '%s' "$args_line" | sed 's|\$ARGUMENTS|acme/app|')
+# shellcheck disable=SC2016 # a literal $ARGUMENTS, the template's placeholder, not a shell variable
+want_line=$(printf '%s' "$args_line" | sed "s|\\\$ARGUMENTS|acme/app|")
 
 # --- the capabilities document --------------------------------------------------------------------------
 if agents=$(api GET /api/agents 2>"$tmp/err"); then
@@ -185,8 +187,9 @@ if send "$typed" "$n1"; then
     *"$first_line"*) ok "it holds the template's own words: $first_line" ;;
     *) bad "it does not hold the template's first line \"$first_line\"" ;;
   esac
+  # shellcheck disable=SC2016 # a literal $ARGUMENTS, the template's placeholder, not a shell variable
   case $user in
-    *'$ARGUMENTS'*) bad "the template's \$ARGUMENTS was left in the request" ;;
+    *"\$ARGUMENTS"*) bad "the template's \$ARGUMENTS was left in the request" ;;
     *) ok "no \$ARGUMENTS is left in the request" ;;
   esac
   if jq -e '[.messages[] | select(.role == "user") | .content | if type == "array" then map(.text // "") | join("") else . end | startswith("/explain")] | any | not' "$tmp/first.json" >/dev/null 2>&1; then
