@@ -36,6 +36,7 @@ spec:
         login: true
         passwordSecret:
           name: another-agentic-db-agent
+
 ---
 # Source: another-agentic-system/templates/cnpg-clusters.yaml
 # The database `agent`, owned by the role `agent`. `databaseReclaimPolicy` is the CRD's default, `retain`: removing this
@@ -55,6 +56,7 @@ spec:
     name: another-agentic-db
   name: agent
   owner: agent
+
 ---
 # Source: another-agentic-system/templates/externalsecrets.yaml
 apiVersion: external-secrets.io/v1

@@ -4,6 +4,6 @@ description: "The orchestration layer for a real deployment: the orchestrator (o
 type: application
 version: 0.2.0
 appVersion: "0.1.0"
-kubeVersion: ">=1.27.0-0"
+kubeVersion: ">=1.37.0-0"
 sources:
   - https://github.com/vymalo/another-agentic-system
