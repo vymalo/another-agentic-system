@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0089 · Run identity is the agent's task id"
+sidebarTitle: "0089 · Run identity is the task id"
 ---
 
 # ADR 0089 — The run identity stays the agent's task id, bound when the orchestrator first sees it

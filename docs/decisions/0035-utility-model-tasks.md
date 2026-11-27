@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0035 · Utility model tasks: title, description"
+sidebarTitle: "0035 · Utility model tasks"
 ---
 
 # ADR 0035 — Utility model tasks: title and description, each with its endpoint, model, prompt and language rule

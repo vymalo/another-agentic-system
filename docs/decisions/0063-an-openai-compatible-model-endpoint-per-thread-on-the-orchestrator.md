@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0063 · Model endpoint per thread, no key in A2A"
+sidebarTitle: "0063 · A model endpoint per thread"
 ---
 
 # ADR 0063 — An OpenAI-compatible model endpoint per thread on the orchestrator: the agent asks for its model, and no model key travels in A2A

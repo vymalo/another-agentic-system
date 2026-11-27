@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0031 · Working text and the turn's answer"
+sidebarTitle: "0031 · Working text and the answer"
 ---
 
 # ADR 0031 — Working text and the turn's answer

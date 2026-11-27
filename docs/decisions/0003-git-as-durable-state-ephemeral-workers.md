@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0003 · Git is the artifact; workers ephemeral"
+sidebarTitle: "0003 · Git is the artifact"
 ---
 
 # ADR 0003 — git is the durable artifact; workers are ephemeral

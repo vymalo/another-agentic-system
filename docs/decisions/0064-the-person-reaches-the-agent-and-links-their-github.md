@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0064 · Signed assertion, GitHub link, repo check"
+sidebarTitle: "0064 · Signed assertion, GitHub link"
 ---
 
 # ADR 0064 — The person reaches the agent as a signed assertion, links their GitHub account, and the coder checks their access before it touches a repository

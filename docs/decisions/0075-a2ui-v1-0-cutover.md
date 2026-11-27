@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0075 · A2UI v1.0 cutover and ui-catalog/v2"
+sidebarTitle: "0075 · A2UI v1.0 and ui-catalog/v2"
 ---
 
 # ADR 0075 — A2UI v1.0, a hard cutover, and `ui-catalog/v2`

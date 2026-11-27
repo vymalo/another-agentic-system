@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0033 · OAuth2 resource server, role permissions"
+sidebarTitle: "0033 · OAuth2 resource server"
 ---
 
 # ADR 0033 — The orchestrator is an OAuth2 resource server; roles map to permissions

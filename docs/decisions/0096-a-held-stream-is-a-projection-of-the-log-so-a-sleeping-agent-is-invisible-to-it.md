@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0096 · A held stream is a projection of the log"
+sidebarTitle: "0096 · A held stream is a projection"
 ---
 
 # ADR 0096 — A held stream is a projection of the log, so an agent sleeping is invisible to it; the activator is what a wake costs

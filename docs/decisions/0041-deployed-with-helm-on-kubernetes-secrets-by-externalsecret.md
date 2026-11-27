@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0041 · Helm on Kubernetes; ExternalSecret"
+sidebarTitle: "0041 · Helm on Kubernetes"
 ---
 
 # ADR 0041 — Deployed with Helm on Kubernetes; secrets by ExternalSecret

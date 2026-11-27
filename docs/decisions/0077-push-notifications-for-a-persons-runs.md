@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0077 · Push notifications for a person's runs"
+sidebarTitle: "0077 · Push notifications for runs"
 ---
 
 # ADR 0077 — Push notifications for a person's runs, delivered by the deployment's own services

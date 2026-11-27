@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0040 · Sharing a thread by a revocable link"
+sidebarTitle: "0040 · Sharing a thread by link"
 ---
 
 # ADR 0040 — Sharing a thread: private, internal or public, by a revocable link

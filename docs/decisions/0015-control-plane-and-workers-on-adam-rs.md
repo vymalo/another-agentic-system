@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0015 · Control plane and workers on adam-rs"
+sidebarTitle: "0015 · Control plane and workers"
 ---
 
 # ADR 0015 — Control plane and workers on adam-rs, with in-process agents

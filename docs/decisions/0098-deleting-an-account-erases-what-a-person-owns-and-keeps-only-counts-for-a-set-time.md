@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0098 · Deleting an account erases own data"
+sidebarTitle: "0098 · Deleting an account"
 ---
 
 # ADR 0098 — Deleting an account erases what a person owns and keeps only counts, for a set time

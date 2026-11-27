@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0008 · Optional platform integration via A2A"
+sidebarTitle: "0008 · Optional platform integration"
 ---
 
 # ADR 0008 — Optional another-agentic-platform integration via an A2A extension

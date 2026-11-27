@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0101 · A cloud run's model calls are signed"
+sidebarTitle: "0101 · A cloud run's calls are signed"
 ---
 
 # ADR 0101 — A cloud run's model calls are signed for the run, and the injector stays only for custom cases

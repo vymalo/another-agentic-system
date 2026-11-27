@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0090 · Clients generated from the contract"
+sidebarTitle: "0090 · Clients from the contract"
 ---
 
 # ADR 0090 — Published clients of the chat API are generated from the contract and built on the reference client

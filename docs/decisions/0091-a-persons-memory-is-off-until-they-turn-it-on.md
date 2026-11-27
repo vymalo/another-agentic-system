@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0091 · A person's memory, off until turned on"
+sidebarTitle: "0091 · A person's memory, off by default"
 ---
 
 # ADR 0091 — A person's memory is off until they turn it on, one switch per agent, and a saved note is stored at once

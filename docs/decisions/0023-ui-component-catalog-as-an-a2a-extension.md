@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0023 · UI component catalog, sent at start"
+sidebarTitle: "0023 · UI component catalog"
 ---
 
 # ADR 0023 — A UI component catalog, sent at conversation start, with a refetch seam

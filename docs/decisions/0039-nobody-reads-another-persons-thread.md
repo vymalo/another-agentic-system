@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0039 · Nobody reads another person's thread"
+sidebarTitle: "0039 · Nobody reads another's thread"
 ---
 
 # ADR 0039 — Nobody reads another person's thread

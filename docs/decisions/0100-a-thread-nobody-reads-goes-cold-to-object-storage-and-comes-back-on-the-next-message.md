@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0100 · A cold thread goes to object storage"
+sidebarTitle: "0100 · A cold thread goes to storage"
 ---
 
 # ADR 0100 — A thread nobody reads goes cold to object storage and comes back on the next message

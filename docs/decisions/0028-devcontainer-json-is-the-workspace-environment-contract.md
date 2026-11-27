@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0028 · devcontainer.json as workspace contract"
+sidebarTitle: "0028 · devcontainer.json contract"
 ---
 
 # ADR 0028 — devcontainer.json is the workspace environment contract

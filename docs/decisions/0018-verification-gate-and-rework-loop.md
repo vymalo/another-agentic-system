@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0018 · Verification gate and bounded rework"
+sidebarTitle: "0018 · Verification gate, rework loop"
 ---
 
 # ADR 0018 — Configurable verification gate and a bounded rework loop

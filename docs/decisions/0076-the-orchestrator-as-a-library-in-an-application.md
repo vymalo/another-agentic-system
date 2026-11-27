@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0076 · The orchestrator as a library in an app"
+sidebarTitle: "0076 · The orchestrator as a library"
 ---
 
 # ADR 0076 — The orchestrator as a library in an application

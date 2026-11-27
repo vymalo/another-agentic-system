@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0084 · The run lease: broker and injector"
+sidebarTitle: "0084 · The run lease"
 ---
 
 # ADR 0084 — The run lease: the broker binds a run and lends its model credential to the injector

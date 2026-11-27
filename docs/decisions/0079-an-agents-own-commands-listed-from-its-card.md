@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0079 · An agent's own commands from its card"
+sidebarTitle: "0079 · An agent's own commands"
 ---
 
 # ADR 0079 — An agent's own commands, listed from its card

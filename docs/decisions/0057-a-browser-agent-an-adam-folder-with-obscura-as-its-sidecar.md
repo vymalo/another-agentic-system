@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0057 · A browser agent with obscura sidecar"
+sidebarTitle: "0057 · A browser agent with obscura"
 ---
 
 # ADR 0057 — A browser agent: an adam folder with obscura as its sidecar

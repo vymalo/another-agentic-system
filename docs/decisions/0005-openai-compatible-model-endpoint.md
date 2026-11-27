@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0005 · Any OpenAI-compatible model endpoint"
+sidebarTitle: "0005 · OpenAI-compatible model endpoint"
 ---
 
 # ADR 0005 — Model access through any OpenAI-compatible endpoint

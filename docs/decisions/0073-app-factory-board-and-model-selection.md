@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0073 · App Factory board, pinned containers"
+sidebarTitle: "0073 · App Factory board, containers"
 ---
 
 # ADR 0073 — App Factory board outside the orchestrator, model selection by pinned agent containers, and container-only MVP runtime

@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0045 · Admin dashboard, roles, agent registry"
+sidebarTitle: "0045 · Admin dashboard and registry"
 ---
 
 # ADR 0045 — The admin dashboard is an area of the web; permissions are Keycloak roles; who may use a platform agent comes from its registry entry

@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0006 · Chat surface: Next.js + assistant-ui"
+sidebarTitle: "0006 · Next.js + assistant-ui"
 ---
 
 # ADR 0006 — Chat surface: Next.js + assistant-ui with an external store

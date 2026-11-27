@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0054 · The web holds its own DPoP-bound tokens"
+sidebarTitle: "0054 · The web holds its own tokens"
 ---
 
 # ADR 0054 — The web holds its own tokens: a public client, DPoP-bound, an offline refresh token in IndexedDB

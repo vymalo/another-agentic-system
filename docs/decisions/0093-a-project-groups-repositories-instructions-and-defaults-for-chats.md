@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0093 · A project groups repositories, defaults"
+sidebarTitle: "0093 · A project groups repositories"
 ---
 
 # ADR 0093 — A project groups a workspace's repositories, instructions and defaults, and a chat starts from one

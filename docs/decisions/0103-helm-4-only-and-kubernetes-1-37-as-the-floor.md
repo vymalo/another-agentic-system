@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0103 · Helm 4 only, Kubernetes 1.37 floor"
+sidebarTitle: "0103 · Helm 4 only, Kubernetes 1.37"
 ---
 
 # ADR 0103 — Helm 4 only, and Kubernetes 1.37 as the floor

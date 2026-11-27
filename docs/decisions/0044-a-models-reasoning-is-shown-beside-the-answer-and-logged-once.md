@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0044 · A model's reasoning beside the answer"
+sidebarTitle: "0044 · Reasoning beside the answer"
 ---
 
 # ADR 0044 — A model's reasoning is shown beside the answer and logged once

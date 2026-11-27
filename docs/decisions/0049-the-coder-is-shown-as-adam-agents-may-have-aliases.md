@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0049 · Coder shown as Adam; aliases; icon"
+sidebarTitle: "0049 · Coder shown as Adam"
 ---
 
 # ADR 0049 — The coder is shown as Adam, an agent may have aliases, and a step may carry the OpenCode icon

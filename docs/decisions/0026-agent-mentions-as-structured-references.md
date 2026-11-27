@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0026 · Agent mentions as structured references"
+sidebarTitle: "0026 · Agent mentions as references"
 ---
 
 # ADR 0026 — Agent mentions as structured references

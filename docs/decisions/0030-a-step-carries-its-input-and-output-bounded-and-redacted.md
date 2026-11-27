@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0030 · A step carries bounded, redacted I/O"
+sidebarTitle: "0030 · A step carries bounded I/O"
 ---
 
 # ADR 0030 — A step carries its input and output, bounded and redacted

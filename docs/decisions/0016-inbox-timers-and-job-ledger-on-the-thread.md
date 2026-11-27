@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0016 · Inbox, timers, job ledger on the thread"
+sidebarTitle: "0016 · Inbox, timers, job ledger"
 ---
 
 # ADR 0016 — Inbox, timers and the job ledger on the thread

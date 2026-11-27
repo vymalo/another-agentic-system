@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0034 · One YAML config; secrets by reference"
+sidebarTitle: "0034 · One YAML config file"
 ---
 
 # ADR 0034 — One YAML configuration file; secrets by reference

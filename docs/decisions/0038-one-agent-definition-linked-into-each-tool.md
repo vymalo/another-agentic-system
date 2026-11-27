@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0038 · One agent definition for each tool"
+sidebarTitle: "0038 · One agent definition"
 ---
 
 # ADR 0038 — One agent definition, linked into each tool

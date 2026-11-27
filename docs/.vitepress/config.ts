@@ -16,7 +16,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 // else the fallback. VitePress 1.6.4 has no key for it (verified 2026-11-27 in vitepress/dist/client/theme-default/
 // support/sidebar.js: a sidebar item is the `text` the config gives), and `title` would change the page's <title>.
 // The heading and the <title> stay as written; STRUCTURE.md "Writing pages" says the rule and the limit.
-const LABEL_MAX = 48;
+const LABEL_MAX = 40;
 const labelled: { file: string; text: string }[] = [];
 function label(file: string, fallback: string, override?: string) {
   const src = readFileSync(file, "utf8");

@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0011 · Chat surface: shadcn/ui on Tailwind v4"
+sidebarTitle: "0011 · shadcn/ui on Tailwind v4"
 ---
 
 # ADR 0011 — Chat surface: shadcn/ui on Tailwind v4, kebab-case feature layout

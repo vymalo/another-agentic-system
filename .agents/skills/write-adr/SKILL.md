@@ -36,7 +36,7 @@ description: Record, amend or supersede an architecture decision (ADR) in anothe
    Add *Alternatives rejected* when there were real ones.
 
    The `sidebarTitle` is the label in the docs site's sidebar: the number, ` · `, and a shortening of the title that
-   keeps its key nouns, at most **48 characters** in all (the docs build fails on a longer one). The title itself stays as long as it needs to be.
+   keeps its key nouns, at most **40 characters** in all (the docs build fails on a longer one). The title itself stays as long as it needs to be.
 4. **Register it** in `README.md` → *Decisions* table, and link it from the doc
    section it affects (architecture, orchestrator, …).
 5. **Changing an existing decision:**

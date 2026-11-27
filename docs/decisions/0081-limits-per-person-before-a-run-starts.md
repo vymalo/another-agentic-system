@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0081 · Limits per person before a run starts"
+sidebarTitle: "0081 · Limits before a run starts"
 ---
 
 # ADR 0081 — Limits per person before a run starts: the role's allowance, checked before dispatch

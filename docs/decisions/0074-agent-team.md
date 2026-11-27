@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0074 · Agent-team: several primary agents"
+sidebarTitle: "0074 · Agent-team in one chat"
 ---
 
 # ADR 0074 — Agent-team: several primary agents in one chat, handing off and fanning out, with the person in the loop

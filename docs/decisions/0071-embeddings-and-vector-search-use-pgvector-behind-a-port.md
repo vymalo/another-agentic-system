@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0071 · Embeddings and vector search on pgvector"
+sidebarTitle: "0071 · Vector search on pgvector"
 ---
 
 # ADR 0071 — Embeddings and vector search use pgvector, behind a port

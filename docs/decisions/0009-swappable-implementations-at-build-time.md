@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0009 · Swappable implementations at build time"
+sidebarTitle: "0009 · Swappable implementations"
 ---
 
 # ADR 0009 — Swappable implementations, selected at build time

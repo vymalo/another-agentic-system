@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0022 · Platform provisions; system discovers"
+sidebarTitle: "0022 · Platform provisions, we discover"
 ---
 
 # ADR 0022 — The platform provisions A2A agents; the system discovers them

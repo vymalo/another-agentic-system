@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0085 · The interface's language as a hint"
+sidebarTitle: "0085 · Interface language as a hint"
 ---
 
 # ADR 0085 — The interface's language travels with the message, as a hint

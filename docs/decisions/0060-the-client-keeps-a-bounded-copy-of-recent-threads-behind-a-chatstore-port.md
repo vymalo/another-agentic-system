@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0060 · Bounded client copy: ChatStore port"
+sidebarTitle: "0060 · Client copy behind ChatStore"
 ---
 
 # ADR 0060 — The client keeps a bounded copy of recent threads behind a `ChatStore` port

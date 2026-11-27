@@ -1,5 +1,5 @@
 ---
-sidebarTitle: "0047 · One UI for web, desktop and mobile"
+sidebarTitle: "0047 · One UI for web, desktop, mobile"
 ---
 
 # ADR 0047 — One UI for web, desktop and mobile; each signs in as a public OAuth client
