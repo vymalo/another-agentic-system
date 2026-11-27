@@ -1,0 +1,124 @@
+{
+  "mappings": [
+    {
+      "name": "coder tier 0: start_scratch (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "coder tier 0: start_scratch"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-coder"
+            }
+          },
+          {
+            "contains": "[mock:tier]"
+          },
+          {
+            "doesNotContain": "tier-call-1"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-coder-tier-tier-call-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-coder\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"tier-call-1\",\"type\":\"function\",\"function\":{\"name\":\"start_scratch\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-coder-tier-tier-call-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-coder\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"name\\\":\\\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-coder-tier-tier-call-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-coder\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"tiernote\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-coder-tier-tier-call-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-coder\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-coder-tier-tier-call-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-coder\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n"
+      }
+    },
+    {
+      "name": "coder tier 1: write_file note.txt (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "coder tier 1: write_file note.txt"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-coder"
+            }
+          },
+          {
+            "contains": "[mock:tier]"
+          },
+          {
+            "contains": "tier-call-1"
+          },
+          {
+            "doesNotContain": "tier-call-2"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-coder-tier-tier-call-2\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-coder\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"tier-call-2\",\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-coder-tier-tier-call-2\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-coder\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"path\\\":\\\"note.txt\\\",\\\"content\\\":\\\"w\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-coder-tier-tier-call-2\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-coder\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"ritten by the tier scenario\\\\n\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-coder-tier-tier-call-2\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-coder\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-coder-tier-tier-call-2\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-coder\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n"
+      }
+    },
+    {
+      "name": "coder tier 2: final answer (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "coder tier 2: final answer"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-coder"
+            }
+          },
+          {
+            "contains": "[mock:tier]"
+          },
+          {
+            "contains": "tier-call-2"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-coder-tier-final\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-coder\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-coder-tier-final\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-coder\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"I went through the two steps I was given\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-coder-tier-final\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-coder\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\". What each one did is in the steps above.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-coder-tier-final\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-coder\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-coder-tier-final\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-coder\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n"
+      }
+    }
+  ]
+}
