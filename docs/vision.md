@@ -1,6 +1,6 @@
 # Vision: the system
 
-What the system is meant to be, in the owner's words, and how far the code is from it. The summary below lists each requirement as built on mocks, partly built, planned or not built; the proof, the history and the detail are under the blocks. Everything built was proven on mocks, and the owner has not tried this state.
+What the system is meant to be, in the owner's words, and how far the code is from it. The summary below lists each requirement as built on the pinned real agent image, built on mocks, partly built, planned or not built; the proof, the history and the detail are under the blocks. Everything built was proven on mocks, and the owner has not tried this state.
 
 ::: in-depth Status notes: when this page was written and checked
 
@@ -84,7 +84,8 @@ specs under [`web/e2e/`](../web/e2e/) (run against the web's own mock server).
 
 In short (the icons are the [legend of the reference](api/README.md#status-icons)):
 
-- 🧪 experimental · built on mocks: requirements 1, 2a, 2b, 3, 4, 5, 6, 7, 8 and 9.
+- ✅ built · run against the pinned real agent image: requirements 5, 7 and 9.
+- 🧪 experimental · built on mocks: requirements 1, 2a, 2b, 3, 4, 6 and 8.
 - ⚠️ partial · requirement 4b, a real researcher, browser and coder in the football run.
 - 🚧 planned · requirement 6b, a repository's devcontainer as its work environment, which waits on adam's own slice.
 - ❌ not supported · requirements 2c and 3b, not built.
@@ -101,12 +102,12 @@ In short (the icons are the [legend of the reference](api/README.md#status-icons
 | 3b | A person enters the URL of an MCP server of their own; the icon an upstream server offers | ❌ not supported · **Not built** | none | 0024; question 38 |
 | 4 | Several agents in one message by mention; the composer autocompletes; the football example | 🧪 experimental · **Built**, with mock agents asked | `dev/mentions-e2e.sh`, `crates/e2e/tests/mentions.rs`, `ask_agent.rs`, `asks.rs`, `web/e2e/mentions.spec.ts`, `asks.spec.ts` | [0026](decisions/0026-agent-mentions-as-structured-references.md) |
 | 4b | A real researcher, browser and coder in the football run; a planner agent | ⚠️ partial · **Partly built** (2026-10-09): a browser agent exists ([ADR 0057](decisions/0057-a-browser-agent-an-adam-folder-with-obscura-as-its-sidecar.md), adam-agent with obscura, asked by the chat on a mention of `@browser`, or, with `browser.chatSubagent` (off by default), by the chat itself as its remote sub-agent); its screenshots are files (adam-rs `0bfea49`, ADR 0057 amended 2026-10-09) that reach the person who talks to the browser or asks the chat that calls it, but not the person who mentions `@browser` (an asked agent's file is named, not kept); the football run still asks the three mocks by decision | `dev/browser-e2e.sh`, `dev/chat-browser-e2e.sh` (written, not yet run) | 0026, 0057 |
-| 5 | Nested steps, collapsed, a little more per click, spinners, bounded log | 🧪 experimental · **Built** | `dev/coder-e2e.sh` (the tree an OpenCode delegation leaves), `crates/e2e/tests/steps.rs`, `web/e2e/steps.spec.ts`, `step-io.spec.ts` | [0025](decisions/0025-nested-steps-events-carry-their-source-path.md), [0030](decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md) |
+| 5 | Nested steps, collapsed, a little more per click, spinners, bounded log | ✅ built · **Built** | `dev/coder-e2e.sh` (the tree an OpenCode delegation leaves), `crates/e2e/tests/steps.rs`, `web/e2e/steps.spec.ts`, `step-io.spec.ts` | [0025](decisions/0025-nested-steps-events-carry-their-source-path.md), [0030](decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md) |
 | 6 | Workspaces: several repositories, asking before a new one, ephemeral with none, GitHub through MCP, credentials per installation | 🧪 experimental · **Built** in adam-coder; a job that pushes to two repositories is gated on the last only; the coder's checks are not published as GitHub check runs | `dev/workspace-e2e.sh`, `dev/coder-e2e.sh` (token and App) | [0014](decisions/0014-adam-coder-default-agent-over-a2a.md) status note; question 42 |
 | 6b | A repository's devcontainer is its work environment | 🚧 planned · **The contract stands** ([ADR 0028](decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md), amended 2026-11-19): the old *how* is removed, on Kubernetes the environment is a run pod of the repository's published image (adam ADR 0052, adam's own slice, not built yet and not this repository), and in this stack and on a desktop the tool does not appear | none here (its scenario was removed 2026-11-19); adam's slice, not built yet | [0028](decisions/0028-devcontainer-json-is-the-workspace-environment-contract.md); question 41 |
-| 7 | Agents configured at run time, not compiled | 🧪 experimental · **Built** | `dev/agent-folder-e2e.sh`, `dev/greeting-e2e.sh` | 0014 status notes |
+| 7 | Agents configured at run time, not compiled | ✅ built · **Built** | `dev/agent-folder-e2e.sh`, `dev/greeting-e2e.sh` | 0014 status notes |
 | 8 | Examples for several uses: a coder, a chat, a researcher, a browser | 🧪 experimental · **Built** with a **mock browser**; the live researcher's real search is *unverified* | `dev/agents-e2e.sh`, `dev/mentions-e2e.sh` | 0014 |
-| 9 | Streaming answers, thread titles | 🧪 experimental · **Built** | `dev/coder-e2e.sh` (live frames), `dev/title-e2e.sh`, `web/e2e/stream.spec.ts` | [0027](decisions/0027-live-text-relayed-not-stored.md), [0005](decisions/0005-openai-compatible-model-endpoint.md) |
+| 9 | Streaming answers, thread titles | ✅ built · **Built** | `dev/coder-e2e.sh` (live frames), `dev/title-e2e.sh`, `web/e2e/stream.spec.ts` | [0027](decisions/0027-live-text-relayed-not-stored.md), [0005](decisions/0005-openai-compatible-model-endpoint.md) |
 
 :::
 
