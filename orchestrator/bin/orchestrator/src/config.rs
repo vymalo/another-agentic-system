@@ -36,7 +36,7 @@ use orch_app::{
     RoleGrant, SharingSettings, TaskSettings, ToolServerInfo, built_in_roles, known_sources,
 };
 use orch_core::{
-    AgentId, AskLimits, CheckSource, DEFAULT_CI_TIMEOUT_SECS, DEFAULT_MAX_ATTEMPTS,
+    AccountId, AgentId, AskLimits, CheckSource, DEFAULT_CI_TIMEOUT_SECS, DEFAULT_MAX_ATTEMPTS,
     DEFAULT_VERIFIER_TIMEOUT_SECS, GatePolicy, TaskKind, UserId,
 };
 use orch_ports::{AgentEndpoint, ToolServerEndpoint};
@@ -1657,7 +1657,12 @@ impl Config {
         }
         let mcp = if surfaces.contains(&Surface::Mcp) && role.runs_control_plane() {
             Some(McpSettings {
-                tokens: parse_mcp_tokens(clean(args.mcp_tokens_file), &get_env, &read)?,
+                tokens: parse_mcp_tokens(
+                    clean(args.mcp_tokens_file),
+                    mcp_users_are_subs(&resolved.auth),
+                    &get_env,
+                    &read,
+                )?,
                 allowed_hosts: parse_allowed_hosts(clean(args.mcp_allowed_hosts))?,
                 public_url,
                 wait_max: Duration::from_secs(mcp_wait_max_secs),
@@ -2625,10 +2630,25 @@ fn parse_allowed_origins(raw: Option<String>) -> Result<Vec<String>, ConfigError
     Ok(origins)
 }
 
+/// Whether the people of this deployment are the identity provider's `sub` and not an e-mail
+/// address (ADR 0108): `auth.jwt.userClaim: sub` in a mode that reads no identity header (a mode
+/// that also reads it gives some people an e-mail for an id). The same test as the meter's, in
+/// `orch-config`'s rules.
+fn mcp_users_are_subs(auth: &AuthSettings) -> bool {
+    !auth.mode.reads_header() && auth.jwt.as_ref().is_some_and(|jwt| jwt.user_claim == "sub")
+}
+
 /// `MCP_TOKENS_FILE`: the YAML list, with each token read from the variable its `tokenEnv` names.
 /// A user may appear more than once (a rotation); a token may belong to one user only.
+///
+/// A job started over `/mcp` belongs to the token's user, so that user is the kind of person the
+/// deployment has: an e-mail address, or, when `subs` (`auth.jwt.userClaim: sub`), an account id of
+/// the platform's alphabet `[A-Za-z0-9._:/-]{1,128}` as [`UserId::new`] makes it (trimmed and
+/// lower-cased), which is what [`AccountId`] checks (ADR 0108). The other kind is refused, naming
+/// the entry's position and never its value.
 fn parse_mcp_tokens(
     path: Option<String>,
+    subs: bool,
     env: &impl Fn(&str) -> Option<String>,
     read: &impl Fn(&Path) -> io::Result<String>,
 ) -> Result<Vec<(UserId, BTreeSet<orch_ports::Role>, SecretString)>, ConfigError> {
@@ -2653,9 +2673,17 @@ fn parse_mcp_tokens(
     }
     let mut tokens: Vec<(UserId, BTreeSet<orch_ports::Role>, SecretString)> =
         Vec::with_capacity(specs.len());
-    for spec in specs {
+    for (index, spec) in specs.into_iter().enumerate() {
         let user = spec.user.trim();
-        if !user.contains('@') {
+        if subs {
+            if AccountId::of_user(&UserId::new(user)).is_err() {
+                return Err(invalid(format!(
+                    "the user of entry {index} must be the identity provider's sub (auth.jwt.userClaim \
+                     is sub): 1 to 128 letters, digits, '.', '_', ':', '/' or '-', and no '@' \
+                     (ADR 0108)"
+                )));
+            }
+        } else if !user.contains('@') {
             return Err(invalid(format!(
                 "user {user:?} must be the e-mail address the jobs belong to"
             )));
@@ -5659,6 +5687,114 @@ mod tests {
         let shown = format!("{mcp:?}");
         assert!(!shown.contains("secret"), "{shown}");
         assert!(shown.contains("alice@example.com"), "{shown}");
+    }
+
+    /// `load_with` for a deployment whose `auth.mode` is `mode` and whose `auth.jwt.userClaim` is
+    /// `claim`, with the MCP surface and its tokens file.
+    #[cfg(all(feature = "surface-mcp", feature = "auth-jwt"))]
+    fn load_mcp_as(mode: AuthMode, claim: &str, tokens_yaml: &str) -> Result<Config, ConfigError> {
+        let env = mcp_env();
+        let resolved = Resolved {
+            auth: AuthSettings {
+                mode,
+                jwt: Some(JwtSettings {
+                    issuer: "https://idp.example".to_owned(),
+                    audiences: vec!["orchestrator".to_owned()],
+                    jwks_url: None,
+                    user_claim: claim.to_owned(),
+                    roles_claim: None,
+                }),
+                ..AuthSettings::default()
+            },
+            ..Resolved::default()
+        };
+        let tokens = tokens_yaml.to_owned();
+        Config::load_with(args_of(&env), resolved, env_of(&env), move |path| {
+            if path == Path::new("/etc/orch/mcp-tokens.yaml") {
+                Ok(tokens.clone())
+            } else if path == Path::new("/etc/orch/agents.yaml") {
+                Ok(AGENTS.to_owned())
+            } else {
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            }
+        })
+    }
+
+    /// ANR-1163: under `userClaim: sub` a job started over `/mcp` is bound to a person that
+    /// `account_of` accepts, so its run can be leased and metered (ADR 0108).
+    #[cfg(all(feature = "surface-mcp", feature = "auth-jwt"))]
+    #[test]
+    fn under_a_sub_claim_an_mcp_user_is_a_sub_the_meter_can_answer() {
+        let tokens = "\
+- { user: ' Cm1Abc2Def ', tokenEnv: MCP_TOKEN_ALICE }
+- { user: 'tenant:a/b.c_d-1', tokenEnv: MCP_TOKEN_BOB }
+";
+        let cfg = load_mcp_as(AuthMode::Jwt, "sub", tokens).unwrap();
+        let mcp = cfg.mcp.unwrap();
+        let users: Vec<&str> = mcp.tokens.iter().map(|(user, ..)| user.as_str()).collect();
+        // UserId::new trims and lower-cases, as it does a token's sub.
+        assert_eq!(users, ["cm1abc2def", "tenant:a/b.c_d-1"]);
+        for (user, ..) in &mcp.tokens {
+            let account = orch_ports::account_of(user).expect("the meter answers this person");
+            assert_eq!(account.as_str(), user.as_str());
+        }
+    }
+
+    #[cfg(all(feature = "surface-mcp", feature = "auth-jwt"))]
+    #[test]
+    fn under_a_sub_claim_an_e_mail_or_a_text_outside_the_alphabet_is_refused_by_position() {
+        let too_long = "a".repeat(129);
+        for user in [
+            "alice@example.com",
+            "auth0|abc",
+            "has space",
+            "''",
+            too_long.as_str(),
+        ] {
+            let tokens = format!(
+                "- {{ user: cm1abc, tokenEnv: MCP_TOKEN_BOB }}\n- {{ user: {user}, tokenEnv: MCP_TOKEN_ALICE }}\n"
+            );
+            let error = load_mcp_as(AuthMode::Jwt, "sub", &tokens).err().unwrap();
+            let shown = error.to_string();
+            assert!(
+                matches!(
+                    &error,
+                    ConfigError::Invalid {
+                        var: "MCP_TOKENS_FILE",
+                        ..
+                    }
+                ),
+                "{shown}"
+            );
+            assert!(shown.contains("entry 1"), "{shown}");
+            let value = user.trim_matches('\'');
+            assert!(value.is_empty() || !shown.contains(value), "{shown}");
+            assert!(!shown.contains("alice-secret"), "{shown}");
+        }
+    }
+
+    /// The e-mail rule is unchanged where the people are e-mail addresses: another claim, and a
+    /// mode that also reads the identity header.
+    #[cfg(all(feature = "surface-mcp", feature = "auth-jwt"))]
+    #[test]
+    fn where_people_are_e_mail_addresses_an_mcp_user_still_must_be_one() {
+        let sub_user = "- { user: cm1abc2def, tokenEnv: MCP_TOKEN_ALICE }\n";
+        let email_user = "- { user: Alice@Example.com, tokenEnv: MCP_TOKEN_ALICE }\n";
+        for (mode, claim) in [
+            (AuthMode::Jwt, "email"),
+            (AuthMode::Jwt, "preferred_username"),
+            #[cfg(feature = "auth-header")]
+            (AuthMode::JwtOrProxyHeader, "sub"),
+        ] {
+            let error = load_mcp_as(mode, claim, sub_user).err().unwrap();
+            assert!(
+                error.to_string().contains("must be the e-mail address"),
+                "{claim}: {error}"
+            );
+            let cfg = load_mcp_as(mode, claim, email_user).unwrap();
+            let user = cfg.mcp.unwrap().tokens[0].0.clone();
+            assert_eq!(user.as_str(), "alice@example.com");
+        }
     }
 
     #[cfg(feature = "surface-mcp")]

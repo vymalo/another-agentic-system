@@ -9,7 +9,7 @@ sidebarTitle: "0108 · A run is charged to the sub"
   hours; the run id the meter sends is the annotation, not the hash.* Amends [ADR 0084](0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md)
   (decision 6 and the two status notes of 2026-11-24 on `accountId`). **Open: ANR-Q139** (the owner's, on the board): whether the account
   is to be the `sub` exactly as the provider issues it rather than the orchestrator's trimmed, lower-cased `UserId`; this record
-  states what holds today.
+  states what holds today. **Amended (2026-11-27, ANR-1163):** the MCP surface's known gap (below) is closed.
 - **Numbering (2026-11-27):** written as 0106, renumbered to 0107 because an open pull request (#616) took 0106, and to 0108 because #620 (the SQL adapters' ADR) landed 0107.
 
 ## Context
@@ -127,6 +127,9 @@ stateDiagram-v2
 - **Known gap, the MCP surface:** under `jwt` + `sub`, `bin/orchestrator/src/config.rs` still requires an MCP token's user to contain
   `@`, so a job started over `/mcp` is bound to an e-mail person and can never be leased or metered. Nothing leaks (it gets a `422`);
   it is simply not metered. Not changed here; a card is filed.
+  **Amended (2026-11-27, ANR-1163): closed.** Under `auth.jwt.userClaim: sub` in a mode that reads no identity header, each user of
+  `mcp.tokensFile` must be a `sub` (`AccountId` alphabet, after `UserId::new`) and an `@` is refused; under any other claim the e-mail rule
+  stands. Either mismatch is exit 78 at load, naming the entry's position and never its value. The file is read once at start.
 - An older build ignores `ended_at`, but its `DELETE` removes the binding with no tombstone: roll the build out on every replica
   before the meter is turned on.
 - **Open (not decided here):** the injector's own token has no key in the configuration (`SharedTokens::with_injector` is never
