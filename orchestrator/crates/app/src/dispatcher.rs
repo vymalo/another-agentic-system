@@ -88,6 +88,21 @@ pub struct DispatcherConfig {
     /// listed in the registry yet (ANR-1061); then it is given up. With the backoff, 5 tries last
     /// about 15 s.
     pub own_agent_listing_attempts: u32,
+    /// How long a row waits, in one claim, for the person's own agent to answer that it is ready
+    /// (ANR-1078, ADR 0103). A wake that takes longer is **cut** at this bound: the row goes back
+    /// to `pending` with [`own_agent_wait_delay`](Self::own_agent_wait_delay) and the claim is
+    /// refunded, so a slot is never held for the whole wait-ready bound (`readyTimeoutSecs` plus
+    /// `OUTER_SLACK`), and the rows that wait for a slow agent cannot take every slot from the
+    /// rest. The port promises that a cut call strands nothing (`AgentProvisioner::ensure_ready`):
+    /// the agent goes on coming up and the next claim finds it. 2 s by default: a ready or a
+    /// quickly resumed agent still answers inside the one claim.
+    pub own_agent_probe: Duration,
+    /// How long a row whose person's own agent is not ready yet (a cut probe, or a platform that
+    /// answered `NotReady`) waits before it is looked at again. Fixed, not a backoff: the row
+    /// must not sit for long after the agent is up. 2 s by default. The rows give up once the
+    /// probes and waits that fit in the wake bound (`readyTimeoutSecs` plus `OUTER_SLACK`, each
+    /// cycle taking the probe plus this delay) have been spent.
+    pub own_agent_wait_delay: Duration,
     /// Delay before re-checking a cancel that raced a delegation.
     pub cancel_retry_delay: Duration,
     /// How often a verification or an ask in flight looks at its thread to see that it is still wanted
@@ -121,6 +136,8 @@ impl Default for DispatcherConfig {
             max_poll_failures: 10,
             max_cancel_attempts: 10,
             own_agent_listing_attempts: 5,
+            own_agent_probe: Duration::from_secs(2),
+            own_agent_wait_delay: Duration::from_secs(2),
             cancel_retry_delay: Duration::from_secs(1),
             verify_watch: Duration::from_secs(5),
             live_flush: Duration::from_millis(100),
@@ -643,6 +660,64 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         Ok(())
     }
 
+    /// The waits a row may spend on the person's own agent waking: the cycles (a probe and the
+    /// wait that follows it) that fit in the wake bound, `readyTimeoutSecs` plus `OUTER_SLACK`.
+    /// Every wait of a delegation row is one of these (a stop's own wait is another row's), so the
+    /// row's refunded claims are the count. None when provisioning is off.
+    fn wake_waits(&self) -> u32 {
+        let Some(bound) = self.app.own_agent_wake_bound() else {
+            return 0;
+        };
+        let cycle = self
+            .cfg
+            .own_agent_probe
+            .saturating_add(self.cfg.own_agent_wait_delay)
+            .as_millis()
+            .max(1);
+        u32::try_from(bound.as_millis().div_ceil(cycle)).unwrap_or(u32::MAX)
+    }
+
+    /// The person's own agent is not ready after this claim's probe: the row waits
+    /// `own_agent_wait_delay` and is looked at again, the claim refunded, and gives up once the
+    /// waits that fit in the wake bound are spent ([`wake_waits`](Self::wake_waits): the agent
+    /// did not become ready in the time the platform was given). Bounded by that count, so no row
+    /// waits for ever.
+    async fn wait_for_wake(&self, row: &OutboxItem, agent: &AgentId) -> Done {
+        if row.refunded < self.wake_waits() {
+            tracing::debug!(id = %row.id, agent = %agent, attempt = row.attempts, waited = row.refunded, "the person's own agent is not ready yet; the row waits");
+            return self
+                .wait(
+                    row,
+                    self.cfg.own_agent_wait_delay,
+                    format!("your agent '{agent}' is not ready yet"),
+                )
+                .await;
+        }
+        tracing::warn!(id = %row.id, agent = %agent, attempt = row.attempts, waited = row.refunded, "the person's own agent did not become ready in the wake bound; giving up");
+        self.give_up_not_ready(row).await
+    }
+
+    /// Ends a row whose person's own agent could not be made ready: the thread is told, and the
+    /// row is dead.
+    async fn give_up_not_ready(&self, row: &OutboxItem) -> Done {
+        self.apply_quiet(
+            row,
+            Input::DeliveryFailed {
+                reason: "your agent could not be made ready".to_owned(),
+                retryable: false,
+            },
+            format!("dead:{}", row.id),
+        )
+        .await?;
+        self.finish(
+            row,
+            OutboxFinal::Dead {
+                error: "own agent not ready".to_owned(),
+            },
+        )
+        .await
+    }
+
     // --------------------------------------------------------- the run's binding
 
     /// Binds the run whose task id the delegation's stream has just named (ADR 0084, the ruling of
@@ -787,12 +862,17 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         // row given up for want of a listing says so only then
         let mut woke = false;
         if wakes {
-            match self
-                .app
-                .ensure_own_agent(&thread.owner, &binding.agent_id)
-                .await
-            {
-                Ok(agent) => {
+            // The wake is a probe (ANR-1078): one claim waits for it `own_agent_probe` and no more,
+            // so that a row waiting for a slow agent does not hold a slot for the whole bound.
+            // Dropping the call at the bound is safe: the port promises that a dropped
+            // `ensure_ready` leaves the agent coming up.
+            let probed = tokio::time::timeout(
+                self.cfg.own_agent_probe,
+                self.app.ensure_own_agent(&thread.owner, &binding.agent_id),
+            )
+            .await;
+            match probed {
+                Ok(Ok(agent)) => {
                     woke = agent.is_some();
                     // the wait may have lasted seconds: what is acted on is the thread as it is
                     // now, not as it was before (a stop may have ended it meanwhile)
@@ -809,7 +889,13 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                         .await?
                         .ok_or_else(|| StoreError::corrupt("binding missing"))?;
                 }
-                Err(e) => {
+                // the agent is not up yet: the probe ran out, or the platform said so. Not a
+                // failure of the row: it waits for the agent with its claim refunded.
+                Err(_) | Ok(Err(AppError::AgentNotReady { .. })) => {
+                    self.wait_for_wake(row, lookup).await?;
+                    return Ok(None);
+                }
+                Ok(Err(e)) => {
                     tracing::warn!(id = %row.id, agent = %lookup, attempt = row.attempts, error = %report(&e), "the person's own agent could not be made ready for the row");
                     if row.counted_attempts() < self.cfg.max_attempts {
                         self.retry(
@@ -820,22 +906,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                         .await?;
                         return Ok(None);
                     }
-                    self.apply_quiet(
-                        row,
-                        Input::DeliveryFailed {
-                            reason: "your agent could not be made ready".to_owned(),
-                            retryable: false,
-                        },
-                        format!("dead:{}", row.id),
-                    )
-                    .await?;
-                    self.finish(
-                        row,
-                        OutboxFinal::Dead {
-                            error: "own agent not ready".to_owned(),
-                        },
-                    )
-                    .await?;
+                    self.give_up_not_ready(row).await?;
                     return Ok(None);
                 }
             }
@@ -2141,8 +2212,10 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             .saturating_add(self.wake_headroom(routed))
     }
 
-    /// The attempts a stop may spend waiting for a routed delegation to wake its agent: the
-    /// waits that fit in the wake bound; none for a thread that is not routed. Only the wait
+    /// The attempts a stop may spend waiting for a routed delegation that a claim holds, at its
+    /// wake or at the send that follows it: the waits that fit in the wake bound; none for a
+    /// thread that is not routed. A delegation between two probes is `pending` and unsent, and a
+    /// stop skips it instead of waiting (ANR-1078 PR 2, ADR 0103). Only the wait
     /// for the delegation uses it, and it is still needed: the waits are refunded
     /// ([`OutboxItem::counted_attempts`]) so the later phases (the listing, the `CancelTask`) count
     /// only the claims that tried something (they share that one counted counter, and a lapse
@@ -2273,9 +2346,10 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             .await?;
             return self.finish(&row, OutboxFinal::Delivered).await;
         }
-        // A delegation is being sent right now; once it has a task id the next attempt cancels it.
-        // For a routed thread that can take as long as the person's agent needs to wake, so the
-        // budget covers the wake bound too: a stop is not lost while the agent is coming up. The
+        // A delegation is being sent right now (a claim holds it: at its wake probe, or at the
+        // send); once it has a task id the next attempt cancels it. A routed delegation that waits
+        // for its agent between two probes is `pending` and unsent, and was skipped above. The
+        // budget covers the wake bound too, so a stop is not lost while the agent is coming up. The
         // wait is not a failure, so it is refunded and the phases after it (the listing, the
         // `CancelTask`) count only the claims that tried something (they share one counted
         // counter, and a lapse counts); the bound of the wait itself is the one thing that must
