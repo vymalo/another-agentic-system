@@ -85,6 +85,22 @@ caller drives itself with `tls_connector()`.
 | A connection the pool closes | `Terminate`, then the stream shut down (`PgConnection::close`, read in `sqlx-postgres` 0.9.0) | the same, within `LINGER` |
 | The refusals above | done | refused |
 
+## SQLSTATEs: `sqlstate`
+
+What a server's error says to do, **one table for both PostgreSQL adapters** (`orch-store-postgres` and
+`orch-secrets-pg` each build their port's error from it; ADR 0107 decision 5):
+
+| `sqlstate::class(code)` | Codes |
+|---|---|
+| `Transient` | PostgreSQL's class `08` and `53`, `40001`, `40P01`, `57P01` to `57P03` |
+| `Corrupt` | `OR001` (`RuleCode::Corrupt`): stored data breaks an invariant a function of the schema checks |
+| `Internal` | `OR002` (`RuleCode::BadArguments`): a function refuses its arguments, a caller's bug; an `OR` code this build does not know; every other code |
+
+`RuleCode` is a closed enum of the class `OR`, the orchestrator's own (adam-rs raises `AD`, the platform `AP`;
+PostgreSQL 18 uses none of them, *verified 2026-11-27*, its Appendix A). `sqlstate::is_retried_at_connect` is the two
+codes a pool tries again at connect, as sqlx's did (`53300`, `57P03`). A lock timeout (`55P03`) and a unique violation
+are each adapter's to read.
+
 ## Errors
 
 `ParseError` (`NotAUrl`, `Scheme`, `SslMode`, `ClientCertificate`, `Parameter(name)`) and `ConnectError` (`RootCert`,
@@ -92,6 +108,8 @@ caller drives itself with `tls_connector()`.
 
 ## Tests
 
+* Unit, `sqlstate`: every `OR` code with its class, five characters and not ending in `000`, an unknown `OR` code and
+  adam-rs's class internal; PostgreSQL's transient and internal codes; the two retried at connect.
 * Unit: the environment, its defaults and the OS user (a fake environment and file system), the URL's parts decoded,
   the query key by key (aliases, the last one winning, `options` growing, `options[...]` escaped, a socket kept apart
   from the host), the password file (`PGPASSFILE` before `~/.pgpass`, wildcards, escapes, comments, malformed lines),

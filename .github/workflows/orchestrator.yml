@@ -75,8 +75,10 @@ jobs:
   check:
     runs-on: ubuntu-latest
     services:
+      # The newest server (ADR 0107, owner's decision 5: the store suites run on 18.7, the floor, in `store-floor`, and on 19.0
+      # here). Pinned by tag and digest (the manifest list, *verified 2026-11-27* by a pull from Docker Hub).
       postgres:
-        image: postgres:19.0
+        image: postgres:19.0@sha256:4ea94de574c17f0372722806c949757050fbb1cd7648410fe45d6bba275cc00e
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: orch_test
@@ -192,6 +194,46 @@ jobs:
       # binary hosting an echo agent, and the roles splitting the work) against the database.
       - run: cargo clippy -p orchestrator --features agent-local --all-targets --locked -- -D warnings
       - run: cargo test -p orchestrator --features agent-local --locked
+
+  # The store suites on PostgreSQL 18, the floor (ADR 0107 decision 4, the owner's decision 5), beside `check`'s 19.0: every crate
+  # that talks to PostgreSQL, the migrations' floor test and the fresh-database tests among them. A job of its own rather than a
+  # matrix of `check`, so `check` keeps its name and the lints and the other suites are not run twice. The server is 18.7, the
+  # version the chart pins, by tag and digest (the manifest list, *verified 2026-11-27* by a pull from Docker Hub).
+  store-floor:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.7@sha256:64c8b0d31e4ab6ea665e8426ea406a94bf52de3c05b3a4a8bf713704eefa9328
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orch_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ORCH_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/orch_test
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        working-directory: orchestrator
+    steps:
+      - uses: actions/checkout@v7
+      - name: The server is the floor
+        run: |
+          v=$(docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "SHOW server_version_num")
+          echo "server_version_num=$v"
+          test "$v" -ge 180000 && test "$v" -lt 190000
+      - name: Install the pinned toolchain
+        run: rustup toolchain install 1.94.1 --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "orchestrator -> target"
+      - run: cargo test -p orch-pg-migrate -p orch-pg-connect -p orch-store-postgres -p orch-secrets-pg --locked
+      # The binary's own Postgres tests (its roles, its migrations at boot, the floor's exit code).
+      - run: cargo test -p orchestrator --locked
 
   # The library composition root (ADR 0076 decision 4, slice E3). No service: SQLite is a file.
   embed:

@@ -2538,6 +2538,15 @@ doc Pooler another-agentic-db-pooler > "$sec"
 check "pooler: a parameter set to null is dropped (Helm deletes the key) and the others stay" sh -c "! grep -q 'max_client_conn' '$sec' && grep -Eq '^      max_prepared_statements: \"200\"\$' '$sec'"
 
 # Refusals, and what is accepted.
+# The floor (ADR 0107 decision 4): an image below PostgreSQL 18, or one whose tag names no major, is refused; 18 and 19 render.
+refused_says "below the floor" "database.imageName PostgreSQL 17 (ADR 0107's floor)" --set database.imageName=ghcr.io/cloudnative-pg/postgresql:17.6-standard-trixie
+refused_says "below the floor" "database.imageName PostgreSQL 9.6 (one digit, below the floor)" --set database.imageName=postgres:9.6
+refused_says "must name the PostgreSQL major" "database.imageName with no tag" --set database.imageName=ghcr.io/cloudnative-pg/postgresql
+refused_says "must name the PostgreSQL major" "database.imageName pinned by digest only" --set database.imageName=ghcr.io/cloudnative-pg/postgresql@sha256:1abcfd1cac6d53cda5185706819aab36d66a4ed88e99fc2ae44ab0826aa99f00
+refused_says "must name the PostgreSQL major" "database.imageName whose tag names no major" --set database.imageName=registry.example.org:5000/pg:latest
+check "database.imageName PostgreSQL 18.0 renders (the floor itself)" renders --set database.imageName=ghcr.io/cloudnative-pg/postgresql:18.0-standard-trixie
+check "database.imageName PostgreSQL 19 renders, a registry port and a digest included" renders --set database.imageName=registry.example.org:5000/postgresql:19.0-standard-trixie@sha256:1abcfd1cac6d53cda5185706819aab36d66a4ed88e99fc2ae44ab0826aa99f00
+check "database.imageName empty renders (CloudNativePG's own default image)" renders --set database.imageName=
 refused "database.instances 0" --set database.instances=0
 refused "database.instances negative" --set database.instances=-1
 refused "database.instances not whole" --set-json 'database.instances=1.5'

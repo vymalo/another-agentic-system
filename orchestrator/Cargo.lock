@@ -3403,6 +3403,7 @@ dependencies = [
  "orch-log-filter",
  "orch-model-openai",
  "orch-pg-connect",
+ "orch-pg-migrate",
  "orch-ports",
  "orch-provisioner-platform",
  "orch-registry-platform",

@@ -21,6 +21,11 @@
 //! * **The session.** `TimeZone` is `UTC` and `DateStyle` is `ISO, MDY` for the run, as sqlx sets
 //!   them on every connection, so a migration reads a literal as it did.
 //!
+//! What it adds: **the floor** (ADR 0107 decision 4). Before it takes the lock or creates the
+//! history table, a run reads the server's `server_version_num` and refuses a server below
+//! [`MIN_SERVER_VERSION`] (PostgreSQL 18) with [`MigrateError::ServerTooOld`], so a database is
+//! never half-migrated by a build whose migrations need a newer server.
+//!
 //! A reversible migration (`.up.sql`, `.down.sql`) is refused: sqlx runs only the `up` half, and
 //! none exists here. A session lock needs one session: run it on a connection to the database
 //! itself, not through a transaction-mode pooler. A run that is cancelled (its future dropped)
@@ -105,11 +110,16 @@ pub fn lock_id(database_name: &str) -> i64 {
     0x3d32_ad9e * i64::from(CRC.checksum(database_name.as_bytes()))
 }
 
+/// The oldest server a run migrates, as `server_version_num` says it: PostgreSQL 18.0 (ADR 0107
+/// decision 4, the owner's floor). A server below it is refused before any DDL.
+pub const MIN_SERVER_VERSION: i32 = 180_000;
+
 /// The migrations of a crate in a history table of its own.
 #[derive(Clone, Debug)]
 pub struct Migrator {
     table: String,
     migrations: Vec<Migration>,
+    min_server_version: i32,
 }
 
 impl Migrator {
@@ -133,7 +143,22 @@ impl Migrator {
         Ok(Self {
             table: table.to_owned(),
             migrations,
+            min_server_version: MIN_SERVER_VERSION,
         })
+    }
+
+    /// The same migrations with another floor, as `server_version_num` says it (`180000` is
+    /// 18.0): for a test that proves the refusal on a server at or above [`MIN_SERVER_VERSION`].
+    /// A crate migrates with the default.
+    #[must_use]
+    pub fn with_min_server_version(mut self, version: i32) -> Self {
+        self.min_server_version = version;
+        self
+    }
+
+    /// The oldest server this run migrates.
+    pub fn min_server_version(&self) -> i32 {
+        self.min_server_version
     }
 
     /// The migrations, in the order of their versions.
@@ -177,19 +202,30 @@ impl Migrator {
 
     /// Applies every migration the history does not have, under the database's advisory lock, and
     /// releases the lock whatever the outcome. Idempotent, and safe to call from every replica at
-    /// boot.
+    /// boot. The server's version is read first: below the floor nothing else is sent.
     ///
     /// # Errors
     ///
-    /// [`MigrateError::Dirty`], [`MigrateError::VersionMissing`] or
+    /// [`MigrateError::ServerTooOld`] for a server below the floor (no lock taken, no table
+    /// created); [`MigrateError::Dirty`], [`MigrateError::VersionMissing`] or
     /// [`MigrateError::VersionMismatch`] when the history does not match this build (nothing is
     /// applied); [`MigrateError::Execute`] when a migration's SQL fails (its transaction is rolled
     /// back); [`MigrateError::Database`] for the connection or a bookkeeping statement.
     pub async fn run(&self, client: &mut Client) -> Result<(), MigrateError> {
-        let database: String = client
-            .query_one("SELECT current_database()", &[])
-            .await?
-            .try_get(0)?;
+        let row = client
+            .query_one(
+                "SELECT current_setting('server_version_num')::integer, current_database()",
+                &[],
+            )
+            .await?;
+        let found: i32 = row.try_get(0)?;
+        if found < self.min_server_version {
+            return Err(MigrateError::ServerTooOld {
+                found,
+                required: self.min_server_version,
+            });
+        }
+        let database: String = row.try_get(1)?;
         let lock = lock_id(&database);
         client
             .execute("SELECT pg_advisory_lock($1)", &[&lock])
@@ -333,6 +369,19 @@ pub enum MigrateError {
     /// A migration file is not named `<integer>_<description>.sql`.
     #[error("the migration file {0:?} is not named <integer>_<description>.sql")]
     FileName(String),
+    /// The server is older than the floor ([`MIN_SERVER_VERSION`]): nothing was sent but the read
+    /// of its version. Both numbers are `server_version_num`'s (`170006` is 17.6).
+    #[error(
+        "the PostgreSQL server is version {}, and this build needs {} or later",
+        version_text(*found),
+        version_text(*required)
+    )]
+    ServerTooOld {
+        /// The server's `server_version_num`.
+        found: i32,
+        /// The floor it was held to.
+        required: i32,
+    },
     /// The history table's name is not letters, digits and `_`.
     #[error("the history table {0:?} is not a name of letters, digits and _")]
     TableName(String),
@@ -360,6 +409,15 @@ pub enum MigrateError {
     /// The connection, the lock or a bookkeeping statement failed.
     #[error("the database failed while migrating")]
     Database(#[from] tokio_postgres::Error),
+}
+
+/// `server_version_num` as people write it: `180007` is `18.7`, `90624` is `9.6.24`.
+fn version_text(num: i32) -> String {
+    if num >= 100_000 {
+        format!("{}.{}", num / 10_000, num % 10_000)
+    } else {
+        format!("{}.{}.{}", num / 10_000, num / 100 % 100, num % 100)
+    }
 }
 
 #[cfg(test)]
@@ -411,6 +469,30 @@ mod tests {
         .unwrap();
         let versions: Vec<i64> = sorted.migrations().iter().map(Migration::version).collect();
         assert_eq!(versions, [1, 2]);
+    }
+
+    #[test]
+    fn the_refusal_names_both_versions_as_people_write_them() {
+        let e = MigrateError::ServerTooOld {
+            found: 170_006,
+            required: MIN_SERVER_VERSION,
+        };
+        assert_eq!(
+            e.to_string(),
+            "the PostgreSQL server is version 17.6, and this build needs 18.0 or later"
+        );
+        assert_eq!(version_text(90_624), "9.6.24");
+        assert_eq!(version_text(190_000), "19.0");
+    }
+
+    #[test]
+    fn the_floor_is_postgresql_18_unless_a_test_moves_it() {
+        let m = Migrator::new("t", vec![]).unwrap();
+        assert_eq!(m.min_server_version(), 180_000);
+        assert_eq!(
+            m.with_min_server_version(190_001).min_server_version(),
+            190_001
+        );
     }
 
     #[test]

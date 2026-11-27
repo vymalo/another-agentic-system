@@ -551,3 +551,67 @@ async fn the_lock_is_sqlx_s_lock() {
     drop(client);
     db.drop().await;
 }
+
+/// Whether `name` is a table of the database's `public` schema.
+async fn has_table(db: &Db, name: &str) -> bool {
+    db.client()
+        .await
+        .query_one("SELECT to_regclass($1) IS NOT NULL", &[&name])
+        .await
+        .unwrap()
+        .get(0)
+}
+
+/// ADR 0107 decision 4: a server below the floor is refused before any DDL. CI's servers are at or
+/// above PostgreSQL 18, so the floor is moved one above the server's own version: the run is
+/// refused with both numbers, it never asked for the lock (another session holds it, and the
+/// refusal still comes at once), and neither the history table nor the migration's table exists
+/// after. The same migrations at the server's own version are applied.
+#[tokio::test]
+async fn a_server_below_the_floor_is_refused_before_any_ddl() {
+    let Some(db) = Db::new().await else {
+        return;
+    };
+    let mut client = db.client().await;
+    let found: i32 = client
+        .query_one("SELECT current_setting('server_version_num')::integer", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert!(
+        found >= orch_pg_migrate::MIN_SERVER_VERSION,
+        "the test server ({found}) is below the floor: the store cannot run on it"
+    );
+    let held = db.client().await;
+    held.execute("SELECT pg_advisory_lock($1)", &[&lock_id(&db.name)])
+        .await
+        .unwrap();
+
+    let files = dir(&[ONE]);
+    let above = Migrator::new(TABLE, ours(files.path()))
+        .unwrap()
+        .with_min_server_version(found + 1);
+    let refused = tokio::time::timeout(Duration::from_secs(10), above.run(&mut client))
+        .await
+        .expect("the refusal does not wait for the lock");
+    match refused {
+        Err(MigrateError::ServerTooOld { found: f, required }) => {
+            assert_eq!((f, required), (found, found + 1))
+        }
+        other => panic!("expected ServerTooOld, got {other:?}"),
+    }
+    assert!(!has_table(&db, TABLE).await, "no history table");
+    assert!(!has_table(&db, "a").await, "no migration ran");
+
+    held.execute("SELECT pg_advisory_unlock($1)", &[&lock_id(&db.name)])
+        .await
+        .unwrap();
+    drop(held);
+    let at = Migrator::new(TABLE, ours(files.path()))
+        .unwrap()
+        .with_min_server_version(found);
+    at.run(&mut client).await.unwrap();
+    assert_eq!(db.rows().await, [(1, true)]);
+    drop(client);
+    db.drop().await;
+}

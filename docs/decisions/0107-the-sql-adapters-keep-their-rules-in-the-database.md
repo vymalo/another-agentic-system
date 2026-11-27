@@ -4,7 +4,14 @@ sidebarTitle: "0107 · Rules in SQL, PostgreSQL 18 floor"
 
 # ADR 0107 — The SQL adapters keep their rules in the database
 
-- **Status:** **Accepted (2026-11-27)** by the owner, for the direction and the floor; nothing is built. Task ANR-1149.
+- **Status:** **Accepted (2026-11-27)** by the owner, for the direction and the floor. Task ANR-1149.
+  *Status note (2026-11-27): slice P0 is built* (the floor in `orch-pg-migrate`, `MigrateError::ServerTooOld` before any
+  DDL and exit 78; the table `orch_pg_connect::sqlstate` with the class `OR`, read by both PostgreSQL adapters; the
+  fresh-database tests of the three stores, whose lists are empty of `orch_` routines; CI on 18.7 and 19.0 by digest; the
+  chart's refusal below 18). Two details differ from the text below, and the text is amended where they are said: the
+  floor's CI is a job of its own, `store-floor`, and not a matrix of `check` (decision 4); and the store's first
+  migration of a function is `0036_…`, since `0034` and `0035` were taken by other changes after this ADR was written
+  (decision 6). No function exists yet; P1 is next.
   The owner decided on 2026-11-27 (the owner, 2026-11-27):
 
   > *"If something can be done in SQL, we better use SQL rather than rust."*
@@ -117,7 +124,11 @@ Categories, 18 documentation), which is what a read after another writer's commi
    - **CI.** Nothing runs below 18 today. `.github/workflows/orchestrator.yml`'s `check` job (its service at line 79)
      becomes a matrix of `postgres:18.7` (the floor, and the chart's version) and `postgres:19.0`, each pinned by tag
      and digest (the digests are read at P0); the pooler job (`:295`), the image job (`:347`) and `system.yml` (`:38`)
-     stay on 19.0, above the floor.
+     stay on 19.0, above the floor. *Amended (2026-11-27, P0):* `check` keeps its one service, `postgres:19.0` now
+     pinned by digest, and a new job `store-floor` runs the PostgreSQL crates' suites and the binary's tests on
+     `postgres:18.7` by digest, after checking that the server is an 18. A matrix would have renamed `check` (to
+     `check (18.7)` and `check (19.0)`) and run its lints and its other suites twice; the owner's decision 5, the store
+     suites on two servers, is what the job keeps.
    - **Compose** (`compose.yaml`: the orchestrator's `postgres` at line 235 and the three other servers at `:614`,
      `:894`, `:1113`) stays on `postgres:19.0-alpine3.24`, above the floor; nothing to raise.
    - **The chart** pins `ghcr.io/cloudnative-pg/postgresql:18.7-…-standard-trixie` by tag and digest
@@ -141,7 +152,8 @@ Categories, 18 documentation), which is what a read after another writer's commi
    mapped by one table in `orch-store-sqlite` to the same variants (`orch:seq` is `Corrupt`; `orch:too_many` is the
    port's `TooMany` with its limit).
 6. **The migration scheme.** Functions and views come in numbered migration files like every table
-   (`orch-store-postgres` from `0034_…`, `orch-secrets-pg` from `0004_…`), each in its migration's transaction, after
+   (`orch-store-postgres` from `0034_…`, `orch-secrets-pg` from `0004_…`; *amended (2026-11-27, P0):* the store's from
+   `0036_…`, `0034` and `0035` having been taken since), each in its migration's transaction, after
    the tables it names. A migration's text is never edited (its SHA-384 is in the history, `orch-pg-migrate`), so:
    - **every change of a function is a new migration file**, and each slice that adds, changes or drops one has its own
      (the rule adam-rs's ADR 0082 amended its decision 10 to, the same day: each slice bumps the version again);

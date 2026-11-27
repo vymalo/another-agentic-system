@@ -21,10 +21,14 @@
 //!   | `verify-full` | always | its chain and its name |
 //!
 //! No error of this crate holds the connection string: it may carry a password.
+//!
+//! [`sqlstate`] is what a server's SQLSTATE says to do, for both PostgreSQL adapters: PostgreSQL's
+//! transient codes and the class `OR` of the orchestrator's own functions (ADR 0107 decision 5).
 
 #![forbid(unsafe_code)]
 
 mod parse;
+pub mod sqlstate;
 
 use std::future::Future;
 use std::path::PathBuf;

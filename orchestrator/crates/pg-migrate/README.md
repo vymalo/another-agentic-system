@@ -33,20 +33,30 @@ migrator.check_directory(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/migrati
 
 A reversible migration (`.up.sql`, `.down.sql`) is refused: sqlx runs only the `up` half, and none exists here.
 
+## The floor: PostgreSQL 18
+
+What it adds to sqlx's runner (ADR 0107 decision 4): **the first statement of a run reads the server's
+`server_version_num`**, before the lock is taken and before the history table is created, and a server below
+`MIN_SERVER_VERSION` (`180000`, PostgreSQL 18.0) is refused with `MigrateError::ServerTooOld { found, required }`,
+whose text names both versions as people write them (`17.6`, `18.0`) and nothing else. Nothing else is sent, so a
+database is never half-migrated by a build whose migrations need a newer server. `Migrator::with_min_server_version(n)`
+moves the floor, for a test that proves the refusal on a server at or above it; a crate migrates with the default.
+
 A session lock needs one session: run it on a connection to the database itself, never through a
 transaction-mode pooler (PgBouncer). A run that is cancelled (its future dropped by a timeout or a shutdown) keeps
 the lock until its connection closes: drop that client then, rather than reusing it.
 
 ## Errors
 
-`MigrateError`: `FileName`, `TableName` and `DuplicateVersion` for a crate's mistake, the three refusals
-above, `Execute { version, source }` when a migration's SQL fails (its transaction rolled back), and
+`MigrateError`: `FileName`, `TableName` and `DuplicateVersion` for a crate's mistake, `ServerTooOld` for a server
+below the floor, the three refusals above, `Execute { version, source }` when a migration's SQL fails (its transaction rolled back), and
 `Database` for the connection, the lock or a bookkeeping statement.
 
 ## Tests
 
 * Unit: a file name read as sqlx reads it (`-- no-transaction` included; bad names, `.up.sql` and `.down.sql`
-  refused), the table name and versions checked, and the lock key against CRC-32's check value.
+  refused), the table name and versions checked, the lock key against CRC-32's check value, the floor's default and
+  the refusal's text.
 * `tests/sqlx_history.rs`, against what sqlx 0.9 did, recorded before sqlx left the workspace at the end of E1:
   * `every_migration_sqlx_read_reads_as_sqlx_read_it`: every migration of `tests/sqlx-0.9-history.txt` (each one
     the workspace had on 2026-11-21, with the version, description, SHA-384 and transaction sqlx gave it, recorded by
@@ -63,5 +73,8 @@ above, `Execute { version, source }` when a migration's SQL fails (its transacti
     this runner wrote), `the_history_is_checked_before_anything_runs` (the three refusals, a failed migration
     leaves no row and none of its work, the lock is free after each refusal), `the_lock_is_sqlx_s_lock` (while a
     session holds sqlx's lock, `pg_advisory_lock` of `lock_id`, which is held to sqlx's recorded keys, the server shows this runner's request for it, not
-    granted; it runs once the lock is let go). Each drops its database,
+    granted; it runs once the lock is let go), `a_server_below_the_floor_is_refused_before_any_ddl` (the floor moved one
+    above the test server's own version: `ServerTooOld` with both numbers, at once although another session holds
+    the lock, so the lock was never asked for, and neither the history table nor the migration's table exists after;
+    the same migrations at the server's own version are applied). Each drops its database,
     and the databases a killed run left are dropped by the next.

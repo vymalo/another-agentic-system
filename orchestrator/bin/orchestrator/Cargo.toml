@@ -112,6 +112,8 @@ orch-auth-header = { workspace = true, optional = true }
 orch-auth-jwt = { workspace = true, optional = true }
 orch-agent-adam = { workspace = true, optional = true }
 orch-store-postgres.workspace = true
+# The floor's refusal (ADR 0107): `exit_code` finds `MigrateError::ServerTooOld` in a cause chain.
+orch-pg-migrate.workspace = true
 anyhow.workspace = true
 bytes.workspace = true
 clap.workspace = true

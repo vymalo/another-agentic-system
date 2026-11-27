@@ -69,6 +69,13 @@ fn exit_code(err: &anyhow::Error) -> u8 {
         if cause.downcast_ref::<ConfigError>().is_some() {
             return EX_CONFIG;
         }
+        // The deployment points at a PostgreSQL below the floor (ADR 0107 decision 4): either
+        // store's migrations refused it before any DDL, and a restart changes nothing.
+        if let Some(orch_pg_migrate::MigrateError::ServerTooOld { .. }) =
+            cause.downcast_ref::<orch_pg_migrate::MigrateError>()
+        {
+            return EX_CONFIG;
+        }
         if let Some(store) = cause.downcast_ref::<StoreError>()
             && store.class() == ErrorClass::Transient
         {
@@ -328,6 +335,25 @@ mod tests {
         assert_eq!(exit_code(&anyhow::Error::from(HostError::NothingToRun)), 70);
 
         assert_eq!(exit_code(&anyhow::anyhow!("something else")), 1);
+    }
+
+    /// ADR 0107 decision 4: a server below the floor, refused by either store's migrations, is a
+    /// configuration error (78), never an outage that a restart would retry.
+    #[test]
+    fn a_server_below_the_floor_exits_78() {
+        let too_old = || orch_pg_migrate::MigrateError::ServerTooOld {
+            found: 170_006,
+            required: orch_pg_migrate::MIN_SERVER_VERSION,
+        };
+        let store = anyhow::Error::from(StoreError::internal(too_old()))
+            .context("cannot apply the database migrations");
+        assert_eq!(exit_code(&store), 78, "{store:#}");
+        let secrets = anyhow::Error::from(
+            SecretError::unavailable("the database server is older than the secret store needs")
+                .with_source(too_old()),
+        )
+        .context("cannot apply the migrations of the secret store (secrets)");
+        assert_eq!(exit_code(&secrets), 78, "{secrets:#}");
     }
 
     /// The secret store's errors at startup, as its adapter makes them (no database needed): a

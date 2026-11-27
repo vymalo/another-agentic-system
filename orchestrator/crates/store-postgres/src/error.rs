@@ -1,6 +1,7 @@
 use deadpool_postgres::{HookError, PoolError};
 use orch_core::ErrorClass;
 use orch_pg_connect::ConnectError;
+use orch_pg_connect::sqlstate::{self, SqlStateClass};
 use orch_pg_migrate::MigrateError;
 use orch_ports::{StoreError, WakeupError};
 
@@ -68,15 +69,16 @@ impl SqlError {
     }
 }
 
-/// Whether a SQLSTATE says "try again later": class 08 (connection exception), `40001`
-/// (serialization failure), `40P01` (deadlock detected), class 53 (insufficient resources),
-/// `57P01`..`57P03` (admin shutdown, crash shutdown, cannot connect now).
-///
-/// Meanings *unverified* (PostgreSQL manual, Appendix A, from memory, 2026-09-29).
-fn transient_sqlstate(code: &str) -> bool {
-    code.starts_with("08")
-        || code.starts_with("53")
-        || matches!(code, "40001" | "40P01" | "57P01" | "57P02" | "57P03")
+/// The class of a server's error, by its SQLSTATE: the table both PostgreSQL adapters share
+/// (`orch_pg_connect::sqlstate`, ADR 0107 decision 5): PostgreSQL's transient codes, and the class
+/// `OR` of the orchestrator's own functions (`OR001` corrupt, `OR002` and an unknown `OR` code
+/// internal).
+fn sqlstate_class(code: &str) -> ErrorClass {
+    match sqlstate::class(code) {
+        SqlStateClass::Transient => ErrorClass::Transient,
+        SqlStateClass::Corrupt => ErrorClass::Corrupt,
+        SqlStateClass::Internal => ErrorClass::Internal,
+    }
 }
 
 /// What `tokio-postgres` 0.7.18 says of a failure that is not the server's (its `Display`, which
@@ -152,11 +154,7 @@ fn pool_class(err: &PoolError) -> ErrorClass {
 
 fn driver_class(err: &tokio_postgres::Error) -> ErrorClass {
     if let Some(db) = err.as_db_error() {
-        return if transient_sqlstate(db.code().code()) {
-            ErrorClass::Transient
-        } else {
-            ErrorClass::Internal
-        };
+        return sqlstate_class(db.code().code());
     }
     driver_kind_class(
         err.to_string().as_str(),
@@ -189,14 +187,9 @@ fn io_of(err: &tokio_postgres::Error) -> Option<&std::io::Error> {
 /// connect now (`57P03`).
 pub(crate) fn refused_while_starting(err: &tokio_postgres::Error) -> bool {
     if let Some(db) = err.as_db_error() {
-        return retried_sqlstate(db.code().code());
+        return sqlstate::is_retried_at_connect(db.code().code());
     }
     io_of(err).is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionRefused)
-}
-
-/// The SQLSTATEs at connection that sqlx's pool tried again.
-fn retried_sqlstate(code: &str) -> bool {
-    matches!(code, "53300" | "57P03")
 }
 
 /// A database's failure as this crate keeps it, the source of a port's error: its class and its
@@ -255,11 +248,7 @@ impl DbFailure {
     #[cfg(test)]
     pub(crate) fn sqlstate(code: &str) -> Self {
         DbFailure {
-            class: if transient_sqlstate(code) {
-                ErrorClass::Transient
-            } else {
-                ErrorClass::Internal
-            },
+            class: sqlstate_class(code),
             severity: Some("ERROR".to_owned()),
             message: "refused".to_owned(),
             code: Some(code.to_owned()),
@@ -316,9 +305,17 @@ fn connect_words(err: &ConnectError) -> String {
 /// Maps a driver error to the port's error type, keeping the [`DbFailure`] as its source (a
 /// syntax error is `Internal` and never retried, a network failure `Unavailable`).
 pub(crate) fn store_err(err: impl Into<SqlError>) -> StoreError {
-    let failure = DbFailure::of(&err.into());
+    store_failure(DbFailure::of(&err.into()))
+}
+
+/// The port's error of a failure already kept.
+fn store_failure(failure: DbFailure) -> StoreError {
     match failure.class() {
         ErrorClass::Transient => StoreError::unavailable(failure),
+        // a server's `OR001`: a function of the schema found stored data that breaks its rule
+        ErrorClass::Corrupt if failure.code().is_some() => {
+            StoreError::corrupt_with("the stored data breaks a rule the database checks", failure)
+        }
         ErrorClass::Corrupt => StoreError::corrupt_with("a row does not decode", failure),
         _ => StoreError::internal(failure),
     }
@@ -340,6 +337,9 @@ pub(crate) fn migrate_err(err: MigrateError) -> StoreError {
         e @ (MigrateError::FileName(_)
         | MigrateError::TableName(_)
         | MigrateError::DuplicateVersion(_)) => StoreError::internal(e),
+        // the deployment points at a server below the floor (ADR 0107): two numbers, kept as the
+        // source so the binary exits 78
+        e @ MigrateError::ServerTooOld { .. } => StoreError::internal(e),
         // `MigrateError` is non_exhaustive: a variant added later is `Internal` until it is named
         // here, and is not kept as the source (it might hold a driver's error, and a DETAIL)
         _ => StoreError::internal("the migrations failed in a way this build does not know"),
@@ -369,27 +369,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sqlstates_are_classified_by_what_retrying_can_do() {
+    fn sqlstates_are_classified_by_the_shared_table() {
         for code in [
             "08006", "40001", "40P01", "53300", "57P01", "57P02", "57P03",
         ] {
-            assert!(transient_sqlstate(code), "{code}");
+            assert_eq!(sqlstate_class(code), ErrorClass::Transient, "{code}");
         }
         // What is wrong with the statement or the data is not cured by waiting.
         for code in [
-            "42601", "42P01", "23505", "23514", "22012", "55P03", "57014",
+            "42601", "42P01", "23505", "23514", "22012", "55P03", "57014", "OR002", "OR999",
         ] {
-            assert!(!transient_sqlstate(code), "{code}");
+            assert_eq!(sqlstate_class(code), ErrorClass::Internal, "{code}");
         }
+        assert_eq!(sqlstate_class("OR001"), ErrorClass::Corrupt);
+    }
+
+    /// ADR 0107 decision 5: a function's `OR001` is the port's `Corrupt`, its `OR002` `Internal`.
+    #[test]
+    fn the_orchestrator_s_own_codes_are_the_port_s_classes() {
+        use orch_core::Classify as _;
+        let corrupt = store_failure(DbFailure::sqlstate("OR001"));
+        assert_eq!(corrupt.class(), ErrorClass::Corrupt, "{corrupt:?}");
+        let bad = store_failure(DbFailure::sqlstate("OR002"));
+        assert_eq!(bad.class(), ErrorClass::Internal, "{bad:?}");
+    }
+
+    #[test]
+    fn a_server_below_the_floor_is_internal_and_keeps_its_numbers() {
+        use orch_core::Classify as _;
+        let e = migrate_err(MigrateError::ServerTooOld {
+            found: 170_006,
+            required: 180_000,
+        });
+        assert_eq!(e.class(), ErrorClass::Internal);
+        let source = std::error::Error::source(&e).expect("the migrator's error is the source");
+        assert!(matches!(
+            source.downcast_ref::<MigrateError>(),
+            Some(MigrateError::ServerTooOld { found: 170_006, .. })
+        ));
     }
 
     #[test]
     fn what_sqlx_tried_again_at_connection_is_tried_again() {
         for code in ["53300", "57P03"] {
-            assert!(retried_sqlstate(code), "{code}");
+            assert!(sqlstate::is_retried_at_connect(code), "{code}");
         }
         for code in ["28P01", "3D000", "08006", "57P01", "42501"] {
-            assert!(!retried_sqlstate(code), "{code}");
+            assert!(!sqlstate::is_retried_at_connect(code), "{code}");
         }
     }
 
