@@ -3252,7 +3252,9 @@ about 14 of 64 stills, by 15 to about 500 pixels, each by at most 32/255 (*measu
 token and the settling of `shot` already removed the other causes). A byte comparison fails on that noise and hides nothing a
 person can see; a changed layout, text or colour moves far more than 0.05 % of a still. The bound is the owner's to change, not
 an agent's. A host's own `pnpm screens` is for looking, not for committing: its fonts and browser build differ and move
-images nobody changed. **A re-baseline is a workflow, not a hand**: Actions → *Update screens* (`update-screens.yml`) draws the set
+images nobody changed. **A still that passes but spends more than half of the bound is named in the log** (`near the limit …,
+N % of the bound`, and a count under the summary; ANR-1351): a green run does not say the next one will be green, and this is
+what names the still one benign change away from red. It changes no exit code. **A re-baseline is a workflow, not a hand**: Actions → *Update screens* (`update-screens.yml`) draws the set
 in the same image and opens one pull request with it, so a still drawn outside the image cannot land; its `screens` job compares the
 new set with the image again (within the bound above).
 **The workflow commits only what the bound flags** (ANR-1128): after drawing, `scripts/screens-select.sh` (run by
