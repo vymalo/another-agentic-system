@@ -1038,10 +1038,16 @@ for (const scheme of ["light", "dark"] as const) {
     test("mentions: the warning when the agent does not use them", async ({ page }) => {
       await startThread(page, "echo review the plan", "Reviewer");
       await expect(badge(page)).toHaveText("Done", { timeout: 20_000 });
-      await page.getByLabel("Message", { exact: true }).focus();
+      const box = page.getByLabel("Message", { exact: true });
+      await box.focus();
       await page.keyboard.type("echo please @cod");
       await page.keyboard.press("Enter");
+      // a pick writes the label a render later and moves the caret a frame after that: a key typed before goes
+      // into the old text or before the caret (two draws once showed "look at it" and "ook at itl")
+      await expect(box).toHaveValue("echo please @adam ");
+      await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => done())));
       await page.keyboard.type("look at it");
+      await expect(box).toHaveValue("echo please @adam look at it");
       await expect(page.locator('[data-slot="mentions-warning"]')).toBeVisible();
       await shot(page, "mentions-warning");
     });

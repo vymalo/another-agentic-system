@@ -81,6 +81,10 @@ pub struct DispatcherConfig {
     pub max_poll_failures: u32,
     /// Attempts of a cancel row.
     pub max_cancel_attempts: u32,
+    /// Times a row is tried again while the person's own agent, ready on the platform, is not
+    /// listed in the registry yet (ANR-1061); then it is given up. With the backoff, 5 tries last
+    /// about 15 s.
+    pub own_agent_listing_attempts: u32,
     /// Delay before re-checking a cancel that raced a delegation.
     pub cancel_retry_delay: Duration,
     /// How often a verification or an ask in flight looks at its thread to see that it is still wanted
@@ -113,6 +117,7 @@ impl Default for DispatcherConfig {
             poll_max: Duration::from_secs(10),
             max_poll_failures: 10,
             max_cancel_attempts: 10,
+            own_agent_listing_attempts: 5,
             cancel_retry_delay: Duration::from_secs(1),
             verify_watch: Duration::from_secs(5),
             live_flush: Duration::from_millis(100),
@@ -183,6 +188,12 @@ struct Loaded {
     /// The last event the thread copied from its parent, when it is a fork (ADR 0029): the
     /// events `1..=cut` are the conversation its first task is told.
     forked_at: Option<i64>,
+    /// A stop for a thread routed to the person's own agent, which the registry does not list
+    /// (ANR-1061): `ctx.endpoint` is then a placeholder that nothing may call, and `cancel` decides
+    /// the stop locally. Never set for another row.
+    own_unlisted: bool,
+    /// The thread is routed to a person's own agent (ANR-1061).
+    routed: bool,
 }
 
 /// A delegation that opens a task of its own: what [`Dispatcher::consume`] needs to tell, from the
@@ -727,11 +738,11 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     // ---------------------------------------------------------------- delegate
 
     async fn load(&self, row: &OutboxItem) -> Result<Option<Loaded>, DispatchError> {
-        let Some(thread) = self.store().get_thread(None, row.thread_id).await? else {
+        let Some(mut thread) = self.store().get_thread(None, row.thread_id).await? else {
             self.finish(row, OutboxFinal::Skipped).await?;
             return Ok(None);
         };
-        let binding = self
+        let mut binding = self
             .store()
             .get_binding(row.thread_id)
             .await?
@@ -739,10 +750,115 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         // The registry is read now, for every row: an agent the platform removed is dead-lettered
         // when the registry answers without it (ADR 0022), and a registry that cannot answer
         // leaves the row to be tried again, never dead.
-        let entry = match self.app.resolve_agent(&binding.agent_id).await {
-            Ok(Some(entry)) => entry,
+        //
+        // Where the thread's messages go is the route recorded with it (ANR-1061, ADR 0103): the
+        // person's own agent, or the thread's agent when it has none. A row woken for a routed
+        // thread makes sure that agent is up first, except a stop and a follow, which never wake
+        // an agent.
+        let route = thread.job.route.clone();
+        // owned, so that the binding may be read again after a wake
+        let lookup_id = route.clone().unwrap_or_else(|| binding.agent_id.clone());
+        let lookup = &lookup_id;
+        let wakes = route.is_some()
+            && !thread.state.is_terminal()
+            && !matches!(
+                row.payload,
+                OutboxPayload::Cancel { .. } | OutboxPayload::Observe { .. }
+            );
+        // whether the platform answered that the person's agent is up (a `Some`): the reason of a
+        // row given up for want of a listing says so only then
+        let mut woke = false;
+        if wakes {
+            match self
+                .app
+                .ensure_own_agent(&thread.owner, &binding.agent_id)
+                .await
+            {
+                Ok(agent) => {
+                    woke = agent.is_some();
+                    // the wait may have lasted seconds: what is acted on is the thread as it is
+                    // now, not as it was before (a stop may have ended it meanwhile)
+                    thread = match self.store().get_thread(None, row.thread_id).await? {
+                        Some(now) => now,
+                        None => {
+                            self.finish(row, OutboxFinal::Skipped).await?;
+                            return Ok(None);
+                        }
+                    };
+                    binding = self
+                        .store()
+                        .get_binding(row.thread_id)
+                        .await?
+                        .ok_or_else(|| StoreError::corrupt("binding missing"))?;
+                }
+                Err(e) => {
+                    tracing::warn!(id = %row.id, agent = %lookup, attempt = row.attempts, error = %report(&e), "the person's own agent could not be made ready for the row");
+                    if row.attempts < self.cfg.max_attempts {
+                        self.retry(
+                            row,
+                            self.backoff(row.attempts),
+                            format!("your agent could not be made ready: {}", report(&e)),
+                        )
+                        .await?;
+                        return Ok(None);
+                    }
+                    self.apply_quiet(
+                        row,
+                        Input::DeliveryFailed {
+                            reason: "your agent could not be made ready".to_owned(),
+                            retryable: false,
+                        },
+                        format!("dead:{}", row.id),
+                    )
+                    .await?;
+                    self.finish(
+                        row,
+                        OutboxFinal::Dead {
+                            error: "own agent not ready".to_owned(),
+                        },
+                    )
+                    .await?;
+                    return Ok(None);
+                }
+            }
+        }
+        let mut own_unlisted = false;
+        let endpoint = match self.app.resolve_agent(lookup).await {
+            Ok(Some(entry)) => entry.endpoint,
+            // a stop for an agent the platform does not list: `cancel` decides it, never waking the
+            // agent (a task running at it cannot be reached; none running is nothing to stop)
+            Ok(None) if route.is_some() && matches!(row.payload, OutboxPayload::Cancel { .. }) => {
+                own_unlisted = true;
+                orch_ports::AgentEndpoint::a2a(lookup.clone(), String::new(), None)
+            }
+            // ready on the platform and not listed yet: the registry reads the platform live, so
+            // the row is tried again `own_agent_listing_attempts` times, and then given up with
+            // its own reason
+            Ok(None) if route.is_some() && row.attempts < self.cfg.own_agent_listing_attempts => {
+                tracing::debug!(id = %row.id, agent = %lookup, attempt = row.attempts, "the person's own agent is not listed yet; will retry");
+                self.retry(
+                    row,
+                    self.backoff(row.attempts),
+                    format!("agent '{lookup}' is not listed yet"),
+                )
+                .await?;
+                return Ok(None);
+            }
             Ok(None) => {
-                let reason = format!("agent '{}' is no longer listed", binding.agent_id);
+                if route.is_some() {
+                    tracing::warn!(id = %row.id, agent = %lookup, attempts = row.attempts, "the person's own agent was never listed; giving up");
+                }
+                let reason = if route.is_some() && woke {
+                    format!("your agent '{lookup}' is ready but is not listed yet")
+                } else if route.is_some() && wakes {
+                    format!("your agent '{lookup}' is not listed and provisioning is not on for it")
+                } else if route.is_some() {
+                    format!(
+                        "your agent '{lookup}' is not listed (following a task does not wake it)"
+                    )
+                } else {
+                    format!("agent '{lookup}' is no longer listed")
+                };
                 // A person's start or close of a session is no delegation: it ends with the
                 // word, and the job it was asked beside is not failed (ADR 0072)
                 match &row.payload {
@@ -776,7 +892,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 return Ok(None);
             }
             Err(AppError::RegistryUnavailable { source }) => {
-                tracing::warn!(id = %row.id, agent = %binding.agent_id, attempt = row.attempts, error = %report(&source), "the agent registry cannot say where the agent is; will retry");
+                tracing::warn!(id = %row.id, agent = %lookup, attempt = row.attempts, error = %report(&source), "the agent registry cannot say where the agent is; will retry");
                 self.retry(
                     row,
                     self.backoff(row.attempts),
@@ -794,7 +910,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             job: thread.job.number,
             agent: binding.agent_id.clone(),
             person: thread.owner.clone(),
-            endpoint: entry.endpoint.clone(),
+            endpoint,
             revision: binding.revision.clone(),
             files: files::Budget::default(),
             // the row is the message whose pick names the run's model alias, and only a delegation
@@ -817,6 +933,8 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             binding,
             is_child: thread.child_of.is_some(),
             forked_at: thread.forked_from.map(|origin| origin.seq),
+            own_unlisted,
+            routed: route.is_some(),
         }))
     }
 
@@ -926,6 +1044,8 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             binding,
             is_child,
             forked_at,
+            own_unlisted: _,
+            routed: _,
         }) = self.load(&row).await?
         else {
             return Ok(());
@@ -1425,6 +1545,8 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             binding,
             is_child: _,
             forked_at: _,
+            own_unlisted: _,
+            routed: _,
         }) = self.load(&row).await?
         else {
             return Ok(());
@@ -1990,6 +2112,26 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
 
     // ------------------------------------------------------------------ cancel
 
+    /// How many attempts a stop makes while a delegation is in flight: `max_cancel_attempts`, and
+    /// for a routed thread that many more than the retries that fit in the wake bound.
+    fn in_flight_cancel_budget(&self, routed: bool) -> u32 {
+        self.cfg
+            .max_cancel_attempts
+            .saturating_add(self.wake_headroom(routed))
+    }
+
+    /// The attempts a stop may spend waiting for a routed delegation to wake its agent: the
+    /// retries that fit in the wake bound; none for a thread that is not routed. Only the wait
+    /// for the delegation uses it: the stop's one attempt counter is shared by the later phases
+    /// (the listing, the `CancelTask`), which keep their plain caps (a known gap, ADR 0103).
+    fn wake_headroom(&self, routed: bool) -> u32 {
+        let Some(bound) = routed.then(|| self.app.own_agent_wake_bound()).flatten() else {
+            return 0;
+        };
+        let delay = self.cfg.cancel_retry_delay.as_millis().max(1);
+        u32::try_from(bound.as_millis().div_ceil(delay)).unwrap_or(u32::MAX)
+    }
+
     async fn cancel(&self, row: OutboxItem) -> Done {
         let Some(Loaded {
             ctx,
@@ -1999,6 +2141,8 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             binding,
             is_child: _,
             forked_at: _,
+            own_unlisted,
+            routed,
         }) = self.load(&row).await?
         else {
             return Ok(());
@@ -2021,6 +2165,28 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         let running = binding
             .task_id
             .filter(|_| !binding.task_state.is_some_and(AgentTaskState::is_terminal));
+        // a task running at an own agent the registry does not list cannot be reached, and the
+        // agent is not woken for it: the stop waits for the listing as a row of the thread does,
+        // then ends the thread locally (the task at the agent is not stopped)
+        if running.is_some() && own_unlisted {
+            if row.attempts < self.cfg.own_agent_listing_attempts {
+                return self
+                    .retry(
+                        &row,
+                        self.backoff(row.attempts),
+                        format!("agent '{}' is not listed yet", ctx.endpoint.id),
+                    )
+                    .await;
+            }
+            tracing::warn!(id = %row.id, agent = %ctx.endpoint.id, "the task at the person's own agent could not be stopped: the agent is not listed; the thread is cancelled without it");
+            self.apply_quiet(
+                &row,
+                Input::CancelledBeforeStart,
+                format!("cancelstart:{}", row.id),
+            )
+            .await?;
+            return self.finish(&row, OutboxFinal::Delivered).await;
+        }
         if let Some(task_id) = running {
             let handle = TaskHandle {
                 endpoint: ctx.endpoint.clone(),
@@ -2080,7 +2246,9 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             return self.finish(&row, OutboxFinal::Delivered).await;
         }
         // A delegation is being sent right now; once it has a task id the next attempt cancels it.
-        if row.attempts < self.cfg.max_cancel_attempts {
+        // For a routed thread that can take as long as the person's agent needs to wake, so the
+        // budget covers the wake bound too: a stop is not lost while the agent is coming up.
+        if row.attempts < self.in_flight_cancel_budget(routed) {
             return self
                 .retry(
                     &row,
