@@ -3068,8 +3068,17 @@ async fn a_chosen_port_that_is_taken_is_chosen_again() {
         )
     })
     .await;
-    assert_eq!(starts.get(), 2, "the taken port was given up, once");
-    assert_ne!(addr, taken_addr);
+    // At least once: the port the helper chooses next is "free a moment ago" too, and another test or
+    // process may take it before the binary binds it, which gives up a second time (a third start).
+    assert!(
+        starts.get() >= 2,
+        "the taken port was given up and another chosen: {} start(s)",
+        starts.get()
+    );
+    assert_ne!(
+        addr, taken_addr,
+        "the process that serves is not the one given the taken port"
+    );
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     eventually("the binary answers /healthz", || async {
         (http_status(&client, &format!("http://{addr}/healthz")).await == Some(200)).then_some(())

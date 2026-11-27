@@ -1873,12 +1873,22 @@ async fn routed_rows_waiting_for_a_slow_agent_leave_the_slots_to_the_next_row() 
 
 #[tokio::test]
 async fn routed_rows_at_twice_the_slots_waiting_for_a_slow_agent_leave_slots_to_another_person() {
-    // twice as many as slots. The unrelated thread is ANOTHER person's on purpose: the claim order
-    // is fair between people but by row position within one person, so alice's own newer
-    // unrelated row could be kept from a slot by her older routed rows, which are due again as soon
-    // as a slot frees. That is a known limit (ADR 0103, amended 2026-11-27), not what this test
-    // proves: it proves that no routed row holds a slot for the wake.
+    // twice as many as slots, the unrelated thread another person's: no routed row holds a slot for
+    // the wake. The same person's own unrelated thread is the next test (ANR-1175).
     routed_rows_that_wait_for_a_slow_agent_leave_the_slots_to_the_rest(4, bob()).await;
+}
+
+/// ANR-1175, a smoke test: the same person's own unrelated thread is served too. Six routed rows of
+/// alice wait for her agent (three times the two slots) and her thread to `plain` is newer than
+/// all of them. The claim ranks a person's rows by `next_attempt_at` and then by age, so a row that
+/// only waited (put back due later) does not outrank the newer thread. How long the old order
+/// would keep the thread from a slot depends on timing, so this does not claim to fail without the
+/// change: `a_fair_claim_does_not_rank_a_row_that_only_waited_before_newer_work` in the store
+/// testkit is the deterministic proof of the order.
+#[tokio::test]
+async fn routed_rows_at_three_times_the_slots_waiting_for_a_slow_agent_leave_slots_to_the_same_persons_own_thread()
+ {
+    routed_rows_that_wait_for_a_slow_agent_leave_the_slots_to_the_rest(6, alice()).await;
 }
 
 /// A provisioner whose agent is ready only when **one call runs to its end**: the call sleeps
@@ -2423,7 +2433,7 @@ async fn the_row_gives_up_when_the_wake_bound_is_spent(dispatching: Provisioning
         )),
     );
     let dispatching = app_over(&w, &registry, Some(dispatching));
-    let waits = u32::try_from((BOUND + OUTER_SLACK).as_millis().div_ceil(300)).unwrap();
+    let waits = spent_wake_waits();
     assert_eq!(waits, 134);
     let id = new_coder_thread(&requests, "echo never woke").await;
     let mut row_id = None;
@@ -2504,6 +2514,320 @@ async fn a_platform_that_answers_not_ready_at_once_gives_up_at_the_same_bound() 
     the_row_gives_up_when_the_wake_bound_is_spent(
         Provisioning::new(NeverReady, [AgentKind::Coder], BOUND),
         0,
+    )
+    .await;
+}
+
+// --- a person's start or close of a helper session whose agent cannot be woken (ANR-1176) ------
+
+/// Which row of a helper session (ADR 0072) the test waits on.
+#[derive(Clone, Copy)]
+enum SessionRow {
+    Start,
+    Close,
+}
+
+fn helper_offer() -> ChildSessionsOffer {
+    ChildSessionsOffer::from_params(&json!({
+        "agents": [{"name": "planner", "description": "Plans"}],
+        "maxOpen": 16
+    }))
+    .unwrap()
+}
+
+/// A routed thread that is **working** (a row for a terminal thread never wakes the agent) with a
+/// person's start or close of a helper session waiting beside the job: the start is the parent's
+/// (`gate one`, its task held open); the close is the helper's (`gate more`, its next round held
+/// open). The dispatcher that ran the job is stopped, so the row is untouched. Returns the thread
+/// the row is on and the row.
+async fn session_row_beside_a_working_job(
+    w: &World,
+    registry: &MemoryRegistry,
+    which: SessionRow,
+) -> (ThreadId, orch_ports::OutboxId) {
+    let requests = app_over(
+        w,
+        registry,
+        Some(Provisioning::new(
+            listing(registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let (task, token) = spawn_over(&requests);
+    let thread = match which {
+        SessionRow::Start => {
+            let id = new_coder_thread(&requests, "gate one").await;
+            wait_in(w, id, ThreadState::Working).await;
+            eventually("the context the start is made in", || async {
+                w.store
+                    .get_binding(id)
+                    .await
+                    .unwrap()
+                    .and_then(|b| b.context_id)
+            })
+            .await;
+            id
+        }
+        SessionRow::Close => {
+            let id = new_coder_thread(&requests, "sessions planner keep").await;
+            wait_in(w, id, ThreadState::Done).await;
+            let kid = eventually("the child thread", || async {
+                w.store
+                    .child_threads(&alice(), id)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .next()
+            })
+            .await;
+            wait_in(w, kid.id, ThreadState::Done).await;
+            requests
+                .post_message(&alice(), kid.id, "gate more".to_owned())
+                .await
+                .unwrap();
+            wait_in(w, kid.id, ThreadState::Working).await;
+            kid.id
+        }
+    };
+    token.cancel();
+    let _ = task.await;
+    // the live card of the thread's agent says it offers helpers, as a start and a close read it
+    w.agent.set_child_sessions("coder", Some(helper_offer()));
+    match which {
+        SessionRow::Start => requests
+            .start_child_session(
+                &alice(),
+                thread,
+                StartChildSession {
+                    request: "req-1".to_owned(),
+                    agent: "planner".to_owned(),
+                    description: Some("Find the writers".to_owned()),
+                    text: "echo x".to_owned(),
+                    keep_open: false,
+                    tier: None,
+                },
+            )
+            .await
+            .unwrap(),
+        SessionRow::Close => {
+            requests
+                .close_child_session(&alice(), thread, false)
+                .await
+                .unwrap();
+        }
+    }
+    let row = w
+        .store
+        .list_open_outbox(thread)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| match which {
+            SessionRow::Start => {
+                matches!(r.payload, orch_ports::OutboxPayload::SessionStart { .. })
+            }
+            SessionRow::Close => {
+                matches!(r.payload, orch_ports::OutboxPayload::SessionClose { .. })
+            }
+        })
+        .expect("the session's row");
+    assert_eq!(row.kind, orch_ports::OutboxKind::Steer);
+    if matches!(which, SessionRow::Close) {
+        let record = w.store.get_thread(None, thread).await.unwrap().unwrap();
+        assert!(
+            record.job.child.as_ref().unwrap().close_asked,
+            "the close is asked before the wake gives up"
+        );
+    }
+    (thread, row.id)
+}
+
+/// Claims every due row for `"seed"` (so that no other row is left for the dispatcher: the job's
+/// own row, released when the stopped dispatcher shut down, is due at once, and giving *it* up
+/// would fail the thread for another reason) and makes `target` wait `passes` times, as
+/// `the_row_gives_up_when_the_wake_bound_is_spent` does.
+async fn seed_only(w: &World, target: orch_ports::OutboxId, passes: u32) {
+    for _ in 0..passes {
+        let claimed = w
+            .store
+            .claim_outbox(
+                "seed",
+                SystemClock.now(),
+                Duration::from_secs(60),
+                50,
+                orch_ports::ClaimOrder::Fifo,
+            )
+            .await
+            .unwrap();
+        let row = claimed
+            .into_iter()
+            .find(|r| r.id == target)
+            .expect("the session's row is due");
+        assert!(
+            w.store
+                .wait_outbox(&row.lease().unwrap(), SystemClock.now(), "seed".to_owned())
+                .await
+                .unwrap()
+        );
+    }
+}
+
+/// A wake that gives up ends the session row of a person with its own refusal and leaves the job
+/// that works beside it alone (ADR 0072, as the row of an agent that is not listed does): the
+/// start ends `failed` with the reason and the pending start is gone; the close is an `error` of
+/// the helper with the reason. Both rows are dead with `operator`, and nothing is sent.
+///
+/// On 4a34be2e the give-ups sent `DeliveryFailed` for every row: no `child_session_start_ended`
+/// (the start stays pending, so the assertion on it fails). For the close, `DeliveryFailed` writes
+/// the same `error` event and operator text, so what fails there is that the helper's ask is not
+/// cleared (`close_asked` stays set; only `SessionCloseFailed` clears it) and, where the input is
+/// applied, that the thread is no longer `Working`.
+async fn a_wake_that_gives_up_refuses_the_session_row_and_not_the_job(
+    which: SessionRow,
+    dispatching: Provisioning,
+    passes: u32,
+    operator: &str,
+    reason: &str,
+) {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let (thread, row_id) = session_row_beside_a_working_job(&w, &registry, which).await;
+    let dispatching = app_over(&w, &registry, Some(dispatching));
+    seed_only(&w, row_id, passes).await;
+    let sent = w.agent.sends().len();
+    let token = tokio_util::sync::CancellationToken::new();
+    let task = tokio::spawn(
+        Dispatcher::new(
+            Arc::clone(&dispatching),
+            orch_app::DispatcherConfig {
+                own_agent_probe: Duration::from_millis(200),
+                own_agent_wait_delay: Duration::from_millis(100),
+                ..fast()
+            },
+            "d1",
+        )
+        .run(token.clone()),
+    );
+    let row = eventually("the row gives up", || async {
+        let row = w.store.get_outbox(row_id).await.unwrap().unwrap();
+        (row.status == orch_ports::OutboxStatus::Dead).then_some(row)
+    })
+    .await;
+    assert_eq!(row.last_error.as_deref(), Some(operator), "{row:?}");
+    let events = w.store.list_events(thread, 0, 500).await.unwrap();
+    match which {
+        SessionRow::Start => {
+            let ended: Vec<_> = events
+                .iter()
+                .filter_map(|e| match &e.body {
+                    orch_core::EventBody::ChildSessionStartEnded(d) => Some(d.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(ended.len(), 1, "{:?}", shape(&events));
+            assert_eq!(ended[0].outcome, orch_core::StartOutcomeKind::Failed);
+            assert_eq!(ended[0].reason.as_deref(), Some(reason));
+            let record = w.store.get_thread(None, thread).await.unwrap().unwrap();
+            assert!(
+                record.job.session_starts.is_empty(),
+                "the pending start is gone: {:?}",
+                record.job.session_starts
+            );
+        }
+        SessionRow::Close => {
+            let errors: Vec<_> = events
+                .iter()
+                .filter_map(|e| match &e.body {
+                    orch_core::EventBody::Error(d) => Some(d.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(errors.len(), 1, "{:?}", shape(&events));
+            assert_eq!(errors[0].message, reason);
+            assert!(!errors[0].retryable);
+            // only `SessionCloseFailed` clears the ask (`DeliveryFailed` writes the same error)
+            let record = w.store.get_thread(None, thread).await.unwrap().unwrap();
+            assert!(
+                !record.job.child.as_ref().unwrap().close_asked,
+                "the close's ask is cleared"
+            );
+        }
+    }
+    assert_eq!(
+        state_of(&w, thread).await,
+        ThreadState::Working,
+        "the job beside the row is not failed: {:?}",
+        shape(&events)
+    );
+    assert_eq!(w.agent.sends().len(), sent, "nothing was sent to an agent");
+    token.cancel();
+    let _ = task.await;
+}
+
+fn spent_wake_waits() -> u32 {
+    u32::try_from((BOUND + OUTER_SLACK).as_millis().div_ceil(300)).unwrap()
+}
+
+#[tokio::test]
+async fn a_start_whose_agent_never_wakes_is_refused_and_the_job_is_not_failed() {
+    let (_open_tx, provisioning) = never_opening();
+    a_wake_that_gives_up_refuses_the_session_row_and_not_the_job(
+        SessionRow::Start,
+        provisioning,
+        spent_wake_waits(),
+        "own agent not ready",
+        "your agent could not be made ready",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_close_whose_agent_never_wakes_is_refused_and_the_job_is_not_failed() {
+    let (_open_tx, provisioning) = never_opening();
+    a_wake_that_gives_up_refuses_the_session_row_and_not_the_job(
+        SessionRow::Close,
+        provisioning,
+        spent_wake_waits(),
+        "own agent not ready",
+        "your agent could not be made ready",
+    )
+    .await;
+}
+
+fn blocked() -> Provisioning {
+    Provisioning::new(
+        Failing {
+            make: || ProvisionError::Blocked {
+                reason: orch_ports::BlockedReason::NameConflict,
+            },
+            calls: Arc::new(AtomicUsize::new(0)),
+        },
+        [AgentKind::Coder],
+        BOUND,
+    )
+}
+
+#[tokio::test]
+async fn a_start_whose_agent_is_blocked_is_refused_and_the_job_is_not_failed() {
+    a_wake_that_gives_up_refuses_the_session_row_and_not_the_job(
+        SessionRow::Start,
+        blocked(),
+        1,
+        "agent blocked: NameConflict",
+        "your agent is blocked: NameConflict",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_close_whose_agent_is_blocked_is_refused_and_the_job_is_not_failed() {
+    a_wake_that_gives_up_refuses_the_session_row_and_not_the_job(
+        SessionRow::Close,
+        blocked(),
+        1,
+        "agent blocked: NameConflict",
+        "your agent is blocked: NameConflict",
     )
     .await;
 }

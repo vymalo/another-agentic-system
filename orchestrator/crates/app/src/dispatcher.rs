@@ -701,11 +701,10 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// Ends a row whose person's own agent could not be made ready: the thread is told, and the
     /// row is dead.
     async fn give_up_not_ready(&self, row: &OutboxItem) -> Done {
-        self.give_up(
+        self.give_up_wake(
             row,
             "your agent could not be made ready".to_owned(),
             "own agent not ready".to_owned(),
-            false,
         )
         .await
     }
@@ -713,13 +712,38 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// Ends a row whose person's own agent is blocked for a reason waiting cannot clear
     /// (`ProvisionError::Blocked`, ANR-1062): at once, with no retry and no wait.
     async fn give_up_blocked(&self, row: &OutboxItem, reason: &str) -> Done {
-        self.give_up(
+        self.give_up_wake(
             row,
             format!("your agent is blocked: {reason}"),
             format!("agent blocked: {reason}"),
-            false,
         )
         .await
+    }
+
+    /// Where both give-ups of the wake end a row (ANR-1176), as the row that finds its agent not
+    /// listed does: a person's start or close of a helper session is no delegation, so it ends with
+    /// its own refusal (the start `failed`, the close an `error` of the helper) and the job it was
+    /// asked beside is not failed (ADR 0072). Only the rows that carry a delegation or a steer
+    /// reach the wake otherwise (a stop and a follow never wake), and they fail the job.
+    async fn give_up_wake(&self, row: &OutboxItem, reason: String, operator: String) -> Done {
+        match &row.payload {
+            OutboxPayload::SessionStart { request, .. } => {
+                self.end_start_failed(row, request, reason, operator).await
+            }
+            OutboxPayload::SessionClose { .. } => self.close_failed(row, reason, operator).await,
+            // the rows that carry a delegation or a steer fail the job
+            OutboxPayload::Delegate { .. }
+            | OutboxPayload::Action { .. }
+            | OutboxPayload::Steer { .. } => self.give_up(row, reason, operator, false).await,
+            // never here: a stop and a follow are excluded by `wakes`, and the others never call
+            // `load`. Listed so that a new variant does not compile until someone decides.
+            OutboxPayload::Cancel { .. }
+            | OutboxPayload::Observe { .. }
+            | OutboxPayload::Verify { .. }
+            | OutboxPayload::Title { .. }
+            | OutboxPayload::Description { .. }
+            | OutboxPayload::Ask { .. } => self.give_up(row, reason, operator, false).await,
+        }
     }
 
     // --------------------------------------------------------- the run's binding

@@ -72,6 +72,7 @@ fn migrator() -> Result<Migrator, StoreError> {
         "0033_user_tool_server_last4.sql",
         "0034_outbox_refunded.sql",
         "0035_run_leases_tombstone.sql",
+        "0036_outbox_open_owner_due.sql",
     )
     .map_err(migrate_err)?;
     Migrator::new(MIGRATIONS_TABLE, migrations).map_err(migrate_err)
@@ -1217,8 +1218,11 @@ const CLAIM_FIFO: &str = concat!(
 ///  * `running`: the rows each person has `inflight` under a lease that has not expired, of every
 ///    replica and every kind (`outbox_inflight_owner`);
 ///  * `ranked`: per person, their first `4 * limit` candidates (due, under the per-thread rule),
-///    oldest first, with `load = running + rank`, `rank` the position among the person's
-///    candidates; and the first `limit` cancel rows, with load 0, which take no place in anybody's
+///    by `next_attempt_at` and then `ord` (ANR-1175: `wait_outbox` and `retry_outbox` move
+///    `next_attempt_at` forward, so a row that only waited ranks behind newer work, while a claim
+///    never changes it, so a row recovered after a crash keeps its place; the order is that of
+///    the index `outbox_open_owner_due`, so the scan of a person stops after `4 * limit` rows),
+///    `load = running + rank`, `rank` the position among the person's candidates; and the first `limit` cancel rows, with load 0, which take no place in anybody's
 ///    rank. A row whose rank passes `limit` cannot be among the `limit` first, so the rest of a
 ///    queue is never ranked;
 ///  * `picked`: the `4 * limit` rows with the lowest `(load, ord)`. The factor leaves room for the
@@ -1237,15 +1241,15 @@ const CLAIM_FAIR: &str = concat!(
        SELECT x.id, x.ord, coalesce(r.n, 0) + x.rank AS load \
        FROM owners w \
        CROSS JOIN LATERAL ( \
-         SELECT s.id, s.ord, row_number() OVER (ORDER BY s.ord) AS rank FROM ( \
-           SELECT o.id, o.ord FROM outbox o \
+         SELECT s.id, s.ord, row_number() OVER (ORDER BY s.due_at, s.ord) AS rank FROM ( \
+           SELECT o.id, o.ord, o.next_attempt_at AS due_at FROM outbox o \
            WHERE o.owner = w.owner AND o.status IN ('pending', 'inflight') \
              AND o.kind <> 'cancel' AND ",
     outbox_due!(),
     " AND ",
     outbox_thread_rule!(),
     " \
-           ORDER BY o.ord LIMIT $4 * 4) s) x \
+           ORDER BY o.next_attempt_at, o.ord LIMIT $4 * 4) s) x \
        LEFT JOIN running r ON r.owner = w.owner \
        UNION ALL \
        (SELECT o.id, o.ord, 0 FROM outbox o \
@@ -2873,6 +2877,6 @@ mod tests {
             .unwrap();
         let first = &migrator.migrations()[0];
         assert_eq!((first.version(), first.description()), (1, "init"));
-        assert_eq!(migrator.migrations().len(), 35);
+        assert_eq!(migrator.migrations().len(), 36);
     }
 }

@@ -1170,8 +1170,13 @@ fn choose(inner: &Inner, now: Timestamp, limit: usize, order: ClaimOrder) -> Vec
                     *running.entry(owner_of(i)).or_default() += 1;
                 }
             }
+            // a person's candidates are ranked by `next_attempt_at`, then by position (ANR-1175):
+            // a wait or a retry moves it forward, a claim never does
+            let mut ordered: Vec<usize> = candidates.collect();
+            ordered.sort_by_key(|&i| (inner.outbox[i].next_attempt_at, i));
             let mut rank: HashMap<Option<&UserId>, u64> = HashMap::new();
-            let mut keyed: Vec<(u64, usize)> = candidates
+            let mut keyed: Vec<(u64, usize)> = ordered
+                .into_iter()
                 .map(|i| {
                     if inner.outbox[i].kind == OutboxKind::Cancel {
                         return (0, i);

@@ -226,7 +226,9 @@ process's temporary directory, so the suite needs **no docker, no Postgres and n
 `ORCH_TEST_DATABASE_URL`**. The crate's own tests cover what the testkit cannot: a second process
 refused (including through a symlink, and the lock released when the store is dropped), WAL on,
 the migrations recorded once, an edited migration refused, the bundled version, the time
-round-trip, and the shapes of the search predicates and of a page's parameters.
+round-trip, and the shapes of the search predicates and of a page's parameters. `tests/schema_objects.rs` is
+ADR 0107's fresh-database test: a migrated file has exactly the triggers and views its `OBJECTS` lists (none before
+slice S1), and a stray trigger and view are found, so the listing is not blind.
 
 ## Environment variables
 

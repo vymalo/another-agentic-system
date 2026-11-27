@@ -14,7 +14,7 @@ sidebarTitle: "0066 · A fair share of the dispatcher"
   [ADR 0036](0036-sending-while-an-agent-works.md) (the lanes of the per-thread order) and
   [ADR 0039](0039-nobody-reads-another-persons-thread.md) (a row's person is its thread's owner). Weighted shares by plan are left to
   issues [282](https://github.com/vymalo/another-agentic-system/issues/282) and
-  [287](https://github.com/vymalo/another-agentic-system/issues/287).
+  [287](https://github.com/vymalo/another-agentic-system/issues/287). **Amended (2026-11-27): ANR-1175, within one person the rank is by `next_attempt_at`, then by age (the note under Decision).**
 
 ## Context
 
@@ -105,6 +105,21 @@ stateDiagram-v2
   Inflight --> Delivered: the turn ended
   Delivered --> [*]
 ```
+
+**Amended 2026-11-27 (ANR-1175): the order within a person.** The text above ranks a person's candidates by age (`ord`). Since ANR-1078
+PR 2 a routed row waiting for its person's agent to wake is put back `pending` between short probes (`wait_outbox`, the claim refunded),
+so by age alone it outranked its own person's newer, unrelated rows each time it was due again ([ADR 0103](0103-a-persons-own-agent-is-made-and-kept-ready-before-their-message-is-accepted.md),
+"Known limit"). The `rank` is now the position among the person's candidates ordered by **`next_attempt_at`**, then `ord`. `wait_outbox`
+and `retry_outbox` move `next_attempt_at` forward, so a row that waited or was retried ranks behind newer work that is due; a claim never
+changes it, so a row whose lease lapsed (a crash) keeps its place. The `load = running + rank`, the per-person fairness, the tie across people
+(`ord`) and the cancel rows are unchanged. For a row that never waited or failed, `next_attempt_at` is its creation time, so the order is the age as
+before. A waiting row is not starved: a row due earlier is never behind one that becomes due after it, and time only goes forward. Postgres
+gets migration `0036`, the partial index `outbox_open_owner_due (owner, next_attempt_at, ord) WHERE status IN ('pending', 'inflight')`, which has
+the columns of the new order, so the scan of a person's rows stops after `4 * limit` as it did on `outbox_open_owner (owner, ord)`; SQLite ranks every
+candidate in its `cand` CTE already (no early stop to keep), so it gets no index. *Unverified:* the measurement below was **not re-run** (no heavy job on
+the host that made this change); the index is the reason it should hold, and the 20 ms figure for `Fair` is to be re-measured on the next run of the
+measurement. The testkit cases are `a_fair_claim_does_not_rank_a_row_that_only_waited_before_newer_work` and
+`a_fair_claim_keeps_the_place_of_a_row_whose_lease_lapsed`.
 
 ## The measurement
 
