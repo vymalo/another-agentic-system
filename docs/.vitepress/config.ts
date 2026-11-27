@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { slug as githubSlug } from "github-slugger";
@@ -6,12 +6,16 @@ import { defineMd3Config } from "@vaam-apps/vitepress-md3/config";
 import { useSidebar } from "vitepress-openapi";
 import llmstxt from "vitepress-plugin-llms";
 import { groupIconMdPlugin, groupIconVitePlugin } from "vitepress-plugin-group-icons";
-import { DEFAULT_BASE } from "./openapi/shared";
+import { DEFAULT_BASE, rewriteDocLinks } from "./openapi/shared";
 import { loadSpec } from "./openapi/spec";
 import { llmsSidebar } from "./llms";
 import { inDepth } from "./theme/in-depth";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+// Files the build writes into the site beside the pages (buildEnd below), so docs/public/ has no copy of them: a relative link
+// to one is served, not the file on GitHub. The path is relative to docs/.
+const GENERATED_SERVED = new Set(["api/chat-api.yaml"]);
 
 // The label of a page in the sidebar: `sidebarTitle` of its front matter if it has one, else its first heading,
 // else the fallback. VitePress 1.6.4 has no key for it (verified 2026-11-27 in vitepress/dist/client/theme-default/
@@ -162,7 +166,7 @@ export function repoLinks(md: any) {
           const ext = posix.extname(resolved);
           const isFile = ext !== "" && !path.endsWith("/");
           const inExamples = /(^|\/)examples(\/|$)/.test(resolved);
-          const served = !outside && existsSync(join(root, "public", resolved));
+          const served = !outside && (GENERATED_SERVED.has(resolved) || existsSync(join(root, "public", resolved)));
           if (outside || inExamples || (isFile && ext !== ".md" && !served)) {
             const repoPath = (outside ? posix.normalize(resolved.replace(/^\.\.\//, "")) : `docs/${resolved}`).replace(/\/$/, "");
             if (repoPath === ".." || repoPath.startsWith("../")) throw new Error(`repoLinks: ${href} in ${rel} leaves the repository`);
@@ -190,6 +194,14 @@ export default defineMd3Config({
   base: process.env.DOCS_BASE ?? DEFAULT_BASE,
   cleanUrls: true,
   rewrites: { "api/README.md": "api/index.md" },
+  // The chat API's machine-readable form, llms.txt links it: api/chat-api.yaml with its relative links rewritten as the pages
+  // of the API are (rewriteDocLinks), written into the built site. Nothing is committed under docs/public/, so it cannot go stale;
+  // check-api-pages.mjs compares the built file with the source.
+  buildEnd(siteConfig) {
+    const out = join(siteConfig.outDir, "api", "chat-api.yaml");
+    mkdirSync(dirname(out), { recursive: true });
+    writeFileSync(out, rewriteDocLinks(readFileSync(join(root, "api", "chat-api.yaml"), "utf8"), siteConfig.site.base));
+  },
   // Each operation and tag page has its own title, from the route's pageTitle.
   transformPageData(pageData) {
     const title = pageData.params?.pageTitle;
