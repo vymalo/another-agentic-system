@@ -65,6 +65,7 @@ macro_rules! thread_store_conformance {
             a_fair_claim_takes_the_older_rows_among_equal_loads
             a_fair_claim_ranks_a_persons_rows_by_age_and_not_by_id
             a_fair_claim_does_not_rank_a_row_that_only_waited_before_newer_work
+            a_fair_claim_keeps_the_place_of_a_row_whose_lease_lapsed
             a_fifo_claim_takes_the_oldest_rows_whoever_they_are_for
             retry_not_claimable_before_due complete_outcomes mark_sent_is_atomic
             the_binding_adopts_the_agents_context_once

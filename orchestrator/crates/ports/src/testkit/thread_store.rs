@@ -1404,10 +1404,9 @@ pub async fn a_fair_claim_ranks_a_persons_rows_by_age_and_not_by_id<S: ThreadSto
     );
 }
 
-/// A person's rows are ranked by when they became due, then by age (ANR-1175): a row that only
-/// waited (`wait_outbox`, the claim refunded) is due later than a newer row that never did, so it
-/// does not outrank it; and it is still taken, in the order it became due, when the newer work is
-/// gone. Alice's rows 1 to 3 are claimed and wait, 1 and 2 until 5 s and 3 until 8 s; her row 4 is
+/// A person's rows are ranked by `next_attempt_at`, then by age (ANR-1175): a row that only waited
+/// (`wait_outbox` moves it forward, the claim refunded) ranks behind a newer row that never did;
+/// and it is still taken, in the order of its `next_attempt_at`, when the newer work is gone. Alice's rows 1 to 3 are claimed and wait, 1 and 2 until 5 s and 3 until 8 s; her row 4 is
 /// new and due at once.
 pub async fn a_fair_claim_does_not_rank_a_row_that_only_waited_before_newer_work<S: ThreadStore>(
     store: S,
@@ -1430,7 +1429,7 @@ pub async fn a_fair_claim_does_not_rank_a_row_that_only_waited_before_newer_work
     }
     seed(&store, &alice(), 4).await;
     // all four are due at 10 s: the new row first although its position is last, then the rows
-    // that waited in the order they became due (1 and 2 at 5 s by age, 3 at 8 s)
+    // that waited by `next_attempt_at` (1 and 2 at 5 s by age, 3 at 8 s)
     for expected in [4, 1, 2, 3] {
         assert_eq!(
             claim_ids(&store, "a", at(10), 1, Fair).await,
@@ -1438,6 +1437,35 @@ pub async fn a_fair_claim_does_not_rank_a_row_that_only_waited_before_newer_work
         );
     }
     assert!(claim_ids(&store, "a", at(10), 1, Fair).await.is_empty());
+}
+
+/// A row whose lease lapsed (its worker crashed) keeps its place (ANR-1175): a claim never changes
+/// `next_attempt_at`, so it ranks by the time it was first due and not by the end of its lease. Row
+/// 1 is claimed at 0 s and its lease ends at 30 s; row 2, claimed too, waits until 5 s. At 40 s both
+/// are due, and the crashed row, which was due first, goes first. A rank by the end of the lease
+/// (30 s against 5 s) would take row 2.
+pub async fn a_fair_claim_keeps_the_place_of_a_row_whose_lease_lapsed<S: ThreadStore>(store: S) {
+    use crate::ClaimOrder::Fair;
+    seed(&store, &alice(), 1).await;
+    seed(&store, &alice(), 2).await;
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 2, Fair).await,
+        outbox_ids(&[1, 2])
+    );
+    assert!(
+        store
+            .wait_outbox(&lease(2, "a", 1), at(5), "waiting".into())
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        claim_ids(&store, "b", at(40), 1, Fair).await,
+        outbox_ids(&[1])
+    );
+    assert_eq!(
+        claim_ids(&store, "b", at(40), 1, Fair).await,
+        outbox_ids(&[2])
+    );
 }
 
 /// Which rows may be claimed at all is the per-thread rule under the fair order too: a delegate

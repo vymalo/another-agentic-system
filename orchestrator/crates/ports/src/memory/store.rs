@@ -1170,17 +1170,10 @@ fn choose(inner: &Inner, now: Timestamp, limit: usize, order: ClaimOrder) -> Vec
                     *running.entry(owner_of(i)).or_default() += 1;
                 }
             }
-            // a person's candidates are ranked by when they became due, then by position
-            // (ANR-1175): a row that only waited is due later than a newer row that never did
-            let due_at = |i: usize| {
-                let row = &inner.outbox[i];
-                match row.status {
-                    OutboxStatus::Pending => row.next_attempt_at,
-                    _ => row.lease_until.unwrap_or(row.next_attempt_at),
-                }
-            };
+            // a person's candidates are ranked by `next_attempt_at`, then by position (ANR-1175):
+            // a wait or a retry moves it forward, a claim never does
             let mut ordered: Vec<usize> = candidates.collect();
-            ordered.sort_by_key(|&i| (due_at(i), i));
+            ordered.sort_by_key(|&i| (inner.outbox[i].next_attempt_at, i));
             let mut rank: HashMap<Option<&UserId>, u64> = HashMap::new();
             let mut keyed: Vec<(u64, usize)> = ordered
                 .into_iter()

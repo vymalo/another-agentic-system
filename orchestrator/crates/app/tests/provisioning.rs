@@ -1878,14 +1878,13 @@ async fn routed_rows_at_twice_the_slots_waiting_for_a_slow_agent_leave_slots_to_
     routed_rows_that_wait_for_a_slow_agent_leave_the_slots_to_the_rest(4, bob()).await;
 }
 
-/// ANR-1175: the same person's own unrelated thread is served too. Six routed rows of alice wait
-/// for her agent (three times the two slots) and her thread to `plain` is newer than all of them.
-/// The claim ranks a person's rows by when they became due and then by age, so a row that only
-/// waited (its claim refunded, due again later) does not outrank the newer thread. Ranked by age
-/// alone (44ac7408) the older routed rows, due again as soon as a slot frees, are always ahead of
-/// it in her own queue, and with enough of them it is not claimed within `eventually`'s 10 s
-/// (timing decides how long: `a_fair_claim_does_not_rank_a_row_that_only_waited_before_newer_work`
-/// in the store testkit is the deterministic proof of the order).
+/// ANR-1175, a smoke test: the same person's own unrelated thread is served too. Six routed rows of
+/// alice wait for her agent (three times the two slots) and her thread to `plain` is newer than
+/// all of them. The claim ranks a person's rows by `next_attempt_at` and then by age, so a row that
+/// only waited (put back due later) does not outrank the newer thread. How long the old order
+/// would keep the thread from a slot depends on timing, so this does not claim to fail without the
+/// change: `a_fair_claim_does_not_rank_a_row_that_only_waited_before_newer_work` in the store
+/// testkit is the deterministic proof of the order.
 #[tokio::test]
 async fn routed_rows_at_three_times_the_slots_waiting_for_a_slow_agent_leave_slots_to_the_same_persons_own_thread()
  {

@@ -4,7 +4,7 @@ sidebarTitle: "0103 · Own agents kept ready"
 
 # ADR 0103 — A person's own agent is made and kept ready before their message is accepted
 
-- **Status:** **Proposed (2026-11-26)** (ANR-806, part 2; built in `orchestrator/crates/app/src/provisioning.rs`, off unless the deployment has a `provisioner` section). Not yet tried against a real platform: the dev stack plays it with a WireMock stand-in (`dev/provisioner-e2e.sh`). **Amended (2026-11-27): ANR-1061, a person's message goes to their own agent by a route recorded in `Job.route`, and the dispatcher's sends for a routed thread provision too (decision 5, the amendment below).** **Amended (2026-11-27): ANR-1062, a `Blocked` agent is waited for, except two reasons that waiting cannot clear, which are a 500 `agent_blocked` (the amendment below).** **Amended (2026-11-27): ANR-1078, the two known gaps of a stop that waited are fixed by refunding the wait (note under Consequences).** **Amended (2026-11-27): ANR-1078 PR 2, a routed row waiting for the person's agent to wake is cut at a short probe and waits `pending`, so it no longer holds a dispatcher slot, and a stop that finds it between two probes ends the thread before it starts (the amendment `Amended 2026-11-27 (ANR-1078, PR 2)` below).** **Amended (2026-11-27): ANR-1175, the known limit of the claim order is removed: a person's due rows are ranked by when they became due, then by age (note under the Known limit).**
+- **Status:** **Proposed (2026-11-26)** (ANR-806, part 2; built in `orchestrator/crates/app/src/provisioning.rs`, off unless the deployment has a `provisioner` section). Not yet tried against a real platform: the dev stack plays it with a WireMock stand-in (`dev/provisioner-e2e.sh`). **Amended (2026-11-27): ANR-1061, a person's message goes to their own agent by a route recorded in `Job.route`, and the dispatcher's sends for a routed thread provision too (decision 5, the amendment below).** **Amended (2026-11-27): ANR-1062, a `Blocked` agent is waited for, except two reasons that waiting cannot clear, which are a 500 `agent_blocked` (the amendment below).** **Amended (2026-11-27): ANR-1078, the two known gaps of a stop that waited are fixed by refunding the wait (note under Consequences).** **Amended (2026-11-27): ANR-1078 PR 2, a routed row waiting for the person's agent to wake is cut at a short probe and waits `pending`, so it no longer holds a dispatcher slot, and a stop that finds it between two probes ends the thread before it starts (the amendment `Amended 2026-11-27 (ANR-1078, PR 2)` below).** **Amended (2026-11-27): ANR-1175, the known limit of the claim order is removed: a person's due rows are ranked by `next_attempt_at`, then by age (note under the Known limit).**
 
 ## Context
 
@@ -164,11 +164,12 @@ slow agents could take every slot (`concurrency`, 32 by default) from everyone e
 - **Known limit.** The claim order is by row position, within a person's queue (ADR 0066), so a person with at least twice as many
   waiting routed rows as slots can keep their own *unrelated* newer rows from a slot, as they could before; another person's rows
   are not held back, and no row holds a slot for more than a probe.
-  **Removed (2026-11-27, ANR-1175).** The claim ranks a person's due rows by when each became due (a `pending` row's
-  `next_attempt_at`, an expired lease's end), then by age, in the memory, Postgres and SQLite stores, instead of by age alone. A routed
-  row that only waited was put back due later, so it ranks behind a newer row that is due now (a title, another agent's thread) and the
-  person's own unrelated work is no longer held back; no row is starved, because a row that was due earlier is never behind a row that
-  becomes due after it. The text above is kept as it was written. See the note on [ADR 0066](0066-a-fair-share-of-the-dispatcher.md).
+  **Removed (2026-11-27, ANR-1175).** The claim ranks a person's due rows by `next_attempt_at`, then by age, in the memory, Postgres
+  and SQLite stores, instead of by age alone. A routed row that only waited was put back due later (`wait_outbox` moves
+  `next_attempt_at` forward), so it ranks behind a newer row that is due now (a title, another agent's thread) and the person's own
+  unrelated work is no longer held back. No row is starved: a row due earlier is never behind a row that becomes due after it. A row
+  recovered after a crash keeps its place, because a claim never changes `next_attempt_at`. The text above is kept as it was written.
+  See the note on [ADR 0066](0066-a-fair-share-of-the-dispatcher.md).
 
 ## Consequences
 
