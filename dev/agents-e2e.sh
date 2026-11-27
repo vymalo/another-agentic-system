@@ -123,6 +123,7 @@ persona() {
 say() {
   _agent=$1
   _thread=$(uuid)
+  thread=$_thread
   _input=$(jq -n --arg thread "$_thread" --arg run "$(uuid)" --arg msg "$(uuid)" --arg text "$2" '{
     threadId: $thread, runId: $run, state: {}, tools: [], context: [],
     messages: [{id: $msg, role: "user", content: $text}], forwardedProps: {}}')
@@ -401,7 +402,7 @@ esac
 # session is ONE child thread of the parent, however many rounds it has: a round is a job of that thread, never a thread of its own.
 echo "== the chat's planner as a kept-open session"
 say chat "Organise a team offsite. [mock:plan-session]"
-ps_parent=$_thread
+ps_parent=$thread
 if [ "$outcome" = success ]; then
   ok "chat, plan session: the run stream ended with RUN_FINISHED (success)"
 else
@@ -495,8 +496,9 @@ if [ -n "$ps_child" ]; then ok "chat, plan session: the parent names the child t
 expect "chat, plan session: the parent's log opened the session once, the helper planner, kept open, round 1" \
   "$(jq -r '[.events[] | select(.kind == "child_session_opened")] | "\(length) \(.[0].data.agent) \(.[0].data.keepOpen) \(.[0].data.round)"' "$tmp/ps-parent.export.json")" \
   "1 planner true 1"
-# `by` is not guaranteed: a session first seen in the parent task's sessions object has none (only the events carry it). What matters is
-# that the person started nothing here: the chat's model did.
+# The positive case is not asserted here: a session the orchestrator first learns from the parent task's sessions object legitimately has
+# no `by` (only the events carry it), so this scenario cannot tell `by: agent` from absent — a regression that drops `by` on the wire is
+# invisible to `dev/`. What it can say is that nobody claims the person started it.
 expect "chat, plan session: no child_session_opened says the person started it (the chat's model did)" \
   "$(jq -r '[.events[] | select(.kind == "child_session_opened" and .data.by == "person")] | length' "$tmp/ps-parent.export.json")" "0"
 # The round is a job of the child thread, never of the parent: the parent's log has no job of its own here, and its conversation carries

@@ -285,8 +285,9 @@ A person's start and close of a helper session end with the word, never with a f
 S5 is built: `dev/agents-e2e.sh` starts the chat's own `planner` as a kept-open session (`subagent_start`, `keep_open: true`) on the
 pinned adam (`sha-9f90f1e`), the orchestrator opens the child thread and follows round 1, the person sends that thread a second round
 and closes it, and the script asserts one child thread of the parent (not one per round), the parent's
-`child_session_opened`/`reported`/`closed`, both rounds in the child's log, and the AG-UI cards of the parent and of the child.
+`child_session_opened`/`reported`/`closed`, both rounds' jobs in the child's log, and the AG-UI cards of the parent and of the child.
 Nothing of the contract changed.
 
 *Verified 2026-11-27*: `dev/e2e-all.sh` (37 scenarios), `dev/agents-e2e.sh`, `dev/child-sessions-e2e.sh` and
-`dev/check-agent-mocks.sh` green against the `app` profile on this host with the pinned image; CI runs it in `Coder E2E`.
+`dev/check-agent-mocks.sh` green against the `app` profile on this host with the pinned image; CI runs the scenario in `Coder E2E`
+(`dev/e2e-all.sh`) and the mock checks in `Compose`.

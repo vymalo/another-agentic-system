@@ -143,7 +143,8 @@ under the URI, one **event**:
 | `reported` | A round ended. | `round` (its final state), `report`: `done`, `failed`, `canceled` or `blocked` (a round waiting for the person, `input-required`) |
 | `closed` | The session closed: not kept open and its round ended, a close, or the agent's idle limit. | nothing more |
 
-Every event carries `session`, `contextId`, `agent`, `description`, `keepOpen` and `by` (`agent` or `person`: who acted).
+Every event carries `session`, `contextId`, `agent`, `description`, `keepOpen` and `by` (`agent` or `person`: who acted). A session the
+orchestrator first learns from the sessions object (which carries no `by`) is noted without it, and a later event does not change the note.
 `round.state` is the round task's A2A state, spelled as the A2A JSON spells it (`TASK_STATE_WORKING`, `TASK_STATE_COMPLETED`, `TASK_STATE_INPUT_REQUIRED`, ...), and `null` when the agent could not read it; the orchestrator also reads the plain word (`completed`). An event carries **no report text**: the text is the round's own task, which the
 client reads in the child context. Events of one session come in the order above; events of different sessions interleave.
 
