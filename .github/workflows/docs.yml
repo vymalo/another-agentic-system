@@ -7,6 +7,8 @@ name: Docs
 # The development agents (.agents/agents, ADR 0038) must match their links and generated adapters
 # (tools/agents/sync.mjs --check); it needs no npm install.
 #
+# No tracked file may name a private repository (tools/check-private-names.sh): this repository is public.
+#
 # The AG-UI golden streams (docs/api/examples/agui) must also read cleanly through the
 # reference client, @ag-ui/client 1.0.0 (tools/agui-conformance). That is a behavioural check the
 # Rust schema tests cannot make: ordering, balanced runs, and what a standard client ends up holding.
@@ -36,6 +38,8 @@ jobs:
           node-version: 24
       - name: Check the agent definitions, their links and adapters
         run: node tools/agents/sync.mjs --check
+      - name: Check that no tracked file names a private repository
+        run: sh tools/check-private-names.sh
       - name: Install pinned checker dependencies
         run: npm --prefix tools/docs-check ci --no-fund --no-audit
       - name: Check diagrams, links and images

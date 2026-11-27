@@ -1,13 +1,13 @@
-# The ledger's budget read, mocked (ANR-669). It stands where another-backend's ledger stands, so the proof covers
+# The ledger's budget read, mocked (ANR-669). It stands where the deployment's ledger stands, so the proof covers
 # Authorino's real second lookup: `GET /budget/v1/remaining?account_id=<the lease's accountId>`, behind the injector's
-# own token, answering the person's remaining credit in micro-USD (the wire shape of
-# `crates/another-service/src/budget_remaining.rs` in another-backend). A read, never a debit: this mock has no route
+# own token, answering the person's remaining credit in micro-USD (the wire shape of the real ledger's budget
+# read). A read, never a debit: this mock has no route
 # that writes.
 #
 # Three answers the scenario needs:
 #   - `acct-run-1`, the funded person, has credit (`42` micro-USD — a fixture, not a price);
 #   - anything else is a zero balance with `200`, exactly what the real ledger answers for an account it has never
-#     seen (its ADR-0021), which is the fail-closed choice: no credit, never a made-up 404 or a pass;
+#     seen (its own rule), which is the fail-closed choice: no credit, never a made-up 404 or a pass;
 #   - `acct-unreadable-run` answers `503 budget_unavailable`, the real listener's answer when the balance cannot be
 #     computed, so the proof can show the injector refusing rather than treating an outage as zero.
 #
@@ -73,7 +73,7 @@ data:
             if account in UNREADABLE:
                 return self._send(503, {"error": "budget_unavailable",
                                         "message": "the balance cannot be read right now"})
-            # An account this ledger has never seen reads as zero, never a 404 (ADR-0021).
+            # An account this ledger has never seen reads as zero, never a 404 (the real ledger's rule).
             return self._send(200,
                 {"budget_account_id": account,
                  "period": "2026-11",

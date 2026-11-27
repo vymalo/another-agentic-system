@@ -151,7 +151,7 @@ injector:
     # is refused.
     cacheTtlSecs: 30
   # The person's balance, read at every model call from the usage ledger (ADR 0084 decision 7; the ledger is
-  # another-backend's): `GET <url>/budget/v1/remaining?account_id=<the lease's accountId>`, a READ that never debits.
+  # the deployment's own): `GET <url>/budget/v1/remaining?account_id=<the lease's accountId>`, a READ that never debits.
   # Required when the injector is on: a model call whose balance nobody read is a model call nobody pays for.
   budget:
     # The ledger's budget listener, http or https, with a host and no credential, query or fragment. Empty: refused.
