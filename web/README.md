@@ -3253,7 +3253,19 @@ person can see; a changed layout, text or colour moves far more than 0.05 % of a
 an agent's. A host's own `pnpm screens` is for looking, not for committing: its fonts and browser build differ and move
 images nobody changed. **A re-baseline is a workflow, not a hand**: Actions → *Update screens* (`update-screens.yml`) draws the set
 in the same image and opens one pull request with it, so a still drawn outside the image cannot land; its `screens` job compares the
-new set with the image again (within the bound above). Re-baseline when a visual change is deliberate or the base image moves
+new set with the image again (within the bound above).
+**The workflow commits only what the bound flags** (ANR-1128): after drawing, `scripts/screens-select.sh` (run by
+`sh scripts/screens-docker.sh update`) compares the drawn set with the committed one in the image (`scripts/screens-compare.sh
+--list-failing` prints the names of the stills beyond the bound, one per line, and the detail on stderr; `check` is unchanged) and
+changes the committed tree by exactly: (a) the stills beyond the bound or of other dimensions, copied; (b) new stills, added; (c)
+committed stills no longer drawn, removed. A still that differs **within** the bound stays byte for byte as committed, so the
+sub-pixel noise between two runs rewrites nothing (pull request #604 rewrote 28 stills for it). The pull request body lists each
+touched still with its pixel count and percentage; when nothing is beyond the bound the job logs "nothing to update" and opens no
+pull request. **Limit:** a pull request opened with the default `GITHUB_TOKEN` starts no workflow (GitHub's rule), so the bot's pull
+request has no `screens` or `Web` run of its own. The workflow therefore compares the drawn set with the selected tree itself, in the
+same image, before it pushes (a failure there opens no pull request) and prints the verdict in the body; a person runs the pull
+request's checks by closing and reopening it, or by pushing to it. (Opening it with a GitHub App token or a PAT would start them,
+but needs a secret the owner creates; not done.) Re-baseline when a visual change is deliberate or the base image moves
 (a Chromium, a font); a failure that only names stills within a few pixels of the bound is noise, not a reason to re-baseline.
 **The docs embed these files** (the repository README, this file, [DESIGN.md](DESIGN.md) and
 [`dev/README.md`](../dev/README.md), each as a `<picture>` of the `-light-` and `-dark-` file of a state). A screen that is
