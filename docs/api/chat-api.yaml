@@ -78,6 +78,7 @@ paths:
               examples: { MeExample: { $ref: "#/components/examples/MeExample" } }
               schema: { $ref: "#/components/schemas/Me" }
             application/cbor:
+              examples: { MeExample: { $ref: "#/components/examples/MeExample" } }
               schema: { $ref: "#/components/schemas/Me" }
   /api/me/usage:
     get:
@@ -109,6 +110,7 @@ paths:
               examples: { MyUsageExample: { $ref: "#/components/examples/MyUsageExample" } }
               schema: { $ref: "#/components/schemas/MyUsage" }
             application/cbor:
+              examples: { MyUsageExample: { $ref: "#/components/examples/MyUsageExample" } }
               schema: { $ref: "#/components/schemas/MyUsage" }
   /api/agents:
     get:
@@ -129,6 +131,7 @@ paths:
               examples: { AgentList: { $ref: "#/components/examples/AgentList" } }
               schema: { type: array, items: { $ref: "#/components/schemas/Agent" } }
             application/cbor:
+              examples: { AgentList: { $ref: "#/components/examples/AgentList" } }
               schema: { type: array, items: { $ref: "#/components/schemas/Agent" } }
   /api/registry:
     get:
@@ -165,6 +168,7 @@ paths:
               examples: { PublicConfigExample: { $ref: "#/components/examples/PublicConfigExample" } }
               schema: { $ref: "#/components/schemas/PublicConfig" }
             application/cbor:
+              examples: { PublicConfigExample: { $ref: "#/components/examples/PublicConfigExample" } }
               schema: { $ref: "#/components/schemas/PublicConfig" }
   /api/tool-servers:
     get:
@@ -458,6 +462,7 @@ paths:
             examples: { SearchRequestExample: { $ref: "#/components/examples/SearchRequestExample" } }
             schema: { $ref: "#/components/schemas/SearchThreadsRequest" }
           application/cbor:
+            examples: { SearchRequestExample: { $ref: "#/components/examples/SearchRequestExample" } }
             schema: { $ref: "#/components/schemas/SearchThreadsRequest" }
       responses:
         "200":
@@ -469,6 +474,7 @@ paths:
               examples: { SearchPageExample: { $ref: "#/components/examples/SearchPageExample" } }
               schema: { $ref: "#/components/schemas/ThreadSearchPage" }
             application/cbor:
+              examples: { SearchPageExample: { $ref: "#/components/examples/SearchPageExample" } }
               schema: { $ref: "#/components/schemas/ThreadSearchPage" }
         "400": { description: "`code: query_empty` (nothing is left of `q` after it is trimmed), `query_too_long` (more than 200 characters), `bad_cursor` (`cursor` is not a position of a page of this request: it is checked against the terms, `archived` and `branches` of the request, not the text of `q`, and a position that is not valid is refused); or `code: bad_request`: not JSON, not one object, a member that is not allowed (there is no `owner`: ADR 0039), a member twice, a member of the wrong type (`null` too), a lone surrogate, `limit` out of range or not an integer literal (`20.0` is refused), `archived` or `branches` not one of their words", $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
@@ -811,6 +817,7 @@ paths:
               examples: { ThreadList: { $ref: "#/components/examples/ThreadList" } }
               schema: { type: array, items: { $ref: "#/components/schemas/Thread" } }
             application/cbor:
+              examples: { ThreadList: { $ref: "#/components/examples/ThreadList" } }
               schema: { type: array, items: { $ref: "#/components/schemas/Thread" } }
   /api/threads/{threadId}:
     parameters: [ { $ref: "#/components/parameters/ThreadId" } ]
@@ -829,6 +836,7 @@ paths:
               examples: { ThreadWorking: { $ref: "#/components/examples/ThreadWorking" } }
               schema: { $ref: "#/components/schemas/Thread" }
             application/cbor:
+              examples: { ThreadWorking: { $ref: "#/components/examples/ThreadWorking" } }
               schema: { $ref: "#/components/schemas/Thread" }
         "404": { $ref: "#/components/responses/Problem" }
     patch:
@@ -859,6 +867,7 @@ paths:
               examples: { ThreadWorking: { $ref: "#/components/examples/ThreadWorking" } }
               schema: { $ref: "#/components/schemas/Thread" }
             application/cbor:
+              examples: { ThreadWorking: { $ref: "#/components/examples/ThreadWorking" } }
               schema: { $ref: "#/components/schemas/Thread" }
         "400": { $ref: "#/components/responses/Problem" }
         "403": { description: "No role of theirs holds `thread.write`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
@@ -985,6 +994,7 @@ paths:
               examples: { ThreadExportExample: { $ref: "#/components/examples/ThreadExportExample" } }
               schema: { $ref: "#/components/schemas/ThreadExport" }
             application/cbor:
+              examples: { ThreadExportExample: { $ref: "#/components/examples/ThreadExportExample" } }
               schema: { $ref: "#/components/schemas/ThreadExport" }
         "403": { description: "No role of the caller holds `thread.read`, or their roles grant nothing", $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
@@ -1417,6 +1427,7 @@ paths:
             examples: { RunNewThread: { $ref: "#/components/examples/RunNewThread" }, RunFollowUp: { $ref: "#/components/examples/RunFollowUp" } }
             schema: { $ref: "#/components/schemas/AgUiRunAgentInput" }
           application/cbor:
+            examples: { RunNewThread: { $ref: "#/components/examples/RunNewThread" }, RunFollowUp: { $ref: "#/components/examples/RunFollowUp" } }
             schema: { $ref: "#/components/schemas/AgUiRunAgentInput" }
       responses:
         "200":
