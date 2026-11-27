@@ -243,8 +243,9 @@ last_poll=$(admin GET /requests | jq -r --arg p "$dev_path" '
   | sort_by(.request.loggedDate) | first | .request.loggedDate // empty')
 api "$tmp/dev.h" GET "/api/threads/$thread/export" > "$tmp/export.json" 2>/dev/null || echo '{"events":[]}' > "$tmp/export.json"
 first_event=$(jq -r '.events[0].at // empty' "$tmp/export.json")
-first_event_ms=""
-if [ -n "$first_event" ]; then first_event_ms=$(date -u -d "$first_event" +%s%3N 2>/dev/null || true); fi
+# Milliseconds by jq, not `date +%s%3N`: GNU date reads the fraction of `.060097` as 600 ms, so a check could pass on a wrong value.
+first_event_ms=$(jq -r '.events[0].at // empty | capture("^(?<s>[^.Z]+)(\\.(?<f>[0-9]+))?Z$")
+  | (((.s + "Z") | fromdateiso8601) * 1000 + (((.f // "") + "000")[0:3] | tonumber))' "$tmp/export.json" 2>/dev/null || true)
 if [ -n "$last_poll" ] && [ -n "$first_event_ms" ] && [ "$first_event_ms" -ge "$last_poll" ]; then
   ok "the thread's first event ($first_event, ${first_event_ms} ms) is not before the platform's first ready answer (${last_poll} ms)"
 else
