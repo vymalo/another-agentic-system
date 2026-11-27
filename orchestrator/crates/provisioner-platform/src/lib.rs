@@ -451,7 +451,14 @@ impl AgentProvisioner for PlatformProvisioner {
                             let etag = seen.etag.ok_or_else(raced)?;
                             self.replace(owner, kind, &name, &etag, false).await?;
                         }
-                        AgentState::Saving | AgentState::Blocked | AgentState::Degraded => {
+                        // Blocked: the operator did not apply the form (a referent is missing or
+                        // the config is invalid), so waiting cannot change it: refuse at once,
+                        // as the platform's `422` on a form would (`Invalid`, a 500 for the
+                        // person: the deployment's form is at fault).
+                        AgentState::Blocked => return Err(ProvisionError::Invalid),
+                        // Saving and Degraded (applied, not ready: a rollout or a crash loop that
+                        // goes back to Ready by itself) are waited for, up to the bound.
+                        AgentState::Saving | AgentState::Degraded => {
                             if Instant::now() >= deadline {
                                 return Err(ProvisionError::NotReady { last });
                             }

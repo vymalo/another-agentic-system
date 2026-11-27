@@ -63,7 +63,9 @@ stateDiagram-v2
   `PlatformConfig::with_form`; the adapter adds `name`, `owner` and `suspend` and refuses a form
   that sets them.
 * A wait that ends before `ready` is `NotReady { last }` (transient); a `Deleting` agent is
-  `Deleting`. A bad token is `Refused`. No retry loop beyond the waits above.
+  `Deleting`. `Saving` and `Degraded` (the platform's "applied, not ready", which returns to
+  `ready` by itself) are polled until `ready_timeout`; a `Blocked` agent (the operator did not
+  apply the form: a missing referent or an invalid config) is `Invalid` at once, with no wait. A bad token is `Refused`. No retry loop beyond the waits above.
 
 ## Configuration
 

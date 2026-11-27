@@ -59,6 +59,8 @@ struct Platform {
     requests: Mutex<Vec<String>>,
     /// When set, a create answers `409` with this problem slug whatever the agents are.
     conflict: Mutex<Option<&'static str>>,
+    /// When set, a read answers this state for every agent that exists (`blocked`, `degraded`).
+    forced_state: Mutex<Option<&'static str>>,
 }
 
 type Shared = Arc<Platform>;
@@ -79,11 +81,12 @@ fn authorised(headers: &HeaderMap) -> bool {
         == Some(&format!("Bearer {TOKEN}"))
 }
 
-fn detail(name: &str, agent: &Agent) -> Response {
+fn detail(name: &str, agent: &Agent, forced: Option<&str>) -> Response {
     (
         StatusCode::OK,
         [(header::ETAG, agent.etag())],
-        json!({"name": name, "state": agent.state(), "suspend": agent.suspend}).to_string(),
+        json!({"name": name, "state": forced.unwrap_or(agent.state()), "suspend": agent.suspend})
+            .to_string(),
     )
         .into_response()
 }
@@ -100,8 +103,9 @@ async fn read(
     if !authorised(&headers) {
         return problem(StatusCode::UNAUTHORIZED, "unauthorized");
     }
+    let forced = *p.forced_state.lock().unwrap();
     match p.agents.lock().unwrap().get(&name) {
-        Some(a) if a.owner == owner => detail(&name, a),
+        Some(a) if a.owner == owner => detail(&name, a, forced),
         _ => problem(StatusCode::NOT_FOUND, "not-found"),
     }
 }
@@ -346,6 +350,79 @@ async fn an_agent_that_never_becomes_ready_gives_not_ready() {
             err,
             ProvisionError::NotReady {
                 last: AgentState::Saving
+            }
+        ),
+        "{err:?}"
+    );
+}
+
+/// The agent exists and the platform reads it as `state` from the first poll.
+async fn platform_reading(state: &'static str, timeout: Duration) -> (PlatformProvisioner, Shared) {
+    let (url, platform) = serve().await;
+    *platform.forced_state.lock().unwrap() = Some(state);
+    let p = PlatformProvisioner::new(config(&url, TOKEN).with_ready_timeout(timeout)).unwrap();
+    (p, platform)
+}
+
+async fn gets(platform: &Shared) -> usize {
+    platform
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.starts_with("GET "))
+        .count()
+}
+
+#[tokio::test]
+async fn a_blocked_agent_is_refused_at_once_not_after_the_wait_bound() {
+    // The bound is 10 s; a refused form must not hold the request for it.
+    let (p, platform) = platform_reading("blocked", Duration::from_secs(10)).await;
+    let started = Instant::now();
+    let err = p
+        .ensure_ready(&owner("blocked"), AgentKind::Coder)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ProvisionError::Invalid), "{err:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "waited {:?}",
+        started.elapsed()
+    );
+    // One read after the create: no polling of a state that cannot pass by waiting.
+    assert_eq!(gets(&platform).await, 2);
+}
+
+#[tokio::test]
+async fn a_degraded_agent_is_waited_for_until_it_is_ready() {
+    // The platform's lifecycle: `Degraded` is "applied, not ready" (a rollout, a crash loop) and
+    // goes back to `Ready` by itself, so the wait continues.
+    let (p, platform) = platform_reading("degraded", Duration::from_secs(10)).await;
+    let clear = platform.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        *clear.forced_state.lock().unwrap() = None;
+    });
+    let agent = p
+        .ensure_ready(&owner("degraded"), AgentKind::Coder)
+        .await
+        .unwrap();
+    assert_eq!(agent.state, AgentState::Ready);
+    assert!(gets(&platform).await > 2, "it polled while degraded");
+}
+
+#[tokio::test]
+async fn a_degraded_agent_that_stays_so_gives_not_ready_at_the_bound() {
+    let (p, _platform) = platform_reading("degraded", Duration::from_millis(200)).await;
+    let err = p
+        .ensure_ready(&owner("stuck"), AgentKind::Coder)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ProvisionError::NotReady {
+                last: AgentState::Degraded
             }
         ),
         "{err:?}"
