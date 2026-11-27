@@ -23,6 +23,30 @@ struct Entry {
     ended_at: Option<Timestamp>,
 }
 
+/// Whether two bindings of one run differ in what a binding fixes: the agent, the person and the
+/// model. A run is bound to one of each (ADR 0084 decision 1).
+fn differs(a: &RunBinding, b: &RunBinding) -> bool {
+    a.agent != b.agent || a.person != b.person || a.model != b.model
+}
+
+/// What binding `binding` does to the entry already held for its run, if any: `Ok(())` to write it
+/// (a new run, the same binding again, an ended run bound again by the same agent and person), or
+/// `Err(Conflict)` after dropping an ended run's tombstone (ADR 0107 decision 6: the run id is the
+/// agent's to choose, so a tombstone is never handed to another person; the run is then unattributed
+/// and the new binding fails closed).
+fn admit(bindings: &mut BTreeMap<RunId, Entry>, binding: &RunBinding) -> Result<(), RunLeaseError> {
+    let Some(held) = bindings.get(&binding.run) else {
+        return Ok(());
+    };
+    if !differs(&held.binding, binding) {
+        return Ok(());
+    }
+    if held.ended_at.is_some() {
+        bindings.remove(&binding.run);
+    }
+    Err(RunLeaseError::Conflict)
+}
+
 /// `now` less `retention`, saturating at the beginning of time rather than panicking.
 fn cutoff(now: Timestamp, retention: Duration) -> Timestamp {
     now.checked_sub(retention).unwrap_or(Timestamp::MIN)
@@ -83,29 +107,17 @@ impl MemoryRunLeases {
 impl RunLeases for MemoryRunLeases {
     async fn bind(&self, binding: RunBinding) -> Result<(), RunLeaseError> {
         let mut bindings = self.bindings.lock().unwrap_or_else(PoisonError::into_inner);
-        match bindings.get(&binding.run) {
-            // A live binding is bound once: the same binding again is idempotent.
-            Some(Entry {
-                binding: existing,
+        // A run is bound once: the same binding again is idempotent, and a run that ended is made
+        // live again only by the same binding; anything else is a conflict.
+        admit(&mut bindings, &binding)?;
+        bindings.insert(
+            binding.run.clone(),
+            Entry {
+                binding,
                 ended_at: None,
-            }) if existing.agent != binding.agent
-                || existing.person != binding.person
-                || existing.model != binding.model =>
-            {
-                Err(RunLeaseError::Conflict)
-            }
-            // The same binding again, or a run that ended and is bound anew.
-            _ => {
-                bindings.insert(
-                    binding.run.clone(),
-                    Entry {
-                        binding,
-                        ended_at: None,
-                    },
-                );
-                Ok(())
-            }
-        }
+            },
+        );
+        Ok(())
     }
 
     async fn unbind(&self, run: &RunId) -> Result<(), RunLeaseError> {
@@ -115,7 +127,10 @@ impl RunLeases for MemoryRunLeases {
         if let Some(entry) = bindings.get_mut(run) {
             entry.ended_at.get_or_insert(now);
         }
-        bindings.retain(|_, entry| entry.ended_at.is_none_or(|ended| ended >= keep_after));
+        // The boundary is the same everywhere: a tombstone is answered while `ended_at > keep_after`
+        // (see `account`) and swept once `ended_at <= keep_after`, so with a bound of zero the run
+        // that just ended is already gone and no person outlives it.
+        bindings.retain(|_, entry| entry.ended_at.is_none_or(|ended| ended > keep_after));
         Ok(())
     }
 
@@ -179,27 +194,15 @@ pub struct MemoryRunBindingStore {
 impl crate::RunBindingStore for MemoryRunBindingStore {
     async fn upsert(&self, binding: &RunBinding) -> Result<(), RunLeaseError> {
         let mut bindings = self.bindings.lock().unwrap_or_else(PoisonError::into_inner);
-        match bindings.get(&binding.run) {
-            Some(Entry {
-                binding: existing,
+        admit(&mut bindings, binding)?;
+        bindings.insert(
+            binding.run.clone(),
+            Entry {
+                binding: binding.clone(),
                 ended_at: None,
-            }) if existing.agent != binding.agent
-                || existing.person != binding.person
-                || existing.model != binding.model =>
-            {
-                Err(RunLeaseError::Conflict)
-            }
-            _ => {
-                bindings.insert(
-                    binding.run.clone(),
-                    Entry {
-                        binding: binding.clone(),
-                        ended_at: None,
-                    },
-                );
-                Ok(())
-            }
-        }
+            },
+        );
+        Ok(())
     }
 
     async fn end(
@@ -212,7 +215,8 @@ impl crate::RunBindingStore for MemoryRunBindingStore {
         if let Some(entry) = bindings.get_mut(run) {
             entry.ended_at.get_or_insert(ended_at);
         }
-        bindings.retain(|_, entry| entry.ended_at.is_none_or(|ended| ended >= sweep_before));
+        // `>` as in `person_of`: answered while `ended_at > sweep_before`, swept at or before it.
+        bindings.retain(|_, entry| entry.ended_at.is_none_or(|ended| ended > sweep_before));
         Ok(())
     }
 

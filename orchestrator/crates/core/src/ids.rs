@@ -60,8 +60,9 @@ impl fmt::Display for UserId {
 /// The longest [`AccountId`], in bytes: the platform's own bound for an identifier it meters.
 pub const MAX_ACCOUNT_ID_LEN: usize = 128;
 
-/// The account a run's spending is charged to (ADR 0107): the person's identity-provider `sub`,
-/// and only a value of the platform's closed alphabet.
+/// The account a run's spending is charged to (ADR 0107): the person's [`UserId`] (under
+/// `auth.jwt.userClaim: sub`, the identity provider's `sub` claim **trimmed and lower-cased**, which
+/// is what [`UserId::new`] makes of it), and only when it is of the platform's closed alphabet.
 ///
 /// The alphabet is `[A-Za-z0-9._:/-]`, 1 to 128 bytes: what the platform's usage contract
 /// (`aap-usage`, `PodMinuteEvent::validate`) accepts for an identifier, so that free text and
@@ -80,7 +81,8 @@ pub struct AccountId(String);
 pub struct AccountIdError;
 
 impl AccountId {
-    /// Reads `text` as an account id, exactly as written: no trimming, no case change.
+    /// Reads `text` as an account id. It checks the alphabet and changes nothing: the trimming and
+    /// the lower-casing are [`UserId::new`]'s, done before an account is asked of a person.
     ///
     /// # Errors
     /// [`AccountIdError`] for an empty text, one over 128 bytes, or one with a byte outside
@@ -94,8 +96,9 @@ impl AccountId {
         Ok(AccountId(text.to_owned()))
     }
 
-    /// The account of a person: their [`UserId`] when it is an account id, which it is when the
-    /// deployment reads the identity provider's `sub` (`auth.jwt.userClaim: sub`).
+    /// The account of a person: their [`UserId`] (trimmed and lower-cased) when it is an account id,
+    /// which it is when the deployment reads the identity provider's `sub` (`auth.jwt.userClaim: sub`)
+    /// and that `sub` is lower-case ASCII of the alphabet.
     ///
     /// # Errors
     /// [`AccountIdError`] when the person's id is not one, as an e-mail address is not.
@@ -162,6 +165,7 @@ pub fn is_valid_agent_id(id: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -196,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn an_e_mail_person_has_no_account_and_a_sub_person_has_its_own_text() {
+    fn an_e_mail_person_has_no_account_and_a_sub_person_is_trimmed_and_lower_cased() {
         assert!(AccountId::of_user(&UserId::new("Person@Example.com")).is_err());
         let sub = UserId::new("  4F2A9C1E-0B7D  ");
         assert_eq!(AccountId::of_user(&sub).unwrap().as_str(), "4f2a9c1e-0b7d");

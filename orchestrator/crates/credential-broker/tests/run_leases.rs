@@ -6,24 +6,24 @@ use std::time::Duration;
 
 use orch_credential_broker::RunLeaseBroker;
 use orch_ports::memory::{MemoryModelCredentials, MemoryRunBindingStore};
-use orch_ports::testkit::run_leases::{an_ended_run_is_not_found_after_the_bound, token};
+use orch_ports::testkit::run_leases::token;
 
-fn credentials() -> MemoryModelCredentials {
-    MemoryModelCredentials::new(BTreeMap::from([("glm-5.3".to_owned(), token())]))
-}
+type Broker = RunLeaseBroker<MemoryRunBindingStore, MemoryModelCredentials>;
 
-async fn make() -> Option<RunLeaseBroker<MemoryRunBindingStore, MemoryModelCredentials>> {
-    Some(RunLeaseBroker::new(
+fn broker() -> Broker {
+    RunLeaseBroker::new(
         MemoryRunBindingStore::default(),
-        credentials(),
-    ))
+        MemoryModelCredentials::new(BTreeMap::from([("glm-5.3".to_owned(), token())])),
+    )
 }
 
-orch_ports::run_leases_conformance!(make);
-
-#[tokio::test]
-async fn a_run_that_ended_is_not_found_after_its_tombstone_bound() {
-    let broker = RunLeaseBroker::new(MemoryRunBindingStore::default(), credentials())
-        .with_tombstone_retention(Duration::ZERO);
-    an_ended_run_is_not_found_after_the_bound(&broker).await;
+async fn make() -> Option<Broker> {
+    Some(broker())
 }
+
+/// The same with no tombstone: the bound is zero.
+async fn make_unkept() -> Option<Broker> {
+    Some(broker().with_tombstone_retention(Duration::ZERO))
+}
+
+orch_ports::run_leases_conformance!(make, make_unkept);

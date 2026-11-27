@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use orch_credential_broker::RunLeaseBroker;
 use orch_ports::memory::MemoryModelCredentials;
-use orch_ports::testkit::run_leases::{an_ended_run_is_not_found_after_the_bound, token};
+use orch_ports::testkit::run_leases::token;
 use orch_store_postgres::PgRunBindings;
 use support::TestDb;
 
@@ -26,14 +26,11 @@ async fn make() -> Option<RunLeaseBroker<PgRunBindings, MemoryModelCredentials>>
     ))
 }
 
-orch_ports::run_leases_conformance!(make);
-
-#[tokio::test]
-async fn a_run_that_ended_is_not_found_after_its_tombstone_bound() {
-    let Some(broker) = make().await else {
-        eprintln!("skipped: no run-lease broker available");
-        return;
-    };
-    let broker = broker.with_tombstone_retention(Duration::ZERO);
-    an_ended_run_is_not_found_after_the_bound(&broker).await;
+/// The same with no tombstone: the bound is zero.
+async fn make_unkept() -> Option<RunLeaseBroker<PgRunBindings, MemoryModelCredentials>> {
+    make()
+        .await
+        .map(|broker| broker.with_tombstone_retention(Duration::ZERO))
 }
+
+orch_ports::run_leases_conformance!(make, make_unkept);

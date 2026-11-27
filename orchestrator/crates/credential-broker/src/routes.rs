@@ -37,6 +37,7 @@ use orch_core::AgentId;
 use orch_ports::{RunBinding, RunCaller, RunId, RunLeaseError, RunLeases};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq as _;
 
 /// The longest field the bind route accepts: the ids the orchestrator sends are far shorter, and
 /// the cap keeps a stranger's body from becoming a row.
@@ -115,13 +116,15 @@ impl RunCallerAuth for SharedTokens {
             .ok()?
             .strip_prefix("Bearer ")?;
         let presented = digest(presented);
-        if presented == self.orchestrator {
+        // Constant time, so a wrong token costs what a right one does (the digests are fixed size).
+        let is = |token: &[u8; 32]| bool::from(presented[..].ct_eq(&token[..]));
+        if is(&self.orchestrator) {
             return Some(RunCaller::Orchestrator);
         }
-        if self.injector == Some(presented) {
+        if self.injector.as_ref().is_some_and(is) {
             return Some(RunCaller::Injector);
         }
-        if self.meter == Some(presented) {
+        if self.meter.as_ref().is_some_and(is) {
             return Some(RunCaller::Meter);
         }
         self.agents.get(&presented).cloned().map(RunCaller::Agent)

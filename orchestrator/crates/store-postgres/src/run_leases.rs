@@ -52,12 +52,10 @@ impl RunBindingStore for PgRunBindings {
         let written: Result<Option<(String,)>, SqlError> = query_as(
             "INSERT INTO run_leases (run, agent, person, model, expires_at) \
              VALUES ($1, $2, $3, $4, $5) \
-             ON CONFLICT (run) DO UPDATE SET agent = EXCLUDED.agent, person = EXCLUDED.person, \
-                 model = EXCLUDED.model, expires_at = EXCLUDED.expires_at, ended_at = NULL \
-             WHERE run_leases.ended_at IS NOT NULL \
-                OR (run_leases.agent = EXCLUDED.agent \
-                    AND run_leases.person = EXCLUDED.person \
-                    AND run_leases.model IS NOT DISTINCT FROM EXCLUDED.model) \
+             ON CONFLICT (run) DO UPDATE SET expires_at = EXCLUDED.expires_at, ended_at = NULL \
+             WHERE run_leases.agent = EXCLUDED.agent \
+               AND run_leases.person = EXCLUDED.person \
+               AND run_leases.model IS NOT DISTINCT FROM EXCLUDED.model \
              RETURNING run",
         )
         .bind(binding.run.as_str())
@@ -74,6 +72,19 @@ impl RunBindingStore for PgRunBindings {
                 return Err(unavailable(err));
             }
         };
+        if written.is_none() {
+            // A different binding for a run that ended: the run id is the agent's to choose, so the
+            // tombstone is never handed to another person (ADR 0107 decision 6). It is dropped, the
+            // run is unattributed and the bind is refused: fail closed. A live row is not touched.
+            let dropped = query("DELETE FROM run_leases WHERE run = $1 AND ended_at IS NOT NULL")
+                .bind(binding.run.as_str())
+                .execute(&mut *tx)
+                .await;
+            if let Err(err) = dropped {
+                let _ = tx.rollback().await;
+                return Err(unavailable(err));
+            }
+        }
         tx.commit().await.map_err(unavailable)?;
         match written {
             Some(_) => Ok(()),
@@ -88,6 +99,8 @@ impl RunBindingStore for PgRunBindings {
         sweep_before: Timestamp,
     ) -> Result<(), RunLeaseError> {
         let mut conn = Object::take(self.pool.acquire().await.map_err(unavailable)?);
+        // The two statements are each idempotent and need no transaction: a crash between them
+        // leaves a tombstone the next `end` sweeps, and `person_of` filters by the bound anyway.
         // The first end's time stands: a second end does not extend the tombstone.
         query("UPDATE run_leases SET ended_at = $2 WHERE run = $1 AND ended_at IS NULL")
             .bind(run.as_str())
@@ -96,7 +109,9 @@ impl RunBindingStore for PgRunBindings {
             .await
             .map_err(unavailable)?;
         // The sweep: a tombstone past the bound is gone (the partial index `run_leases_ended_at`).
-        query("DELETE FROM run_leases WHERE ended_at IS NOT NULL AND ended_at < $1")
+        // `<=` as `person_of`'s `>`: answered while `ended_at > bound`, swept at or before it, so a
+        // bound of zero deletes the run that just ended.
+        query("DELETE FROM run_leases WHERE ended_at IS NOT NULL AND ended_at <= $1")
             .bind(to_db(sweep_before))
             .execute(&mut *conn)
             .await

@@ -669,7 +669,8 @@ async fn run_routes(
     let leases = RunLeaseBroker::new(
         PgRunBindings::from_pool(store.pool().clone()),
         ConfiguredCredentials::build(&cfg.models),
-    );
+    )
+    .with_tombstone_retention(tombstone_retention(settings));
     let router = orch_credential_broker::router(Arc::new(leases), Arc::new(tokens));
     Ok(Some((listener, router)))
 }
@@ -687,6 +688,17 @@ fn run_route_tokens(settings: &crate::config::InternalSettings) -> SharedTokens 
     match &settings.meter_token {
         Some(meter) => tokens.with_meter(meter.expose_secret()),
         None => tokens,
+    }
+}
+
+/// How long an ended run's person is kept for the meter (ADR 0107 decision 6): the default bound when
+/// the deployment runs a meter, and **nothing** otherwise, so that where no caller can read it no
+/// person's id outlives the run.
+fn tombstone_retention(settings: &crate::config::InternalSettings) -> Duration {
+    if settings.meter_token.is_some() {
+        orch_ports::ACCOUNT_TOMBSTONE
+    } else {
+        Duration::ZERO
     }
 }
 
@@ -1011,7 +1023,7 @@ mod tests {
     use orch_ports::RunCaller;
     use secrecy::SecretString;
 
-    use super::run_route_tokens;
+    use super::{run_route_tokens, tombstone_retention};
     use crate::config::InternalSettings;
 
     fn settings(meter: Option<&str>) -> InternalSettings {
@@ -1057,5 +1069,19 @@ mod tests {
     fn without_a_meter_token_nobody_is_the_meter() {
         let tokens = run_route_tokens(&settings(None));
         assert_eq!(tokens.caller(&bearer("meter-token")), None);
+    }
+
+    #[test]
+    fn a_tombstone_is_kept_only_where_a_meter_can_read_it() {
+        assert_eq!(
+            tombstone_retention(&settings(Some("meter-token"))),
+            orch_ports::ACCOUNT_TOMBSTONE,
+            "with a meter: the default bound"
+        );
+        assert_eq!(
+            tombstone_retention(&settings(None)),
+            std::time::Duration::ZERO,
+            "with no meter: nothing is kept, as before ADR 0107"
+        );
     }
 }
