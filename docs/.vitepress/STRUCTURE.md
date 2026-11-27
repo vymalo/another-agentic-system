@@ -40,7 +40,7 @@ A page is read in layers, so it is progressive: the reader stops when they have 
 - **Put the rest in `::: in-depth`.** The detail, the history, the edge cases and the long tables go in a block that is
   closed until opened. Give it a plain-text title (no Markdown, no HTML) that says what is inside (`::: in-depth Why a row that dies is never lost`);
   with no title it is "In depth". Blocks nest (`::: in-depth` inside `::: in-depth`, each closed by its own `:::`),
-  and a code fence inside is left alone. It is a native `<details>`, so the keyboard and a screen reader work with no
+  and a code fence inside is left alone. Inside VitePress's own `::: tip` or `::: details`, write that outer marker longer (`:::: tip` … `::::`), or the tip closes at the block's `:::`. It is a native `<details>`, so the keyboard and a screen reader work with no
   script. A block cannot sit inside a table cell: use a list or headings, a line each, then the block. Like `::: tip`,
   `::: in-depth` shows as literal text when the file is read on GitHub.
 - **Status tables use the legend below.** The icon always comes with its word in the cell (`✅ built`), because an icon
