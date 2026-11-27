@@ -139,3 +139,5 @@ gets `-1`, `-2`. `tools/docs-check` fails on a `#fragment` that names no heading
 ## Links
 
 A relative link that leaves `docs/` (or names a non-page file of it, such as a JSON schema or a page of `examples/`) is rewritten to the file on GitHub by `repoLinks` in `config.ts`; a link to a folder's `README.md` lands on its index page. `npm --prefix docs run check:links` crawls the built site and fails on any internal link or `#anchor` that resolves to nothing (CI runs it after the build).
+
+A link rewritten to GitHub is not crawled; `tools/docs-check` proves its target and #anchor exist in the repository.

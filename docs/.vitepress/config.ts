@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { slug as githubSlug } from "github-slugger";
@@ -148,22 +148,35 @@ export function escapeUnknownTags(md: any) {
 const REPO = "https://github.com/vymalo/another-agentic-system";
 export function repoLinks(md: any) {
   md.core.ruler.push("repo-links", (state: any) => {
-    const from = posix.dirname(state.env?.relativePath ?? "index.md");
+    // Dynamic routes (api/operations/) have no relativePath and no relative links; one that has a link to resolve fails.
+    const rel: string | undefined = state.env?.relativePath;
     for (const block of state.tokens)
       for (const t of block.children ?? [])
         if (t.type === "link_open") {
           const href = t.attrGet("href");
           if (!href || href.startsWith("#") || href.startsWith("/") || /^[a-z][a-z0-9+.-]*:/i.test(href)) continue;
+          if (!rel) throw new Error(`repoLinks: ${href} on a page with no relativePath cannot be resolved`);
           const [, path, rest = ""] = href.match(/^([^#?]*)(.*)$/)!;
-          const resolved = posix.normalize(posix.join(from, decodeURI(path)));
+          const resolved = posix.normalize(posix.join(posix.dirname(rel), decodeURI(path)));
           const outside = resolved === ".." || resolved.startsWith("../");
           const ext = posix.extname(resolved);
           const isFile = ext !== "" && !path.endsWith("/");
           const inExamples = /(^|\/)examples(\/|$)/.test(resolved);
           const served = !outside && existsSync(join(root, "public", resolved));
           if (outside || inExamples || (isFile && ext !== ".md" && !served)) {
-            const repoPath = outside ? posix.normalize(resolved.replace(/^\.\.\//, "")) : `docs/${resolved}`;
-            t.attrSet("href", `${REPO}/${isFile ? "blob" : "tree"}/main/${repoPath.replace(/\/$/, "")}${rest}`);
+            const repoPath = (outside ? posix.normalize(resolved.replace(/^\.\.\//, "")) : `docs/${resolved}`).replace(/\/$/, "");
+            if (repoPath === ".." || repoPath.startsWith("../")) throw new Error(`repoLinks: ${href} in ${rel} leaves the repository`);
+            if (repoPath === "" || repoPath === ".") {
+              t.attrSet("href", `${REPO}/tree/main${rest}`);
+              continue;
+            }
+            let dir = !isFile;
+            try {
+              dir = statSync(join(root, "..", repoPath)).isDirectory();
+            } catch {
+              // not on disk (a generated file): the extension's guess stands
+            }
+            t.attrSet("href", `${REPO}/${dir ? "tree" : "blob"}/main/${encodeURI(repoPath)}${rest}`);
             continue;
           }
           t.attrSet("href", href.replace(/(^|\/)README\.md(?=#|\?|$)/, "$1index.md"));
@@ -177,8 +190,6 @@ export default defineMd3Config({
   base: process.env.DOCS_BASE ?? DEFAULT_BASE,
   cleanUrls: true,
   rewrites: { "api/README.md": "api/index.md" },
-  // A link that leaves docs/ is rewritten to GitHub below (markdown.config), so every dead link left fails the build.
-  // The one exception: a link into docs/**/examples/, which is not on the site and is rewritten to GitHub as well.
   // Each operation and tag page has its own title, from the route's pageTitle.
   transformPageData(pageData) {
     const title = pageData.params?.pageTitle;

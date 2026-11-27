@@ -60,6 +60,10 @@ for (const [url, page] of pages) {
     }
   }
 }
+if (pages.size === 0 || links === 0) {
+  console.error(`nothing crawled in ${dist}`);
+  process.exit(1);
+}
 console.log(`${pages.size} pages, ${links} internal links, ${fragments} fragments checked`);
 if (broken.length) {
   console.error(broken.join("\n"));
