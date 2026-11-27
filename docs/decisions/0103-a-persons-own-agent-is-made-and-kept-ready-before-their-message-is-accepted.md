@@ -73,7 +73,7 @@ This amendment replaces its first version, which recomputed the route from the c
   agent only. A stop whose agent is not listed is decided by `cancel`, which never wakes the agent: with no task running at it and nothing in flight the thread
   is cancelled locally (`CancelledBeforeStart`) at once; a delegation in flight is waited for, and the stop then stops the task it
   started (for a routed thread the wait's budget is `max_cancel_attempts` plus the retries that fit in `readyTimeoutSecs` plus
-  `OUTER_SLACK`, so a stop pressed while the agent wakes is not lost; the later phases of the stop, the listing attempts and the retries of `CancelTask`, count from the end of that wait, so their caps are that headroom plus their own); and with a task running at the
+  `OUTER_SLACK`, so a stop pressed while the agent wakes is not lost); and with a task running at the
   unlisted agent the stop is tried for up to `own_agent_listing_attempts` attempts of the row in all and then ends the thread
   locally with a warning that the task at the agent could not be stopped.
 - **The tier and the cap come from the own agent's card.** The request checks a tier against the thread's agent, the send against
@@ -100,7 +100,13 @@ This amendment replaces its first version, which recomputed the route from the c
   - **A rollback past this change is one-way.** An older binary drops `route` from `job_json` on its next write, and the next
     message then goes to the shared agent carrying the person's agent's context. Do not roll back past it while provisioning is
     on.
-  - The dispatcher re-reads the thread after a row's wake (`ensure_ready`), so it never acts on state from before the wait.
+  - **Known gaps (follow-up ANR-1078).** A stop has one attempt counter for its three phases (the wait for a delegation in
+    flight, the listing wait, `CancelTask`), and only the first has the wake headroom; no stored datum (the binding keeps no
+    time, a finished delegation's row is not reachable from the stop) says how many attempts a stop spent waiting. So (A) a
+    transient `CancelTask` error right after a long wake is not retried when the wait used up `max_cancel_attempts`, and the
+    stop is rejected; and (B) an agent that is not yet listed right after the wake is cancelled locally, without the listing
+    attempts, when the wait used up `own_agent_listing_attempts`. A stop that never waited has exactly the plain caps.
+  - The dispatcher re-reads the thread and the binding after a row's wake (`ensure_ready`), so it never acts on state from before the wait.
   - Turning provisioning off, or removing a kind from `provisioner.kinds`, **strands the routed threads**: they never return to
     the shared agent (a row for one that is not listed ends with the reason above).
   - The request-time checks of tier, model pick, uploads and child sessions read the **shared agent's** card and are

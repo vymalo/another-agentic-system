@@ -2121,9 +2121,9 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     }
 
     /// The attempts a stop may spend waiting for a routed delegation to wake its agent: the
-    /// retries that fit in the wake bound; none for a thread that is not routed. The phases of a
-    /// stop that come after the wait (the listing, the `CancelTask`) count from the end of it, so
-    /// their caps are this headroom plus their own.
+    /// retries that fit in the wake bound; none for a thread that is not routed. Only the wait
+    /// for the delegation uses it: the stop's one attempt counter is shared by the later phases
+    /// (the listing, the `CancelTask`), which keep their plain caps (a known gap, ADR 0103).
     fn wake_headroom(&self, routed: bool) -> u32 {
         let Some(bound) = routed.then(|| self.app.own_agent_wake_bound()).flatten() else {
             return 0;
@@ -2169,11 +2169,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         // agent is not woken for it: the stop waits for the listing as a row of the thread does,
         // then ends the thread locally (the task at the agent is not stopped)
         if running.is_some() && own_unlisted {
-            if row.attempts
-                < self
-                    .wake_headroom(routed)
-                    .saturating_add(self.cfg.own_agent_listing_attempts)
-            {
+            if row.attempts < self.cfg.own_agent_listing_attempts {
                 return self
                     .retry(
                         &row,
@@ -2205,13 +2201,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                     self.reject_cancel(&row, &ctx.agent, reason, false, OutboxFinal::Delivered)
                         .await
                 }
-                Err(e)
-                    if e.is_retryable()
-                        && row.attempts
-                            < self
-                                .wake_headroom(routed)
-                                .saturating_add(self.cfg.max_cancel_attempts) =>
-                {
+                Err(e) if e.is_retryable() && row.attempts < self.cfg.max_cancel_attempts => {
                     self.retry(&row, self.delay(row.attempts, &e), report(&e))
                         .await
                 }
