@@ -178,13 +178,16 @@ pub enum AppError {
     },
     /// The person's own agent did not become ready within the wait-ready bound
     /// (`provisioner.readyTimeoutSecs`, ANR-806): nothing was written and nothing was sent to any
-    /// agent. `waited` is the bound, not the dispatch's; `last` is where the agent stood, `None`
-    /// when the provisioner did not answer at all in time. The caller can send the message again.
+    /// agent. `waited` is the wait-ready bound for a caller that started the flight it waited on,
+    /// and otherwise the time this caller actually waited, rounded up to whole seconds (never the
+    /// dispatch's timeout); `last` is where the agent stood, `None` when the provisioner did not
+    /// answer at all in time. The caller can send the message again.
     #[error("your {kind} agent is not ready after {waited:?}")]
     AgentNotReady {
         /// The kind of agent (`coder`, `workspace`).
         kind: &'static str,
-        /// The wait-ready bound that ran out.
+        /// The wait-ready bound that ran out for a flight the caller started; otherwise the time
+        /// the caller actually waited, in whole seconds.
         waited: Duration,
         /// The last state seen, if the platform said one.
         last: Option<AgentState>,

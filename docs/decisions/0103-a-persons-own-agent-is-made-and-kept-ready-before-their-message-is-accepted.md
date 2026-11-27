@@ -104,8 +104,10 @@ slow agents could take every slot (`concurrency`, 32 by default) from everyone e
   would have come up. Whether the platform finishes a create or a resume whose client vanished is *unverified*; the flight makes
   it not matter for the dispatcher. The next claim finds the agent, the port's rule (below) covering a restart. **The request path keeps its own
   deadline:** a caller that joined a flight which ends `NotReady` before the caller's own deadline (its start plus
-  `readyTimeoutSecs` plus `OUTER_SLACK`) joins the next flight, or starts one, until that deadline; a flight a caller started is
-  final, and `waited` is the bound that ran out for it, the time actually waited for one it joined. The dispatcher's probe cuts
+  `readyTimeoutSecs` plus `OUTER_SLACK`) joins the next flight, or starts one, and **is cut at that deadline** (the wait is dropped at it; the
+  flight goes on). A joiner whose flight ends `NotReady` at once may send one more platform request, bounded and no spin: each extra
+  round is paid by a flight that ended. A flight a caller started is final, and `waited` is the bound that ran out when it started
+  the only flight it waited on, otherwise the time it actually waited, rounded up to whole seconds. The dispatcher's probe cuts
   the call at the probe either way. A flight the dispatcher started **cannot be cancelled by a person's delete** while it runs
   (it ends at the backstop at the latest, as the request path's wait did before). A probe that runs out, or a platform that answers
   `AgentNotReady`, sends the row back with `ThreadStore::wait_outbox` (the refund of PR 1, Consequences) after the
