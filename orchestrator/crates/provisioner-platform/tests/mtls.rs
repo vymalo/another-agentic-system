@@ -15,7 +15,7 @@ use axum::extract::Path;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use jiff::Timestamp;
+use jiff::{SignedDuration, Timestamp};
 use orch_ports::{
     AgentKind, AgentOwner, AgentProvisioner, PlatformCertificateFuture, PlatformClientCertificate,
     PlatformClientCertificates, PlatformCredentialsError, ProvisionError,
@@ -75,8 +75,13 @@ fn authority(name: &str) -> Authority {
 }
 
 impl Authority {
-    /// A client certificate: leaf first, then the intermediate (no root), with its key.
+    /// A client certificate: leaf first, then the intermediate (no root), with its key, good for a day.
     fn client(&self, serial: u64) -> PlatformClientCertificate {
+        self.client_until(serial, Timestamp::now() + SignedDuration::from_secs(86_400))
+    }
+
+    /// The same, whose end of validity (as the port reports it) is `not_after`.
+    fn client_until(&self, serial: u64, not_after: Timestamp) -> PlatformClientCertificate {
         let mut params = CertificateParams::new(Vec::new()).unwrap();
         params.distinguished_name = rcgen::DistinguishedName::new();
         params.subject_alt_names = vec![SanType::URI(
@@ -95,7 +100,7 @@ impl Authority {
             vec![leaf.der().to_vec(), self.inter_der.clone()],
             Zeroizing::new(key.serialize_der()),
             format!("{serial:02x}"),
-            Timestamp::now(),
+            not_after,
         )
     }
 
@@ -375,7 +380,43 @@ async fn a_certificate_of_another_authority_is_refused_by_the_listener() {
         matches!(error, ProvisionError::Unavailable { .. }),
         "{error:?}"
     );
-    // The check is the listener's own: it stopped the client, and no request got through.
+    // The check is the listener's own: it refused the handshake (its own count, which an error from
+    // anywhere else would not move), and no request got through.
+    for _ in 0..100 {
+        if server.seen.refused.load(Ordering::SeqCst) >= 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        server.seen.refused.load(Ordering::SeqCst) >= 1,
+        "the listener refused no handshake"
+    );
+    assert!(server.seen.authorization.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_certificate_that_is_over_is_not_presented_and_nothing_is_sent() {
+    let server = serve().await;
+    // The port should never answer one, but if it does the provisioner is the second check: at
+    // or before now is over, and not one connection is opened.
+    for not_after in [
+        Timestamp::now() - SignedDuration::from_secs(1),
+        Timestamp::now() - SignedDuration::from_secs(3_600),
+    ] {
+        let stub = Stub::new(Ok(server.authority.client_until(0x0c, not_after)));
+        let provisioner = provisioner(&server, stub.clone());
+        let error = provisioner
+            .ensure_ready(&owner(), AgentKind::Coder)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ProvisionError::Unavailable { .. }),
+            "{error:?}"
+        );
+        assert_eq!(stub.asked.load(Ordering::SeqCst), 1, "it was asked");
+    }
+    assert_eq!(server.seen.tcp.load(Ordering::SeqCst), 0);
     assert!(server.seen.authorization.lock().unwrap().is_empty());
 }
 

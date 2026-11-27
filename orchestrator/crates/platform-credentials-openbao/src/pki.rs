@@ -85,8 +85,9 @@ struct SignReply {
 #[derive(Deserialize)]
 struct SignData {
     certificate: String,
+    /// `null` is as good as absent: an answer with no chain still has the issuing CA.
     #[serde(default)]
-    ca_chain: Vec<String>,
+    ca_chain: Option<Vec<String>>,
     #[serde(default)]
     issuing_ca: Option<String>,
 }
@@ -181,10 +182,11 @@ impl Issuer {
         let key = generate()?;
         let signed = self.sign(&client_token, &key.csr_pem).await?;
         drop(client_token);
-        let extra: Vec<&str> = if signed.ca_chain.is_empty() {
+        let chain = signed.ca_chain.as_deref().unwrap_or_default();
+        let extra: Vec<&str> = if chain.is_empty() {
             signed.issuing_ca.iter().map(String::as_str).collect()
         } else {
-            signed.ca_chain.iter().map(String::as_str).collect()
+            chain.iter().map(String::as_str).collect()
         };
         let verified = leaf::verify(
             &signed.certificate,

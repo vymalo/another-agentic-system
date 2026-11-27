@@ -415,6 +415,13 @@ impl PlatformProvisioner {
             }
             PlatformAuth::ClientCertificate(certificates) => {
                 let certificate = certificates.current().await.map_err(credentials_error)?;
+                // The port answers a certificate that is valid now; the platform would refuse one
+                // that is not, but it is not the only check: nothing is sent with a lapsed one.
+                if certificate.not_after() <= jiff::Timestamp::now() {
+                    return Err(ProvisionError::unavailable(
+                        "the platform client certificate is over",
+                    ));
+                }
                 Ok((self.certificate_client(&certificate)?, None))
             }
         }

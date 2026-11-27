@@ -64,13 +64,16 @@ stateDiagram-v2
 * **The leaf is checked before it is used, and anything else fails closed:** it parses; its public key is the
   one of our CSR; its extended key usage has `clientAuth` and **not** `serverAuth`; its names are **exactly
   one URI, the configured id**; it is valid now on the injected `Clock` and for longer than the renewal
-  margin; it is not self-signed. The chain presented is the leaf and the intermediates OpenBao sent, **no
-  root**, each once, at most eight.
+  margin; it is not self-signed; it is a leaf and not an authority (no `cA`, no `keyCertSign`); and `anyExtendedKeyUsage` is not
+  among its usages. The chain presented is the leaf and the intermediates OpenBao sent, **no
+  root**, each once, at most eight; a `ca_chain` that is `null` or absent falls back to `issuing_ca`.
 * **Renewal.** One caller at a time decides and renews (single flight: a burst of requests makes one login and
   one signing). The leaf is renewed once `now >= not_after - renewalMargin`, with a **new key** each time.
-  While inside the margin and the old leaf is still valid, a failed renewal serves the old leaf and is not
-  tried again for 30 s. Past `not_after`, a failed renewal is an error: **there is no identity, and the
-  provisioner sends nothing**.
+  **A failed issue is remembered, with or without a leaf:** nothing is asked of OpenBao for 30 s after an
+  `Unavailable` and **60 s after a `Refused`** (a setup fault a retry does not mend, so half the cadence, but
+  a fixed role is seen within a minute). Meanwhile a caller gets the old leaf if it is still valid, and
+  otherwise the recorded error: a burst with no leaf makes one login and one signing, not one each in turn.
+  Past `not_after`, a failed renewal is an error: **there is no identity, and the provisioner sends nothing**.
 * **Errors carry a class** (`PlatformCredentialsError`, `Classify`): a 400, 401 or 403 from OpenBao is
   `Refused` (`Unauthenticated`: the deployment's setup, not a transient fault); a 5xx, a network error, an
   answer that is not what OpenBao documents, a missing token file and **every leaf that fails the check** are
@@ -97,7 +100,7 @@ reads them from the `provisioner.credentials` block of its configuration
 | `service_account_token_file` | the pod's own | read at each login |
 | `pki_mount`, `pki_role` | — | the PKI engine's mount and **this certificate's own role** |
 | `spiffe_id` | — | `spiffe://<trust domain>/<path>` in its plain form: the one name the leaf must carry |
-| `ttl` | 86 400 s (a day) | at least 60 s; the role's `max_ttl` may cut it |
+| `ttl` | 86 400 s (a day) | at least 60 s; the role's `max_ttl` may cut it, but must stay above `renewal_margin` |
 | `renewal_margin` | 28 800 s (8 h) | must be less than `ttl` |
 | `timeout` | 5 s | one request to OpenBao |
 
@@ -113,8 +116,9 @@ the cheapest to make on each renewal. (Both are defaults, set by configuration.)
 
 The PKI role must be written to match what the adapter checks, or the leaf is refused here:
 `client_flag=true`, `server_flag=false`, `allowed_uri_sans` (exactly the configured id),
-`use_csr_sans=false`, `require_cn=false` (and no `use_csr_common_name`), `key_type=ec`, `key_bits=256`, and a
-short `max_ttl` (at most the configured `ttl`). The Kubernetes auth role binds the orchestrator's service
+`use_csr_sans=false`, `require_cn=false` (and no `use_csr_common_name`), `key_type=ec`, `key_bits=256`, **no
+extra `ext_key_usage`**, and a short `max_ttl` (at most the configured `ttl` and **greater than the renewal
+margin**). The Kubernetes auth role binds the orchestrator's service
 account and namespace and gives it **only** `update` on `<pki>/sign/<role>`. This crate does not create any of
 it.
 
@@ -128,8 +132,11 @@ with the one URI name and the chain without the root (and a root sent anyway not
 the margin; a renewal inside it with a **new serial and a new key**; **one signing under eight concurrent
 callers**; past `not_after` with the PKI down is `Unavailable` and inside the margin the old leaf is served and
 not hammered; a refused login or signing is `Refused` and a down or unreadable OpenBao `Unavailable`, with
-nothing kept; each leaf that is not ours (server authority too, none, server only, two names, another name, an
-extra DNS name, no name, another key, expired, shorter than the margin) is refused as unusable; the token file
+nothing kept; each leaf that is not ours (server authority too, any usage, none, server only, two names, another name,
+an extra DNS name, no name, another key, expired, shorter than the margin, a CA, `keyCertSign`, self-signed) is
+refused as unusable; a chain of eight is presented and one of nine refused; a `null` `ca_chain` falls back to
+`issuing_ca`; **a burst with no leaf makes one login and every caller gets the same error**, with the pause
+after a failure and after a refusal; a back-off that runs past the end of the leaf is an error without a new try; the token file
 is read again at each login; **no sentinel, `BEGIN`, token or key bytes in a `Debug`, an error or a captured
 log**; and the settings are checked when the adapter is built.
 

@@ -37,12 +37,20 @@ header, so it does not fit the token port: the HTTP client must be **built with 
    the leaf (`use_csr_sans=false`): the request cannot ask for any other name.
 3. **The leaf is checked before it is used, and any other leaf fails closed** (`Unavailable`): it parses; its public key is the
    CSR's; its extended key usage has `clientAuth` and **not** `serverAuth`; its names are exactly one URI, the configured id; it is
-   valid now on the injected `Clock`, and for longer than the renewal margin; it is not self-signed. The chain presented is the leaf
-   and the intermediates, **no root**, each once, at most eight.
-4. **Renewal is single-flight and early.** One caller decides and renews while the others wait. A leaf is renewed once `now >=
-   not_after - renewalMargin`, with a new key. Inside the margin, while the old leaf is still valid, a failed renewal serves the old
-   leaf and is not tried again for 30 s; past `not_after`, a failed renewal is an error and there is no identity. A 400, 401 or 403 is
-   `Refused`; a 5xx, a network error, an unreadable answer, a missing token file and every refused leaf are `Unavailable`.
+   valid now on the injected `Clock`, and for longer than the renewal margin; it is not self-signed; it is **a leaf and not an
+   authority** (no `basicConstraints` `cA`, no `keyCertSign`); and its extended key usages do not include `anyExtendedKeyUsage`. The
+   chain presented is the leaf and the intermediates, **no root**, each once, at most eight. A `ca_chain` that is `null` or absent
+   falls back to `issuing_ca`.
+4. **Renewal is single-flight and early, and a failure is remembered.** One caller decides and renews while the others wait. A
+   leaf is renewed once `now >= not_after - renewalMargin`, with a new key. **Every failed issue is recorded with its error and a
+   pause, whether or not a leaf is held:** 30 s after an `Unavailable`, **60 s after a `Refused`** (a refusal is a fault of the
+   deployment's setup that a retry does not mend, so it is tried at half the cadence, not never: a role that is fixed is seen within
+   a minute). During the pause nothing is asked of OpenBao. A caller that comes meanwhile gets the old leaf if it is still valid
+   (inside the margin), and otherwise **the recorded error**, so a burst of callers with no leaf makes one login and one signing and
+   not one each in turn while OpenBao is down. Past `not_after` a failed renewal is an error and there is no identity. A 400, 401
+   or 403 is `Refused`; a 5xx, a network error, an unreadable answer, a missing token file and every refused leaf are
+   `Unavailable`. **The provisioner is a second check:** a certificate whose `not_after` is at or before now is answered as
+   unavailable and nothing is sent, whatever the port said.
 5. **No key, CSR, certificate or token in a log, an error or a `Debug`.** An error is a stage and a class; a log line is a serial and
    a time; the key and the tokens are in `zeroize` buffers.
 6. **Defaults.** `ttlSecs` 86 400 and `renewalMarginSecs` 28 800 (less than the life, enforced), key P-256, the Kubernetes mount
@@ -50,7 +58,9 @@ header, so it does not fit the token port: the HTTP client must be **built with 
    of a stolen one**: a day keeps it short, and eight hours of margin give three renewal tries before the leaf lapses.
 7. **The OpenBao side, which ANR-714 owns (the live PKI).** The PKI role is its own, for this one use (not the prompt-signing
    certificate of ANR-718): `client_flag=true`, `server_flag=false`, `allowed_uri_sans` exactly the SPIFFE id, `use_csr_sans=false`,
-   `require_cn=false`, `key_type=ec`, `key_bits=256`, and a short `max_ttl` no greater than `ttlSecs`; the Kubernetes auth role binds
+   `require_cn=false`, `key_type=ec`, `key_bits=256`, **no extra `ext_key_usage`** (so no `any` and no server usage), and a short
+   `max_ttl` **no greater than `ttlSecs` and greater than `renewalMarginSecs`** (a leaf that does not outlive the margin is refused
+   as unusable, so every issue would fail); the Kubernetes auth role binds
    the orchestrator's service account and gives it only `update` on `<pki>/sign/<role>`. This change creates none of it.
 8. **Configuration.** `provisioner.credentials.type: openbao-pki` (`address`, `caFile`, `kubernetesMount`, `authRole`,
    `serviceAccountTokenFile`, `pkiMount`, `pkiRole`, `spiffeId`, `ttlSecs`, `renewalMarginSecs`, `serverCaFile`), validated at load:
@@ -109,7 +119,10 @@ stateDiagram-v2
 - The binary gains a dependency on `rcgen` (key and CSR, on aws-lc-rs) and `x509-cert` (to read the leaf it checks), both behind
   the `provisioner-platform` feature, and the workspace gains `tokio-rustls` for the tests.
 - Rotation of the leaf needs no restart; rotation of the service-account token needs none either (it is read at each login).
-- A role whose `max_ttl` is below the renewal margin makes every issue fail as unusable: the operator sees it in the log at once.
+- A role whose `max_ttl` is not above the renewal margin makes every issue fail as unusable: the operator sees it in the log at once.
+- `orch-ports` gains the conformance testkit `platform_client_certificates_conformance!` (valid now and complete; an error means no
+  identity and is classified; a lapsed certificate is never answered; a renewal is a new serial and key; no key in a `Debug`) and the
+  in-memory `MemoryPlatformClientCertificates` it runs against, with fakes that each break one rule.
 
 ## Alternatives rejected
 

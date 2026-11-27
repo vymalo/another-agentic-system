@@ -47,8 +47,13 @@ pub const DEFAULT_TTL_SECS: u64 = 86_400;
 /// The default margin before the end of validity at which a leaf is renewed: eight hours, so a
 /// renewal has three tries a day before the leaf lapses.
 pub const DEFAULT_RENEWAL_MARGIN_SECS: u64 = 28_800;
-/// How long a failed renewal is not tried again while the old leaf is still good.
+/// How long after a failed issue (an OpenBao that is down, a leaf that is refused) nothing is tried
+/// again, whether or not a leaf is still held: the callers that come meanwhile are answered the
+/// same error, or the old leaf, and OpenBao is left alone when it is down.
 const RETRY_AFTER: SignedDuration = SignedDuration::from_secs(30);
+/// The same after a **refusal** (a 400, 401 or 403): a fault of the deployment's setup that a retry
+/// does not mend, so it is tried less often than a fault that passes by itself.
+const RETRY_AFTER_REFUSED: SignedDuration = SignedDuration::from_secs(60);
 /// The shortest life a leaf may be asked for.
 const MIN_TTL: Duration = Duration::from_secs(60);
 
@@ -153,12 +158,14 @@ pub enum BuildError {
     Http,
 }
 
-/// What the adapter holds between two calls: the leaf and when a failed renewal may be tried
-/// again.
+/// What the adapter holds between two calls: the leaf, and the last failed issue with the moment
+/// before which none is tried again.
 #[derive(Default)]
 struct State {
     held: Option<PlatformClientCertificate>,
     retry_not_before: Option<Timestamp>,
+    /// What the last issue failed with; kept while `retry_not_before` is in the future.
+    failure: Option<PlatformCredentialsError>,
 }
 
 /// [`PlatformClientCertificates`] from an OpenBao PKI role, over the pod's service-account login.
@@ -232,11 +239,15 @@ impl OpenBaoClientCertificates {
             .as_ref()
             .filter(|held| now < held.not_after())
             .cloned();
+        let backing_off = state.retry_not_before.is_some_and(|until| now < until);
         if let Some(held) = &valid {
-            let backing_off = state.retry_not_before.is_some_and(|until| now < until);
             if !renewal_due(held.not_after(), self.margin, now) || backing_off {
                 return Ok(held.clone());
             }
+        } else if let (true, Some(error)) = (backing_off, state.failure) {
+            // No identity, and the last try failed a moment ago: the callers that queued behind it
+            // are answered what it was answered, and OpenBao is not asked again until the pause is over.
+            return Err(error);
         }
         match self.issuer.issue(self.clock.as_ref(), self.margin).await {
             Ok(fresh) => {
@@ -247,6 +258,7 @@ impl OpenBaoClientCertificates {
                 );
                 state.held = Some(fresh.clone());
                 state.retry_not_before = None;
+                state.failure = None;
                 Ok(fresh)
             }
             Err(failure) => {
@@ -255,17 +267,21 @@ impl OpenBaoClientCertificates {
                     still_valid = valid.is_some(),
                     "the platform client certificate could not be renewed"
                 );
+                let error = PlatformCredentialsError::from(failure);
+                let pause = if error == PlatformCredentialsError::Refused {
+                    RETRY_AFTER_REFUSED
+                } else {
+                    RETRY_AFTER
+                };
+                state.retry_not_before = now.checked_add(pause).ok();
+                state.failure = Some(error);
                 match valid {
-                    // Inside the margin, and the old leaf is still good: keep serving it and
-                    // do not hammer OpenBao.
-                    Some(held) => {
-                        state.retry_not_before = now.checked_add(RETRY_AFTER).ok();
-                        Ok(held)
-                    }
+                    // Inside the margin, and the old leaf is still good: keep serving it.
+                    Some(held) => Ok(held),
                     // None, or past its end: no identity. The old key is dropped with it.
                     None => {
                         state.held = None;
-                        Err(failure.into())
+                        Err(error)
                     }
                 }
             }

@@ -9,7 +9,9 @@ use x509_cert::Certificate;
 use x509_cert::der::Decode as _;
 use x509_cert::der::asn1::ObjectIdentifier;
 use x509_cert::ext::pkix::name::GeneralName;
-use x509_cert::ext::pkix::{ExtendedKeyUsage, SubjectAltName};
+use x509_cert::ext::pkix::{
+    BasicConstraints, ExtendedKeyUsage, KeyUsage, KeyUsages, SubjectAltName,
+};
 use x509_cert::time::Time;
 
 /// The chain sent to the platform is the leaf and at most seven more.
@@ -18,6 +20,8 @@ const MAX_CHAIN: usize = 8;
 const CLIENT_AUTH: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.2");
 /// id-kp-serverAuth.
 const SERVER_AUTH: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.1");
+/// anyExtendedKeyUsage: a leaf that says it may be used for anything is not for clients only.
+const ANY_EXTENDED_KEY_USAGE: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.37.0");
 
 /// Why a leaf is not used. A phrase: nothing of the certificate is in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -28,6 +32,8 @@ pub(crate) enum LeafError {
     OtherKey,
     #[error("it is not for client authentication only")]
     Purpose,
+    #[error("it is a certificate authority, or may sign certificates")]
+    Authority,
     #[error("it does not carry exactly the configured SPIFFE id and nothing else as its names")]
     Identity,
     #[error("it is not valid now")]
@@ -122,8 +128,24 @@ pub(crate) fn verify(
     // 2. For clients, and for nothing else: clientAuth present, serverAuth absent.
     match tbs.get::<ExtendedKeyUsage>() {
         Ok(Some((_, ExtendedKeyUsage(purposes))))
-            if purposes.contains(&CLIENT_AUTH) && !purposes.contains(&SERVER_AUTH) => {}
+            if purposes.contains(&CLIENT_AUTH)
+                && !purposes.contains(&SERVER_AUTH)
+                && !purposes.contains(&ANY_EXTENDED_KEY_USAGE) => {}
         Ok(_) => return Err(LeafError::Purpose),
+        Err(_) => return Err(LeafError::Unreadable),
+    }
+
+    // 2b. A leaf, not an authority: no `cA`, and no right to sign certificates.
+    match tbs.get::<BasicConstraints>() {
+        Ok(Some((_, constraints))) if constraints.ca => return Err(LeafError::Authority),
+        Ok(_) => {}
+        Err(_) => return Err(LeafError::Unreadable),
+    }
+    match tbs.get::<KeyUsage>() {
+        Ok(Some((_, usage))) if usage.0.contains(KeyUsages::KeyCertSign) => {
+            return Err(LeafError::Authority);
+        }
+        Ok(_) => {}
         Err(_) => return Err(LeafError::Unreadable),
     }
 

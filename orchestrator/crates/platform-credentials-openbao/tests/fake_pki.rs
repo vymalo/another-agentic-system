@@ -63,6 +63,14 @@ enum Mis {
     Expired,
     /// Valid, and for less than the renewal margin.
     ShortLived,
+    /// clientAuth and anyExtendedKeyUsage.
+    AnyEku,
+    /// A certificate authority (`cA` true).
+    CaLeaf,
+    /// Not a CA, but allowed to sign certificates (`keyCertSign`).
+    KeyCertSign,
+    /// Issued by itself: issuer and subject are the same name.
+    SelfSigned,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -83,6 +91,8 @@ struct Authority {
     inter_der: Vec<u8>,
     inter_pem: String,
     issuer: Issuer<'static, KeyPair>,
+    /// Nine more intermediates under the root, for a chain that is too long.
+    extras_pem: Vec<String>,
 }
 
 fn odt(at: Timestamp) -> time::OffsetDateTime {
@@ -112,7 +122,24 @@ fn authority(now: Timestamp) -> Authority {
     inter.not_after = odt(now.checked_add(ten_years).unwrap());
     let inter_key = KeyPair::generate().unwrap();
     let inter_cert = inter.signed_by(&inter_key, &root_issuer).unwrap();
+    let extras_pem = (0..9)
+        .map(|i| {
+            let mut extra = CertificateParams::new(Vec::new()).unwrap();
+            extra.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+            extra
+                .distinguished_name
+                .push(DnType::CommonName, format!("Fake Extra {i}"));
+            extra.key_usages = vec![KeyUsagePurpose::KeyCertSign];
+            extra.not_before = odt(now.checked_sub(Duration::from_secs(86_400)).unwrap());
+            extra.not_after = odt(now.checked_add(ten_years).unwrap());
+            extra
+                .signed_by(&KeyPair::generate().unwrap(), &root_issuer)
+                .unwrap()
+                .pem()
+        })
+        .collect();
     Authority {
+        extras_pem,
         root_der: root_cert.der().to_vec(),
         root_pem: root_cert.pem(),
         inter_der: inter_cert.der().to_vec(),
@@ -131,6 +158,10 @@ struct Fake {
     sign_delay_ms: AtomicU64,
     /// Answer the root in `ca_chain` whatever the request says about `remove_roots_from_chain`.
     always_send_root: AtomicBool,
+    /// How many of the authority's extra intermediates to append to `ca_chain`.
+    extra_chain: AtomicUsize,
+    /// Answer `"ca_chain": null`.
+    null_chain: AtomicBool,
     jwts: Mutex<Vec<String>>,
     sign_bodies: Mutex<Vec<Value>>,
     /// The public point of the key of each CSR.
@@ -239,6 +270,10 @@ async fn sign(State(fake): State<Shared>, headers: HeaderMap, Json(body): Json<V
             ExtendedKeyUsagePurpose::ServerAuth,
         ],
         Some(Mis::ServerAuthOnly) => vec![ExtendedKeyUsagePurpose::ServerAuth],
+        Some(Mis::AnyEku) => vec![
+            ExtendedKeyUsagePurpose::ClientAuth,
+            ExtendedKeyUsagePurpose::Any,
+        ],
         Some(Mis::NoEku) => Vec::new(),
         _ => vec![ExtendedKeyUsagePurpose::ClientAuth],
     };
@@ -251,11 +286,32 @@ async fn sign(State(fake): State<Shared>, headers: HeaderMap, Json(body): Json<V
     ));
     params.subject_alt_names = names;
     params.extended_key_usages = usages;
-    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-    params.is_ca = IsCa::NoCa;
+    params.key_usages = match mis {
+        Some(Mis::KeyCertSign) => vec![
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::KeyCertSign,
+        ],
+        _ => vec![KeyUsagePurpose::DigitalSignature],
+    };
+    params.is_ca = match mis {
+        Some(Mis::CaLeaf) => IsCa::Ca(BasicConstraints::Constrained(0)),
+        _ => IsCa::NoCa,
+    };
     let leaf = if mis == Some(Mis::ForeignKey) {
         params
             .signed_by(&KeyPair::generate().unwrap(), &fake.authority.issuer)
+            .unwrap()
+    } else if mis == Some(Mis::SelfSigned) {
+        // The same name as subject and as issuer, signed by a key that is not ours.
+        params.distinguished_name = rcgen::DistinguishedName::new();
+        params.distinguished_name.push(DnType::CommonName, "self");
+        let mut own = CertificateParams::new(Vec::new()).unwrap();
+        own.distinguished_name.push(DnType::CommonName, "self");
+        params
+            .signed_by(
+                &csr.public_key,
+                &Issuer::new(own, KeyPair::generate().unwrap()),
+            )
             .unwrap()
     } else {
         params
@@ -268,9 +324,16 @@ async fn sign(State(fake): State<Shared>, headers: HeaderMap, Json(body): Json<V
     if fake.always_send_root.load(Ordering::SeqCst) || body["remove_roots_from_chain"] != true {
         chain.push(fake.authority.root_pem.clone());
     }
+    let extra = fake.extra_chain.load(Ordering::SeqCst);
+    chain.extend(fake.authority.extras_pem.iter().take(extra).cloned());
+    let ca_chain = if fake.null_chain.load(Ordering::SeqCst) {
+        Value::Null
+    } else {
+        json!(chain)
+    };
     Json(json!({"data": {
         "certificate": leaf.pem(),
-        "ca_chain": chain,
+        "ca_chain": ca_chain,
         "issuing_ca": fake.authority.inter_pem,
         "serial_number": "ignored-by-the-adapter",
     }}))
@@ -316,6 +379,8 @@ async fn start_with(tweak: impl FnOnce(&mut OpenBaoPkiConfig)) -> Harness {
         serial: AtomicU64::new(0),
         sign_delay_ms: AtomicU64::new(0),
         always_send_root: AtomicBool::new(false),
+        extra_chain: AtomicUsize::new(0),
+        null_chain: AtomicBool::new(false),
         jwts: Mutex::new(Vec::new()),
         sign_bodies: Mutex::new(Vec::new()),
         csr_keys: Mutex::new(Vec::new()),
@@ -506,6 +571,8 @@ async fn inside_the_margin_the_old_leaf_is_served_while_the_pki_is_down_and_not_
 async fn a_refused_login_or_signing_is_refused_and_nothing_is_kept() {
     let h = start().await;
     for (mode, logins, signs) in [(Mode::LoginRefused, 1, 0), (Mode::SignRefused, 2, 1)] {
+        // Past the pause after a refusal, so that the next one is really asked.
+        h.clock.advance(secs(61));
         h.fake.set(mode);
         let error = h.adapter.current().await.unwrap_err();
         assert_eq!(error, PlatformCredentialsError::Refused, "{mode:?}");
@@ -514,6 +581,7 @@ async fn a_refused_login_or_signing_is_refused_and_nothing_is_kept() {
         assert_eq!(h.fake.signs(), signs, "{mode:?}");
     }
     // The refusal did not poison the adapter: when OpenBao grants again, it issues.
+    h.clock.advance(secs(61));
     h.fake.set(Mode::Ok);
     h.adapter.current().await.unwrap();
 }
@@ -522,6 +590,8 @@ async fn a_refused_login_or_signing_is_refused_and_nothing_is_kept() {
 async fn a_failing_or_unreadable_openbao_is_unavailable() {
     let h = start().await;
     for mode in [Mode::LoginDown, Mode::SignDown, Mode::Garbage] {
+        // Past the pause after a failure, so that the next one is really asked.
+        h.clock.advance(secs(31));
         h.fake.set(mode);
         assert_eq!(
             h.adapter.current().await.unwrap_err(),
@@ -534,10 +604,10 @@ async fn a_failing_or_unreadable_openbao_is_unavailable() {
     let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = format!("http://{}", closed.local_addr().unwrap());
     drop(closed);
-    let adapter = OpenBaoClientCertificates::new(OpenBaoPkiConfig::new(
-        address, AUTH_ROLE, PKI_MOUNT, PKI_ROLE, SPIFFE,
-    ))
-    .unwrap();
+    // With the token file there, so that it is the network that fails and not the file.
+    let mut config = OpenBaoPkiConfig::new(address, AUTH_ROLE, PKI_MOUNT, PKI_ROLE, SPIFFE);
+    config.service_account_token_file = h.token_file.clone();
+    let adapter = OpenBaoClientCertificates::new(config).unwrap();
     assert_eq!(
         adapter.current().await.unwrap_err(),
         PlatformCredentialsError::Unavailable
@@ -569,7 +639,13 @@ async fn every_leaf_that_is_not_ours_is_refused_as_unusable() {
         Mis::ForeignKey,
         Mis::Expired,
         Mis::ShortLived,
+        Mis::AnyEku,
+        Mis::CaLeaf,
+        Mis::KeyCertSign,
+        Mis::SelfSigned,
     ] {
+        // Past the pause after the last failure, so that this one is really asked.
+        h.clock.advance(secs(31));
         let signed_before = h.fake.signs();
         h.fake.set(Mode::Mis(mis));
         let error = h.adapter.current().await.unwrap_err();
@@ -581,6 +657,7 @@ async fn every_leaf_that_is_not_ours_is_refused_as_unusable() {
         );
     }
     // And the right leaf is still accepted by the same adapter.
+    h.clock.advance(secs(31));
     h.fake.set(Mode::Ok);
     h.adapter.current().await.unwrap();
 }
@@ -746,4 +823,98 @@ async fn the_settings_are_checked_when_the_adapter_is_built() {
         build(good(), &|c| c.ca_pem = Some("not pem".into())),
         Some(BuildError::BadCa)
     ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_burst_with_no_leaf_asks_openbao_once_and_every_caller_gets_the_same_error() {
+    for (mode, error, pause) in [
+        (Mode::SignDown, PlatformCredentialsError::Unavailable, 30),
+        (Mode::LoginRefused, PlatformCredentialsError::Refused, 60),
+    ] {
+        let h = start().await;
+        h.fake.set(mode);
+        // Slow enough for the eight callers to queue behind the first.
+        h.fake.sign_delay_ms.store(200, Ordering::SeqCst);
+        let tasks: Vec<_> = (0..8)
+            .map(|_| {
+                let adapter = h.adapter.clone();
+                tokio::spawn(async move { adapter.current().await })
+            })
+            .collect();
+        for task in tasks {
+            assert_eq!(task.await.unwrap().unwrap_err(), error, "{mode:?}");
+        }
+        assert_eq!(
+            h.fake.logins(),
+            1,
+            "{mode:?}: one login for the whole burst"
+        );
+        assert!(h.fake.signs() <= 1, "{mode:?}: one signing at most");
+
+        // Nothing more is asked while the pause lasts, and it is asked again when it is over.
+        h.clock.advance(secs(pause - 1));
+        assert_eq!(h.adapter.current().await.unwrap_err(), error);
+        assert_eq!(h.fake.logins(), 1, "{mode:?}: inside the pause");
+        h.clock.advance(secs(2));
+        assert_eq!(h.adapter.current().await.unwrap_err(), error);
+        assert_eq!(h.fake.logins(), 2, "{mode:?}: after the pause");
+        // And the PKI coming back is seen at the next try.
+        h.fake.set(Mode::Ok);
+        h.clock.advance(secs(61));
+        h.adapter.current().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_back_off_that_runs_past_the_end_of_the_leaf_is_an_error_without_a_new_try() {
+    let h = start().await;
+    h.adapter.current().await.unwrap();
+    h.fake.set(Mode::SignDown);
+    // Ten seconds before the end: due, tried, failed; the old leaf is still served.
+    h.clock.advance(secs(24 * 3600 - 10));
+    h.adapter.current().await.unwrap();
+    assert_eq!(h.fake.logins(), 2);
+    // The leaf lapses inside the pause: no identity, the last error, and OpenBao is not asked.
+    h.clock.advance(secs(15));
+    assert_eq!(
+        h.adapter.current().await.unwrap_err(),
+        PlatformCredentialsError::Unavailable
+    );
+    assert_eq!(h.fake.logins(), 2);
+    // Past the pause it is asked again.
+    h.clock.advance(secs(30));
+    assert_eq!(
+        h.adapter.current().await.unwrap_err(),
+        PlatformCredentialsError::Unavailable
+    );
+    assert_eq!(h.fake.logins(), 3);
+}
+
+#[tokio::test]
+async fn a_chain_of_at_most_eight_is_presented_and_a_longer_one_is_refused() {
+    let h = start().await;
+    // The leaf, the intermediate and six more: eight.
+    h.fake.extra_chain.store(6, Ordering::SeqCst);
+    assert_eq!(h.adapter.current().await.unwrap().chain_der().len(), 8);
+    // One more makes nine.
+    h.clock.advance(secs(24 * 3600 + 1));
+    h.fake.extra_chain.store(7, Ordering::SeqCst);
+    assert_eq!(
+        h.adapter.current().await.unwrap_err(),
+        PlatformCredentialsError::Unavailable
+    );
+}
+
+#[tokio::test]
+async fn a_null_chain_falls_back_to_the_issuing_ca() {
+    let h = start().await;
+    h.fake.null_chain.store(true, Ordering::SeqCst);
+    let cert = h.adapter.current().await.unwrap();
+    assert_eq!(
+        cert.chain_der(),
+        [
+            h.fake.leaves.lock().unwrap()[0].clone(),
+            h.fake.authority.inter_der.clone()
+        ]
+    );
 }

@@ -7,7 +7,8 @@
 //! [`PendingAuthorizations`](crate::PendingAuthorizations),
 //! [`TeamPresetStore`](crate::TeamPresetStore), [`PromptSigner`](crate::PromptSigner),
 //! [`CredentialBroker`](crate::CredentialBroker), [`AgentProvisioner`](crate::AgentProvisioner) and
-//! [`EntitlementSource`](crate::EntitlementSource) implementation must pass it.
+//! [`EntitlementSource`](crate::EntitlementSource) and
+//! [`PlatformClientCertificates`](crate::PlatformClientCertificates) implementation must pass it.
 //!
 //! ```ignore
 //! async fn make() -> Option<MyStore> { /* None skips, e.g. when a database URL is unset */ }
@@ -24,6 +25,7 @@ pub mod chat_model;
 pub mod credential_broker;
 pub mod entitlement;
 pub mod pending_authorizations;
+pub mod platform_client_certificates;
 pub mod prompt_signer;
 pub mod prompt_store;
 pub mod provisioner;
@@ -1347,6 +1349,42 @@ macro_rules! entitlement_conformance {
                         .expect("conformance case timed out");
                     }
                     None => eprintln!("skipped: no entitlement source available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `PlatformClientCertificates` conformance case. `$make` is an
+/// `async fn() -> Option<F>` returning a fresh, isolated
+/// [`PlatformClientCertificatesFixture`](platform_client_certificates::PlatformClientCertificatesFixture)
+/// (`None` skips the suite). Each case gives up after 10 s. The calling crate needs `tokio` (with
+/// `macros`, `rt` and `time`) as a dev-dependency.
+#[macro_export]
+macro_rules! platform_client_certificates_conformance {
+    ($make:path) => {
+        $crate::platform_client_certificates_conformance!(@cases $make;
+            a_certificate_is_valid_now_and_complete
+            an_error_means_no_identity_and_is_classified
+            a_certificate_that_has_lapsed_is_never_answered
+            a_renewal_is_a_new_certificate
+            a_certificate_shows_no_key
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test]
+            async fn $case() {
+                match $make().await {
+                    Some(fixture) => {
+                        tokio::time::timeout(
+                            ::std::time::Duration::from_secs(10),
+                            $crate::testkit::platform_client_certificates::$case(fixture),
+                        )
+                        .await
+                        .expect("conformance case timed out");
+                    }
+                    None => eprintln!("skipped: no certificate source available"),
                 }
             }
         )*
