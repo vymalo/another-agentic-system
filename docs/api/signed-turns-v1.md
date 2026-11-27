@@ -108,7 +108,7 @@ a **proposal to put to adam for T4**:
 
 ```json
 {"run": "<task id>", "cnv": "<base64url sha-256 of the conversation id>", "idx": 12, "prv": "<chain hash before idx 12>",
- "count": 14, "head": "<adam-head/v1 signature>",
+ "statement": "<adam-turns/v1 detached JWS over {run, cnv, len, chain}>", "source": "<source context id, on a fork>",
  "rows": [ {"role": "assistant", "content": "...", "extra_content": {"adam": {"turn_signature": "<header>..<signature>"}}},
            {"role": "tool", "content": "...", "extra_content": {"adam": {"turn_signature": "<header>..<signature>"}}} ]}
 ```
@@ -133,8 +133,10 @@ From adam's ADR 0068 (decisions 2 and 3), **verified 2026-11-27** against adam-r
 
 - The rows are **every committed row of the run, a person's rows too** (steer/v1 inserts them), so the whole chain is
   recomputable from the rows alone. Whether adam does this is *unverified*.
-- A **row count** and the **head signature** (`adam-head/v1` over `len`, `chain` and the head). The chain alone cannot show
-  that the last rows were dropped, since a prefix of a valid chain is valid; the count and the head can.
+- A **statement**: a detached JWS (the same header rules and keys) over `{typ: "adam-turns/v1", run, cnv, len, chain}`, with
+  `len` the run's row count and `chain` the hash `h(len-1)`. The chain alone cannot show that the last rows were dropped,
+  since a prefix of a valid chain is valid, and the orchestrator cannot check `adam-head/v1`, which signs the whole state
+  document. **Once the card lists the URI the statement is required.**
 - Whether a task's message carries the **whole transcript, signed again under this task's run** (adam ADR 0068, decision 5)
   or only the rows this task committed is *unverified until T4*.
 
@@ -153,10 +155,11 @@ For each message that carries `metadata[URI]`, in this order. The first failure 
 | **`run` equals this response's A2A task id**, on every row | `wrong_run` |
 | `cnv` is the same on every row and, **after the thread's first verified message, equals the `cnv` pinned to the thread** | `wrong_conversation` |
 | `idx` runs without a gap, and each row's `prv` is the chain hash of the row before it | `out_of_order` |
-| with `count` and `head` given: the count and the head's `len` and `chain` agree with the rows | `truncated` |
+| the `statement` is present | `no_statement` |
+| the statement verifies, its `len` is the first `idx` plus the number of rows, and its `chain` is the chain hash after the last row | `truncated` |
 
 The first row's `prv` is taken as given: a signature over it shows adam signed that row at that position over that prefix,
-not that the orchestrator holds the prefix. Without `count` and `head` **dropping the final rows is not detected**. The
+not that the orchestrator holds the prefix. A missing statement is refused, so a dropped tail cannot pass. The
 orchestrator **never** edits a row to make it verify and never signs one.
 
 **A refused row is never shown as the agent's verified content.** Nothing of it is stored, projected into a frame, exported
@@ -167,16 +170,19 @@ failed: its message and steps are plain A2A and are shown, marked unverified.
 **The comparison and the mark.** When the rows verify, the orchestrator compares the task's final message text with the last
 assistant row's content, and each tool step's output with the tool row it belongs to. The mark is the closed member `signed`
 (*proposed*): `verified` when everything compared matches, `unverified` on any mismatch, on refused rows, and when an agent
-that listed the URI sent no rows; **absent** for an agent that does not list it. It is recorded on the logged `agent_message`
-and on the step's finishing event, and projected as `vymalo.signed` on the AG-UI message and step. The orchestrator never
-hides the text; what a client draws from the mark is the web's decision. A step whose output the agent shortened for the
-steps bound (`steps/v1`) is compared by the bounded prefix and says so; the exact rule is the build's.
+that listed the URI sent no rows; **absent** for an agent that does not list it. The rows arrive with the final message, after the steps'
+`agent_step` events were logged ([`steps-v1.md`](steps-v1.md)), so the marks are recorded **on the `agent_message`**: `signed`
+for the message (two-valued) and a closed map from step id to `verified` or `unverified` for that task's steps. They are
+projected as `vymalo.signed` on the AG-UI message and, after the fact, on those steps. The comparison is a pure function
+outside `transition`; its result is an input of the event. The orchestrator never
+hides the text; what a client draws from the mark is the web's decision. A step output the agent shortened for the
+steps bound (`steps/v1`) is compared by the bounded prefix; **a difference beyond the bound is not detected**.
 
 ## Stored, and what travels
 
 | | Rows |
 |---|---|
-| Beside the log | the rows as received, **verbatim as text** (not re-serialised), with the `kid` and the time of the check, in the commit of the agent message; durable state beside the log, not in it (the amendment of invariant 3). A row that passed is not checked again against a later card. *Unverified until T4:* if a task's message carries the whole re-signed transcript, only the latest run's rows are kept per thread |
+| Beside the log | the rows as received, **verbatim as text** (not re-serialised), with the `kid` and the time of the check, in the commit of the agent message; durable state beside the log, not in it (the amendment of invariant 3). A row that passed is not checked again against a later card. *Unverified until T4:* if a task's message carries the whole re-signed transcript, only the latest run's rows are kept per thread, and a fork cuts that run; otherwise each run's rows are kept |
 | A frame, the search index, a notification, a model prompt, the orchestrator's own model calls (title, description) | never. The `signed` mark is the one thing a frame carries |
 | An erase of the thread or the account | erases them |
 | A fork | **copies none**; its rows come from its own tasks. The fork's first message sends one run's rows of the source thread back (below) |
@@ -184,9 +190,13 @@ steps bound (`steps/v1`) is compared by the bounded prefix and says so; the exac
 | A shared thread's link | carries none |
 
 **A fork** whose agent lists the URI sends **one run's rows**. Each task is a new run that adam signs again (adam ADR 0068,
-decision 5), so rows of several tasks are not one chain. The fork sends the rows of the **last task at or before the fork
-point, cut at the point**, keeping that run's `run`, `cnv`, first `idx` and `prv`, and, *proposed*, a `source` member naming
-the **source context** (adam's decision 6 requires a fork message to name it). adam verifies them under the source run, then
+decision 5), so rows of several tasks are not one chain. The fork sends **one run's rows, cut at the fork
+point**, keeping that run's `run`, `cnv`, first `idx` and `prv`, and, *proposed*, a `source` member naming
+the **source context** (adam's decision 6 requires a fork message to name it). The fork point is a cut of the log at the end of a turn; it maps to the row paired with that turn's final message by the
+comparison above, and the cut is that row's `idx`, inclusive. With per-run storage the run is the last task at or before the
+point. In the whole-transcript case it is the latest run's rows, but if that run's prefix up to the cut **no longer matches the
+history at the fork point** (adam signs again after a compaction or a shortening, adam ADR 0068, decision 5), the fork sends
+no rows and continues as text. adam verifies them under the source run, then
 signs them again under the new run, so every signature of a run names that run. Rows of another person's conversation are
 `-32602` (`InvalidParams`) and nothing is written. If the rows are refused, **or the source thread was deleted
 ([ADR 0043](../decisions/0043-deleting-a-thread-erases-it.md)) and none exist**, the fork continues as it does today, with the
@@ -200,7 +210,7 @@ history as text (which the agent reads as a person's words), and a refusal is lo
 - `run` must be this task's id and `cnv` the thread's, so a row signed for another run or conversation, even by the right
   key, is refused.
 - Revocation applies at ingest and at a fork, not backwards: a stored row keeps the time of its check (ADR 0111 question 3).
-- Dropping the last rows is not detected by the chain; the count and the head signature are proposed for T4 for that.
+- Dropping the last rows is not detected by the chain; the `adam-turns/v1` statement is proposed for T4 for that, and is required once the card lists the URI.
 - Rows hold the tool outputs `steps/v1` already shows, so they are bounded and kept as the steps are, and appear nowhere a
   step does not.
 - A person's own words are not covered: they are chained, not signed. The prompt signature is ADR 0087.
@@ -211,7 +221,7 @@ history as text (which the agent reads as a person's words), and a refusal is lo
 
 - The A2A client reads the card entry (the closed set of extensions gains one member), activates the URI, reads `metadata[URI]`
   and runs the checks above in a pure function (no I/O, the key set passed in).
-- Each store adapter gains a member for a thread's rows (beside the log); the refusal is a tracing line and a counter, not an event; `agent_message` and the step's finishing event gain the closed `signed` member.
+- Each store adapter gains a member for a thread's rows (beside the log); the refusal is a tracing line and a counter, not an event; `agent_message` gains the closed `signed` member and the step-mark map.
 - `docs/api/chat-api.yaml`, additive only: the export gains a rows member and its keys; the message and step gain `vymalo.signed`. No frame carries rows.
 - The fork path sends the rows when the agent lists the URI and falls back to text on `-32602`.
 - adam-rs: its slice T4 (the card entry, the message member, the continuation from rows). Until then nothing here runs.
@@ -230,7 +240,7 @@ history as text (which the agent reads as a person's words), and a refusal is lo
 5. an agent that does not list the URI is plain A2A: nothing activated, nothing stored.
 
 Checks on a mock agent, each red before its fix: a wrong `typ`, `alg: none`, an unknown and a revoked `kid`, a changed
-`cnv`, a row signed for another task's run (`wrong_run`), a reordered pair, a gap in `idx` and a dropped tail (with `count` and `head`) are each refused with their reason; a steered task, with a person's row between two of the agent's, still verifies; the log never holds a row's content or a
+`cnv`, a row signed for another task's run (`wrong_run`), a reordered pair, a gap in `idx`, a missing statement and a dropped tail are each refused with their reason; a steered task, with a person's row between two of the agent's, still verifies; the log never holds a row's content or a
 signature; a refused row is absent from the export; a card whose `params` are malformed reads as unlisted.
 
 ## Verified and unverified
@@ -241,7 +251,7 @@ signature; a refused row is absent from the export; a card whose `params` are ma
   (commit `08fe47f3`, #447, no row in the slice table) and T3a-1 to T3a-3 are built; **T2 is not complete**: no host passes
   turn keys except the ephemeral key of `crates/adam-runtime/src/worker.rs:2011`, so the scenario depends on T2 too; **T3b (the journal's signature) and T4 are not**: a search of that revision for the URI finds
   only the ADR's text.
-- *Unverified:* the member names of `metadata[URI]` beyond adam's own, the `count`, `head` and `source` members (this page's
+- *Unverified:* the member names of `metadata[URI]` beyond adam's own, the `statement` and `source` members (this page's
   proposals to adam); whether the rows include a person's rows; whether a task's message carries the whole re-signed
   transcript; which subject adam sees on a fork the orchestrator sends, and so whether the rows of a person's thread
   verify there; the size the rows add to a long task.
