@@ -893,7 +893,7 @@ off: `web.enabled: false` and `edge.enabled: false`. Then
   its ExternalSecret, the edge's Ingress and the `web`/`oauth2-proxy` NetworkPolicies render nothing;
 - the orchestrator's NetworkPolicy admits `networkPolicy.bff` — a namespace and the labels of the BFF's pods — and the chat
   agent and `networkPolicy.orchestratorFrom` only if their own values say so;
-- `auth` is the BFF's own token: `userClaim: sub`, `audiences: [orchestrator]` (the audience another-idp issues for this API),
+- `auth` is the BFF's own token: `userClaim: sub`, `audiences: [orchestrator]` (the audience the deployment's identity provider issues for this API),
   and `rolesClaim` as before (`agentic_roles`). The person is the token's subject; the token rules are those of
   [ADR 0033](../../docs/decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md), amended 2026-11-24 for this case;
 - `ingress.enabled` and `auth.browser.enabled` must be off with the edge, `mobileAppLinks.enabled` with the web, and
@@ -903,7 +903,7 @@ off: `web.enabled: false` and `edge.enabled: false`. Then
 
 [`tests/bff-only.values.yaml`](tests/bff-only.values.yaml) is the shape `render-check.sh` asserts (the absences, the single peer,
 the rendered `auth.jwt`) and that `deploy.yml` has the pinned orchestrator image read with `--print-config`. The `orchestrator`
-audience itself is another-idp's to issue (card F9); this chart only names the value.
+audience itself is the deployment's identity provider's to issue (card F9); this chart only names the value.
 
 ## Web search and Context7
 
@@ -1716,7 +1716,7 @@ injector:
   broker:
     tokenProperty: injector_broker_token      # AWS property of the injector's own token
   budget:
-    url: http://another-ledger.ledger.svc:8201  # the usage ledger's budget listener (a READ, never a debit)
+    url: http://ledger.ledger.svc:8201          # the usage ledger's budget listener (a READ, never a debit)
     tokenProperty: injector_budget_token      # AWS property of the ledger's shared secret
 orchestrator:
   internal:
@@ -1755,10 +1755,10 @@ rendered (Envoy Gateway v1.10's `extAuth.grpc` has no TLS field, *verified 2026-
 is not rendered either. And the broker's injector token is the seam `SharedTokens::with_injector` (*in the broker crate*),
 which the orchestrator binary does not yet pass and `orchestrator.internal` does not yet name: until that wiring lands,
 the AuthConfig's lookup answers `401 unauthenticated`, and every model call through the injector fails closed. The
-ledger side has a gap of its own: another-backend's budget listener reads its secret from `x-lightbridge-budget-token`,
+ledger side has a gap of its own: the deployment's budget listener reads its secret from `x-lightbridge-budget-token`,
 while Authorino's `sharedSecretRef` can only send `Authorization: Bearer`, so the listener must accept the bearer (or a
-rewriter must stand between them) before the read works in production (*verified 2026-11-25* in another-backend's
-`crates/another-service/src/budget_remaining.rs`).
+rewriter must stand between them) before the read works in production (*verified 2026-11-25* in the source of the
+ledger's budget read).
 
 ## The browser agent (ADR 0057)
 

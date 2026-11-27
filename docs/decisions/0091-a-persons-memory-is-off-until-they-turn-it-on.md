@@ -8,7 +8,7 @@ sidebarTitle: "0091 · Memory off until they turn it on"
   invariant 3 of `CLAUDE.md`. Slice M0 of [ADR 0067](0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md)
   (the memory epic, [#337](https://github.com/vymalo/another-agentic-system/issues/337)).
 - **Owner's decision, ANR-Q59, 2026-11-24 06:29Z:** *(b) "As (a), but notes are saved without asking once memory is
-  on"*. Recorded in another-context `decisions-2026-11-24.md` row 6 (`#122`, `810bdd0`). He also answered the second
+  on"*. Recorded in the owner's private decision log (2026-11-24). He also answered the second
   question: **memory works through the tools only**, never as a small pinned context.
 
 ## Context

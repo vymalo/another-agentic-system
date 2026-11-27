@@ -104,7 +104,7 @@ sequenceDiagram
      still cuts the ledger's reads by an order of magnitude. A TTL above 30 s is refused: past that it is no longer a
      balance, it is a memory.
    - **An account the ledger has never seen is a zero balance** (`200`, `0`), not a 404 — the ledger's own rule
-     (another-backend's ADR-0021). Zero credit is the fail-closed answer: the unknown person spends nothing, and the
+     (a decision of the ledger's own). Zero credit is the fail-closed answer: the unknown person spends nothing, and the
      refusal is the same shape as a person who has spent everything, so there is one "you cannot spend" to document
      and one for a client to handle.
    - **A ledger that cannot answer** (`503 budget_unavailable`, a timeout, a wrong secret) leaves the metadata unset
@@ -238,7 +238,7 @@ the Gateway, and the broker's binding rules, are the walls around that — not t
 `extAuth.grpc` has no TLS field, *verified 2026-11-24*); the broker's injector token is the seam
 `SharedTokens::with_injector`, which the orchestrator binary does not yet pass, so until that wiring lands every lookup
 answers `401` and every model call through the injector fails closed (see the chart README). And the ledger side does not
-match yet, stated plainly: another-backend's budget listener reads its secret from `x-lightbridge-budget-token`
-(`crates/another-service/src/budget_remaining.rs`, *verified 2026-11-25*), while Authorino v0.26.4's `sharedSecretRef`
+match yet, stated plainly: the deployment's budget listener reads its secret from `x-lightbridge-budget-token`
+(in the source of its budget read, *verified 2026-11-25*), while Authorino v0.26.4's `sharedSecretRef`
 can only present it as `Authorization: Bearer`. The chart sends the bearer; the real listener needs to accept it, or a
 rewriter has to stand between them, before this is wired in production.

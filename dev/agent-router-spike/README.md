@@ -70,7 +70,7 @@ The scenario runs on a kind cluster, and nothing else:
    account and whether that secret was presented. `acct-run-1` has credit (`42` micro-USD, a fixture); every other
    account is unknown and answers `200` with `0` — the real ledger's rule for an account it has never seen;
    `acct-unreadable-run` answers `503 budget_unavailable`. It is a read-only mock with no route that writes, because
-   the read is never a debit. It stands where another-backend's ledger stands.
+   the read is never a debit. It stands where the deployment's ledger stands.
 6. An **`AIServiceBackend` + `Backend` + `AIGatewayRoute`** (`manifests/20-aigateway.yaml`): a model
    named by `x-ai-eg-model: spike-model`, routed to the gateway. This is the route under test.
 7. **Authorino + `AuthConfig`** (`manifests/30-authorino.yaml`): authenticate with a real
@@ -173,7 +173,7 @@ were restored. The Authorino-only `402` experiment above is the third: `response
 ## What this scenario does not prove
 
 The broker's caller rules are the chart's and the orchestrator's, and the NetworkPolicy that keeps the route off the
-edge is not here. The ledger is a **stand-in**: it answers the wire shape of another-backend's budget read, but not its
+edge is not here. The ledger is a **stand-in**: it answers the wire shape of the deployment's budget read, but not its
 secret header — the real listener wants `x-lightbridge-budget-token` while Authorino can only present the secret as
 `Authorization: Bearer` (`docs/api/model-injector.md` says so), so the two need agreeing before production. What the
 balance proves is that the injector reads, caches and refuses; it does not prove that a settlement in the ledger charged

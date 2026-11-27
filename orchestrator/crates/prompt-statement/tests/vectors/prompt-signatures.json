@@ -1,6 +1,6 @@
 {
   "test_only": true,
-  "source": "The shared prompt-signature test vectors of the signature contract's cloud section (its ADR-0033), vectors V2 and V3a/V3b/V3c, copied 2026-11-25. Only what these tests need is here; every value is a test value and the origins end in .test.invalid.",
+  "source": "The shared prompt-signature test vectors of the signature contract's cloud section, vectors V2 and V3a/V3b/V3c, copied 2026-11-25. Only what these tests need is here; every value is a test value and the origins end in .test.invalid.",
   "v3a": {
     "content": "Summarise the open pull requests of the example repository.",
     "forwardedProps": null,
