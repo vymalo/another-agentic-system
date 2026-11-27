@@ -67,8 +67,9 @@ idle after it and the meter backfills up to 24 hours, so the pod's last minutes 
    bindings only, so no credential outlives the job (ADR 0084 decision 6 stands for the lease). Ending twice keeps the first
    end's time; a run never bound leaves nothing.
    **A tombstone is never handed to someone else.** The run id is chosen by the agent, so a bind of an ended run id is admitted
-   only for the same agent, person and model as the live rule requires (the binding is then live again). Any other bind of an ended
-   run id **drops the tombstone and is refused `409 run_already_bound`**: the run is then unattributed to the meter (`404`), never
+   only for the same agent and person (the binding is then live again and takes the new model and deadline: the same person picking
+   another model on a reused task id loses nothing, and no attribution is at stake). A live run keeps the full rule, agent, person
+   and model. Any other bind of an ended run id, by another agent or person, **drops the tombstone and is refused `409 run_already_bound`**: the run is then unattributed to the meter (`404`), never
    attributed to the wrong person, and the new binding fails closed.
    **A tombstone is kept only where a meter can read it.** `RunLeaseBroker::with_tombstone_retention` is the bound; the binary
    sets it to 24 hours when `server.internal.meter` is configured and to **zero** when it is not, and a zero bound deletes the run
@@ -95,7 +96,7 @@ stateDiagram-v2
     Live --> Live: bind again (same binding)
     Live --> Ended: unbind (ended_at = now)
     Ended --> Ended: unbind again (first end stands)
-    Ended --> Live: bind again, the same agent, person and model
+    Ended --> Live: bind again by the same agent and person (the model may change)
     Ended --> [*]: bind by another agent or person (refused, the tombstone is dropped)
     Ended --> [*]: the next end after 24 h sweeps it (at once when no meter is configured)
     note right of Live: lease and account answer
@@ -108,6 +109,11 @@ stateDiagram-v2
   the testkit proves it for every implementation, and the configuration refuses the meter where it could never be answered.
 - A deployment on `userClaim: email` loses the injected lease (it is refused `account_not_opaque`) and has no meter until it moves
   to `sub`. Cloud runs of ours are signed and have no lease (ADR 0101), so this reaches only the custom injector.
+- **Accepted consequence:** a refused rebind erases the tombstone, so the agent that controls a run id can make that run's post-end
+  usage unattributed. It is fail-closed, never misattributed, and no worse than before this record, when every post-end charge was
+  unattributed. The orchestrator logs the refusal distinctly (the run id and thread, never the person).
+- **Rollout:** while replicas disagree on `server.internal.meter`, a replica with no meter has a zero bound, and its `end` sweeps
+  every tombstone, including those a meter-configured replica kept. Turn the meter on for every replica together.
 - With a meter configured, the binding table keeps ended rows up to 24 hours: one row per run, no secret (a person's `sub` and ids).
   Erasing an account does not reach it: an ended run's row holds the person's `sub` for at most the bound. **The sweep runs on
   `end`**, so the row is physically removed only while runs keep ending (a quiet deployment keeps its last rows longer); the
