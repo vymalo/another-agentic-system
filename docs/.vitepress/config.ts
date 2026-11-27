@@ -3,6 +3,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineMd3Config } from "@vaam-apps/vitepress-md3/config";
 import { withMermaid } from "vitepress-plugin-mermaid";
+import { useSidebar } from "vitepress-openapi";
+import { DEFAULT_BASE, DEFAULT_TAG } from "./openapi/shared";
+import { loadSpec } from "./openapi/spec";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -24,18 +27,26 @@ function page(path: string, text?: string) {
 }
 
 // A group of pages, shown only when it holds one: an empty group is not drawn.
-function group(text: string, items: { text: string; link: string }[], collapsed = true) {
+type SidebarItem = { text: string; link?: string; collapsed?: boolean; items?: SidebarItem[] };
+function group(text: string, items: SidebarItem[], collapsed = true) {
   return { text, collapsed, items };
 }
 
 // Reference > API: the one place to add a page. Every file of docs/api/ is in exactly one of the three
 // Reference arrays below (the build throws on one that is in none), so a new page is one name in one array.
-// ANR-922 adds the pages it generates from the OpenAPI document here.
+// The chat API's own pages (reference.md, and the tags/ and operations/ routes below it) are rendered from
+// api/chat-api.yaml by vitepress-openapi.
+const referencePage = { text: "Chat API reference", link: "/api/reference" };
 const apiPages: { text: string; link: string }[] = [
-  { text: "Chat API (OpenAPI)", link: "/api/chat-api" },
   { text: "API index", link: "/api/" },
   ...["agui", "attachments", "history", "memory-v1", "message-text-v1", "missions-v1", "notifications-v1", "projects-v1", "prompts-v1", "teams-v1", "thread-markdown-v1", "thread-search-v1", "webhooks", "windows-v1"].map((f) => page(`api/${f}`)),
 ];
+// The operations of the chat API, one page each under /api/operations/: dynamic routes, so not files the guard reads.
+const chatApiOperations: SidebarItem = {
+  text: "Chat API operations",
+  collapsed: true,
+  items: useSidebar({ spec: loadSpec(), defaultTag: DEFAULT_TAG, linkPrefix: "/api/operations/", tagLinkPrefix: "/api/tags/" }).generateSidebarGroups({ tags: [DEFAULT_TAG] }),
+};
 // Reference > Extensions: the A2A extensions and the other contracts a tool server or an agent implements.
 const extensionPages = [
   "extensions", "access-tier-v1", "child-sessions-v1", "commands-v1", "locale-v1", "mentions-v1", "model-pick-v1", "model-relay-v1",
@@ -47,9 +58,9 @@ const configurationPages = ["config", "client-version", "model-injector"].map((f
 
 // Every page of docs/api/ must be placed: a page in none of the groups would be on the site and in no sidebar.
 {
-  const placed = new Set([...apiPages, ...extensionPages, ...configurationPages].map((p) => p.link.replace(/^\/api\/?/, "")));
+  const placed = new Set([referencePage, ...apiPages, ...extensionPages, ...configurationPages].map((p) => p.link.replace(/^\/api\/?/, "")));
   const missing = readdirSync(join(root, "api"))
-    .filter((f) => f.endsWith(".md") && f !== "README.md" && f !== "chat-api.md")
+    .filter((f) => f.endsWith(".md") && f !== "README.md")
     .filter((f) => !placed.has(f.replace(/\.md$/, "")));
   if (missing.length) throw new Error(`docs/api pages in no sidebar group: ${missing.join(", ")}; add them to apiPages, extensionPages or configurationPages in .vitepress/config.ts`);
 }
@@ -73,7 +84,7 @@ const sidebar = [
   // Guides: one task per page. No page of the repository is one yet, so the four groups are empty and not drawn.
   section("Guides", [group("Deploy", []), group("Operate", []), group("Use", []), group("Extend", [])]),
   section("Reference", [
-    group("API", apiPages),
+    group("API", [referencePage, chatApiOperations, ...apiPages]),
     group("Extensions", extensionPages),
     group("Configuration", configurationPages),
     group("Errors", []),
@@ -85,6 +96,10 @@ const sidebar = [
 
 // Prose writes <agent> or <ThreadShare> meaning a placeholder; Vue would read it as a component and fail the build.
 // Only real HTML elements pass through, everything else is shown as the text it is.
+// The API pages (api/reference.md, api/tags/, api/operations/) also use `script` and the components of vitepress-openapi:
+// those are allowed there and nowhere else.
+const API_ONLY = ["script", "oaspec", "oaoperation"];
+const isApiPage = (relativePath = "") => /^api\/(reference\.md|tags\/|operations\/)/.test(relativePath);
 const HTML = new Set(
   "a abbr blockquote br code details dd div dl dt em figcaption figure h1 h2 h3 h4 h5 h6 hr i img kbd li ol p picture pre small source span strong sub summary sup table tbody td tfoot th thead tr u ul video".split(" "),
 );
@@ -95,10 +110,11 @@ export function escapeUnknownTags(md: any) {
   for (const rule of ["html_inline", "html_block"]) {
     const original = md.renderer.rules[rule];
     md.renderer.rules[rule] = (tokens: any, i: number, ...rest: any[]) => {
+      const env = rest[1] as { relativePath?: string } | undefined;
       const content: string = tokens[i].content;
       const tags = [...content.matchAll(/<\/?([A-Za-z][\w-]*)/g)].map((m) => m[1].toLowerCase());
       const wellFormed = /^\s*(<\/?[A-Za-z][\w-]*(\s+[\w:-]+(="[^"]*")?)*\s*\/?>\s*)+$/.test(content) || tokens[i].type === "html_block";
-      if (wellFormed && tags.every((t) => HTML.has(t))) return original(tokens, i, ...rest);
+      if (wellFormed && tags.every((t) => HTML.has(t) || (API_ONLY.includes(t) && isApiPage(env?.relativePath)))) return original(tokens, i, ...rest);
       return md.utils.escapeHtml(content).replace(/\{\{/g, "&#123;&#123;");
     };
   }
@@ -108,11 +124,16 @@ export default withMermaid(
   defineMd3Config({
     title: "another-agentic-system",
     description: "A protocol-agnostic orchestration layer for multi-agent work.",
-    base: process.env.DOCS_BASE ?? "/another-agentic-system/",
+    base: process.env.DOCS_BASE ?? DEFAULT_BASE,
     cleanUrls: true,
     rewrites: { "api/README.md": "api/index.md" },
     // Pages link to source files outside docs/ (checked by tools/docs-check); every other dead link fails the build.
     ignoreDeadLinks: [/^\.\/(\.\.\/)+/, /(^|\/)examples\//],
+    // Each operation and tag page has its own title, from the route's pageTitle.
+    transformPageData(pageData) {
+      const title = pageData.params?.pageTitle;
+      if (typeof title === "string" && title) pageData.title = title;
+    },
     // tester-note.md is a draft for the owner: it stays in the repository and is not on the site.
     srcExclude: ["**/node_modules/**", "**/examples/**", "tester-note.md"],
     themeConfig: {
