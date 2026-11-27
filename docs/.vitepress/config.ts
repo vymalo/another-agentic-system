@@ -2,7 +2,6 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineMd3Config } from "@vaam-apps/vitepress-md3/config";
-import { withMermaid } from "vitepress-plugin-mermaid";
 import { useSidebar } from "vitepress-openapi";
 import { DEFAULT_BASE, DEFAULT_TAG } from "./openapi/shared";
 import { loadSpec } from "./openapi/spec";
@@ -120,7 +119,7 @@ export function escapeUnknownTags(md: any) {
   }
 }
 
-export default withMermaid(
+export default (
   defineMd3Config({
     title: "another-agentic-system",
     description: "A protocol-agnostic orchestration layer for multi-agent work.",
@@ -149,6 +148,5 @@ export default withMermaid(
       socialLinks: [{ icon: "github", link: "https://github.com/vymalo/another-agentic-system" }],
     },
     markdown: { config: escapeUnknownTags, attrs: { disable: true } },
-    mermaid: {},
   }),
 );

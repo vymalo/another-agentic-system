@@ -31,6 +31,17 @@ A group with no page is not drawn. It appears when its first page does, and its 
 **Architecture** opens with a **Concepts** page: the words the documentation uses, each in a line or two with a link to
 the page that says the rest.
 
+## Diagrams
+
+Mermaid diagrams are drawn by `vitepress-mermaid-renderer` 1.2.3 (verified 2026-11-27: npm, `peerDependencies`
+`mermaid` `^11 || ^12`, `@mermaid-js/mermaid-zenuml` optional) with `mermaid` 11.17.2, both pinned exactly in
+`docs/package.json`. It replaces `vitepress-plugin-mermaid`, which has had no release since 2024-09. It adds zoom, pan,
+fullscreen, copy and download to each diagram, and the diagrams are drawn in the theme's Material 3 colours, redrawn when
+the scheme changes. Copy `docs/.vitepress/theme/mermaid.ts` (the layout that starts the renderer; `theme/index.ts` only
+names it as `Layout`) and `docs/.vitepress/theme/mermaid.css` into a site that uses `@vaam-apps/vitepress-md3`, and
+nothing else: `config.ts` has no Mermaid setting and needs no tag in `escapeUnknownTags`, because the renderer works on
+the page in the browser.
+
 ## Sites
 
 | Repository | Site | State |
