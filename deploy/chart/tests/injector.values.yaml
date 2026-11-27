@@ -1,6 +1,9 @@
 # Layered over examples/netcup.values.yaml by render-check.sh: the model-credential injector (S9) on, with its own
 # broker token as an AWS property and the run-lease listener it queries. Not a deployment's values: see README.md,
 # "The model-credential injector".
+# The lease names the person's sub (ADR 0107), so a render with an injector reads it.
+auth:
+  userClaim: sub
 injector:
   enabled: true
   gatewayClassName: eg

@@ -468,6 +468,16 @@ refused() { # refused <description> <helm args...>
   desc=$1; shift
   if renders "$@"; then echo "FAIL refused: $desc"; fail=1; else echo "ok   refused: $desc"; fi
 }
+# refused_says <fixed message text> <description> <helm args...>: the render is refused AND the refusal says that text, so a
+# render that fails for another reason does not pass for this one.
+refused_says() {
+  pat=$1; desc=$2; shift 2
+  if helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" "$@" 2>&1 >/dev/null | grep -Fq -- "$pat"; then
+    echo "ok   refused: $desc"
+  else
+    echo "FAIL refused: $desc (not refused, or not for the reason '$pat')"; fail=1
+  fi
+}
 nohost=$(mktemp); printf 'auth:\n  issuer: https://auth.example.org/realms/x\n' > "$nohost"
 if helm template x "$chart" -f "$nohost" >/dev/null 2>&1; then echo "FAIL refused: no host"; fail=1; else echo "ok   refused: no host"; fi
 rm -f "$nohost"
@@ -2604,14 +2614,18 @@ check "meter on: the orchestrator's Secret carries the meter's token, by AWS pro
 check "meter on: the pod mounts the token where the config reads it" out_all '^              - key: internal-meter-token$' '^                path: internal-meter-token$'
 check "meter on: the port admits the meter's pods by namespace and labels, beside the orchestrator's" out_all '^              kubernetes.io/metadata.name: "operator"$' '^              app.kubernetes.io/name: pod-minute-meter$'
 check "meter on: every secret key of the configuration is still a reference" test -z "$(plain_secret_in_config)"
-refused "a meter with an e-mail claim (the meter is answered the sub, never an e-mail address)" -f "$internal_values" -f "$meter_values" --set auth.userClaim=email
-refused "a meter without orchestrator.internal" --set orchestrator.internal.meter.enabled=true --set auth.userClaim=sub --set orchestrator.internal.meter.tokenProperty=internal_meter_token --set orchestrator.internal.meter.namespace=operator --set orchestrator.internal.meter.matchLabels.a=b
-refused "a meter without a token property" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.tokenProperty=
-refused "a meter naming the orchestrator's own token (the door would answer it as the orchestrator)" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.tokenProperty=internal_orchestrator_token
-refused "a meter naming an agent's token" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.tokenProperty=internal_coder_token
-refused "a meter without a namespace" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.namespace=
-refused "a meter without a selector (a policy that admits the whole namespace is worse than none)" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.matchLabels=null
-refused "a meter switch that is not a boolean" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.enabled=yes
+refused_says "needs auth.userClaim: sub" "a meter with an e-mail claim (the meter is answered the sub, never an e-mail address)" -f "$internal_values" -f "$meter_values" --set auth.userClaim=email
+refused_says "orchestrator.internal.meter.enabled needs orchestrator.internal.enabled" "a meter without orchestrator.internal" --set orchestrator.internal.meter.enabled=true --set auth.userClaim=sub --set orchestrator.internal.meter.tokenProperty=internal_meter_token --set orchestrator.internal.meter.namespace=operator --set orchestrator.internal.meter.matchLabels.a=b
+refused_says "orchestrator.internal.meter.tokenProperty is required" "a meter without a token property" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.tokenProperty=
+refused_says "names a token another caller" "a meter naming the orchestrator's own token (the door would answer it as the orchestrator)" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.tokenProperty=internal_orchestrator_token
+refused_says "names a token another caller" "a meter naming an agent's token" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.tokenProperty=internal_coder_token
+refused_says "orchestrator.internal.meter.namespace is required" "a meter without a namespace" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.namespace=
+refused_says "orchestrator.internal.meter.matchLabels" "a meter without a selector (a policy that admits the whole namespace is worse than none)" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.matchLabels=null
+refused_says "orchestrator.internal.meter.matchLabels must be a map" "a meter selector that is a list, not a map" -f "$internal_values" -f "$meter_values" --set 'orchestrator.internal.meter.matchLabels={a,b}'
+refused_says "injector.enabled needs auth.userClaim: sub" "the injector with an e-mail claim (every lease would be 422 account_not_opaque)" -f "$chart/tests/injector.values.yaml" --set auth.userClaim=email
+refused_says "orchestrator.internal.injector.enabled needs auth.userClaim: sub" "the run routes' injector peer with an e-mail claim" -f "$internal_values" --set auth.userClaim=email
+refused_says "orchestrator.internal.injector.matchLabels must be a map" "an injector selector that is a list, not a map" -f "$internal_values" --set 'orchestrator.internal.injector.matchLabels={a,b}'
+refused_says "orchestrator.internal.meter.enabled must be true or false" "a meter switch that is not a boolean" -f "$internal_values" -f "$meter_values" --set orchestrator.internal.meter.enabled=yes
 # ---- The platform's agent registry (ANR-685): off by default, on by values ---------------------------------------------------
 registry_values="$chart/tests/registry.values.yaml"
 render
@@ -2799,8 +2813,8 @@ check "injector: a balance cache of 0 or above 30 s is refused (a stale one lets
   ! helm template another-agentic-system '$chart' --namespace another-agentic-system -f '$base' -f '$injector_values' --set injector.budget.cacheTtlSecs=0 >/dev/null 2>&1 &&
   ! helm template another-agentic-system '$chart' --namespace another-agentic-system -f '$base' -f '$injector_values' --set injector.budget.cacheTtlSecs=31 >/dev/null 2>&1"
 check "injector: a broker URL is required without the internal listener" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$injector_values" --set orchestrator.internal.enabled=false
-check "injector: an explicit broker URL needs no internal listener" renders --set injector.enabled=true --set injector.gatewayClassName=eg --set injector.upstream.url=http://model.example.invalid:8080 --set injector.model=injector-model --set injector.broker.url=http://broker.example.invalid:8081 --set injector.broker.tokenProperty=injector_broker_token --set injector.budget.url=http://ledger.example.invalid:8201 --set injector.budget.tokenProperty=injector_budget_token
-check "injector: ExternalSecrets off needs no token property (the deployment creates the Secret)" renders --set injector.enabled=true --set injector.gatewayClassName=eg --set injector.upstream.url=http://model.example.invalid:8080 --set injector.model=injector-model --set injector.broker.url=http://broker.example.invalid:8081 --set injector.broker.tokenProperty= --set injector.budget.url=http://ledger.example.invalid:8201 --set injector.budget.tokenProperty= --set externalSecrets.enabled=false
+check "injector: an explicit broker URL needs no internal listener" renders --set injector.enabled=true --set auth.userClaim=sub --set injector.gatewayClassName=eg --set injector.upstream.url=http://model.example.invalid:8080 --set injector.model=injector-model --set injector.broker.url=http://broker.example.invalid:8081 --set injector.broker.tokenProperty=injector_broker_token --set injector.budget.url=http://ledger.example.invalid:8201 --set injector.budget.tokenProperty=injector_budget_token
+check "injector: ExternalSecrets off needs no token property (the deployment creates the Secret)" renders --set injector.enabled=true --set auth.userClaim=sub --set injector.gatewayClassName=eg --set injector.upstream.url=http://model.example.invalid:8080 --set injector.model=injector-model --set injector.broker.url=http://broker.example.invalid:8081 --set injector.broker.tokenProperty= --set injector.budget.url=http://ledger.example.invalid:8201 --set injector.budget.tokenProperty= --set externalSecrets.enabled=false
 render
 config_of config.yaml "$cfg"
 

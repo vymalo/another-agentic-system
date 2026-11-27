@@ -1,5 +1,8 @@
 # Layered over examples/netcup.values.yaml by the checks (render-check.sh): the run routes' internal listener, its tokens'
 # AWS properties, and the injector's pods admitted to it. Not a deployment's values: see README.md, "The run routes".
+# The lease names the person's sub (ADR 0107), so a render with an injector reads it.
+auth:
+  userClaim: sub
 orchestrator:
   internal:
     enabled: true

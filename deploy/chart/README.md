@@ -1660,9 +1660,7 @@ orchestrator:
 ```
 
 The pod's `adam.vymalo.com/run-id` annotation is the run id the meter sends (the label `adam.vymalo.com/run` is a hash the broker does
-not know). `tests/meter.values.yaml` is the fixture the render checks layer. *Verified 2026-11-27:* on renders only (Helm 3.16 with
-`--kube-version 1.37.0`; the seven byte-for-byte golden checks fail there on the unchanged base too, a Helm 3 against 4 difference);
-*unverified* on a cluster.
+not know). `tests/meter.values.yaml` is the fixture the render checks layer. *Verified 2026-11-27:* `render-check.sh` exits 0 under Helm v4.3.2 (CI's pin), the meter checks and the injector refusals among its 1333 ok; *unverified* on a cluster. Only an identity provider whose `sub` is lower-case ASCII of the alphabet is supported for the meter and the injector's account (another-idp's CUID2 and Keycloak's UUIDs are): the account is the `UserId`, the `sub` trimmed and lower-cased, so a mixed-case `sub` does not join billing, and a `sub` with `|` (Auth0's `auth0|…`) passes the configuration check and is refused `422 account_not_opaque` on every call. The injector (`injector.enabled`, `orchestrator.internal.injector.enabled`) is refused with any claim but `sub` for the same reason.
 
 Each token is a property of the ExternalSecret's AWS secret (`externalSecrets.key`), at least 32 bytes, mounted as a file and read
 as `server.internal.token` and `server.internal.agents.<id>`. **No two callers may name one property**: the door compares the
@@ -1717,7 +1715,7 @@ What the chart renders when `injector.enabled` is true (values.yaml, `injector`)
 a Go struct dump, not a string (*verified 2026-11-24* on v0.26.4), and the real case needs the lease's values anyway. Envoy
 Gateway applies the ok_response headers to the upstream request and **replaces** a client-sent `Authorization`: exactly one
 header arrives at the model (*verified 2026-11-24*, Envoy Gateway v1.10.0 with Agent Router v1.3.0; `dev/agent-router-spike/`).
-`x-account-id` is the lease's `accountId`, the run's person — the `UserId` the usage ledger is keyed by (ADR 0065), never a
+`x-account-id` is the lease's `accountId`: the person's `sub` as an `AccountId` of the closed alphabet (ADR 0107; the `UserId`, trimmed and lower-cased, never an e-mail address), never a
 provider account and never the client's claim, because it is read from the lease and not from the request.
 
 **Spike result (ANR-662, 2026-11-24): an injected header reaches the model gateway through Agent Router + Authorino, and
