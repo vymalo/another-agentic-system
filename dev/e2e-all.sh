@@ -96,6 +96,10 @@
 #                     compose.yaml), a message naming de-DE reaches the model as one more turn
 #                     after the history and never in `system`, a thread that names none gets no
 #                     line, and a tag for the researcher (whose card lists nothing) changes nothing
+#   commands          commands/v1 on the REAL coder (ADR 0079): the capabilities    commands-e2e.sh
+#                     of adam list the folder's three commands, chat lists none, the
+#                     coder's first model request holds `/explain acme/app` expanded,
+#                     and `//explain acme/app` reaches it as the literal text
 #   locale            the interface locale (ADR 0085): mock-locale (a WireMock agent    locale-e2e.sh
 #                     that lists locale/v1) is sent the tag a message names, with the
 #                     extension activated and the tag in its metadata, and answers in it;
@@ -270,7 +274,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier pick pick-real locale locale-real child-sessions title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier pick pick-real commands locale locale-real child-sessions title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -395,6 +399,13 @@ for s in "$@"; do
         *" chat "*) ;;
         *) echo "scenario pick-real needs the agent chat; GET /api/agents does not list it (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
       esac ;;
+    commands)
+      for a in adam chat; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario commands needs the agents adam and chat; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
     locale-real)
       for a in chat researcher; do
         case " $agents " in
@@ -495,6 +506,7 @@ for s in "$@"; do
     tier) run tier sh "$here/tier-e2e.sh" ;;
     pick) run pick sh "$here/pick-e2e.sh" ;;
     pick-real) run pick-real sh "$here/pick-real-e2e.sh" ;;
+    commands) run commands sh "$here/commands-e2e.sh" ;;
     locale) run locale sh "$here/locale-e2e.sh" ;;
     locale-real) run locale-real sh "$here/locale-real-e2e.sh" ;;
     child-sessions) run child-sessions sh "$here/child-sessions-e2e.sh" ;;
