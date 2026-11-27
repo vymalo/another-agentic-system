@@ -64,7 +64,7 @@ const chatApiOperations: SidebarItem = {
 };
 // Reference > Extensions: the A2A extensions and the other contracts a tool server or an agent implements.
 const extensionPages = [
-  "extensions", "access-tier-v1", "child-sessions-v1", "commands-v1", "locale-v1", "mentions-v1", "model-pick-v1", "model-relay-v1",
+  "extensions", "access-tier-v1", "agent-mode-v1", "child-sessions-v1", "commands-v1", "locale-v1", "mentions-v1", "model-pick-v1", "model-relay-v1",
   "network-tier-v1", "signed-tool-requests-v1", "steer-v1", "steps-v1", "text-stream-v1", "thread-tools-v1", "trusted-components-v1",
   "ui-catalog-v1", "ui-catalog-v2", "uploads-v1", "usage-v1",
 ].map((f) => page(`api/${f}`));
