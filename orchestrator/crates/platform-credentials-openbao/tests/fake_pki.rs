@@ -683,7 +683,7 @@ async fn the_token_file_is_read_again_at_each_login() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn nothing_secret_is_in_a_debug_an_error_or_a_log() {
     use std::io::Write;
     use tracing_subscriber::fmt::MakeWriter;
@@ -718,8 +718,16 @@ async fn nothing_secret_is_in_a_debug_an_error_or_a_log() {
         .with_writer(capture.clone())
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
+    // The tests of this file run in parallel, and a callsite that another test's thread was
+    // registering at the moment this subscriber was installed can keep an interest cached from
+    // before it ("never"), which silences its events for good (tracing-core's documented caching,
+    // and a known race of a first registration against a scoped subscriber). Rebuild the cache now
+    // and again after the stand-in server is up, so that what this test hears does not depend on
+    // which test reached an `info!` first.
+    tracing_core::callsite::rebuild_interest_cache();
 
     let h = start().await;
+    tracing_core::callsite::rebuild_interest_cache();
     let cert = h.adapter.current().await.unwrap();
     // A renewal that fails with a good leaf in hand logs a warning.
     h.fake.set(Mode::Mis(Mis::ServerAuthToo));

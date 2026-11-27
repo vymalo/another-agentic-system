@@ -33,6 +33,7 @@ axum.workspace = true
 # The fake PKI parses the CSR it is sent, which rcgen does behind `x509-parser`.
 rcgen = { workspace = true, features = ["x509-parser"] }
 time = { version = "0.3", default-features = false }
+tracing-core = "0.1"
 tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "sync", "time", "net"] }
 
