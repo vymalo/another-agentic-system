@@ -78,7 +78,7 @@ What exists, and what the design rests on:
    first message names none, and an MCP `start_job`, have no choice to continue.
    *Amended 2026-10-11 (the review of the orchestrator's side):* that left a hole. A role capped at `edits` whose message named
    none (the chip left alone, an MCP `start_job`, a fork's first message, an edit) was run at the agent's own default, above its
-   cap. One resolver now decides what any message is sent under (`App::resolve_tier`, [the contract](../api/access-tier-v1.md#_7-the-orchestrator)):
+   cap. One resolver now decides what any message is sent under (`App::resolve_tier`, [the contract](../api/access-tier-v1.md#7-the-orchestrator)):
    a message that names none, from a person with no cap, is the plain A2A message it was; from a person with a cap it is sent under
    the highest tier the agent offers that is not above the lower of its default and the cap, and that tier is pinned on the job
    (`Job.tier`), so every later message and rework keeps to it. A card that lists no extension is sent none (the cap cannot be said

@@ -5,7 +5,7 @@ sidebarTitle: "0025 · Nested steps with source path"
 # ADR 0025 — Nested steps: events carry their source path
 
 - **Status:** accepted (2026-10-01), on the owner's delegation: the extension's URI is decided in the
-  [status note](#status-note-2026-10-01-accepted-on-the-owner-s-delegation). The owner may revisit it.
+  [status note](#status-note-2026-10-01-accepted-on-the-owners-delegation). The owner may revisit it.
   Amended (2026-10-06): the icon vocabulary gains `opencode`, the step that hands work to OpenCode over ACP
   ([ADR 0049](0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)).
 
@@ -14,7 +14,7 @@ sidebarTitle: "0025 · Nested steps with source path"
 "Too many tool calls make the UI unreadable" (owner, 2026-10-01). In one real thread, 7 messages
 produced 336 status events, 197 of them OpenCode's. The work has a shape: orchestrator → agent
 (adam-coder) → sub-agent (OpenCode over ACP) → its commands. The chat flattens it
-([vision](../vision.md#_5-nested-steps)).
+([vision](../vision.md#5-nested-steps)).
 
 - An agent's progress reaches the log as `agent_status` with a free-text `detail`
   ([`core/src/event.rs`](../../orchestrator/crates/core/src/event.rs)), e.g. "opencode: …". Nothing

@@ -20,7 +20,7 @@ Today a coding agent runs every command in its own container. adam-coder runs `r
 `run_checks` and OpenCode, and every command OpenCode starts, inside the coder's image, which is
 another-agentic-images' `workspace` image plus the coder. One image has to carry the toolchain of
 every repository it will ever meet, and a repository cannot say what it needs
-([vision](../vision.md#_6-workspaces-what-the-system-expects-of-agents)).
+([vision](../vision.md#6-workspaces-what-the-system-expects-of-agents)).
 
 The facts below are what the decision rests on. Each is marked.
 
@@ -212,7 +212,7 @@ with a step that says so.
   gateway or SDK.
 - **Host conveniences are optional ([ADR 0008](0008-platform-integration-via-a2a-extension.md)).** This is
   not an extension, because the orchestrator takes no part. It is a requirement on agents that run
-  commands in a workspace, as [vision capability 6](../vision.md#_6-workspaces-what-the-system-expects-of-agents)
+  commands in a workspace, as [vision capability 6](../vision.md#6-workspaces-what-the-system-expects-of-agents)
   is. An agent that does not do this still works, and plain A2A agents are unaffected. The one thing that may
   reach the system is an optional `environment {kind, source?, image}` field in the `checks` artifact. The
   gate ignores it (*verified 2026-10-01*: `recognise_artifact` in

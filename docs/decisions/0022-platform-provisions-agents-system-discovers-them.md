@@ -5,7 +5,7 @@ sidebarTitle: "0022 · Platform provisions A2A agents"
 # ADR 0022 — The platform provisions A2A agents; the system discovers them
 
 - **Status:** accepted (2026-10-01), on the owner's delegation: decision 6 (open question 39) is decided in the
-  [status note](#status-note-2026-10-01-accepted-on-the-owner-s-delegation). The owner may revisit it.
+  [status note](#status-note-2026-10-01-accepted-on-the-owners-delegation). The owner may revisit it.
 
 ## Context
 
@@ -18,7 +18,7 @@ about another-agentic-platform is the release picker
 The owner (2026-10-01): another-agentic-platform "intend[s] to give a seam to manage (system prompt,
 configs, promote, tag, ...) multiple A2A dynamically, and -system should understand that", and "the
 platform should not know about the UI normally, it just provisions A2A-capable Agents"
-([vision](../vision.md#_1-the-platform-is-the-agent-registry)).
+([vision](../vision.md#1-the-platform-is-the-agent-registry)).
 
 A2A names three ways to discover agents: a well-known URI per server, curated registries, and direct
 configuration; it "does not prescribe a standard API for curated registries" (*verified

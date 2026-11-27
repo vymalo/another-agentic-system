@@ -6,7 +6,7 @@
   pinned here since 2026-10-09 ([ADR 0014](../decisions/0014-adam-coder-default-agent-over-a2a.md), its note of that day), so the coder, the chat
   and the researcher of the stack list the extension, and `dev/greeting-e2e.sh` asserts the coder's greeting call and totals (Coder E2E only).
   The contract was proposed on 2026-10-08 at the owner's request ("token gauge: usage per model call from adam-rs to the orchestrator's log to
-  the web, sub-agents counted apart"). **Extended 2026-10-27 with `sandbox`** ([section 5](#_5-the-sandbox): the time a run's commands used in
+  the web, sub-agents counted apart"). **Extended 2026-10-27 with `sandbox`** ([section 5](#5-the-sandbox): the time a run's commands used in
   the environment they ran in): the agent's side is adam-rs `55bbe9f` (its ADR 0043, issue 126), the orchestrator's side
   [ADR 0056](../decisions/0056-token-usage-per-model-call.md) amended the same day (read, logged, projected, counted), proven on the fake agent,
   the goldens and a WireMock agent; *unverified* against a real coder in a real run pod.
@@ -23,7 +23,7 @@ passes them on without converting them (*verified 2026-10-08* in the vendored
 `orchestrator/crates/agui-proto/schema/ag-ui-1.0.schema.json`, `$defs.TokenUsage` and `RunFinishedEvent.usage`).
 
 The totals can also say what the run's commands cost in a sandbox, the time they used in the pod, container or dev container they ran in
-([section 5](#_5-the-sandbox)), so a limit or a price per person can count more than tokens.
+([section 5](#5-the-sandbox)), so a limit or a price per person can count more than tokens.
 
 An agent that does not list the extension reports nothing, and the screen shows no gauge for it.
 
@@ -146,7 +146,7 @@ agent leaves out what it could not keep (adam: a retried attempt, a turn a cance
 answered, remote sub-agents, OpenCode; adam-rs ADR 0032).
 
 **Unknown members are ignored.** The totals object has two members this page defines, `totals` (required) and `sandbox`
-([section 5](#_5-the-sandbox), optional). A client reads the members it knows of that object, of each entry of `totals` and of `sandbox`
+([section 5](#5-the-sandbox), optional). A client reads the members it knows of that object, of each entry of `totals` and of `sandbox`
 and each of its entries, and **ignores every other member**: a member an agent adds later (as `sandbox` was) is not a new version of the
 extension, and a client that predates it takes the tokens as before. Removing a member or changing what one means is a `v2` URI and file
 ([ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md)). The same rule holds for the call report (section 3).

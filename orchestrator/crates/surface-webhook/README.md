@@ -100,4 +100,4 @@ The end-to-end scenarios (a report before its watch, a red report, a deadline, o
 ## See also
 
 [`docs/api/webhooks.md`](../../../docs/api/webhooks.md), [`orch-api`](../api/README.md) (`SurfaceRoutes::machine`),
-[`docs/orchestrator.md`](../../../docs/orchestrator.md#the-webhook-surface-mvp-slices-6-and-9).
+[`docs/orchestrator.md`](../../../docs/orchestrator.md#the-webhook-surface-mvp-slice-6).

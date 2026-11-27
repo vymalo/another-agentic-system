@@ -5,7 +5,7 @@ sidebarTitle: "0068 · A person searches their threads"
 # ADR 0068 — A person searches their own threads: whole words by their start, the rules in the contract, a derived index in the commit of the event
 
 - **Status:** **proposed (2026-11-15)**, the design of slice 7 of [ADR 0067](0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md)
-  (wave 1), built in this change as **7a: the API, the store, the contract and the mock server; no web UI** (7b, the box, is later; *built 2026-11-15*, see [the amendment](#amended-2026-11-15-the-web-s-box-is-built-slice-7b)).
+  (wave 1), built in this change as **7a: the API, the store, the contract and the mock server; no web UI** (7b, the box, is later; *built 2026-11-15*, see [the amendment](#amended-2026-11-15-the-webs-box-is-built-slice-7b)).
   **Proposed**, for the owner to confirm: every name, default and shape below, and the [decisions the build settled](#what-the-build-settled-for-the-owner-to-confirm).
   Builds on [ADR 0039](0039-nobody-reads-another-persons-thread.md) (a person reads their own threads),
   [ADR 0043](0043-deleting-a-thread-erases-it.md) (what an erase leaves) and [ADR 0065](0065-a-usage-ledger-per-person.md) (durable state written in the commit

@@ -39,7 +39,7 @@ The orchestrator also detects a `v1.0` candidate (open question 22), written aga
 | Capabilities key | `a2uiClientCapabilities` under `"v0.9.1"`; `a2uiRendererCapabilities` under `"v1.0"` for the candidate | `orchestrator/crates/agent-a2a/src/a2ui.rs` |
 | Basic catalog ids | `…/v0_9/…`, `…/v0_9_1/…`, `…/v1_0/catalogs/basic/catalog.json` | `UiVersion::basic_catalog_ids`; the web's `BASIC_CATALOG_IDS` |
 | Media type | `application/a2ui+json` | `A2UI_MEDIA_TYPE`, `orchestrator/crates/core/src/ui.rs` |
-| The screen's catalog | `{catalogId, components}`, `catalogId` `https://agents.vymalo.com/a2ui/catalogs/chat`, version 8 | `web/src/features/chat/lib/a2ui/catalog/catalog.json`, [`ui-catalog-v1.md`](../api/ui-catalog-v1.md#_1-the-catalog) |
+| The screen's catalog | `{catalogId, components}`, `catalogId` `https://agents.vymalo.com/a2ui/catalogs/chat`, version 8 | `web/src/features/chat/lib/a2ui/catalog/catalog.json`, [`ui-catalog-v1.md`](../api/ui-catalog-v1.md#1-the-catalog) |
 
 What A2UI v1.0 is (*verified 2026-11-19* unless marked; sources: <https://a2ui.org/specification/v1.0-a2ui/>,
 <https://a2ui.org/specification/v1.0-evolution-guide/>,
@@ -127,7 +127,7 @@ What A2UI v1.0 is (*verified 2026-11-19* unless marked; sources: <https://a2ui.o
    change is a `v2` URI and a new page, never an edit" ([`extensions.md`](../api/extensions.md)), and this change breaks
    every v1 reader:
    - the catalog document gains a required member: v1 says it is "exactly … `{catalogId, components}` … and nothing
-     else" ([section 1](../api/ui-catalog-v1.md#_1-the-catalog)), and adam-rs's reader refuses any other member
+     else" ([section 1](../api/ui-catalog-v1.md#1-the-catalog)), and adam-rs's reader refuses any other member
      (`Catalog::read`, `crates/adam-ui/src/catalog.rs` of adam-rs), while A2UI v1.0 requires `"protocolVersion": "1.0"`
      on the catalog and refuses a v0.9 one;
    - the digest of every catalog changes, because the canonical form covers the new member;

@@ -704,7 +704,7 @@ already drawn from its own name. The CI step is the next section.
 
 ### CI results (`vymalo.ci`)
 
-A CI system's report on a commit (ADR 0017, [`docs/api/agui.md`](../docs/api/agui.md#ci-results-vymaloci)) is a step of
+A CI system's report on a commit (ADR 0017, [`docs/api/agui.md`](../docs/api/agui.md#ci-results-vymalo-ci)) is a step of
 its own, **for every report**, whether or not the gate counted it; the `vymalo.check` step of the source `ci` next to
 it shows what the gate made of it. The orchestrator's order is check (pending), report, check (answered), rework.
 

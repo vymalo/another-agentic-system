@@ -5,12 +5,12 @@ sidebarTitle: "0026 · Agent mentions as references"
 # ADR 0026 — Agent mentions as structured references
 
 - **Status:** accepted (2026-10-01), on the owner's delegation: open question 34 is decided for option A in
-  the [status note](#status-note-2026-10-01-accepted-on-the-owner-s-delegation). The owner may revisit it. **Built:** the
+  the [status note](#status-note-2026-10-01-accepted-on-the-owners-delegation). The owner may revisit it. **Built:** the
   references (2026-10-02) and asking, `ask_agent` (2026-10-03, [status note](#status-note-2026-10-03-built-slice-10-asked-agents)).
   **Amended (2026-10-17):** a form an asked agent *draws* (an interface) is the person's to answer, not a model's, and an asked
   agent is sent the job's UI catalog so that a question with choices draws one; a question in words, with no choices, still is
   the asking agent's, and that leaves a narrower known gap
-  ([status note](#status-note-2026-10-17-a-form-is-the-person-s-to-answer)). **Amended (2026-10-17, second):** an ask is never
+  ([status note](#status-note-2026-10-17-a-form-is-the-persons-to-answer)). **Amended (2026-10-17, second):** an ask is never
   sent without its thread-tools grant: an adapter that cannot mint the token fails the ask instead of sending a plain message
   ([status note](#status-note-2026-10-17-second-an-ask-never-goes-out-without-its-grant)). **Amended (2026-10-17, third):** an
   asked agent is sent a **forms catalog** derived from the thread's, `Choices` alone, so that it can draw a form and nothing
@@ -25,7 +25,7 @@ sidebarTitle: "0026 · Agent mentions as references"
 The owner's example, a message to the chosen agent (2026-10-01): "Help me understand football in
 Europe from 2011 till 2019. @researcher first check for data from that period and @browser you look
 for pictures to illustrate this experiment. And then @coder will plot the whole thing."
-([vision](../vision.md#_4-several-agents-in-one-message-by-mention)).
+([vision](../vision.md#4-several-agents-in-one-message-by-mention)).
 
 Today a thread has one agent, chosen when it starts; a verifier agent can review the worker's commit
 ([ADR 0018](0018-verification-gate-and-rework-loop.md)). The orchestrator has no model, so it cannot
@@ -95,7 +95,7 @@ decided on that delegation as follows; the owner may revisit them.
 ## Status note, 2026-10-02: the contracts written
 
 The extension is written in [`api/mentions-v1.md`](../api/mentions-v1.md) and `ask_agent` in
-[`api/thread-tools-v1.md`](../api/thread-tools-v1.md#ask-agent); neither is built. Decided on the owner's delegation:
+[`api/thread-tools-v1.md`](../api/thread-tools-v1.md#ask_agent); neither is built. Decided on the owner's delegation:
 
 - **Offsets are UTF-16 code units** (what a JavaScript string indexes; the web is the producer), in place of the Unicode
   scalar values the first plan counted. An offset inside a surrogate pair is a 422.

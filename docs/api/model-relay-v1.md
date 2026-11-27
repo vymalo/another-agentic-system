@@ -136,7 +136,7 @@ nothing written, nothing forwarded.
 
 The body is a JSON object of at most `modelRelay.maxRequestBytes` (8 MiB, else `413` `request_too_large`). The relay **changes two things and nothing else**:
 
-1. `model` becomes the upstream name of the resolved model ([section 5](#_5-which-model)).
+1. `model` becomes the upstream name of the resolved model ([section 5](#5-which-model)).
 2. For `stream: true` it sets `stream_options.include_usage` to `true` (other `stream_options` are kept), so the last chunk carries the usage it must record.
 
 Every other member passes untouched: `messages`, `tools`, `tool_choice`, `parallel_tool_calls`, `response_format`, `max_tokens` and `max_completion_tokens`, `temperature`, the provider's reasoning settings, and any
@@ -184,7 +184,7 @@ is recorded as a cancelled call.
 3. **An asked agent's** token (`caller: ask:<n>`) has no `mdl`: it works from rule 2, so the person's pick is for the agent they talk to, and nothing is passed to its helpers (as the tiers).
 4. The ids are ours. The configuration maps each to a named endpoint and the model's name there ([`config.md`](config.md), `modelRelay.models`); the agent never learns either.
 
-The person's pick is made in the web, per thread, and sent per message: [section 8](#_8-the-orchestrator-and-the-web).
+The person's pick is made in the web, per thread, and sent per message: [section 8](#8-the-orchestrator-and-the-web).
 
 ## 6. Usage and the budget
 
@@ -210,7 +210,7 @@ every log line and metric, every table), as `dev/tools-e2e.sh` does for a config
 
 ## 8. The orchestrator and the web
 
-The web sends the pick on the run that carries the message: `forwardedProps["vymalo.model"] = "deep"` ([`agui.md`](agui.md#inbound-ag-ui-→-core-input)); `null` or no member means no pick. Before anything is written:
+The web sends the pick on the run that carries the message: `forwardedProps["vymalo.model"] = "deep"` ([`agui.md`](agui.md#inbound-ag-ui--core-input)); `null` or no member means no pick. Before anything is written:
 
 | Check | Refused as |
 |---|---|

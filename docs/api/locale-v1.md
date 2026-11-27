@@ -30,7 +30,7 @@ asking for German.
 
 | Part | Does |
 |---|---|
-| **Client** | Knows the interface's language, as a BCP 47 tag, and sends it with every message: `forwardedProps["vymalo.locale"]` on a run. Never sends one it invented. Draws the agent's answer as text and Markdown, and keeps **every high-risk string its own** ([section 7](#_7-security)). |
+| **Client** | Knows the interface's language, as a BCP 47 tag, and sends it with every message: `forwardedProps["vymalo.locale"]` on a run. Never sends one it invented. Draws the agent's answer as text and Markdown, and keeps **every high-risk string its own** ([section 7](#7-security)). |
 | **Orchestrator** | Reads the tag on the run and checks that it is a tag (**400**). Carries it on the message the person's words become, and records it on the `user_message` — the log is the state, so the hint is replayable — while projecting nothing of it. Activates the extension and puts the tag in the metadata only to an agent whose live card, read for that very call, lists it well formed. |
 | **Agent** | Lists the extension in its card, with the language it writes in by itself when it says one. Answers in the language the hint names when it can, in the person's language, else its own default. Says which one it used when it matters. |
 
@@ -169,7 +169,7 @@ setting of the thread, no new route. It rides with whatever the other extensions
 1. **Answer in the language the person reads.** The hint first, the person's own words over it, the agent's default last.
 2. **Keep the interface's own strings out of it.** Every string the agent's model writes is *text the person reads*. No string
    the agent writes ever becomes a **high-risk string** of the client: the label of a trusted component, the words of a payment,
-   the text of a consent. Those are the client's own, reviewed, static ([section 7](#_7-security)).
+   the text of a consent. Those are the client's own, reviewed, static ([section 7](#7-security)).
 3. **Say what you used, when it matters.** When the answer is not in the language the person wrote or the interface named, the
    answer says which one it is in, in words. There is no metadata member for it: a locale is a hint, and the orchestrator
    records no echo.

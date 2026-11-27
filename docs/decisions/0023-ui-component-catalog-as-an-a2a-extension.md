@@ -5,7 +5,7 @@ sidebarTitle: "0023 · UI component catalog"
 # ADR 0023 — A UI component catalog, sent at conversation start, with a refetch seam
 
 - **Status:** accepted (2026-10-01), on the owner's delegation: the extension's URI and open question 36 are
-  decided in the [status note](#status-note-2026-10-01-accepted-on-the-owner-s-delegation). The owner may revisit it.
+  decided in the [status note](#status-note-2026-10-01-accepted-on-the-owners-delegation). The owner may revisit it.
   Amended (2026-11-14): catalog version 7 adds five kinds of question to `Choices`, see the
   [status note](#status-note-2026-11-14-version-7-adds-five-kinds-of-question-to-choices).
   **Amended (2026-11-19, [ADR 0075](0075-a2ui-v1-0-cutover.md)):** with the A2UI v1.0 cutover the extension becomes
@@ -19,7 +19,7 @@ sidebarTitle: "0023 · UI component catalog"
 The owner wants agents to know which components the person's screen can show, and to answer and
 ask through them: lists, choices (a radio list of several questions), steppers, cards, a web view,
 an agent suggestion, a skill request, a mermaid graph, images placed in text, a notification
-opt-in, and any combination ([vision](../vision.md#_2-rich-output-and-rich-input-through-components-the-agent-knows-about)).
+opt-in, and any combination ([vision](../vision.md#2-rich-output-and-rich-input-through-components-the-agent-knows-about)).
 "The UI should define components, e.g. by key and params, then let the A2A seam know about them."
 
 **The owner decided (2026-10-01):** "since the components are not dynamic, their params only are,
@@ -202,7 +202,7 @@ answers as it did):
 2. **The answer keeps its shape.** `{id, values}` with `values` an array of **strings** for every kind, and no `other` and no `text`:
    `["no"]`, `["250.5"]`, `["7"]`, `["2026-12-15"]`, `["c", "a", "b"]` (a `rank`'s order is the person's, the one place where it is
    not the options'). A number is **a decimal string with a stated grammar, never a JSON number**: an A2A server holds the numbers of
-   a message's metadata as doubles ([`ui-catalog-v1.md` section 5](../api/ui-catalog-v1.md#_5-to-the-agent-the-extension)), and a string comes
+   a message's metadata as doubles ([`ui-catalog-v1.md` section 5](../api/ui-catalog-v1.md#5-to-the-agent-the-extension)), and a string comes
    out as it went in; it is compared as an exact decimal (millionths in an integer), never through floating point. A date is a day
    and not an instant: no time, no zone. The same shape means a version 6 receiver still reads the answer, and the "no answer" of
    version 5, an empty `values` for a question that is not required, is the only way a question is left unanswered.

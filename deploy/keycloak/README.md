@@ -119,7 +119,7 @@ The desktop app ([`apps/tauri`](../../apps/tauri/README.md)) is the web's page i
 
 Import it when the desktop app is used (*Clients → Import client*); the realm settings of the web's client (the realm role `offline_access`, *Revoke Refresh
 Token*) hold for it too. The API must also let the webview's origins call it: the chart's `orchestrator.cors.allowedOrigins`
-([`deploy/chart`, "Calls from the desktop and mobile apps"](../chart/README.md#calls-from-the-desktop-and-mobile-apps)).
+([`deploy/chart`, "Calls from the desktop app"](../chart/README.md#calls-from-the-desktop-app)).
 
 ## The mobile clients `another-agentic-android` and `another-agentic-ios` (ADR 0047)
 

@@ -22,7 +22,7 @@ sidebarTitle: "0036 · Sending while an agent works"
 ## Context
 
 Today the composer stops being a way to talk while an agent works: only Stop is shown, and the AG-UI surface answers a
-second run on an open thread with 409 ([`agui.md`](../api/agui.md#inbound-ag-ui-→-core-input)). The core does accept a
+second run on an open thread with 409 ([`agui.md`](../api/agui.md#inbound-ag-ui--core-input)). The core does accept a
 message in `queued` and `working` (it appends it and writes a delegation), but the dispatcher keeps a delegation
 in flight until the agent's turn ends, so such a message reaches the agent only **after** the turn
 (*verified 2026-10-01*, plan 08, the dispatcher's `delegate` path). A person who sees the agent going the wrong way has to wait, or press Stop

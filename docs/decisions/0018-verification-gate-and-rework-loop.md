@@ -13,7 +13,7 @@ sidebarTitle: "0018 · Verification gate, rework loop"
   checks, and `ci` is honoured only where a webhook is mounted, see the
   [status note](#status-note-2026-09-30-review-fixes); "the first completed CI report decides" below is superseded.
   **Amended 2026-09-30 (the first live run):** the agent's own checks pass only on the pushed commit, see the
-  [status note](#status-note-2026-09-30-the-agent-s-checks-need-a-pushed-commit), which also has the rework prompt
+  [status note](#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit), which also has the rework prompt
   carry the person's messages, writes down the fence grammar of the prompts the core writes, and lists the holes that
   remain.
   **Amended 2026-09-30 (threads never lock):** the gate applies to **each job** of a thread; verifications are
@@ -62,7 +62,7 @@ choice. Until it lands, the coder's dev gate is CI only.
 
 The sources are a closed enum, `CheckSource`: `Ci`, `AgentChecks`, `Verifier`. **There is no new
 port**: the aggregation (which sources are required, which have passed, whether to rework) is pure
-core logic in `orch-core`, the rules of [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md#_3-the-loop-as-rules-of-the-core).
+core logic in `orch-core`, the rules of [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md#3-the-loop-as-rules-of-the-core).
 
 | Source | Evidence | Arrives as | Passes when |
 |---|---|---|---|
@@ -553,7 +553,7 @@ schema, golden or client changed.
 
 *What replaces what.* This supersedes, for a first attempt that pushed nothing, the 2026-09-30 rule that "checks, but no
 pushed commit" is a failed source and that the owner's "Hi" ends in a rework and then `Failed`
-([the 2026-09-30 note](#status-note-2026-09-30-the-agent-s-checks-need-a-pushed-commit)). Everything else in that note
+([the 2026-09-30 note](#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit)). Everything else in that note
 stands: checks count only on the pushed commit, the rework prompt carries the person's messages, the fence grammar, and
 the list of what the gate still does not check. The "Hi" case that note was written for is `Done` on attempt 1 with the
 agent's reply, which is what `gate.rs` of the app's tests now asserts (the test that said "checks with no pushed commit
@@ -630,7 +630,7 @@ Whoever reads them next should look for it (open point below).
 
 *Pre-existing failures pass with a note (C).* adam-rs re-runs a failing check on the base commit of the pushed work; when it
 fails there too the coder marks the finding `preexisting: true` (with the base commit). The contract is in
-[`api/agui.md`](../api/agui.md#the-agent-s-checks-artifact). The core reads each finding: a string, or an object whose `preexisting`
+[`api/agui.md`](../api/agui.md#the-agents-checks-artifact). The core reads each finding: a string, or an object whose `preexisting`
 is the boolean `true`, is a pre-existing failure; everything else (a missing field, `"true"`, `1`) is the agent's to fix, so an older
 agent behaves exactly as before. A failing report whose findings are **all** marked passes: `check_result` is `passed`, with no
 findings, and its `summary` is the agent's own followed by "failing on the base commit <12 hex> too, so not caused by this
@@ -722,7 +722,7 @@ attempt held.
 - **The gate does not see everything.** `agent-checks` is the agent vouching for itself; the orchestrator does not
   compare `pushed.repository` with what the person asked for and does not refuse a `commit` equal to the base; only `ci`
   and the verifier look at the commit independently. The holes are listed, with what stands in for each, in the
-  [status note of 2026-09-30](#status-note-2026-09-30-the-agent-s-checks-need-a-pushed-commit) ("What the gate still does
+  [status note of 2026-09-30](#status-note-2026-09-30-the-agents-checks-need-a-pushed-commit) ("What the gate still does
   not check").
 
 ## Alternatives considered
