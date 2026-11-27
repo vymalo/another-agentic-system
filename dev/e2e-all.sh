@@ -96,7 +96,7 @@
 #                     compose.yaml), a message naming de-DE reaches the model as one more turn
 #                     after the history and never in `system`, a thread that names none gets no
 #                     line, and a tag for the researcher (whose card lists nothing) changes nothing
-#   commands          commands/v1 on the REAL coder (ADR 0079): the capabilities    commands-e2e.sh
+#   commands          commands/v1 on the REAL coder (ADR 0079): the capabilities            commands-e2e.sh
 #                     of adam list the folder's three commands, chat lists none, the
 #                     coder's first model request holds `/explain acme/app` expanded,
 #                     and `//explain acme/app` reaches it as the literal text

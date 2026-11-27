@@ -172,7 +172,14 @@ user_text() {
 }
 
 code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X DELETE "$openai/__admin/requests" || true)
-if [ "$code" = 200 ]; then ok "journal reset: $openai"; else bad "journal reset: $openai answered HTTP $code"; fi
+# The unmatched check at the end reads the whole journal, so a reset that failed would let an earlier scenario's
+# requests decide it: stop here rather than report on a journal this run does not own.
+if [ "$code" = 200 ]; then
+  ok "journal reset: $openai"
+else
+  echo "FAIL journal reset: $openai answered HTTP ${code:-none}; the journal is not this run's"
+  exit 1
+fi
 
 n1=n$(uuid | tr -d -)
 typed="/explain acme/app [mock:commands] $n1"
