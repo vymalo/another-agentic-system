@@ -15,7 +15,7 @@
 # has an SSE twin and `dev/check-agent-mocks.sh` plays it): `start_scratch` (tier-call-1), `write_file` note.txt (tier-call-2), then an
 # answer. The script is the same whatever the tier, on purpose: the model is a script and offers nothing of its own, so what differs
 # between the two runs is what the coder does with the same two calls. adam-rs (bin/adam-coder/src/tier.rs) holds a tool above the tier
-# back at two places: the model is not offered it (`TierSource::specs` and `withhold`: it is missing from the `tools` of the request) and a
+# back at two places: the model is not offered it (`TierSource::withhold`: it is missing from the `tools` of the request) and a
 # call to it is refused when it would run, with a result that says `` `write_file` needs the edits access tier ``. `start_scratch` and
 # `write_file` need `edits`, so at `plan` both are refused.
 #
@@ -29,7 +29,7 @@
 #     the coder echoed `plan` on; the model's first request was not offered `write_file`, and its last one, after the two calls, carries
 #     the coder's refusal of `write_file` (and of `start_scratch`) as the tool results;
 #   * a run naming `edits`, same script, same words: the thread ends `done`, the echo is `edits`, `write_file` was offered, and no tool
-#     result of the run says an access tier refused anything;
+#     result of the run says an access tier refused anything, and the write_file result says `Created note.txt`;
 #   * `bypass`, above the cap, is a 422 ("this agent does not take the tier 'bypass'"): no thread, and the model was sent nothing.
 # Exit status 0 when every check passed.
 #
@@ -141,7 +141,7 @@ api GET "/api/threads/$plan_thread/export" >"$tmp/plan.export.json" 2>/dev/null 
 expect "the log: the user_message holds the tier" \
   "$(jq -r '[.events[] | select(.kind == "user_message") | .data.tier // "-"] | first // "-"' "$tmp/plan.export.json")" "plan"
 expect "the log: the coder's echo of the tier is on its agent_status" \
-  "$(jq -r '[.events[] | select(.kind == "agent_status" and (.data | has("tier"))) | .data.tier] | unique | join(",")' "$tmp/plan.export.json")" "plan"
+  "$(jq -r '[.events[] | select(.kind == "agent_status" and (.data | has("tier"))) | .data.tier] | join(",")' "$tmp/plan.export.json")" "plan"
 plan_first=$(requests_of "$plan_nonce" | head -1)
 plan_last=$(requests_of "$plan_nonce" | tail -1)
 expect "the model was called for that run" "$([ -n "$plan_first" ] && echo yes || echo no)" "yes"
@@ -168,7 +168,7 @@ api GET "/api/threads/$edits_thread/export" >"$tmp/edits.export.json" 2>/dev/nul
 expect "the log: the user_message holds the tier" \
   "$(jq -r '[.events[] | select(.kind == "user_message") | .data.tier // "-"] | first // "-"' "$tmp/edits.export.json")" "edits"
 expect "the log: the coder's echo of the tier is on its agent_status" \
-  "$(jq -r '[.events[] | select(.kind == "agent_status" and (.data | has("tier"))) | .data.tier] | unique | join(",")' "$tmp/edits.export.json")" "edits"
+  "$(jq -r '[.events[] | select(.kind == "agent_status" and (.data | has("tier"))) | .data.tier] | join(",")' "$tmp/edits.export.json")" "edits"
 edits_first=$(requests_of "$edits_nonce" | head -1)
 edits_last=$(requests_of "$edits_nonce" | tail -1)
 expect "the model was called for that run" "$([ -n "$edits_first" ] && echo yes || echo no)" "yes"
@@ -176,6 +176,10 @@ expect "the model's first request was offered write_file" "$(offered "$edits_fir
 edits_results=$(tool_results "$edits_last")
 expect "the model's last request carries two tool results" \
   "$(printf '%s' "$edits_last" | jq -r '[(.messages // [])[] | select(.role == "tool")] | length')" "2"
+case $edits_results in
+  *'Created note.txt'*) ok "the write happened: the write_file result says Created note.txt" ;;
+  *) bad "the edits run's tool results do not say Created note.txt: ${edits_results:-no tool result}" ;;
+esac
 case $edits_results in
   *'access tier'*) bad "a tool result of the edits run mentions an access tier: $edits_results" ;;
   *) ok "no tool result of the edits run says an access tier refused anything" ;;
@@ -189,6 +193,7 @@ code=$(run_agui coder-share "$over_thread" "[mock:tier] write note.txt ($over_no
 expect "a tier above the coder's cap is a 422" "$code" "422"
 expect "its detail says the agent does not take it" "$(jq -r '.detail // ""' "$tmp/run.out")" "this agent does not take the tier 'bypass'"
 expect "no thread was created" "$(curl -s -o /dev/null -w '%{http_code}' -H "$id_header" "$base/api/threads/$over_thread")" "404"
-expect "the coder's model was sent nothing for it" "$(requests_of "$over_nonce" | wc -l | tr -d ' ')" "0"
+# A side observation: the 422 and the 404 above are the proof; this only says the model was not reached either.
+expect "(side observation) the coder's model saw no request for it" "$(requests_of "$over_nonce" | wc -l | tr -d ' ')" "0"
 
 finish
