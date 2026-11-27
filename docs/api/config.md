@@ -449,7 +449,7 @@ the section (exit 78).
 | `forms.<kind>` | The agent form of each kind in `kinds` (the platform's form without `name`, `owner` and `suspend`, which the orchestrator sets). One per kind, and none for a kind that is not listed. |
 | `credentials` | What the orchestrator presents. One type: `dev-oidc`, the OAuth `client_credentials` grant for the local stack's `mock-oidc`: `tokenUrl`, `clientId`, `clientSecret` (a `{ env }` or `{ file }` reference), and optionally `user`, `audience`, `roles` (the token must carry `platform:agents.own`). A development adapter; use another in a deployment. |
 | `requestTimeoutSecs` | One request to the platform, 1 to 60 (default 5). |
-| `readyTimeoutSecs` | How long to wait for a made or resumed agent to be ready, 1 to 600 (default 120). **The bound of a person's message path**: the application gives up at it (and, as a backstop for an adapter that does not, 10 s later), with the 503 above; it is not the dispatch's timeout. |
+| `readyTimeoutSecs` | How long to wait for a made or resumed agent to be ready, 1 to 600 (default 120). **The bound of a person's message path**: the application gives up at it (and, as a backstop for an adapter that does not, 10 s later), with the 503 above; it is not the dispatch's timeout. It also bounds how long a routed row waits for its agent in the dispatcher. |
 
 ### `userToolServers`
 

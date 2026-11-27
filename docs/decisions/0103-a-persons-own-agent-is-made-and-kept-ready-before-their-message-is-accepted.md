@@ -94,16 +94,27 @@ slow agents could take every slot (`concurrency`, 32 by default) from everyone e
 *Not listed yet* bullet).
 
 - **The wake is a probe.** `Dispatcher::load` waits for the person's agent to answer that it is ready for
-  `DispatcherConfig.own_agent_probe` (2 s) and no longer: `tokio::time::timeout` cuts the call. The cut leaves the platform's
-  agent coming up (the port's rule, below), so the next claim finds it. A probe that runs out, or a platform that answers
-  `AgentNotReady`, sends the row back with `ThreadStore::wait_outbox` (ADR 0103's own refund of 2026-11-27, PR 1) after the
+  `DispatcherConfig.own_agent_probe` (2 s) and no longer: `tokio::time::timeout` cuts the call. The cut drops the **wait**, never the request: the wake runs
+  in a task of `Provisioning`, one per (owner, kind), joined by every caller (the dispatcher's rows, so a person's N waiting rows
+  make **one** request to the platform, and the request path), and a result, an error included, is delivered to each waiter.
+  The entry leaves the map when the task ends, which the backstop (`readyTimeoutSecs` plus `OUTER_SLACK`) bounds; the map is
+  process-local and holds no datum of the person's, so invariant 3 stands. Without it a platform slower than the probe (one
+  request may take 5 s, with a cold token fetch more) would have every probe drop the request and the row die on an agent that
+  would have come up. Whether the platform finishes a create or a resume whose client vanished is *unverified*; the flight makes
+  it not matter for the dispatcher. The next claim finds the agent, the port's rule (below) covering a restart. A probe that runs out, or a platform that answers
+  `AgentNotReady`, sends the row back with `ThreadStore::wait_outbox` (the refund of PR 1, Consequences) after the
   **fixed** delay `own_agent_wait_delay` (2 s), not the exponential backoff: with the backoff a row could sit up to 60 s after
   the agent was ready. The claim is refunded, so `max_attempts` and the other caps read only the claims that tried something. A
-  platform error other than not-ready (`AppError::Provisioning`) keeps the counted retry. `AppError::AgentNotReady`, whose
+  platform error other than not-ready (`AppError::Provisioning`) keeps the counted retry. **A behaviour change:** an `AgentNotReady`
+  was a counted retry with the backoff under `max_attempts`, so an agent that stayed `Blocked` or `Degraded` was waited for
+  about 5 times 130 s, near 11 minutes; now the row waits about 130 to 200 s in all and is dead, so a degraded rollout longer
+  than that loses the message (the thread is told, and the person sends it again). `AppError::AgentNotReady`, whose
   `waited` names the whole bound, is **not** reused for the dispatcher's wait.
 - **The row gives up when the wake bound is spent.** A row whose refunded claims reach the cycles (a probe and its wait) that fit
   in `own_agent_wake_bound()` (`readyTimeoutSecs` plus `OUTER_SLACK`) ends as the row for an agent that cannot be made ready did
-  ("your agent could not be made ready", dead `own agent not ready`). Every wait is thus bounded by that count: no row waits for
+  ("your agent could not be made ready", dead `own agent not ready`). **The bound is a count of cycles, not a duration:** a cycle
+  is the probe, the delay and the claim's latency (up to `poll_interval`), so the 33 cycles of the defaults take about 130 to
+  200 s, and a provisioner that answers not-ready at once has shorter cycles, so it gives up sooner. Every wait is thus bounded by that count: no row waits for
   ever or spins. The cost is one platform read per cycle per waiting row: a person's N waiting rows read the platform every
   `own_agent_probe` plus `own_agent_wait_delay`.
 - **The port's rule.** `AgentProvisioner::ensure_ready` is cut at any `.await`, so *a dropped call leaves the agent coming up
@@ -116,7 +127,8 @@ slow agents could take every slot (`concurrency`, 32 by default) from everyone e
   sent. Before this amendment the delegation was in flight for the whole wake and the stop waited for it. **Accepted.** The stop's
   wait for a delegation in flight (decision of 2026-11-26 above, with its wake headroom and the refund of PR 1) is still reached
   by a delegation a claim holds: at its probe (at most `own_agent_probe`), and at the send that follows a wake. A stop that
-  races a probe waits for it as before.
+  races a probe waits for it as before. A **Stop & send** between two probes is the same stop, and its follow-up job (`after_stop`,
+  ADR 0036) is a new delegation that wakes the agent again; only the plain stop is tested.
 - **The tunables are two fields of `DispatcherConfig` and no configuration key**, so `docs/config.md` is untouched and the
   composition root keeps the defaults. They are public fields: **a struct literal of `DispatcherConfig` outside the workspace
   breaks** (use `..DispatcherConfig::default()`).
