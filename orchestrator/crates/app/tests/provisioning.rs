@@ -1379,10 +1379,14 @@ impl AgentProvisioner for Gated {
     }
 }
 
-/// A stop pressed while a delegation waits for the person's agent to wake is not answered behind
-/// the delegation's back and is not given up: it is tried again (`max_cancel_attempts` of the
-/// dispatcher, plus what fits in the wake bound for a routed thread) until the delegation has
-/// been sent, and then stops the task it started. `min_attempts` is how many claims the stop must
+/// A stop pressed while a delegation is **in flight** (a claim holds it, at the wake or at the send)
+/// is not answered behind the delegation's back and is not given up: it is tried again
+/// (`max_cancel_attempts` of the dispatcher, plus what fits in the wake bound for a routed thread)
+/// until the delegation has been sent, and then stops the task it started. The probe is longer than
+/// any wait of this test (`own_agent_probe` 60 s), so the claim that holds the delegation holds it at
+/// the gate, as it did before the probe (ANR-1078 PR 2): a delegation between two probes is
+/// `pending` and unsent, and a stop skips it (see
+/// `a_stop_between_two_probes_cancels_a_routed_delegation_before_it_starts`). `min_attempts` is how many claims the stop must
 /// have had while the delegation still waited. `transient_cancels` is how many times the agent
 /// then fails the stop's `CancelTask` with an error that passes (ANR-1078, gap A of ADR 0103: the
 /// waits are refunded, so the stop is still given its own `max_cancel_attempts` for the cancel).
@@ -1430,6 +1434,7 @@ async fn a_stop_waits_for_a_waking_delegation(
             Arc::clone(&dispatching),
             orch_app::DispatcherConfig {
                 max_cancel_attempts,
+                own_agent_probe: Duration::from_secs(60),
                 ..fast()
             },
             "d1",
@@ -1490,15 +1495,122 @@ async fn a_stop_waits_for_a_waking_delegation(
     let _ = task.await;
 }
 
-#[tokio::test]
-async fn a_stop_does_not_cancel_a_thread_whose_delegation_waits_for_the_agent_to_wake() {
-    a_stop_waits_for_a_waking_delegation(10_000, 2, 0).await;
+/// A routed delegation whose agent is slow to wake is cut at the probe and waits, `pending`, unsent
+/// and with its claim refunded (ANR-1078 PR 2). A stop pressed then finds nothing sent: it ends the
+/// thread `CancelledBeforeStart` at its first claim and sends nothing, as for any delegation that
+/// has not begun (ADR 0103, amended 2026-11-27). The stop's wait for a delegation in flight is
+/// reached only by a delegation a claim holds: at its probe, or at the send.
+async fn a_stop_between_two_probes_ends_the_thread_before_it_starts(max_cancel_attempts: u32) {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let requests = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            listing(&registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let (open_tx, open_rx) = tokio::sync::watch::channel(false);
+    let entered = Arc::new(AtomicUsize::new(0));
+    let dispatching = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            Gated {
+                inner: MemoryProvisioner::new(),
+                open: open_rx,
+                entered: Arc::clone(&entered),
+            },
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let token = tokio_util::sync::CancellationToken::new();
+    let task = tokio::spawn(
+        Dispatcher::new(
+            Arc::clone(&dispatching),
+            orch_app::DispatcherConfig {
+                max_cancel_attempts,
+                own_agent_probe: Duration::from_millis(100),
+                // one probe, then a wait far longer than the test: the row stays between probes
+                own_agent_wait_delay: Duration::from_secs(30),
+                ..fast()
+            },
+            "d1",
+        )
+        .run(token.clone()),
+    );
+    let id = new_coder_thread(&requests, "echo stopped before the agent woke").await;
+    let waiting = eventually("the delegation waits for the agent", || async {
+        w.store
+            .list_open_outbox(id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| {
+                r.kind == orch_ports::OutboxKind::Delegate
+                    && r.status == orch_ports::OutboxStatus::Pending
+                    && r.refunded >= 1
+            })
+    })
+    .await;
+    assert!(
+        entered.load(Ordering::SeqCst) >= 1,
+        "the probe reached the gate"
+    );
+    assert_eq!(waiting.sent_at, None, "nothing was sent");
+    assert_eq!(
+        waiting.counted_attempts(),
+        0,
+        "the probe was refunded: {waiting:?}"
+    );
+
+    requests.cancel(&alice(), id).await.unwrap();
+    wait_in(&w, id, ThreadState::Cancelled).await;
+    assert_eq!(
+        sends_to(&w, &mine()),
+        0,
+        "nothing was sent to the person's agent"
+    );
+    assert!(
+        w.agent.sends().is_empty(),
+        "nothing was sent to any agent: {:?}",
+        w.agent.sends()
+    );
+    assert!(
+        !w.agent
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::Cancel { .. })),
+        "no task existed to cancel at the agent"
+    );
+    // the delegation was skipped by the stop, and the stop is over: nothing is left open
+    eventually("no row is left open", || async {
+        w.store
+            .list_open_outbox(id)
+            .await
+            .unwrap()
+            .is_empty()
+            .then_some(())
+    })
+    .await;
+    open_tx.send(true).unwrap();
+    token.cancel();
+    let _ = task.await;
 }
 
 #[tokio::test]
-async fn a_stop_outlasts_max_cancel_attempts_while_a_routed_delegation_waits_for_the_agent() {
-    // two attempts would end the stop; the wake bound (30 s plus the backstop) is what it may wait
-    a_stop_waits_for_a_waking_delegation(2, 5, 0).await;
+async fn a_stop_between_two_probes_cancels_a_routed_delegation_before_it_starts_and_sends_nothing()
+{
+    a_stop_between_two_probes_ends_the_thread_before_it_starts(10_000).await;
+}
+
+#[tokio::test]
+async fn a_stop_needs_no_retries_to_cancel_a_routed_delegation_that_waits_between_probes() {
+    // one attempt is all the stop is given, and all it needs: nothing is in flight to wait for
+    a_stop_between_two_probes_ends_the_thread_before_it_starts(1).await;
 }
 
 #[tokio::test]
@@ -1560,6 +1672,7 @@ async fn a_stop_that_waited_still_gets_its_listing_attempts_before_it_cancels_lo
             Arc::clone(&dispatching),
             orch_app::DispatcherConfig {
                 own_agent_listing_attempts: LISTING,
+                own_agent_probe: Duration::from_secs(60),
                 ..fast()
             },
             "d1",
@@ -1605,6 +1718,794 @@ async fn a_stop_that_waited_still_gets_its_listing_attempts_before_it_cancels_lo
     );
     token.cancel();
     let _ = task.await;
+}
+
+/// ANR-1078 PR 2, the card's "Done when": rows routed to a person's agent that is slow to wake do
+/// not hold a dispatcher slot for the whole wait-ready bound, and the rows of others are still
+/// served meanwhile. The provisioner is gated (never opened until the end), `concurrency` is 2 and
+/// `routed` coder threads of alice wait for it; then a thread to `plain`, an agent nobody
+/// provisions, must reach `Done` within `eventually`'s 10 s.
+///
+/// On the commit before the probe (0e6d34f0) each routed row held its slot for the whole wait,
+/// `BOUND` plus `OUTER_SLACK`, 40 s, so the first `concurrency` rows held every slot and the
+/// unrelated row was never claimed in 10 s.
+///
+/// What else is asserted: the routed rows stay open and unsent (never dead, nothing sent to the
+/// person's agent), each is cut at the probe more than once and its claims are refunded (a counted
+/// attempt is at most the one claim that holds it), and when the gate opens they all finish with
+/// exactly one counted attempt, the one that sent.
+async fn routed_rows_that_wait_for_a_slow_agent_leave_the_slots_to_the_rest(
+    routed: usize,
+    unrelated_person: orch_core::UserId,
+) {
+    const SLOTS: usize = 2;
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let requests = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            listing(&registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let (open_tx, open_rx) = tokio::sync::watch::channel(false);
+    let entered = Arc::new(AtomicUsize::new(0));
+    let dispatching = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            Gated {
+                inner: MemoryProvisioner::new(),
+                open: open_rx,
+                entered: Arc::clone(&entered),
+            },
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let token = tokio_util::sync::CancellationToken::new();
+    let task = tokio::spawn(
+        Dispatcher::new(
+            Arc::clone(&dispatching),
+            orch_app::DispatcherConfig {
+                concurrency: SLOTS,
+                own_agent_wait_delay: Duration::from_millis(500),
+                ..fast()
+            },
+            "d1",
+        )
+        .run(token.clone()),
+    );
+    let mut coders = Vec::new();
+    for n in 0..routed {
+        coders.push(new_coder_thread(&requests, &format!("echo routed {n}")).await);
+    }
+    // the wake is at the gate: one flight for the person, whatever the number of rows
+    eventually("the wake at the gate", || async {
+        (entered.load(Ordering::SeqCst) >= 1).then_some(())
+    })
+    .await;
+
+    // an agent nobody provisions, asked by someone else's thread or alice's own
+    let plain = ThreadId(uuid::Uuid::now_v7());
+    requests
+        .create_thread_as(
+            &unrelated_person,
+            plain,
+            NewThread {
+                title: None,
+                target: target("plain"),
+                text: "echo not routed".to_owned(),
+            },
+            Inbound::default(),
+        )
+        .await
+        .unwrap();
+    wait_in(&w, plain, ThreadState::Done).await;
+    assert_eq!(
+        sends_to(&w, "plain"),
+        1,
+        "the unrelated thread was served while the routed rows waited"
+    );
+
+    // the routed rows are still waiting, not dead, and nothing of theirs was sent
+    let mut rows = Vec::new();
+    for id in &coders {
+        let row = eventually("a routed row cut at the probe", || async {
+            w.store
+                .list_open_outbox(*id)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|r| r.kind == orch_ports::OutboxKind::Delegate && r.refunded >= 1)
+        })
+        .await;
+        assert_eq!(row.sent_at, None, "{row:?}");
+        assert!(
+            row.counted_attempts() <= 1,
+            "a probe is refunded, so the cap sees at most the claim that holds the row: {row:?}"
+        );
+        let thread = w.store.get_thread(None, *id).await.unwrap().unwrap();
+        assert!(!thread.state.is_terminal(), "{:?}", thread.state);
+        rows.push(row.id);
+    }
+    assert_eq!(
+        sends_to(&w, &mine()),
+        0,
+        "nothing reached the person's agent"
+    );
+    assert_eq!(
+        entered.load(Ordering::SeqCst),
+        1,
+        "{routed} waiting rows of one person made one request to the platform, not one each"
+    );
+
+    // the agent wakes: every routed row sends once and ends
+    open_tx.send(true).unwrap();
+    for id in &coders {
+        wait_in(&w, *id, ThreadState::Done).await;
+    }
+    assert_eq!(sends_to(&w, &mine()), routed);
+    for id in rows {
+        let row = eventually("a routed row delivered", || async {
+            let row = w.store.get_outbox(id).await.unwrap().unwrap();
+            (row.status == orch_ports::OutboxStatus::Delivered).then_some(row)
+        })
+        .await;
+        assert_eq!(
+            row.counted_attempts(),
+            1,
+            "only the claim that sent counts: {row:?}"
+        );
+        assert!(row.refunded >= 1, "{row:?}");
+    }
+    token.cancel();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn routed_rows_waiting_for_a_slow_agent_leave_the_slots_to_the_next_row() {
+    // as many routed rows as slots: between two probes every slot is free
+    routed_rows_that_wait_for_a_slow_agent_leave_the_slots_to_the_rest(2, alice()).await;
+}
+
+#[tokio::test]
+async fn routed_rows_at_twice_the_slots_waiting_for_a_slow_agent_leave_slots_to_another_person() {
+    // twice as many as slots. The unrelated thread is ANOTHER person's on purpose: the claim order
+    // is fair between people but by row position within one person, so alice's own newer
+    // unrelated row could be kept from a slot by her older routed rows, which are due again as soon
+    // as a slot frees. That is a known limit (ADR 0103, amended 2026-11-27), not what this test
+    // proves: it proves that no routed row holds a slot for the wake.
+    routed_rows_that_wait_for_a_slow_agent_leave_the_slots_to_the_rest(4, bob()).await;
+}
+
+/// A provisioner whose agent is ready only when **one call runs to its end**: the call sleeps
+/// `delay`, then the agent is ready. A call that is dropped before the end leaves nothing done, and
+/// the next call starts the sleep again. It is what a platform is that needs the request to be
+/// held: not the memory provisioner, which is ready by the clock whoever waits.
+#[derive(Clone)]
+struct Uninterrupted {
+    delay: Duration,
+    ready: Arc<std::sync::atomic::AtomicBool>,
+    entered: Arc<AtomicUsize>,
+}
+
+impl AgentProvisioner for Uninterrupted {
+    async fn ensure_ready(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+    ) -> Result<ProvisionedAgent, ProvisionError> {
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        if !self.ready.load(Ordering::SeqCst) {
+            tokio::time::sleep(self.delay).await;
+            self.ready.store(true, Ordering::SeqCst);
+        }
+        Ok(ProvisionedAgent {
+            name: kind.agent_name(owner),
+            state: AgentState::Ready,
+        })
+    }
+    async fn state(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<Option<AgentState>, ProvisionError> {
+        Ok(None)
+    }
+    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+    async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+}
+
+/// A platform slower than the probe still finishes the wake: the call is a flight of its own and a
+/// cut probe leaves it running, so the row is cut more than once and then sends (ANR-1078 PR 2).
+///
+/// The provisioner needs one uninterrupted call of 700 ms, the probe is 200 ms. With the flight the
+/// one call runs to its end and `entered` is 1. If `Provisioning::fly` were a direct
+/// `timeout(probe, ensure_ready)`, every probe would drop the call at 200 ms, the sleep would start
+/// again each time, the agent would never be ready, and the row would give up at the wake bound:
+/// the test would never see `Done` (and `entered` would be many).
+#[tokio::test]
+async fn a_wake_slower_than_the_probe_still_completes_and_the_row_then_sends() {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let requests = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            listing(&registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let slow = Uninterrupted {
+        delay: Duration::from_millis(700),
+        ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        entered: Arc::new(AtomicUsize::new(0)),
+    };
+    // the request path found the agent ready at once (its own provisioner); only the dispatcher's
+    // is slow
+    let entered = Arc::clone(&slow.entered);
+    let dispatching = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(slow, [AgentKind::Coder], BOUND)),
+    );
+    let token = tokio_util::sync::CancellationToken::new();
+    let task = tokio::spawn(
+        Dispatcher::new(
+            Arc::clone(&dispatching),
+            orch_app::DispatcherConfig {
+                own_agent_probe: Duration::from_millis(200),
+                own_agent_wait_delay: Duration::from_millis(100),
+                ..fast()
+            },
+            "d1",
+        )
+        .run(token.clone()),
+    );
+    let id = new_coder_thread(&requests, "echo slow wake").await;
+    eventually("the row cut at the probe", || async {
+        w.store
+            .list_open_outbox(id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.kind == orch_ports::OutboxKind::Delegate && r.refunded >= 1)
+    })
+    .await;
+    wait_in(&w, id, ThreadState::Done).await;
+    assert_eq!(sends_to(&w, &mine()), 1);
+    assert_eq!(
+        entered.load(Ordering::SeqCst),
+        1,
+        "the one call was held until it ended"
+    );
+    token.cancel();
+    let _ = task.await;
+}
+
+/// A provisioner that fails every call with the error `make` builds, after 100 ms (so that
+/// concurrent callers are on the same flight), counting its calls.
+struct Failing {
+    make: fn() -> ProvisionError,
+    calls: Arc<AtomicUsize>,
+}
+
+impl AgentProvisioner for Failing {
+    async fn ensure_ready(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<ProvisionedAgent, ProvisionError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        Err((self.make)())
+    }
+    async fn state(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<Option<AgentState>, ProvisionError> {
+        Ok(None)
+    }
+    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+    async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+}
+
+/// Two first messages of one person at once share one flight that fails with `make`; each gets the
+/// error, and the platform was asked once.
+async fn two_waiters_on_one_failing_flight(make: fn() -> ProvisionError) -> (AppError, AppError) {
+    let w = World::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = app_with(
+        &w,
+        Failing {
+            make,
+            calls: Arc::clone(&calls),
+        },
+        &[AgentKind::Coder],
+    );
+    let new = |text: &str| NewThread {
+        title: None,
+        target: target("coder"),
+        text: text.to_owned(),
+    };
+    let person = alice();
+    let (a, b) = tokio::join!(
+        app.create_thread(&person, new("one")),
+        app.create_thread(&person, new("two")),
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "two waiters, one request to the platform"
+    );
+    (a.unwrap_err(), b.unwrap_err())
+}
+
+#[tokio::test(start_paused = true)]
+async fn two_waiters_on_a_flight_that_is_refused_both_get_refused() {
+    let (a, b) = two_waiters_on_one_failing_flight(|| ProvisionError::Refused).await;
+    for e in [a, b] {
+        assert!(
+            matches!(
+                e,
+                AppError::Provisioning {
+                    source: ProvisionError::Refused,
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+    }
+}
+
+#[derive(Debug)]
+struct SendingFailed(std::io::Error);
+
+impl std::fmt::Display for SendingFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("error sending request")
+    }
+}
+
+impl std::error::Error for SendingFailed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn two_waiters_on_an_unavailable_flight_both_get_it_with_its_cause_chain() {
+    let (a, b) = two_waiters_on_one_failing_flight(|| {
+        ProvisionError::unavailable(SendingFailed(std::io::Error::other("connection refused")))
+    })
+    .await;
+    for e in [a, b] {
+        let AppError::Provisioning {
+            source: ProvisionError::Unavailable { source },
+            ..
+        } = &e
+        else {
+            panic!("expected Unavailable, got {e:?}");
+        };
+        assert_eq!(source.to_string(), "error sending request");
+        assert_eq!(
+            std::error::Error::source(&**source).map(ToString::to_string),
+            Some("connection refused".to_owned()),
+            "the cause chain is kept for every waiter"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn two_waiters_on_a_blocked_flight_both_get_blocked_with_its_reason() {
+    let (a, b) = two_waiters_on_one_failing_flight(|| ProvisionError::Blocked {
+        reason: orch_ports::BlockedReason::StoreOperatorMissing,
+    })
+    .await;
+    for e in [a, b] {
+        assert!(
+            matches!(
+                e,
+                AppError::Provisioning {
+                    source: ProvisionError::Blocked {
+                        reason: orch_ports::BlockedReason::StoreOperatorMissing
+                    },
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+    }
+}
+
+/// A routed row whose agent is blocked for a reason waiting cannot clear (ANR-1062) is dead after
+/// its first claim: no wait, no counted retry, one request to the platform, and the thread is told.
+#[tokio::test]
+async fn a_blocked_agent_ends_the_routed_row_at_once_with_no_wait() {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let requests = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            listing(&registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let dispatching = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            Failing {
+                make: || ProvisionError::Blocked {
+                    reason: orch_ports::BlockedReason::NameConflict,
+                },
+                calls: Arc::clone(&calls),
+            },
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    // the row exists before any dispatcher runs, so that it can be read at the end
+    let id = new_coder_thread(&requests, "echo blocked").await;
+    let row_id = w
+        .store
+        .list_open_outbox(id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.kind == orch_ports::OutboxKind::Delegate)
+        .expect("the delegation")
+        .id;
+    let (task, token) = spawn_over(&dispatching);
+    wait_in(&w, id, ThreadState::Failed).await;
+    let row = eventually("the row is dead", || async {
+        let row = w.store.get_outbox(row_id).await.unwrap().unwrap();
+        (row.status == orch_ports::OutboxStatus::Dead).then_some(row)
+    })
+    .await;
+    assert_eq!(row.attempts, 1, "one claim: {row:?}");
+    assert_eq!(row.refunded, 0, "no wait: {row:?}");
+    assert_eq!(
+        row.last_error.as_deref(),
+        Some("agent blocked: NameConflict")
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "asked the platform once");
+    assert_eq!(sends_to(&w, &mine()), 0);
+    token.cancel();
+    let _ = task.await;
+}
+
+/// A provisioner that panics.
+struct Panicking;
+
+impl AgentProvisioner for Panicking {
+    async fn ensure_ready(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<ProvisionedAgent, ProvisionError> {
+        panic!("the provisioner broke");
+    }
+    async fn state(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<Option<AgentState>, ProvisionError> {
+        Ok(None)
+    }
+    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+    async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_provisioner_that_panics_is_not_ready_at_once_and_the_next_call_starts_afresh() {
+    let w = World::new();
+    let app = app_with(&w, Panicking, &[AgentKind::Coder]);
+    for _ in 0..2 {
+        let err = tokio::time::timeout(
+            Duration::from_secs(5),
+            app.create_thread(
+                &alice(),
+                NewThread {
+                    title: None,
+                    target: target("coder"),
+                    text: "hello".to_owned(),
+                },
+            ),
+        )
+        .await
+        .expect("a dropped sender is an answer, not a hang")
+        .unwrap_err();
+        assert!(
+            matches!(err, AppError::AgentNotReady { last: None, .. }),
+            "{err:?}"
+        );
+    }
+}
+
+/// A provisioner that never answers: the flight ends at its own backstop.
+struct Hanging {
+    calls: Arc<AtomicUsize>,
+}
+
+impl AgentProvisioner for Hanging {
+    async fn ensure_ready(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<ProvisionedAgent, ProvisionError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        std::future::pending().await
+    }
+    async fn state(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<Option<AgentState>, ProvisionError> {
+        Ok(None)
+    }
+    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+    async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+}
+
+/// A caller is never kept past its own deadline (its start plus `BOUND` plus `OUTER_SLACK` plus a
+/// one-second margin, so a flight it starts always ends first): one that joins at t=1 a flight that
+/// ends at the backstop (t=40) starts a flight of its own at once and is cut at t=42, with the time
+/// it actually waited, 41 s, in whole seconds. The caller that started the first flight is told the
+/// bound.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_that_starts_its_own_flight_is_cut_at_its_own_deadline() {
+    let w = World::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = app_with(
+        &w,
+        Hanging {
+            calls: Arc::clone(&calls),
+        },
+        &[AgentKind::Coder],
+    );
+    let new = |text: &str| NewThread {
+        title: None,
+        target: target("coder"),
+        text: text.to_owned(),
+    };
+    let t0 = tokio::time::Instant::now();
+    let person = alice();
+    let first = app.create_thread(&person, new("early"));
+    let joiner = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        app.create_thread(&alice(), new("joiner")).await
+    };
+    let (first, joiner) = tokio::join!(first, joiner);
+    let total = t0.elapsed();
+    let AppError::AgentNotReady { waited, .. } = first.unwrap_err() else {
+        panic!("not ready");
+    };
+    assert_eq!(waited, BOUND);
+    let AppError::AgentNotReady { waited, .. } = joiner.unwrap_err() else {
+        panic!("not ready");
+    };
+    assert_eq!(
+        waited,
+        Duration::from_secs(41),
+        "the time the joiner waited, in whole seconds"
+    );
+    assert!(
+        total >= Duration::from_secs(42) && total < Duration::from_secs(43),
+        "the joiner was cut at its own deadline, not kept for a second backstop: {total:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "one more request, no spin");
+}
+
+/// The first call of this provisioner ends `NotReady` after 20 s; every later one is ready after
+/// 1 s.
+struct SlowThenReady {
+    calls: Arc<AtomicUsize>,
+}
+
+impl AgentProvisioner for SlowThenReady {
+    async fn ensure_ready(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+    ) -> Result<ProvisionedAgent, ProvisionError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            Err(ProvisionError::NotReady {
+                last: AgentState::Saving,
+            })
+        } else {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            Ok(ProvisionedAgent {
+                name: kind.agent_name(owner),
+                state: AgentState::Ready,
+            })
+        }
+    }
+    async fn state(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+    ) -> Result<Option<AgentState>, ProvisionError> {
+        Ok(None)
+    }
+    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+    async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+}
+
+/// A caller that joins a flight started long before it came, which then ends `NotReady` on its own
+/// bound, still has its own deadline: it joins the next flight (here, one it starts) and is served.
+/// The caller that started the first flight is told what that flight said.
+#[tokio::test(start_paused = true)]
+async fn a_late_joiner_of_a_flight_that_runs_out_gets_its_own_deadline() {
+    let w = World::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = app_with(
+        &w,
+        SlowThenReady {
+            calls: Arc::clone(&calls),
+        },
+        &[AgentKind::Coder],
+    );
+    let new = |text: &str| NewThread {
+        title: None,
+        target: target("coder"),
+        text: text.to_owned(),
+    };
+    let person = alice();
+    let first = app.create_thread(&person, new("early"));
+    let late = async {
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        app.create_thread(&alice(), new("late")).await
+    };
+    let (first, late) = tokio::join!(first, late);
+    let AppError::AgentNotReady { waited, last, .. } = first.unwrap_err() else {
+        panic!("the starter of the flight is told what it said");
+    };
+    assert_eq!(waited, BOUND);
+    assert_eq!(last, Some(AgentState::Saving));
+    late.expect("the late joiner had time left and was served by a flight of its own");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+use orch_ports::Clock as _;
+
+/// The bound of the wake (ANR-1078 PR 2, `Dispatcher::wait_for_wake`): a routed row whose agent
+/// never gets ready is given up once its refunded claims reach `wake_waits()`, the cycles of a
+/// probe (200 ms) and a wait (100 ms) that fit in `BOUND` plus `OUTER_SLACK`: 134. It ends dead
+/// with `own agent not ready` and the thread is told (`Failed`).
+///
+/// Paused time is not used: the rows' due times come from the store's wall clock, which a paused
+/// tokio clock does not move. The row is **seeded** instead: its first claims are made and
+/// refunded through the store (`claim_outbox`, `wait_outbox`) before the dispatcher runs, so the
+/// dispatcher's own claim is the next one. With the seed one short of the bound the row waits once
+/// more and then ends (`refunded` 134); with the seed at the bound it ends at its first claim
+/// (`refunded` 134, no wait). If `row.refunded < self.wake_waits()` were always true the row would
+/// wait for ever and never end; if it were `<=` the first case would end with 135.
+async fn the_row_gives_up_when_the_wake_bound_is_spent(dispatching: Provisioning, short_by: u32) {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let requests = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            listing(&registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let dispatching = app_over(&w, &registry, Some(dispatching));
+    let waits = u32::try_from((BOUND + OUTER_SLACK).as_millis().div_ceil(300)).unwrap();
+    assert_eq!(waits, 134);
+    let id = new_coder_thread(&requests, "echo never woke").await;
+    let mut row_id = None;
+    for _ in 0..(waits - short_by) {
+        let claimed = w
+            .store
+            .claim_outbox(
+                "seed",
+                SystemClock.now(),
+                Duration::from_secs(60),
+                1,
+                orch_ports::ClaimOrder::Fifo,
+            )
+            .await
+            .unwrap();
+        let row = claimed.into_iter().next().expect("the delegation is due");
+        assert_eq!(row.kind, orch_ports::OutboxKind::Delegate);
+        assert!(
+            w.store
+                .wait_outbox(&row.lease().unwrap(), SystemClock.now(), "seed".to_owned())
+                .await
+                .unwrap()
+        );
+        row_id = Some(row.id);
+    }
+    let row_id = row_id.unwrap();
+    let token = tokio_util::sync::CancellationToken::new();
+    let task = tokio::spawn(
+        Dispatcher::new(
+            Arc::clone(&dispatching),
+            orch_app::DispatcherConfig {
+                own_agent_probe: Duration::from_millis(200),
+                own_agent_wait_delay: Duration::from_millis(100),
+                ..fast()
+            },
+            "d1",
+        )
+        .run(token.clone()),
+    );
+    let row = eventually("the row gives up", || async {
+        let row = w.store.get_outbox(row_id).await.unwrap().unwrap();
+        (row.status == orch_ports::OutboxStatus::Dead).then_some(row)
+    })
+    .await;
+    assert_eq!(row.refunded, waits, "{row:?}");
+    assert_eq!(row.last_error.as_deref(), Some("own agent not ready"));
+    wait_in(&w, id, ThreadState::Failed).await;
+    assert_eq!(sends_to(&w, &mine()), 0);
+    token.cancel();
+    let _ = task.await;
+}
+
+fn never_opening() -> (tokio::sync::watch::Sender<bool>, Provisioning) {
+    let (open_tx, open_rx) = tokio::sync::watch::channel(false);
+    let gated = Gated {
+        inner: MemoryProvisioner::new(),
+        open: open_rx,
+        entered: Arc::new(AtomicUsize::new(0)),
+    };
+    (open_tx, Provisioning::new(gated, [AgentKind::Coder], BOUND))
+}
+
+#[tokio::test]
+async fn a_row_whose_agent_never_wakes_gives_up_when_the_wake_bound_is_spent() {
+    // the sender stays alive: a closed gate channel would let the call through
+    let (_open_tx, provisioning) = never_opening();
+    the_row_gives_up_when_the_wake_bound_is_spent(provisioning, 0).await;
+}
+
+#[tokio::test]
+async fn a_row_one_wait_short_of_the_wake_bound_waits_once_more_and_then_gives_up() {
+    let (_open_tx, provisioning) = never_opening();
+    the_row_gives_up_when_the_wake_bound_is_spent(provisioning, 1).await;
+}
+
+#[tokio::test]
+async fn a_platform_that_answers_not_ready_at_once_gives_up_at_the_same_bound() {
+    the_row_gives_up_when_the_wake_bound_is_spent(
+        Provisioning::new(NeverReady, [AgentKind::Coder], BOUND),
+        0,
+    )
+    .await;
 }
 
 #[tokio::test]

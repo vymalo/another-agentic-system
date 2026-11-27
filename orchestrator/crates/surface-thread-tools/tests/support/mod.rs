@@ -97,6 +97,8 @@ fn fast_dispatcher() -> DispatcherConfig {
         max_poll_failures: 10,
         max_cancel_attempts: 10,
         own_agent_listing_attempts: 5,
+        own_agent_probe: Duration::from_millis(200),
+        own_agent_wait_delay: Duration::from_millis(100),
         cancel_retry_delay: Duration::from_millis(50),
         verify_watch: Duration::from_millis(50),
         live_flush: Duration::from_millis(20),

@@ -13,10 +13,11 @@ use orch_ports::testkit::provisioner as kit;
 use orch_ports::{
     AgentKind, AgentOwner, AgentProvisioner, AgentState, ProvisionError, ProvisionedAgent,
 };
+use tokio::time::Instant;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Break {
-    /// Nothing: the control.
+    /// Nothing: the control. An agent coming up is ready by the clock, whoever waits.
     Nothing,
     /// A first call checks for the agent, then makes it later, so two at once make two.
     CreatesTwiceOnConcurrentFirstCalls,
@@ -24,11 +25,22 @@ enum Break {
     ResumeDoesNotWait,
     /// A suspend reaches every owner's agent of the kind.
     SuspendsAnotherOwner,
+    /// Only the caller's wait turns `Saving` into `Ready`: a call that is dropped leaves the agent
+    /// `Saving` for good, and the next call returns it without it being ready.
+    DroppedCallStrandsTheAgent,
+}
+
+struct Entry {
+    owner: AgentOwner,
+    kind: AgentKind,
+    state: AgentState,
+    /// When the agent is ready by the clock; `None` for one that is not coming up by itself.
+    ready_at: Option<Instant>,
 }
 
 struct Fake {
     how: Break,
-    agents: Mutex<Vec<(AgentOwner, AgentKind, AgentState)>>,
+    agents: Mutex<Vec<Entry>>,
     delay_ms: AtomicU64,
 }
 
@@ -45,12 +57,41 @@ impl Fake {
         Duration::from_millis(self.delay_ms.load(Ordering::SeqCst))
     }
 
-    fn set(&self, owner: &AgentOwner, kind: AgentKind, state: AgentState) {
+    /// Whether readiness is the clock's (every fake but the one that strands).
+    fn by_the_clock(&self) -> bool {
+        self.how != Break::DroppedCallStrandsTheAgent
+    }
+
+    /// Reads the clock: an agent coming up whose instant has come is ready.
+    fn settle(&self) {
+        let now = Instant::now();
         for a in self.agents.lock().unwrap().iter_mut() {
-            if a.0 == *owner && a.1 == kind {
-                a.2 = state;
+            if a.state == AgentState::Saving && a.ready_at.is_some_and(|at| at <= now) {
+                a.state = AgentState::Ready;
+                a.ready_at = None;
             }
         }
+    }
+
+    fn set(&self, owner: &AgentOwner, kind: AgentKind, state: AgentState) {
+        for a in self.agents.lock().unwrap().iter_mut() {
+            if a.owner == *owner && a.kind == kind {
+                a.state = state;
+                a.ready_at = None;
+            }
+        }
+    }
+
+    /// The agent is coming up: ready at the instant `delay` from now, when the clock says so.
+    fn start(&self, owner: &AgentOwner, kind: AgentKind) -> Instant {
+        let at = Instant::now() + self.delay();
+        for a in self.agents.lock().unwrap().iter_mut() {
+            if a.owner == *owner && a.kind == kind {
+                a.state = AgentState::Saving;
+                a.ready_at = self.by_the_clock().then_some(at);
+            }
+        }
+        at
     }
 
     fn ready(owner: &AgentOwner, kind: AgentKind) -> ProvisionedAgent {
@@ -67,42 +108,56 @@ impl AgentProvisioner for Fake {
         owner: &AgentOwner,
         kind: AgentKind,
     ) -> Result<ProvisionedAgent, ProvisionError> {
+        self.settle();
         let found = self
             .agents
             .lock()
             .unwrap()
             .iter()
-            .find(|a| a.0 == *owner && a.1 == kind)
-            .map(|a| a.2);
+            .find(|a| a.owner == *owner && a.kind == kind)
+            .map(|a| (a.state, a.ready_at));
         match found {
             None => {
                 if self.how == Break::CreatesTwiceOnConcurrentFirstCalls {
                     // The check and the making are apart: both calls see "none".
                     tokio::time::sleep(self.delay()).await;
-                    self.agents
-                        .lock()
-                        .unwrap()
-                        .push((owner.clone(), kind, AgentState::Ready));
+                    self.agents.lock().unwrap().push(Entry {
+                        owner: owner.clone(),
+                        kind,
+                        state: AgentState::Ready,
+                        ready_at: None,
+                    });
                 } else {
                     // Check and make together, then the wait.
                     {
                         let mut agents = self.agents.lock().unwrap();
-                        if !agents.iter().any(|a| a.0 == *owner && a.1 == kind) {
-                            agents.push((owner.clone(), kind, AgentState::Saving));
+                        if !agents.iter().any(|a| a.owner == *owner && a.kind == kind) {
+                            agents.push(Entry {
+                                owner: owner.clone(),
+                                kind,
+                                state: AgentState::Saving,
+                                ready_at: None,
+                            });
                         }
                     }
-                    tokio::time::sleep(self.delay()).await;
+                    let at = self.start(owner, kind);
+                    tokio::time::sleep_until(at).await;
                     self.set(owner, kind, AgentState::Ready);
                 }
             }
-            Some(AgentState::Suspended) => {
+            Some((AgentState::Suspended, _)) => {
                 if self.how == Break::ResumeDoesNotWait {
                     self.set(owner, kind, AgentState::Ready);
                 } else {
-                    self.set(owner, kind, AgentState::Saving);
-                    tokio::time::sleep(self.delay()).await;
+                    let at = self.start(owner, kind);
+                    tokio::time::sleep_until(at).await;
                     self.set(owner, kind, AgentState::Ready);
                 }
+            }
+            // Coming up by the clock: wait for its instant, whoever started it.
+            Some((AgentState::Saving, Some(at))) => {
+                tokio::time::sleep_until(at).await;
+                self.settle();
             }
             Some(_) => {}
         }
@@ -114,20 +169,22 @@ impl AgentProvisioner for Fake {
         owner: &AgentOwner,
         kind: AgentKind,
     ) -> Result<Option<AgentState>, ProvisionError> {
+        self.settle();
         Ok(self
             .agents
             .lock()
             .unwrap()
             .iter()
-            .find(|a| a.0 == *owner && a.1 == kind)
-            .map(|a| a.2))
+            .find(|a| a.owner == *owner && a.kind == kind)
+            .map(|a| a.state))
     }
 
     async fn suspend(&self, owner: &AgentOwner, kind: AgentKind) -> Result<(), ProvisionError> {
         for a in self.agents.lock().unwrap().iter_mut() {
-            let mine = a.0 == *owner && a.1 == kind;
-            if mine || (self.how == Break::SuspendsAnotherOwner && a.1 == kind) {
-                a.2 = AgentState::Suspended;
+            let mine = a.owner == *owner && a.kind == kind;
+            if mine || (self.how == Break::SuspendsAnotherOwner && a.kind == kind) {
+                a.state = AgentState::Suspended;
+                a.ready_at = None;
             }
         }
         Ok(())
@@ -137,7 +194,7 @@ impl AgentProvisioner for Fake {
         self.agents
             .lock()
             .unwrap()
-            .retain(|a| !(a.0 == *owner && a.1 == kind));
+            .retain(|a| !(a.owner == *owner && a.kind == kind));
         Ok(())
     }
 }
@@ -183,6 +240,7 @@ async fn the_control_fake_passes_every_case() {
     kit::state_never_makes_an_agent(fixture(b)).await;
     kit::suspend_and_delete_of_an_absent_agent_change_nothing(fixture(b)).await;
     kit::a_deleted_agent_is_made_again(fixture(b)).await;
+    kit::a_dropped_call_leaves_the_agent_coming_up_and_the_next_call_finds_it(fixture(b)).await;
 }
 
 #[tokio::test]
@@ -201,4 +259,13 @@ async fn a_fake_that_resumes_without_waiting_fails_the_wait_for_ready_case() {
 async fn a_fake_that_suspends_another_owners_agent_fails_the_isolation_case() {
     let f = fixture(Break::SuspendsAnotherOwner);
     assert!(goes_red(kit::another_owners_agent_is_never_touched(f)).await);
+}
+
+#[tokio::test]
+async fn a_fake_whose_dropped_call_strands_the_agent_fails_the_dropped_call_case() {
+    let f = fixture(Break::DroppedCallStrandsTheAgent);
+    assert!(
+        goes_red(kit::a_dropped_call_leaves_the_agent_coming_up_and_the_next_call_finds_it(f))
+            .await
+    );
 }

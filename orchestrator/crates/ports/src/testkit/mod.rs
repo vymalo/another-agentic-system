@@ -1260,6 +1260,7 @@ macro_rules! agent_provisioner_conformance {
             state_never_makes_an_agent
             suspend_and_delete_of_an_absent_agent_change_nothing
             a_deleted_agent_is_made_again
+            a_dropped_call_leaves_the_agent_coming_up_and_the_next_call_finds_it
         );
     };
     (@cases $make:path; $($case:ident)*) => {

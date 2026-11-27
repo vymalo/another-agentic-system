@@ -4,7 +4,7 @@ sidebarTitle: "0103 · Own agents kept ready"
 
 # ADR 0103 — A person's own agent is made and kept ready before their message is accepted
 
-- **Status:** **Proposed (2026-11-26)** (ANR-806, part 2; built in `orchestrator/crates/app/src/provisioning.rs`, off unless the deployment has a `provisioner` section). Not yet tried against a real platform: the dev stack plays it with a WireMock stand-in (`dev/provisioner-e2e.sh`). **Amended (2026-11-27): ANR-1061, a person's message goes to their own agent by a route recorded in `Job.route`, and the dispatcher's sends for a routed thread provision too (decision 5, the amendment below).** **Amended (2026-11-27): ANR-1062, a `Blocked` agent is waited for, except two reasons that waiting cannot clear, which are a 500 `agent_blocked` (the amendment below).** **Amended (2026-11-27): ANR-1078, the two known gaps of a stop that waited are fixed by refunding the wait (note under Consequences).**
+- **Status:** **Proposed (2026-11-26)** (ANR-806, part 2; built in `orchestrator/crates/app/src/provisioning.rs`, off unless the deployment has a `provisioner` section). Not yet tried against a real platform: the dev stack plays it with a WireMock stand-in (`dev/provisioner-e2e.sh`). **Amended (2026-11-27): ANR-1061, a person's message goes to their own agent by a route recorded in `Job.route`, and the dispatcher's sends for a routed thread provision too (decision 5, the amendment below).** **Amended (2026-11-27): ANR-1062, a `Blocked` agent is waited for, except two reasons that waiting cannot clear, which are a 500 `agent_blocked` (the amendment below).** **Amended (2026-11-27): ANR-1078, the two known gaps of a stop that waited are fixed by refunding the wait (note under Consequences).** **Amended (2026-11-27): ANR-1078 PR 2, a routed row waiting for the person's agent to wake is cut at a short probe and waits `pending`, so it no longer holds a dispatcher slot, and a stop that finds it between two probes ends the thread before it starts (the amendment `Amended 2026-11-27 (ANR-1078, PR 2)` below).**
 
 ## Context
 
@@ -103,6 +103,68 @@ This amendment replaces its first version, which recomputed the route from the c
   that lists it is given the message under it. The same holds for the model pick and the other extensions read from the live card.
 - **Unchanged:** the sends that name an agent other than the thread's (`ask_agent`, `@mention`) and ask the platform nothing.
 
+## Amended 2026-11-27 (ANR-1078, PR 2): a row waits for the agent to wake without holding a slot
+
+The text of the 2026-11-26 amendment above is kept as written. Two sentences of it changed: a routed row **held a dispatcher
+slot** for as long as the agent took to wake (the wait-ready bound plus `OUTER_SLACK`, 130 s by default), so a few people's
+slow agents could take every slot (`concurrency`, 32 by default) from everyone else; and a stop pressed while the agent woke
+**waited for the delegation in flight** and then cancelled at the agent ("the stop waits, then cancels at the agent", the
+*Not listed yet* bullet).
+
+- **The wake is a probe.** `Dispatcher::load` waits for the person's agent to answer that it is ready for
+  `DispatcherConfig.own_agent_probe` (2 s) and no longer: `tokio::time::timeout` cuts the call. The cut drops the **wait**, never the request: the wake runs
+  in a task of `Provisioning`, one per (owner, kind), joined by every caller (the dispatcher's rows, so a person's N waiting rows
+  make **one** request to the platform, and the request path), and a result, an error included, is delivered to each waiter (a copy of the error with its cause chain,
+  `ProvisionError::duplicate`, an exhaustive match of the port, so a variant added later must be copied faithfully).
+  The entry leaves the map when the task ends, which the backstop (`readyTimeoutSecs` plus `OUTER_SLACK`) bounds; the map is
+  process-local and holds no datum of the person's, so invariant 3 stands. Without it a platform slower than the probe (one
+  request may take 5 s, with a cold token fetch more) would have every probe drop the request and the row die on an agent that
+  would have come up. Whether the platform finishes a create or a resume whose client vanished is *unverified*; the flight makes
+  it not matter for the dispatcher. The next claim finds the agent, the port's rule (below) covering a restart. **The request path keeps its own
+  deadline:** a caller that joined a flight which ends `NotReady` before the caller's own deadline (its start plus
+  `readyTimeoutSecs` plus `OUTER_SLACK` plus a one-second margin, so a flight it started always ends first) joins the next flight, or starts one, and **is cut at that deadline** (the wait is dropped at it; the
+  flight goes on). A joiner whose flight ends `NotReady` at once may send one more platform request, bounded and no spin: each extra
+  round is paid by a flight that ended. A flight a caller started is final, and `waited` is the bound that ran out when it started
+  the only flight it waited on, otherwise the time it actually waited, rounded up to whole seconds. The dispatcher's probe cuts
+  the call at the probe either way. A flight the dispatcher started **cannot be cancelled by a person's delete** while it runs
+  (it ends at the backstop at the latest, as the request path's wait did before). A probe that runs out, or a platform that answers
+  `AgentNotReady`, sends the row back with `ThreadStore::wait_outbox` (the refund of PR 1, Consequences) after the
+  **fixed** delay `own_agent_wait_delay` (2 s), not the exponential backoff: with the backoff a row could sit up to 60 s after
+  the agent was ready. The claim is refunded, so `max_attempts` and the other caps read only the claims that tried something. A
+  platform error other than not-ready (`AppError::Provisioning`) keeps the counted retry. **A behaviour change:** an `AgentNotReady`
+  was a counted retry with the backoff under `max_attempts`, so an agent that stayed `Blocked` or `Degraded` was waited for
+  about 5 times 130 s, near 11 minutes; now the row waits about 130 to 200 s in all and is dead, so a degraded rollout longer
+  than that loses the message (the thread is told, and the person sends it again). `AppError::AgentNotReady`, whose
+  `waited` names the whole bound, is **not** reused for the dispatcher's wait.
+- **A `Blocked` agent ends the row at once** (ANR-1062, `ProvisionError::Blocked`): it is not waited for and not retried, since
+  waiting cannot clear it. The row is dead at its first claim ("agent blocked: <reason>") and the thread is told, through the same
+  give-up as the row whose wake bound is spent.
+- **The row gives up when the wake bound is spent.** A row whose refunded claims reach the cycles (a probe and its wait) that fit
+  in `own_agent_wake_bound()` (`readyTimeoutSecs` plus `OUTER_SLACK`) ends as the row for an agent that cannot be made ready did
+  ("your agent could not be made ready", dead `own agent not ready`). **The bound is a count of cycles, not a duration:** a cycle
+  is the probe, the delay and the claim's latency (up to `poll_interval`), so the 33 cycles of the defaults take about 130 to
+  200 s, and a provisioner that answers not-ready at once has shorter cycles, so it gives up sooner. Every wait is thus bounded by that count: no row waits for
+  ever or spins. The cost is one platform read per cycle per waiting row: a person's N waiting rows read the platform every
+  `own_agent_probe` plus `own_agent_wait_delay`.
+- **The port's rule.** `AgentProvisioner::ensure_ready` is cut at any `.await`, so *a dropped call leaves the agent coming up
+  and the next call finds it* (conformance case `a_dropped_call_leaves_the_agent_coming_up_and_the_next_call_finds_it`). The
+  Platform API adapter already held it (it polls a state the platform drives, and `create` and `replace` are single requests,
+  idempotent by `If-None-Match` and `If-Match`). The in-memory provisioner did not: the caller's sleep turned `Saving` into
+  `Ready`, so its readiness is a stored instant now.
+- **A stop between two probes cancels before the start.** A delegation that waits for its agent is `pending`, unsent, between two
+  probes, and `skip_unsent_delegates` skips it: the stop ends the thread `CancelledBeforeStart` at its first claim and nothing is
+  sent. Before this amendment the delegation was in flight for the whole wake and the stop waited for it. **Accepted.** The stop's
+  wait for a delegation in flight (decision of 2026-11-26 above, with its wake headroom and the refund of PR 1) is still reached
+  by a delegation a claim holds: at its probe (at most `own_agent_probe`), and at the send that follows a wake. A stop that
+  races a probe waits for it as before. A **Stop & send** between two probes is the same stop, and its follow-up job (`after_stop`,
+  ADR 0036) is a new delegation that wakes the agent again; only the plain stop is tested.
+- **The tunables are two fields of `DispatcherConfig` and no configuration key**, so `docs/config.md` is untouched and the
+  composition root keeps the defaults. They are public fields: **a struct literal of `DispatcherConfig` outside the workspace
+  breaks** (use `..DispatcherConfig::default()`).
+- **Known limit.** The claim order is by row position, within a person's queue (ADR 0066), so a person with at least twice as many
+  waiting routed rows as slots can keep their own *unrelated* newer rows from a slot, as they could before; another person's rows
+  are not held back, and no row holds a slot for more than a probe.
+
 ## Consequences
 
 - A deployment without a `provisioner` section is exactly as it was: `AppConfig.provisioning` is `None`.
@@ -119,6 +181,10 @@ This amendment replaces its first version, which recomputed the route from the c
     it outside the workspace** (use `..DispatcherConfig::default()`).
   - A routed row holds a dispatcher slot while it waits for the agent, up to `readyTimeoutSecs` plus slack per row; a
     follow-up card will bound it.
+    - *Note 2026-11-27 (ANR-1078, PR 2): bounded.* A routed row waits for the agent without a slot: the wake is cut at
+      `own_agent_probe` and the row waits `pending` for `own_agent_wait_delay` with its claim refunded, until the wake bound
+      is spent (the amendment `Amended 2026-11-27 (ANR-1078, PR 2)`); a slot is held for a probe at most. The sentence above is
+      kept as it was written.
   - **A rollback past this change is one-way.** An older binary drops `route` from `job_json` on its next write, and the next
     message then goes to the shared agent carrying the person's agent's context. Do not roll back past it while provisioning is
     on.

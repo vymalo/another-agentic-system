@@ -11,14 +11,19 @@
 //! [`prefix`](AgentKind::prefix)) and the deployment provisions that kind. The shared `chat` agent
 //! and every other agent are never provisioned.
 
+use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
 use orch_core::{AgentId, UserId};
-use orch_ports::{AgentKind, AgentOwner, AgentProvisioner, ProvisionError, ProvisionedAgent};
+use orch_ports::{
+    AgentKind, AgentOwner, AgentProvisioner, AgentState, ProvisionError, ProvisionedAgent,
+};
 use sha2::{Digest, Sha256};
+use tokio::sync::watch;
+use tokio::time::Instant;
 
 use crate::error::AppError;
 
@@ -29,6 +34,11 @@ use crate::error::AppError;
 /// Public only so that the tests can bound how long a wait may last (`tests/provisioning.rs`
 /// asserts it ends between the wait-ready bound and the bound plus this); nothing configures it.
 pub const OUTER_SLACK: Duration = Duration::from_secs(10);
+
+/// How far past the backstop of a flight a caller's own deadline lies: a flight the caller started
+/// therefore always delivers its own outcome (`NotReady` with the bound) before the caller is cut,
+/// and only a caller that joined a flight is ever cut at its deadline.
+const CUT_MARGIN: Duration = Duration::from_secs(1);
 
 /// Characters of the owner key: 24 hex digits (96 bits of the person's hash), so that the longest
 /// agent name, `workspace-<owner>`, stays under the platform's 40.
@@ -52,12 +62,53 @@ impl<T: AgentProvisioner> ErasedProvisioner for T {
     }
 }
 
+/// How a wake ended, kept so that every waiter of the flight gets it (the port's error is not
+/// `Clone`: each waiter gets [`ProvisionError::duplicate`], its cause chain kept).
+enum Outcome {
+    Ready(ProvisionedAgent),
+    /// Not ready in time: the adapter's `NotReady`, or the backstop (`None`).
+    NotReady(Option<AgentState>),
+    Failed(ProvisionError),
+}
+
+/// `elapsed` rounded up to whole seconds, so that a 503's detail never shows nanoseconds.
+fn whole_seconds(elapsed: Duration) -> Duration {
+    Duration::from_secs(elapsed.as_secs() + u64::from(elapsed.subsec_nanos() > 0))
+}
+
+type Flight = watch::Receiver<Option<Arc<Outcome>>>;
+type Flights = Mutex<HashMap<(AgentOwner, AgentKind), Flight>>;
+
+/// Removes a flight from the map when its task ends, whichever way (a panic included).
+struct FlightEnd {
+    flights: Arc<Flights>,
+    key: (AgentOwner, AgentKind),
+}
+
+impl Drop for FlightEnd {
+    fn drop(&mut self) {
+        self.flights
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.key);
+    }
+}
+
 /// The provisioner and the kinds the deployment provisions, as the message path uses them.
+///
+/// **A wake is a flight** (ANR-1078 PR 2): `ensure_ready` for one (owner, kind) runs in a task of
+/// its own, one at a time, and every caller waits on it. A caller that stops waiting (the
+/// dispatcher's probe is a `timeout`) drops its wait and never the request, so a platform slower
+/// than the probe still finishes the wake, and a person with many waiting rows causes one request
+/// to the platform. The map holds a flight until its task ends, which the backstop bounds. It is
+/// process-local and holds no datum of the person's: a restart loses it and the next call starts
+/// a flight again (the port makes that safe), so the invariant of one persistent state is kept.
 #[derive(Clone)]
 pub struct Provisioning {
     inner: Arc<dyn ErasedProvisioner>,
     kinds: Vec<AgentKind>,
     ready_timeout: Duration,
+    flights: Arc<Flights>,
 }
 
 impl fmt::Debug for Provisioning {
@@ -86,6 +137,7 @@ impl Provisioning {
             inner: Arc::new(provisioner),
             kinds,
             ready_timeout,
+            flights: Arc::default(),
         }
     }
 
@@ -150,24 +202,123 @@ impl Provisioning {
             return Ok(None);
         };
         let owner = Self::owner_of(user);
-        let bound = self.ready_timeout.saturating_add(OUTER_SLACK);
-        let result = tokio::time::timeout(bound, self.inner.ensure_ready(&owner, kind)).await;
-        match result {
-            Ok(Ok(agent)) => Ok(Some(AgentId::new(agent.name))),
-            Ok(Err(ProvisionError::NotReady { last })) => Err(AppError::AgentNotReady {
-                kind: kind.prefix(),
-                waited: self.ready_timeout,
-                last: Some(last),
-            }),
-            Ok(Err(source)) => Err(AppError::Provisioning {
-                kind: kind.prefix(),
-                source,
-            }),
-            Err(_elapsed) => Err(AppError::AgentNotReady {
-                kind: kind.prefix(),
-                waited: self.ready_timeout,
-                last: None,
-            }),
+        // This caller's own deadline, whatever flight it joins, a margin past the backstop of a
+        // flight it would start; none if the sum overflows.
+        let began = Instant::now();
+        let deadline = began.checked_add(
+            self.ready_timeout
+                .saturating_add(OUTER_SLACK)
+                .saturating_add(CUT_MARGIN),
+        );
+        let mut last_seen = None;
+        let mut rounds = 0_u32;
+        loop {
+            let round = self.fly(owner.clone(), kind);
+            // Dropping the wait at the deadline is safe: the flight goes on without it.
+            let (outcome, started) = match deadline {
+                Some(at) => match tokio::time::timeout_at(at, round).await {
+                    Ok(done) => done,
+                    Err(_elapsed) => {
+                        return Err(AppError::AgentNotReady {
+                            kind: kind.prefix(),
+                            waited: whole_seconds(began.elapsed()),
+                            last: last_seen,
+                        });
+                    }
+                },
+                None => round.await,
+            };
+            match &*outcome {
+                Outcome::Ready(agent) => return Ok(Some(AgentId::new(agent.name.clone()))),
+                // A flight this caller joined may have been started long before it came, and ended
+                // `NotReady` on its own bound. This caller still has time: it joins the next
+                // flight, or starts one, and is cut at its own deadline. A flight it started
+                // itself is final. Each extra round is paid by a flight that ended, so there is no
+                // spin. (The dispatcher's probe cuts this whole call at the probe anyway.)
+                Outcome::NotReady(last)
+                    if !started && deadline.is_none_or(|at| Instant::now() < at) =>
+                {
+                    last_seen = *last;
+                    rounds += 1;
+                }
+                Outcome::NotReady(last) => {
+                    return Err(AppError::AgentNotReady {
+                        kind: kind.prefix(),
+                        // the bound that ran out for the only flight this caller waited on, which
+                        // it started; otherwise the time it actually waited
+                        waited: if started && rounds == 0 {
+                            self.ready_timeout
+                        } else {
+                            whole_seconds(began.elapsed())
+                        },
+                        last: *last,
+                    });
+                }
+                Outcome::Failed(error) => {
+                    return Err(AppError::Provisioning {
+                        kind: kind.prefix(),
+                        source: error.duplicate(),
+                    });
+                }
+            }
         }
+    }
+
+    /// Joins the flight of `owner`'s agent of `kind`, starting it when there is none, and waits for
+    /// its end; the flag says that this call started it. Dropping this future leaves the flight
+    /// running. No lock is held across an await, nor across the spawn.
+    async fn fly(&self, owner: AgentOwner, kind: AgentKind) -> (Arc<Outcome>, bool) {
+        let key = (owner, kind);
+        let (mut flight, task) = {
+            let mut flights = self.flights.lock().unwrap_or_else(PoisonError::into_inner);
+            let existing = flights.get(&key).cloned();
+            match existing {
+                Some(flight) => (flight, None),
+                None => {
+                    let (tx, rx) = watch::channel(None);
+                    flights.insert(key.clone(), rx.clone());
+                    let inner = Arc::clone(&self.inner);
+                    // made here, not in the task: a task dropped before its first poll (a
+                    // runtime that is shutting down) still removes its entry
+                    let end = FlightEnd {
+                        flights: Arc::clone(&self.flights),
+                        key: key.clone(),
+                    };
+                    let bound = self.ready_timeout.saturating_add(OUTER_SLACK);
+                    let owner = key.0.clone();
+                    let task = async move {
+                        let result =
+                            tokio::time::timeout(bound, inner.ensure_ready(&owner, kind)).await;
+                        let outcome = match result {
+                            Ok(Ok(agent)) => Outcome::Ready(agent),
+                            Ok(Err(ProvisionError::NotReady { last })) => {
+                                Outcome::NotReady(Some(last))
+                            }
+                            Ok(Err(error)) => Outcome::Failed(error),
+                            Err(_elapsed) => Outcome::NotReady(None),
+                        };
+                        // out of the map first: a call that comes now starts a flight of its own
+                        drop(end);
+                        let _ = tx.send(Some(Arc::new(outcome)));
+                    };
+                    (rx, Some(task))
+                }
+            }
+        };
+        // the lock is released: a spawn on a runtime that is shutting down drops the task at once,
+        // and its `FlightEnd` takes the lock
+        let started = task.is_some();
+        if let Some(task) = task {
+            tokio::spawn(task);
+        }
+        let outcome = match flight.wait_for(Option::is_some).await {
+            Ok(done) => match &*done {
+                Some(outcome) => Arc::clone(outcome),
+                None => unreachable!("wait_for returned for a value that is set"),
+            },
+            // the task ended without an answer (it panicked): not ready
+            Err(_) => Arc::new(Outcome::NotReady(None)),
+        };
+        (outcome, started)
     }
 }
