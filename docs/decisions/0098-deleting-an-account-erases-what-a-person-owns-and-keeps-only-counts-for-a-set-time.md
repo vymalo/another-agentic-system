@@ -5,7 +5,7 @@ sidebarTitle: "0098 · Deleting an account keeps counts"
 # ADR 0098 — Deleting an account erases what a person owns and keeps only counts, for a set time
 
 - **Status:** **Proposed (2026-11-25).** Task ANR-768, the first slice of [issue 294](https://github.com/vymalo/another-agentic-system/issues/294)
-  ("delete my account"). Nothing is built: the route, the port and the sweep below are what the next slices will make. The owner asked for
+  ("delete my account"). Nothing is built: the route, the port and the sweep below are what the next slices will make. *Amended (2026-11-27): parts are built since; see [the status note of 2026-11-27](#status-note-2026-11-27-what-is-built).* The owner asked for
   the feature (ANR-Q110); the **keep period and its default are the planner's**, for the owner to confirm (*Open for the owner*).
   Builds on [ADR 0043](0043-deleting-a-thread-erases-it.md) (what erasing a thread does), [ADR 0039](0039-nobody-reads-another-persons-thread.md)
   (nobody reads another person's data) and [ADR 0094, retention](0094-retention-is-a-sweep-per-class-with-a-key-each-and-a-default-of-90-days.md)
@@ -171,3 +171,12 @@ permission `account.delete` is in no role by default: a deployment grants it to 
 - One more path erases a person's data and it reuses ADR 0043's transaction and sweep, so the erase of a thread stays the one proven path.
 - A person's counts survive their account for a stated time and then go; the ledger never names the person after the erase.
 - The identity provider is out of reach, and the dialog says so instead of promising it.
+
+## Status note, 2026-11-27: what is built
+
+*Verified 2026-11-27 against `main` (`a6fb6d7`).* Slice E2 is built:
+[#552](https://github.com/vymalo/another-agentic-system/pull/552) adds the `AccountErase` port
+(`orchestrator/crates/ports/src/account_erase.rs`), its conformance testkit, an in-memory adapter and
+`tests/account_erase_conformance.rs`. Nothing outside `orch-ports` implements or calls it: E3 (the Postgres adapters, the
+route and `deleteAccount` in `chat-api.yaml`, the revoke step, the keep sweep) and E4 (the web and the scenario) are not
+built, so an account cannot be deleted yet.

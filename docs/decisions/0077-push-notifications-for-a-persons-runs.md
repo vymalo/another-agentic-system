@@ -6,7 +6,7 @@ sidebarTitle: "0077 · Push notifications for runs"
 
 - **Status:** **Accepted (2026-11-19).** The owner's decision of 2026-11-19: push notifications are **in R1**, with
   **self-hosted delivery**. Every part marked **(proposed)** is a choice that follows from the decision (names of routes,
-  tables, crates, defaults and timings), which the owner may change by a dated note. **Nothing is built.** It amends
+  tables, crates, defaults and timings), which the owner may change by a dated note. **Nothing is built.** *Amended (2026-11-27): parts are built since; see [the status note of 2026-11-27](#status-note-2026-11-27-what-is-built).* It amends
   invariant 3 of `CLAUDE.md` and [ADR 0001](0001-rust-state-machine-on-postgres.md) (devices, settings, presence and
   notification intents are durable state beside the log), as [ADR 0070](0070-a-persons-prompt-library.md) did. It closes
   open questions [37 and 57](../open-questions.md#closed). The owner also decided, the same day, the three questions
@@ -269,3 +269,13 @@ stateDiagram-v2
 - **The agent sends or asks for the push:** a push would then come from outside the log, and an agent would hold a way
   to reach a person's device.
 - **A self-hosted ntfy for iOS:** it reaches iOS through ntfy.sh and then APNs, a second third party.
+
+## Status note, 2026-11-27: what is built
+
+*Verified 2026-11-27 against `main` (`a6fb6d7`).* Slice N1 is built:
+[#490](https://github.com/vymalo/another-agentic-system/pull/490) adds `orchestrator/crates/core/src/notify.rs`, a pure
+fold of a thread's log into `needs_you` and `done` intents and their withdrawals, deduped by `(thread, cause, kind)` and
+collapsed per thread and class, with the quiet rules that need no I/O, held by the vectors in
+[`docs/api/examples/notifications/`](../api/examples/notifications/). It is a fold beside the transition, not a
+`Command::Notify` of `transition`, and nothing outside `orch-core` calls it yet. N2 to N9 (the ports, the device and
+settings API, the outbox kind, the four senders, the scenario and the web) are not built, so no push reaches a device.

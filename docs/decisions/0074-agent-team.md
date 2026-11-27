@@ -11,7 +11,7 @@ sidebarTitle: "0074 · Agent-team in one chat"
   member, the lead, unattended runs and the release (R1). **Accepted (2026-11-19, the owner's last answer):** a fanned-out member
   does not hand off (decision 6); no question is open. Every decision marked **(owner)** is the owner's; those marked
   **(proposed)** (the turns, the ledger, the AG-UI shape) and the names of routes and events are the design's, which the owner did
-  not decide and may change by a dated note. **Nothing is built.** It amends invariant 3 of `CLAUDE.md` and
+  not decide and may change by a dated note. **Nothing is built.** *Amended (2026-11-27): parts are built since; see [the status note of 2026-11-27](#status-note-2026-11-27-what-is-built).* It amends invariant 3 of `CLAUDE.md` and
   [ADR 0001](0001-rust-state-machine-on-postgres.md) (decision 13), as [ADR 0070](0070-a-persons-prompt-library.md) did. Epic:
   [#377](https://github.com/vymalo/another-agentic-system/issues/377). **Amended (2026-11-19, second, the owner's decisions after a
   study of rakazo):** what is pushed to a member is bounded and what it can reach is not (this replaces decision 9's "no bound");
@@ -297,3 +297,18 @@ in `Working`.
   most of them `NO_RESPONSE`; the lead costs one.
 - **Ad hoc teams only**: presets were the owner's choice; adding and removing members keeps the ad hoc case.
 
+## Status note, 2026-11-27: what is built
+
+*Verified 2026-11-27 against `main` (`a6fb6d7`), by reading the code and the merged pull requests.* The status line's
+"Nothing is built" was true when the ADR was accepted. Since then, against the slices T1 to T9 of epic
+[#377](https://github.com/vymalo/another-agentic-system/issues/377), **three slices are begun and none is complete**:
+
+| Slice | Built | Not built |
+|---|---|---|
+| T1, core | The team ledger, its routing, the cap and the fan-in ([#491](https://github.com/vymalo/another-agentic-system/pull/491)), `hand_off` and the trailing `@member` line with fan-in results labelled by member ([#498](https://github.com/vymalo/another-agentic-system/pull/498)): `orchestrator/crates/core/src/team.rs`, with property tests | The store's binding per `(thread_id, member)` and the team event kinds (no migration holds them); nothing in `orch-app`'s dispatcher reads the ledger |
+| T2, the approval gate | The gate of a hand-off in the core ([#537](https://github.com/vymalo/another-agentic-system/pull/537): `team.rs`, `gate.rs`, `transition.rs`) | `POST /api/threads/{id}/handoffs/{n}`, the timers, the expiry and the AG-UI interrupt |
+| T3, presets | `TeamPresetStore`, its conformance testkit, the Postgres adapter (migration `0032_user_team_presets.sql`, [#493](https://github.com/vymalo/another-agentic-system/pull/493)) and the SQLite one; `GET/POST /api/teams`, `GET/PUT/DELETE /api/teams/{id}` and `teams` in `GET /api/config` ([#511](https://github.com/vymalo/another-agentic-system/pull/511), `orchestrator/crates/api/tests/teams.rs`; [`teams-v1`](../api/teams-v1.md)) | `POST` and `DELETE /api/threads/{id}/members`, `forwardedProps["vymalo.team"]`, the web's mock server, `dev/team-presets-e2e.sh` |
+
+T4 to T9 (checkpoints, `read_thread`, interrupts and tiers, sub-agents of members, the web, the end to end) are not
+begun. A person cannot run a team yet: no thread routes to more than one agent. Everything above is proven by Rust
+tests on the in-memory store and, for the preset store, on Postgres; none of it on a live agent.
