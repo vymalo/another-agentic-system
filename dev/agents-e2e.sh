@@ -55,7 +55,8 @@
 #
 # It EMPTIES the request journal of `mock-model` and the call journal of `mock-mcp-search` first, so run it on a
 # stack you are not in the middle of another scenario on.
-# Needs curl and jq (and /proc or uuidgen for a UUID). Verified by CI only, in .github/workflows/coder-e2e.yml.
+# Needs curl and jq (and /proc or uuidgen for a UUID). *Verified 2026-11-27* against the `app` profile on the pinned adam (`sha-9f90f1e`);
+# CI runs it in `.github/workflows/coder-e2e.yml`.
 set -eu
 
 base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
@@ -118,6 +119,7 @@ persona() {
 #   outcome   how the run stream ended (success, interrupt, error: <code>, or empty)
 #   said      the words of every assistant message of the thread, joined
 #   events    the file holding the thread's frames (a JSON array)
+#   thread    the id of the thread it made (also left in `_thread`; a caller copies it at once, the next `say` overwrites it)
 say() {
   _agent=$1
   _thread=$(uuid)
@@ -478,18 +480,29 @@ frames() {
     sed -n 's/^data: *//p' | jq -s '.' >"$2" 2>/dev/null || echo '[]' >"$2"
 }
 
-# rail_children: how many threads of the person's list are children of the parent (`childOf.threadId`).
+# rail_children: how many threads of the person's list are children of the parent (`childOf.threadId`); the list is shared with every
+# other thread of the person, so ask for a page large enough for it (dev/rail-e2e.sh, dev/delete-e2e.sh).
 rail_children() {
-  api GET "/api/threads?order=rail" 2>/dev/null | jq -r --arg p "$ps_parent" '[.[] | select(.childOf.threadId == $p)] | length' 2>/dev/null || echo "?"
+  api GET "/api/threads?order=rail&limit=100" 2>/dev/null | jq -r --arg p "$ps_parent" '[.[] | select(.childOf.threadId == $p)] | length' 2>/dev/null || echo "?"
 }
 
 wait_for_events "$ps_parent" child_session_reported 1 "$tmp/ps-parent.export.json"
 ps_child=$(jq -r '[.events[] | select(.kind == "child_session_opened") | .data.thread] | first // ""' "$tmp/ps-parent.export.json")
 ps_session=$(jq -r '[.events[] | select(.kind == "child_session_opened") | .data.session] | first // ""' "$tmp/ps-parent.export.json")
 if [ -n "$ps_child" ]; then ok "chat, plan session: the parent names the child thread of the session"; else bad "chat, plan session: the parent names no child thread ($(jq -c '[.events[] | select(.kind | test("child_session"))]' "$tmp/ps-parent.export.json"))"; fi
-expect "chat, plan session: the parent's log opened the session once, by the agent, the helper planner, kept open, round 1" \
-  "$(jq -r '[.events[] | select(.kind == "child_session_opened")] | "\(length) \(.[0].data.by) \(.[0].data.agent) \(.[0].data.keepOpen) \(.[0].data.round)"' "$tmp/ps-parent.export.json")" \
-  "1 agent planner true 1"
+# Without a child thread every check below would fail on an empty id, after a minute of waits: stop here, with the one failure that says why.
+[ -n "$ps_child" ] || finish
+expect "chat, plan session: the parent's log opened the session once, the helper planner, kept open, round 1" \
+  "$(jq -r '[.events[] | select(.kind == "child_session_opened")] | "\(length) \(.[0].data.agent) \(.[0].data.keepOpen) \(.[0].data.round)"' "$tmp/ps-parent.export.json")" \
+  "1 planner true 1"
+# `by` is not guaranteed: a session first seen in the parent task's sessions object has none (only the events carry it). What matters is
+# that the person started nothing here: the chat's model did.
+expect "chat, plan session: no child_session_opened says the person started it (the chat's model did)" \
+  "$(jq -r '[.events[] | select(.kind == "child_session_opened" and .data.by == "person")] | length' "$tmp/ps-parent.export.json")" "0"
+# The round is a job of the child thread, never of the parent: the parent's log has no job of its own here, and its conversation carries
+# the report instead (adam appends the read to the chat's turn).
+expect "chat, plan session: the parent's own log holds no job_started (the round ran in the child and the report came into the chat's turn)" \
+  "$(jq -r '[.events[] | select(.kind == "job_started")] | length' "$tmp/ps-parent.export.json")" "0"
 expect "chat, plan session: the first report the parent's log holds is round 1, done" \
   "$(jq -r '[.events[] | select(.kind == "child_session_reported")] | first | "\(.data.round) \(.data.report)"' "$tmp/ps-parent.export.json")" "1 done"
 # The prompt of the session's first round is not a turn of the parent (child-sessions-v1.md, section 4): it is in no message of the
@@ -501,8 +514,9 @@ expect "chat, plan session: the person's list has exactly one child of the paren
 # --- the person sends the kept-open session a second round, then closes it ------------------------------------------------
 expect "chat, plan session: the person's message to the child thread (round 2) answers 200" \
   "$(run_props "$ps_child" "Book the venue. [mock:plan-session-r2]" '{}' "$tmp/ps-round2.sse")" "200"
-expect "chat, plan session: the child thread ends done again (round 2 ended)" "$(wait_state "$ps_child")" "done"
+# Round 2 first: the child is `done` as soon as round 1 ends, so the state alone would pass before the person's round exists.
 wait_for_events "$ps_child" job_started 2 "$tmp/ps-child.export.json"
+expect "chat, plan session: the child thread ends done again (round 2 ended)" "$(wait_state "$ps_child")" "done"
 # ADR 0072 decision 3: the round the agent starts is an observed job of the child thread and carries its round; a round the person
 # starts in the child thread is an ordinary job of it, so its `job_started` carries none (the parent's log is where its report lands).
 expect "chat, plan session: the child's log holds two jobs, the first the round the agent started (job 1, round 1, by the agent)" \
@@ -524,7 +538,9 @@ expect "chat, plan session: POST /api/threads/{child}/session/close answers 202"
 expect "chat, plan session: the session ends closed" "$(wait_child_state "$ps_child" closed)" "closed"
 expect "chat, plan session: a message to the closed session is refused 409 session_closed" \
   "$(run_props "$ps_child" "Anything else?" '{}' "$tmp/ps-closed.sse") $(problem_code "$tmp/ps-closed.sse")" "409 session_closed"
-export_of "$ps_parent" "$tmp/ps-parent.export.json"
+# The child's state and the parent's event are two commits, the child's first: wait for the event (this writes the export) rather than
+# reading it once, or the assertion races the second commit.
+wait_for_events "$ps_parent" child_session_closed 1 "$tmp/ps-parent.export.json"
 expect "chat, plan session: the parent's log holds child_session_closed once, naming that child thread and session" \
   "$(jq -r --arg c "$ps_child" --arg s "$ps_session" '[.events[] | select(.kind == "child_session_closed" and .data.thread == $c and .data.session == $s)] | length' "$tmp/ps-parent.export.json")" \
   "1"
