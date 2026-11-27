@@ -1404,6 +1404,42 @@ pub async fn a_fair_claim_ranks_a_persons_rows_by_age_and_not_by_id<S: ThreadSto
     );
 }
 
+/// A person's rows are ranked by when they became due, then by age (ANR-1175): a row that only
+/// waited (`wait_outbox`, the claim refunded) is due later than a newer row that never did, so it
+/// does not outrank it; and it is still taken, in the order it became due, when the newer work is
+/// gone. Alice's rows 1 to 3 are claimed and wait, 1 and 2 until 5 s and 3 until 8 s; her row 4 is
+/// new and due at once.
+pub async fn a_fair_claim_does_not_rank_a_row_that_only_waited_before_newer_work<S: ThreadStore>(
+    store: S,
+) {
+    use crate::ClaimOrder::Fair;
+    for n in 1..=3 {
+        seed(&store, &alice(), n).await;
+    }
+    assert_eq!(
+        claim_ids(&store, "a", t0(), 3, Fair).await,
+        outbox_ids(&[1, 2, 3])
+    );
+    for (n, secs) in [(1, 5), (2, 5), (3, 8)] {
+        assert!(
+            store
+                .wait_outbox(&lease(n, "a", 1), at(secs), "waiting".into())
+                .await
+                .unwrap()
+        );
+    }
+    seed(&store, &alice(), 4).await;
+    // all four are due at 10 s: the new row first although its position is last, then the rows
+    // that waited in the order they became due (1 and 2 at 5 s by age, 3 at 8 s)
+    for expected in [4, 1, 2, 3] {
+        assert_eq!(
+            claim_ids(&store, "a", at(10), 1, Fair).await,
+            outbox_ids(&[expected])
+        );
+    }
+    assert!(claim_ids(&store, "a", at(10), 1, Fair).await.is_empty());
+}
+
 /// Which rows may be claimed at all is the per-thread rule under the fair order too: a delegate
 /// waits for the older open delegate of its thread, whoever else has work.
 pub async fn a_fair_claim_keeps_the_per_thread_order<S: ThreadStore>(store: S) {

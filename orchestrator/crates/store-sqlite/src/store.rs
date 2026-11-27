@@ -1542,6 +1542,11 @@ const OUTBOX_THREAD_RULE: &str = "(o.kind IN ('cancel', 'verify', 'ask', 'title'
 const OUTBOX_DUE: &str = "((o.status = 'pending' AND o.next_attempt_at <= ?1) \
      OR (o.status = 'inflight' AND o.lease_until <= ?1))";
 
+/// When a row became due: its next attempt for a `pending` row, the end of its lease for an
+/// `inflight` one. [`ClaimOrder::Fair`] ranks a person's rows by it, then by `ord` (ANR-1175).
+const OUTBOX_DUE_AT: &str =
+    "(CASE WHEN o.status = 'pending' THEN o.next_attempt_at ELSE o.lease_until END)";
+
 /// What claiming does to the rows a statement named in `c`: the outbox columns in the order
 /// [`outbox_from_row`] reads them, and `ord` last (the caller sorts by it).
 macro_rules! outbox_claimed {
@@ -1564,8 +1569,8 @@ fn claim_fifo() -> String {
 }
 
 /// [`ClaimOrder::Fair`] (ADR 0066): per person, their first `4 * limit` candidates with
-/// `load = running + rank`, and the cancel rows with load 0, which take no place in anybody's rank;
-/// then the `4 * limit` rows with the lowest `(load, ord)`; then `limit` of them, oldest first
+/// `load = running + rank` (`rank` by the time a row became due, then `ord`: ANR-1175), and the
+/// cancel rows with load 0, which take no place in anybody's rank; then the `4 * limit` rows with the lowest `(load, ord)`; then `limit` of them, oldest first
 /// among equal loads. A row whose rank passes `limit` cannot be among the `limit` first, so the
 /// rest of a queue is never ranked.
 fn claim_fair() -> String {
@@ -1575,7 +1580,7 @@ fn claim_fair() -> String {
            WHERE status = 'inflight' AND lease_until > ?1 GROUP BY owner), \
          cand AS MATERIALIZED ( \
            SELECT o.id, o.ord, o.owner, \
-             row_number() OVER (PARTITION BY o.owner ORDER BY o.ord) AS rank \
+             row_number() OVER (PARTITION BY o.owner ORDER BY {OUTBOX_DUE_AT}, o.ord) AS rank \
            FROM outbox o \
            WHERE o.status IN ('pending', 'inflight') AND o.kind <> 'cancel' \
              AND {OUTBOX_DUE} AND {OUTBOX_THREAD_RULE}), \

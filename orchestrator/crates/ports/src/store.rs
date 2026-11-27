@@ -1357,7 +1357,10 @@ pub trait ThreadStore:
     /// `running` is the number of rows of the row's person (the owner of its thread) that are
     /// `inflight` under a lease that has not expired at `now`, whichever replica holds them and
     /// whatever their kind; `rank` is the row's position (1, 2, ...) among that person's candidates
-    /// of this call, oldest first. A `cancel` row is not ordered by load: it goes before every
+    /// of this call, by the time each became due (a `pending` row's `next_attempt_at`, an expired
+    /// lease's end) and then oldest first (ANR-1175: a row that only waited, with its claim
+    /// refunded, is due later than a newer row that never did, so it does not outrank it; a row
+    /// that was due first is never overtaken forever, as the time only goes forward). A `cancel` row is not ordered by load: it goes before every
     /// other and does not count in its person's ranks. Nothing is taken back from a job that runs:
     /// fairness only chooses the next rows, and when one person has work, every slot is theirs.
     /// The rows come back oldest first, whatever the order they were chosen in.
