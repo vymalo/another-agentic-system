@@ -736,7 +736,7 @@ impl CredentialBroker for NoBroker {
 
 // ---------------------------------------------------------------- the run lease (B1, ADR 0084)
 
-/// How long after its end a run is still answered to the meter (ADR 0106 decision 6): the longest a
+/// How long after its end a run is still answered to the meter (ADR 0107 decision 6): the longest a
 /// run pod lives idle after its job (900 s) is far inside it, and the platform's meter backfills up to
 /// 24 hours. Only the account route reads what is kept; no lease is lent after the end.
 pub const ACCOUNT_TOMBSTONE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
@@ -824,7 +824,7 @@ impl std::fmt::Debug for RunLease {
 
 impl RunLease {
     /// A lease of `token` until `expires_at`, for the account `account`: the run's person as the
-    /// identity provider's `sub`, an [`AccountId`] (ADR 0106). Only an `AccountId` can be put here,
+    /// identity provider's `sub`, an [`AccountId`] (ADR 0107). Only an `AccountId` can be put here,
     /// so an e-mail address cannot reach the injector's `x-account-id`: the lease of a run whose
     /// person is not one is refused by [`account_of`] before a lease is built. The account is
     /// returned to the injector beside the key and goes in no log line, no error and no message to
@@ -866,7 +866,7 @@ pub enum RunLeaseError {
     /// The store or the credential source failed; the caller fails closed.
     Unavailable(String),
     /// The run's person is not an [`AccountId`]: the deployment does not read the identity
-    /// provider's `sub` as the person (ADR 0106). Nothing of the person is answered; the slug is
+    /// provider's `sub` as the person (ADR 0107). Nothing of the person is answered; the slug is
     /// the contract's `account_not_opaque`.
     AccountNotOpaque,
 }
@@ -888,7 +888,7 @@ impl std::error::Error for RunLeaseError {}
 /// The account a run's person is charged to, or [`RunLeaseError::AccountNotOpaque`] when the person
 /// is not an [`AccountId`] (an e-mail address has an `@`). Every [`RunLeases`] implementation
 /// answers the lease's account and the meter's account through this one function, so no adapter
-/// can answer a person's text that the platform's alphabet refuses (ADR 0106).
+/// can answer a person's text that the platform's alphabet refuses (ADR 0107).
 ///
 /// # Errors
 /// [`RunLeaseError::AccountNotOpaque`].
@@ -920,7 +920,7 @@ pub trait RunLeases: Send + Sync + 'static {
     /// [`RunLeaseError::NotBound`], so the answer never says whether a run exists. It holds no
     /// credential, so a binding past its deadline still answers (a pod may outlive its run's
     /// lease), and so does a run that **ended** within the tombstone bound ([`ACCOUNT_TOMBSTONE`],
-    /// 24 hours by default, ADR 0106 decision 6): a pod lives up to 900 s idle after its job and the
+    /// 24 hours by default, ADR 0107 decision 6): a pod lives up to 900 s idle after its job and the
     /// meter backfills up to 24 hours. A run unbound for longer, or never bound, is `NotBound`. A
     /// run whose person is not an `AccountId` is [`RunLeaseError::AccountNotOpaque`], never the
     /// person's text. A required method: an implementer of `RunLeases` must add it.
@@ -933,7 +933,7 @@ pub trait RunLeases: Send + Sync + 'static {
 
 /// The binding store the broker keeps: one row per run, and the same binding written again is
 /// idempotent (ADR 0084 decision 1). A run that ends keeps its row as a **tombstone** (run,
-/// person, `ended_at`) for the account route alone (ADR 0106 decision 6); [`get`](Self::get) never
+/// person, `ended_at`) for the account route alone (ADR 0107 decision 6); [`get`](Self::get) never
 /// returns it, so no lease is lent after the end.
 pub trait RunBindingStore: Send + Sync + 'static {
     /// Writes `binding`; [`RunLeaseError::Conflict`] when the run is bound to something else. A run

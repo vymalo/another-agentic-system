@@ -29,7 +29,7 @@ pub fn alice() -> UserId {
 }
 
 /// Alice as a deployment that reads the identity provider's `sub` has her: the only kind of
-/// person a lease is answered an account for (ADR 0106).
+/// person a lease is answered an account for (ADR 0107).
 pub fn alice_sub() -> UserId {
     UserId::new("3b1d7e52-6a40-4c18-9f0e-a1c2d3e4f501")
 }

@@ -16,7 +16,7 @@ use crate::{
 /// The longest a lease lives (ADR 0084 decision 3).
 pub const LEASE_TTL: Duration = Duration::from_secs(30);
 
-/// A binding and, once its run ended, when: the tombstone of ADR 0106 decision 6.
+/// A binding and, once its run ended, when: the tombstone of ADR 0107 decision 6.
 #[derive(Clone, Debug)]
 struct Entry {
     binding: RunBinding,

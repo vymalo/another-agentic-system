@@ -223,7 +223,7 @@ orchestrator:
       enabled: false
       namespace: ""
       matchLabels: {}
-    # The operator's pod-minute meter (ADR 0106): the one caller of `GET /internal/runs/{run}/account`, which answers the
+    # The operator's pod-minute meter (ADR 0107): the one caller of `GET /internal/runs/{run}/account`, which answers the
     # person's identity-provider `sub` for a run pod, also for 24 hours after the run ended. OFF by default. It is answered
     # the `sub` and nothing else, so it needs `auth.userClaim: sub` (a deployment that keys its people by e-mail has no account
     # to give it, and the render is refused). The token is the property of the AWS secret (`externalSecrets.key`) whose value

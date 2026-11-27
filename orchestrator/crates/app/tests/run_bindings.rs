@@ -22,7 +22,7 @@ use serde_json::json;
 use support::*;
 
 /// Alice by her identity-provider `sub`: the broker answers a lease an account only for one
-/// (ADR 0106), and the runs here are leased.
+/// (ADR 0107), and the runs here are leased.
 fn alice() -> orch_core::UserId {
     alice_sub()
 }

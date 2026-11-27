@@ -129,7 +129,7 @@ spec:
               {{- toYaml .Values.orchestrator.internal.injector.matchLabels | nindent 14 }}
         {{- end }}
         {{- if .Values.orchestrator.internal.meter.enabled }}
-        # The operator's pod-minute meter (ADR 0106): it asks `GET /internal/runs/{run}/account` and nothing else. Its token,
+        # The operator's pod-minute meter (ADR 0107): it asks `GET /internal/runs/{run}/account` and nothing else. Its token,
         # not this rule, says it may; the rule says only its pods can reach the port.
         - namespaceSelector:
             matchLabels:

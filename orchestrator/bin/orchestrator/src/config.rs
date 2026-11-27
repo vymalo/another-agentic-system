@@ -334,7 +334,7 @@ pub struct InternalSettings {
     /// `GET /internal/runs/{run}/lease`.
     pub agent_tokens: BTreeMap<AgentId, SecretString>,
     /// `server.internal.meter`: the operator's meter token, for
-    /// `GET /internal/runs/{run}/account` (ADR 0106). Only read when `auth.jwt.userClaim` is `sub`,
+    /// `GET /internal/runs/{run}/account` (ADR 0107). Only read when `auth.jwt.userClaim` is `sub`,
     /// which the configuration checks.
     pub meter_token: Option<SecretString>,
 }

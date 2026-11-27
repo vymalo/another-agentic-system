@@ -102,7 +102,7 @@ fn the_only_url_that_may_be_a_reference_is_a_model_endpoints_base_url() {
 /// with ADR 0046, the keys that seal a person's credentials, with issue 290, the direct connection
 /// string of the database, with ADR 0080, the key a tool server's requests are signed with, and,
 /// with ADR 0084, the run routes' own tokens (the orchestrator's and one per agent), and with ADR 0046
-/// the token of the OpenBao secret store, and with ADR 0106 the token of the operator's meter. A
+/// the token of the OpenBao secret store, and with ADR 0107 the token of the operator's meter. A
 /// twenty-second, or a string where one of these is, would be a change of the contract, so it fails here first.
 #[test]
 fn the_secrets_are_the_twenty_one_the_contract_names() {

@@ -60,7 +60,7 @@ impl fmt::Display for UserId {
 /// The longest [`AccountId`], in bytes: the platform's own bound for an identifier it meters.
 pub const MAX_ACCOUNT_ID_LEN: usize = 128;
 
-/// The account a run's spending is charged to (ADR 0106): the person's identity-provider `sub`,
+/// The account a run's spending is charged to (ADR 0107): the person's identity-provider `sub`,
 /// and only a value of the platform's closed alphabet.
 ///
 /// The alphabet is `[A-Za-z0-9._:/-]`, 1 to 128 bytes: what the platform's usage contract

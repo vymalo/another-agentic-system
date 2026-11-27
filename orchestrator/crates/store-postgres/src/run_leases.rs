@@ -1,5 +1,5 @@
 //! [`RunBindingStore`] over Postgres: the run leases of B1 (ADR 0084), one row per run. A run that
-//! ends keeps its row as a tombstone (`ended_at`, migration `0035`, ADR 0106 decision 6).
+//! ends keeps its row as a tombstone (`ended_at`, migration `0035`, ADR 0107 decision 6).
 
 use jiff::Timestamp;
 use orch_core::{AgentId, UserId};

@@ -18,7 +18,7 @@ pub fn chat() -> AgentId {
 }
 
 /// The person whose identity-provider `sub` is `4f2a9c1e-0b7d-4c55-9e1a-6d3f8a2b7c10`: the one
-/// kind of person a lease or the meter is answered an account for (ADR 0106).
+/// kind of person a lease or the meter is answered an account for (ADR 0107).
 pub fn person() -> UserId {
     UserId::new("4f2a9c1e-0b7d-4c55-9e1a-6d3f8a2b7c10")
 }

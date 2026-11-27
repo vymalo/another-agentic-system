@@ -205,13 +205,13 @@ policy that never admits the whole namespace by accident. */ -}}
 {{- end -}}
 {{- $seen = append $seen (toString $property) -}}
 {{- end -}}
-{{- /* The operator's meter (ADR 0106): answered the person's `sub`, so only a deployment that reads `sub` may run it. */ -}}
+{{- /* The operator's meter (ADR 0107): answered the person's `sub`, so only a deployment that reads `sub` may run it. */ -}}
 {{- if not (kindIs "bool" .Values.orchestrator.internal.meter.enabled) -}}
 {{- fail (printf "orchestrator.internal.meter.enabled must be true or false, got %v" .Values.orchestrator.internal.meter.enabled) -}}
 {{- end -}}
 {{- if .Values.orchestrator.internal.meter.enabled -}}
 {{- if ne (toString .Values.auth.userClaim) "sub" -}}
-{{- fail (printf "orchestrator.internal.meter.enabled needs auth.userClaim: sub, got %q: the meter is answered the identity provider's sub, never an e-mail address (ADR 0106)" (toString .Values.auth.userClaim)) -}}
+{{- fail (printf "orchestrator.internal.meter.enabled needs auth.userClaim: sub, got %q: the meter is answered the identity provider's sub, never an e-mail address (ADR 0107)" (toString .Values.auth.userClaim)) -}}
 {{- end -}}
 {{- if not (and (kindIs "string" .Values.orchestrator.internal.meter.tokenProperty) .Values.orchestrator.internal.meter.tokenProperty) -}}
 {{- fail "orchestrator.internal.meter.tokenProperty is required when the meter may ask: the AWS property of its token" -}}

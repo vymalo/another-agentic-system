@@ -2784,7 +2784,7 @@ The design choices are closed enums, authentication at the edge with authorizati
 
 ## Data model
 
-**Built.** 33 migrations of the Postgres store, `crates/store-postgres/migrations/0001_init.sql` to `0033_user_tool_server_last4.sql` (the tables of this section carry the number of the migration that added each column; `orch-secrets-pg` keeps three of its own, and the SQLite store of an embedded application eight; *verified 2026-11-27* by counting the files of those directories), applied at boot by every
+**Built.** 34 migrations of the Postgres store, `crates/store-postgres/migrations/0001_init.sql` to `0035_run_leases_tombstone.sql` (the tables of this section carry the number of the migration that added each column; `orch-secrets-pg` keeps three of its own, and the SQLite store of an embedded application eight; *verified 2026-11-27* by counting the files of those directories), applied at boot by every
 replica (`orch-pg-migrate` takes sqlx's advisory lock and keeps its history; an applied migration is never edited).
 
 ```mermaid

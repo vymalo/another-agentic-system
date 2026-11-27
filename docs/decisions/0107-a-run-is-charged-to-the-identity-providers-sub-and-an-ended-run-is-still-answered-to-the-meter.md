@@ -1,0 +1,120 @@
+---
+sidebarTitle: "0107 · A run is charged to the sub"
+---
+
+# ADR 0107 — A run is charged to the identity provider's `sub`, and an ended run is still answered to the meter
+
+- **Status:** **Accepted (2026-11-27)** by the owner (card ANR-1099, security): *the account id is the identity provider's
+  `sub`, enforced; the lease carries the same id; the e-mail shape gets no meter; a run that ended is still answered for 24
+  hours; the run id the meter sends is the annotation, not the hash.* Amends [ADR 0084](0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md)
+  (decision 6 and the two status notes of 2026-11-24 on `accountId`).
+- **Numbering (2026-11-27):** written as 0106 and renumbered to 0107 the same day, because an open pull request (#616) already took 0106.
+
+## Context
+
+The broker answers two callers an account: the injector gets `accountId` in a lease (it stamps `x-account-id`, ADR 0084
+amended 2026-11-24), and the operator's pod-minute meter asks `GET /internal/runs/{run}/account` to learn whom a run pod is
+charged to. Both answered the run's person as the orchestrator holds it: a `UserId`, which under `auth.jwt.userClaim: email` (the
+chart's default) **is an e-mail address**.
+
+That cannot cross to the platform. Its usage contract accepts an identifier only in a closed alphabet, `[A-Za-z0-9._:/-]`, 1 to
+128 bytes, "so free text and personal data cannot pass" (*verified 2026-11-27*: `aap-usage`, `crates/usage/src/lib.rs`,
+`PodMinuteEvent::validate` and `check_text`, in the platform checkout). An e-mail has an `@` and is refused; worse, a deployment
+that sent it anyway would put a person's address in the platform's usage records. The meter also has two timing gaps: a run's
+binding is deleted when the job ends (`store-postgres/src/run_leases.rs`, `end_run`'s `DELETE`) while a run pod lives up to 900 s
+idle after it and the meter backfills up to 24 hours, so the pod's last minutes had no account to be charged to; and the broker's
+`{run}` is **not** what a pod carries.
+
+## Decision
+
+1. **The account id is the identity provider's `sub`, enforced.** The route
+   `GET /internal/runs/{run}/account` answers `{accountId}` = the person's `UserId` **only when the deployment reads
+   `auth.jwt.userClaim: sub`**. The orchestrator refuses the configuration otherwise: a meter token (`server.internal.meter`) with
+   any other claim, with no `auth.jwt`, or with a mode that also reads the identity header, is exit 78 naming
+   `server.internal.meter`. The chart refuses the same render (`orchestrator.internal.meter.enabled` with `auth.userClaim` other
+   than `sub`).
+2. **The output is held to the platform's alphabet by construction.** `orch_core::AccountId` can only be built by
+   `AccountId::parse`, which accepts `[A-Za-z0-9._:/-]{1,128}` and nothing else, exactly as written (no trimming, no case change).
+   `RunLease::account` and `RunLeases::account` return an `AccountId`, so a value outside the alphabet cannot leave an adapter.
+   A run whose person is not one is refused `RunLeaseError::AccountNotOpaque`, `422 account_not_opaque`, with no part of the
+   person in the answer, the error or the log. The check is on the **answer**: a binding with an e-mail person is still accepted,
+   so the orchestrator's bind never fails on a deployment that has no meter.
+3. **The lease carries the same id**, with the same check: `RunLease::bearer` takes an `AccountId`, and the injector's
+   `x-account-id` is that `sub` (`docs/api/model-injector.md`). **Breaking port change** (invariant 6): `RunLeases::account` and
+   `RunLease::account` change type, `RunBindingStore` changes (decision 6), and `RunLeaseError` gains `AccountNotOpaque`; the
+   conformance testkit (`run_leases_conformance!`) and every implementation (`MemoryRunLeases`, `RunLeaseBroker` over
+   `MemoryRunBindingStore` and `PgRunBindings`) are updated together, and each runs the same cases.
+4. **The e-mail shape gets no meter.** A deployment keyed by e-mail has no account id to give the platform, and none is invented:
+   the meter is not offered there, and an injected lease of such a deployment is refused `account_not_opaque`. Moving to `sub`
+   is a change of `auth.jwt.userClaim`, which re-keys the people (a person's threads belong to the id the claim gives), and is
+   the deployment's own decision, as it is for every other consumer of the claim.
+5. **The run id the meter sends is the pod's annotation, not its label.** The broker's `{run}` is adam's A2A task id (bound at
+   `app/src/dispatcher.rs`, `bind_run`, when the first frame names the task). The pod's label `adam.vymalo.com/run` is a 12-hex
+   hash of it, and the full id is the annotation `adam.vymalo.com/run-id` (adam-rs `crates/adam-env-kubernetes/src/names.rs`:
+   `RUN_LABEL`, `RUN_ID_ANNOTATION`; *verified 2026-11-27* in the checkout). The platform's meter must read
+   **`metadata.annotations["adam.vymalo.com/run-id"]` → `GET /internal/runs/{run}/account` → `{"accountId"}`**. The broker does
+   **not** accept the hash: it cannot be turned back into a run, and a second keying would be a second place to be wrong. The
+   platform-side change is the platform's and is filed separately.
+6. **A run that ends leaves a tombstone, for the account route alone.** `end_run` no longer deletes the binding: it marks it
+   ended (`run_leases.ended_at`, Postgres migration `0035`). The row keeps (run, person, `ended_at`) for **24 hours**
+   (`orch_ports::ACCOUNT_TOMBSTONE`; `RunLeaseBroker::with_tombstone_retention` bounds it otherwise, with no configuration key), and the account
+   route answers it; after that it is `404 run_not_bound`. Every `end` also deletes the tombstones older than the bound, so the
+   table does not grow past it with no sweeper to run. **Leases stay revoked at job end**: `RunBindingStore::get` returns live
+   bindings only, so no credential outlives the job (ADR 0084 decision 6 stands for the lease). Ending twice keeps the first
+   end's time; a run never bound leaves nothing; binding the run again makes it live and replaces the tombstone.
+
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator
+    participant B as Broker
+    participant M as Meter (the platform)
+    O->>B: POST /internal/runs (run, person = sub)
+    Note over B: live binding
+    O->>B: DELETE /internal/runs/run
+    Note over B: ended_at = now, tombstone kept 24 h
+    M->>B: GET /internal/runs/run/account (annotation run-id)
+    B-->>M: 200 {"accountId": "sub"}
+    M->>B: the same, 25 h later
+    B-->>M: 404 run_not_bound
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Live: bind
+    Live --> Live: bind again (same binding)
+    Live --> Ended: unbind (ended_at = now)
+    Ended --> Ended: unbind again (first end stands)
+    Ended --> Live: bind again
+    Ended --> [*]: the next end after 24 h sweeps it
+    note right of Live: lease and account answer
+    note right of Ended: only the account answers
+```
+
+## Consequences
+
+- No e-mail address, and nothing outside `[A-Za-z0-9._:/-]{1,128}`, can leave the broker as an account: the type is the guard,
+  the testkit proves it for every implementation, and the configuration refuses the meter where it could never be answered.
+- A deployment on `userClaim: email` loses the injected lease (it is refused `account_not_opaque`) and has no meter until it moves
+  to `sub`. Cloud runs of ours are signed and have no lease (ADR 0101), so this reaches only the custom injector.
+- The binding table keeps ended rows up to 24 hours: one row per run, no secret (a person's `sub` and ids). Erasing an account
+  does not reach it: an ended run's row holds the person's `sub` for at most the bound, and then the next `end` sweeps it.
+- An older build ignores `ended_at`, but its `DELETE` removes the binding with no tombstone: roll the build out on every replica
+  before the meter is turned on.
+- **Open (not decided here):** the injector's own token has no key in the configuration (`SharedTokens::with_injector` is never
+  called by the binary, *verified 2026-11-27*), so no caller presents as `Injector` today and the chart's AuthConfig lookup
+  answers `401`; wiring it is its own change.
+- **Unverified:** the platform's meter reading the annotation, and the whole chain on a cluster; this is proven on mocks, renders and Rust tests only.
+
+## Alternatives rejected
+
+- **An unsalted hash of the owner (`owner_of`).** It looks opaque and is not: a hash of an e-mail address is a lookup table away
+  from the address (the space of addresses is small and enumerable), and it would still be a derived identifier the ledger and
+  the platform key differently, so the two could never be joined.
+- **An HMAC of the owner under a server key.** Opaque to the platform, but it is a second identity for the person, stable only as
+  long as the key; a rotation re-keys every account, and the platform's records could no longer be tied to the person's ledger.
+- **A minted account id, kept in a table.** A new durable state beside the log and the ledger (invariant 3) for a value the
+  identity provider already issues, and one more thing to erase with an account.
+- **Sending the e-mail and letting the platform refuse it.** The platform's alphabet check would refuse every event of the
+  deployment, and a refusal at the far end is a leak at the near one.
+- **Accepting the hash label at the route.** It cannot be reversed to the run; the broker would have to keep the hash beside
+  every run, and a collision (12 hex) would charge one person's pod to another.

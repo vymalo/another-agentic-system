@@ -2590,7 +2590,7 @@ check "run routes: the port may not be 8080" fails helm template another-agentic
 check "run routes: enabled without the orchestrator's token is refused (the bind would answer nobody)" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" --set orchestrator.internal.enabled=true
 check "run routes: an agent naming the orchestrator's own token is refused (the door would answer it as the orchestrator)" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$internal_values" --set orchestrator.internal.agents.coder=internal_orchestrator_token
 check "run routes: a key that is not an agent id is refused" fails helm template another-agentic-system "$chart" --namespace another-agentic-system -f "$base" -f "$internal_values" --set orchestrator.internal.agents.not_an_id=internal_coder_token
-# ---- The operator's pod-minute meter on the run routes (ADR 0106): off by default, on by values, only with `sub` --------------
+# ---- The operator's pod-minute meter on the run routes (ADR 0107): off by default, on by values, only with `sub` --------------
 meter_values="$chart/tests/meter.values.yaml"
 render -f "$internal_values"
 config_of config.yaml "$cfg"

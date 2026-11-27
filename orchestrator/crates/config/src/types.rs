@@ -394,7 +394,7 @@ pub struct Server {
 
 /// The internal listener the run routes are served on (ADR 0084 decision 5): its own address, the
 /// orchestrator's bearer token (the bind and the unbind), one token per agent (the lease) and, when
-/// the deployment runs the operator's meter, the meter's (the account, ADR 0106).
+/// the deployment runs the operator's meter, the meter's (the account, ADR 0107).
 /// Every token is a reference; a value is never in the file. Only a process that serves routes
 /// binds it, so a worker that shares the file reads and checks the section and opens nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -413,7 +413,7 @@ pub struct ServerInternal {
     pub agents: BTreeMap<String, SecretRef>,
     /// The token of the operator's pod-minute meter: the one caller of
     /// `GET /internal/runs/{run}/account`, which answers the person's identity-provider `sub`
-    /// (ADR 0106). **Refused unless `auth.jwt.userClaim` is `sub`** (exit 78 naming this key): a
+    /// (ADR 0107). **Refused unless `auth.jwt.userClaim` is `sub`** (exit 78 naming this key): a
     /// deployment that keys its people by e-mail has no account to give the meter. At least 32
     /// bytes, and not the token of another caller. Absent: nobody may ask.
     #[serde(default, skip_serializing_if = "Option::is_none")]

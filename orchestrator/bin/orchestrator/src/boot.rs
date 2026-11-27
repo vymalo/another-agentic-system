@@ -675,7 +675,7 @@ async fn run_routes(
 }
 
 /// Who may call the run routes: the orchestrator, each agent and, when the deployment runs the
-/// operator's meter, the meter (ADR 0106; the configuration only reads its token under
+/// operator's meter, the meter (ADR 0107; the configuration only reads its token under
 /// `auth.jwt.userClaim: sub`). The injector's token has no key in the configuration yet, so no
 /// caller presents as `RunCaller::Injector` today: the lease is the orchestrator's until it has.
 fn run_route_tokens(settings: &crate::config::InternalSettings) -> SharedTokens {

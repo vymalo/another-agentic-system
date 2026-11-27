@@ -19,7 +19,7 @@ pub const MAX_BINDING: Duration = Duration::from_secs(24 * 60 * 60);
 /// The broker of run leases. `S` keeps the bindings, `C` the deployment's model credentials.
 ///
 /// A run that ends keeps a tombstone (run, person, end time) for [`ACCOUNT_TOMBSTONE`], 24 hours by
-/// default, which only the meter's account route reads (ADR 0106 decision 6); a lease is never lent
+/// default, which only the meter's account route reads (ADR 0107 decision 6); a lease is never lent
 /// after the end.
 #[derive(Debug)]
 pub struct RunLeaseBroker<S, C> {
