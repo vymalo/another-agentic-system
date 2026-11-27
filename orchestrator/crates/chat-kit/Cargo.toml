@@ -1,0 +1,20 @@
+[package]
+name = "orch-chat-kit"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+description = "The chat contract of an application client as an executable conformance kit: one trait over a chat home, four cases and a macro that writes one test per case."
+readme = "README.md"
+
+[dependencies]
+orch-agui-proto.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true
