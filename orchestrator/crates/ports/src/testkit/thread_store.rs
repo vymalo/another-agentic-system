@@ -1406,7 +1406,8 @@ pub async fn a_fair_claim_ranks_a_persons_rows_by_age_and_not_by_id<S: ThreadSto
 
 /// A person's rows are ranked by `next_attempt_at`, then by age (ANR-1175): a row that only waited
 /// (`wait_outbox` moves it forward, the claim refunded) ranks behind a newer row that never did;
-/// and it is still taken, in the order of its `next_attempt_at`, when the newer work is gone. Alice's rows 1 to 3 are claimed and wait, 1 and 2 until 5 s and 3 until 8 s; her row 4 is
+/// and it is still taken, in the order of its `next_attempt_at`, when the newer work is gone.
+/// Alice's rows 1 to 3 are claimed and wait, 1 and 2 until 5 s and 3 until 8 s; her row 4 is
 /// new and due at once.
 pub async fn a_fair_claim_does_not_rank_a_row_that_only_waited_before_newer_work<S: ThreadStore>(
     store: S,
@@ -1441,7 +1442,8 @@ pub async fn a_fair_claim_does_not_rank_a_row_that_only_waited_before_newer_work
 
 /// A row whose lease lapsed (its worker crashed) keeps its place (ANR-1175): a claim never changes
 /// `next_attempt_at`, so it ranks by the time it was first due and not by the end of its lease. Row
-/// 1 is claimed at 0 s and its lease ends at 30 s; row 2, claimed too, waits until 5 s. At 40 s both
+/// 1 is claimed at 0 s and its lease ends at 30 s; row 2, claimed too, waits until 5 s. At 40 s
+/// both
 /// are due, and the crashed row, which was due first, goes first. A rank by the end of the lease
 /// (30 s against 5 s) would take row 2.
 pub async fn a_fair_claim_keeps_the_place_of_a_row_whose_lease_lapsed<S: ThreadStore>(store: S) {

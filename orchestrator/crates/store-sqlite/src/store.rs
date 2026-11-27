@@ -1565,7 +1565,8 @@ fn claim_fifo() -> String {
 
 /// [`ClaimOrder::Fair`] (ADR 0066): per person, their first `4 * limit` candidates with
 /// `load = running + rank` (`rank` by `next_attempt_at`, then `ord`: ANR-1175), and the cancel
-/// rows with load 0, which take no place in anybody's rank; then the `4 * limit` rows with the lowest `(load, ord)`; then `limit` of them, oldest first
+/// rows with load 0, which take no place in anybody's rank; then the `4 * limit` rows with the
+/// lowest `(load, ord)`; then `limit` of them, oldest first
 /// among equal loads. A row whose rank passes `limit` cannot be among the `limit` first, so the
 /// rest of a queue is never ranked.
 fn claim_fair() -> String {

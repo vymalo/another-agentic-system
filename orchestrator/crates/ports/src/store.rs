@@ -1360,7 +1360,8 @@ pub trait ThreadStore:
     /// of this call, ordered by `next_attempt_at` and then oldest first (ANR-1175: a wait or a
     /// retry moves `next_attempt_at` forward, so a row that only waited does not outrank a newer
     /// row that never did; a claim never changes it, so a row recovered after a crash keeps its
-    /// place; a row due earlier is never behind one due later, so none is starved). A `cancel` row is not ordered by load: it goes before every
+    /// place; a row due earlier is never behind one due later, so none is starved). A `cancel` row
+    /// is not ordered by load: it goes before every
     /// other and does not count in its person's ranks. Nothing is taken back from a job that runs:
     /// fairness only chooses the next rows, and when one person has work, every slot is theirs.
     /// The rows come back oldest first, whatever the order they were chosen in.
