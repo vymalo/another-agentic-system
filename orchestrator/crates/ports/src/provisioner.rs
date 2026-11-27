@@ -196,60 +196,6 @@ impl std::error::Error for CopiedError {
     }
 }
 
-#[cfg(test)]
-#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-mod tests {
-    use super::*;
-
-    #[derive(Debug)]
-    struct Outer(std::io::Error);
-
-    impl fmt::Display for Outer {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("error sending request")
-        }
-    }
-
-    impl std::error::Error for Outer {
-        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-            Some(&self.0)
-        }
-    }
-
-    #[test]
-    fn a_duplicate_keeps_the_variant_and_the_cause_chain() {
-        let error = ProvisionError::unavailable(Outer(std::io::Error::other("connection refused")));
-        let copy = error.duplicate();
-        let ProvisionError::Unavailable { source } = &copy else {
-            panic!("not Unavailable: {copy:?}");
-        };
-        assert_eq!(source.to_string(), "error sending request");
-        let cause = std::error::Error::source(&**source).expect("the cause is kept");
-        assert_eq!(cause.to_string(), "connection refused");
-        assert!(matches!(
-            ProvisionError::NotReady {
-                last: AgentState::Blocked
-            }
-            .duplicate(),
-            ProvisionError::NotReady {
-                last: AgentState::Blocked
-            }
-        ));
-        assert!(matches!(
-            ProvisionError::Refused.duplicate(),
-            ProvisionError::Refused
-        ));
-        assert!(matches!(
-            ProvisionError::Invalid.duplicate(),
-            ProvisionError::Invalid
-        ));
-        assert!(matches!(
-            ProvisionError::Deleting.duplicate(),
-            ProvisionError::Deleting
-        ));
-    }
-}
-
 impl Classify for ProvisionError {
     fn class(&self) -> ErrorClass {
         match self {
@@ -304,4 +250,58 @@ pub trait AgentProvisioner: Send + Sync + 'static {
         owner: &AgentOwner,
         kind: AgentKind,
     ) -> impl Future<Output = Result<(), ProvisionError>> + Send;
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct Outer(std::io::Error);
+
+    impl fmt::Display for Outer {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("error sending request")
+        }
+    }
+
+    impl std::error::Error for Outer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    #[test]
+    fn a_duplicate_keeps_the_variant_and_the_cause_chain() {
+        let error = ProvisionError::unavailable(Outer(std::io::Error::other("connection refused")));
+        let copy = error.duplicate();
+        let ProvisionError::Unavailable { source } = &copy else {
+            panic!("not Unavailable: {copy:?}");
+        };
+        assert_eq!(source.to_string(), "error sending request");
+        let cause = std::error::Error::source(&**source).expect("the cause is kept");
+        assert_eq!(cause.to_string(), "connection refused");
+        assert!(matches!(
+            ProvisionError::NotReady {
+                last: AgentState::Blocked
+            }
+            .duplicate(),
+            ProvisionError::NotReady {
+                last: AgentState::Blocked
+            }
+        ));
+        assert!(matches!(
+            ProvisionError::Refused.duplicate(),
+            ProvisionError::Refused
+        ));
+        assert!(matches!(
+            ProvisionError::Invalid.duplicate(),
+            ProvisionError::Invalid
+        ));
+        assert!(matches!(
+            ProvisionError::Deleting.duplicate(),
+            ProvisionError::Deleting
+        ));
+    }
 }
