@@ -6,7 +6,7 @@ use deadpool_postgres::Object;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{
     EditLink, Event, EventKind, ForkKind, ForkNode, Job, NONCE_LEN, RankError, ThreadId,
-    ThreadRecord, UserId, WatchKey, between, spread, usage_counted_through,
+    ThreadRecord, UserId, WatchKey, between, spread,
 };
 use orch_pg_connect::PgOptions;
 use orch_pg_migrate::Migrator;
@@ -73,6 +73,7 @@ fn migrator() -> Result<Migrator, StoreError> {
         "0034_outbox_refunded.sql",
         "0035_run_leases_tombstone.sql",
         "0036_outbox_open_owner_due.sql",
+        "0037_orch_commit_open.sql",
     )
     .map_err(migrate_err)?;
     Migrator::new(MIGRATIONS_TABLE, migrations).map_err(migrate_err)
@@ -427,7 +428,7 @@ impl PgStore {
                 ));
             }
         }
-        let events = insert_events(&mut tx, new.id, cut + 1, first.events).await?;
+        let events = insert_events(&mut tx, new.id, first.events).await?;
         // the usage ledger, in the transaction of the events (ADR 0065); what a fork copied was
         // counted in its parent, so only the events of its own are folded in
         usage::fold_events(&mut tx, &new.owner, &events).await?;
@@ -444,7 +445,7 @@ impl PgStore {
         let rearmed =
             insert_watches_and_timers(&mut tx, new.id, &first.watches, first.timers, first.now)
                 .await?;
-        let last_seq = cut + i64::try_from(events.len()).unwrap_or(i64::MAX - cut);
+        let last_seq = events.last().map_or(cut, |e| e.seq);
         let search_through = if search_reached >= cut {
             last_seq
         } else {
@@ -1490,47 +1491,75 @@ async fn lock_watch(tx: &mut Tx, key: &str) -> Result<(), StoreError> {
         .map_err(store_err)
 }
 
-/// Inserts `events` as `first_seq..`, returning them as stored.
+/// Appends `events` to the thread's log, returning them as stored. One statement: the thread's
+/// `last_seq` advances by the number of events and the events take the seqs after the old one, so
+/// the sequence is gap-free by construction under the lock `orch_commit_open` took (ADR 0107 row 2).
 async fn insert_events(
     tx: &mut Tx,
     thread: ThreadId,
-    first_seq: i64,
     events: Vec<NewEvent>,
 ) -> Result<Vec<Event>, StoreError> {
-    let mut stored = Vec::with_capacity(events.len());
-    for (offset, new) in (0_i64..).zip(events) {
-        let seq = first_seq + offset;
-        let actor = serde_json::to_value(&new.actor)
-            .map_err(|e| StoreError::corrupt_with("cannot serialise", e))?;
-        query(
-            "INSERT INTO events (thread_id, seq, at, kind, actor, data, idempotency_key) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind(thread.0)
-        .bind(seq)
-        .bind(to_db(new.at))
-        .bind(new.body.kind().as_str())
-        .bind(actor)
-        .bind(new.body.data_value())
-        .bind(new.idempotency_key.as_deref())
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| {
-            if is_unique_violation(&e, Some("events_idempotency")) {
-                StoreError::corrupt("the same idempotency key twice in one commit")
-            } else {
-                store_err(e)
-            }
-        })?;
-        stored.push(Event {
+    if events.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut ats = Vec::with_capacity(events.len());
+    let mut kinds = Vec::with_capacity(events.len());
+    let mut actors = Vec::with_capacity(events.len());
+    let mut data = Vec::with_capacity(events.len());
+    let mut keys: Vec<Option<String>> = Vec::with_capacity(events.len());
+    for new in &events {
+        ats.push(to_db(new.at));
+        kinds.push(new.body.kind().as_str().to_owned());
+        actors.push(
+            serde_json::to_value(&new.actor)
+                .map_err(|e| StoreError::corrupt_with("cannot serialise", e))?,
+        );
+        data.push(new.body.data_value());
+        keys.push(new.idempotency_key.clone());
+    }
+    let seqs: Vec<i64> = query_scalar(
+        "WITH t AS (UPDATE threads SET last_seq = last_seq + cardinality($2::timestamptz[]) \
+             WHERE id = $1 RETURNING last_seq - cardinality($2::timestamptz[]) AS base) \
+         INSERT INTO events (thread_id, seq, at, kind, actor, data, idempotency_key) \
+         SELECT $1, t.base + e.ord, e.at, e.kind, e.actor, e.data, e.key \
+         FROM t, unnest($2::timestamptz[], $3::text[], $4::jsonb[], $5::jsonb[], $6::text[]) \
+             WITH ORDINALITY AS e(at, kind, actor, data, key, ord) \
+         RETURNING seq",
+    )
+    .bind(thread.0)
+    .bind(ats)
+    .bind(kinds)
+    .bind(actors)
+    .bind(data)
+    .bind(keys)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| {
+        if is_unique_violation(&e, Some("events_idempotency")) {
+            StoreError::corrupt("the same idempotency key twice in one commit")
+        } else {
+            store_err(e)
+        }
+    })?;
+    // `RETURNING` has no order: the seqs are consecutive, so sorted they are the events' own.
+    let mut seqs = seqs;
+    seqs.sort_unstable();
+    if seqs.len() != events.len() {
+        return Err(StoreError::corrupt(
+            "the append wrote another number of events",
+        ));
+    }
+    Ok(seqs
+        .into_iter()
+        .zip(events)
+        .map(|(seq, new)| Event {
             seq,
             thread_id: thread,
             at: ts(new.at),
             actor: new.actor,
             body: new.body,
-        });
-    }
-    Ok(stored)
+        })
+        .collect())
 }
 
 async fn insert_outbox(
@@ -1910,74 +1939,75 @@ impl ThreadStore for PgStore {
         commit: Commit,
     ) -> Result<CommitOutcome, StoreError> {
         let mut tx = self.pool.begin().await.map_err(store_err)?;
-        // The row lock serialises every writer of this thread: the seq counter below cannot
-        // be raced, so seq has no gaps and no duplicates (READ COMMITTED is enough).
-        let locked = query(
-            "SELECT version, last_seq, state, owner, usage_through, forked_at, search_through, \
-                 search_fold, title, description FROM threads WHERE id = $1 FOR UPDATE",
-        )
-        .bind(thread.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_err)?;
-        let Some(locked) = locked else {
-            rollback(tx).await;
-            return Err(StoreError::NotFound);
+        // `orch_commit_open` takes the locks (the thread, then the claimed outbox row, then the
+        // claimed inbox row) and says whether the commit may go on, before anything is written. The
+        // thread's row lock serialises every writer of the thread, so the append below leaves seq
+        // without gaps and duplicates (READ COMMITTED is enough). A claimed inbox row is locked
+        // while a stale `park_inbox` holding a watch key may wait for it and this commit, holding
+        // the row, wants that key later: PostgreSQL detects the cycle (`40P01`), aborts one side,
+        // and the store maps that to a transient error.
+        let keys: Vec<&str> = commit
+            .events
+            .iter()
+            .filter_map(|e| e.idempotency_key.as_deref())
+            .collect();
+        let (outbox_id, outbox_owner, outbox_attempts) = match &commit.lease {
+            Some(lease) => (
+                Some(lease.id.0),
+                Some(lease.owner.clone()),
+                Some(attempt(lease)),
+            ),
+            None => (None, None, None),
         };
-        if let Some(lease) = &commit.lease {
-            // Lock order is thread, then outbox row, then binding; nothing takes a thread lock
-            // while holding an outbox row lock (outbox statements only touch outbox and
-            // binding rows, and change no foreign key), so this cannot deadlock. FOR SHARE
-            // keeps the claim in place until this transaction ends: a claimer's UPDATE waits
-            // (or, with SKIP LOCKED, passes the row by), so the check cannot go stale before
-            // the write below.
-            let held = query(
-                "SELECT 1 FROM outbox WHERE id = $1 AND thread_id = $2 AND lease_owner = $3 \
-                 AND attempts = $4 AND status = 'inflight' FOR SHARE",
-            )
-            .bind(lease.id.0)
+        let (inbox_id, inbox_owner, inbox_attempts) = match &commit.inbox {
+            Some(lease) => (
+                Some(lease.id.0),
+                Some(lease.owner.clone()),
+                Some(inbox_attempt(lease)),
+            ),
+            None => (None, None, None),
+        };
+        let locked = query("SELECT * FROM orch_commit_open($1, $2, $3, $4, $5, $6, $7, $8, $9)")
             .bind(thread.0)
-            .bind(&lease.owner)
-            .bind(attempt(lease))
-            .fetch_optional(&mut *tx)
+            .bind(expected_version)
+            .bind(outbox_id)
+            .bind(outbox_owner)
+            .bind(outbox_attempts)
+            .bind(inbox_id)
+            .bind(inbox_owner)
+            .bind(inbox_attempts)
+            .bind(keys)
+            .fetch_one(&mut *tx)
             .await
             .map_err(store_err)?;
-            if held.is_none() {
+        let outcome: String = locked.try_get("outcome").map_err(store_err)?;
+        match outcome.as_str() {
+            "applied" => {}
+            "not_found" => {
+                rollback(tx).await;
+                return Err(StoreError::NotFound);
+            }
+            "fenced" => {
                 rollback(tx).await;
                 return Ok(CommitOutcome::Fenced);
             }
-        }
-        if let Some(lease) = &commit.inbox {
-            // FOR UPDATE: the row is marked applied below, so its claim must not move before
-            // this transaction ends. Lock order is thread, outbox row, inbox row. The inbox
-            // statements outside a commit lock one inbox row (claim with SKIP LOCKED, retry,
-            // complete, release, expiry) or a watch key and then a row (`park_inbox`), never a
-            // thread, so no cycle through the thread lock exists. One does through the watch
-            // key: a stale `park_inbox` holding key K waits for this row while this commit,
-            // holding the row, wants K in `insert_watches_and_timers`. Postgres detects such a
-            // cycle (`40P01`), aborts one side, and the store maps that to a transient error.
-            let held = query(
-                "SELECT 1 FROM inbox WHERE id = $1 AND lease_owner = $2 AND attempts = $3 \
-                 AND status = 'inflight' FOR UPDATE",
-            )
-            .bind(lease.id.0)
-            .bind(&lease.owner)
-            .bind(inbox_attempt(lease))
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(store_err)?;
-            if held.is_none() {
+            "version_conflict" => {
                 rollback(tx).await;
-                return Ok(CommitOutcome::Fenced);
+                return Err(StoreError::VersionConflict);
+            }
+            "duplicate" => {
+                rollback(tx).await;
+                return Ok(CommitOutcome::Duplicate);
+            }
+            _ => {
+                rollback(tx).await;
+                return Err(StoreError::corrupt(
+                    "orch_commit_open answered an unknown outcome",
+                ));
             }
         }
-        let version: i64 = locked.try_get("version").map_err(store_err)?;
-        let last_seq: i64 = locked.try_get("last_seq").map_err(store_err)?;
-        let state: String = locked.try_get("state").map_err(store_err)?;
-        if version != expected_version {
-            rollback(tx).await;
-            return Err(StoreError::VersionConflict);
-        }
+        let last_seq: i64 = locked.try_get("cur_last_seq").map_err(store_err)?;
+        let state: String = locked.try_get("cur_state").map_err(store_err)?;
         if commit.only_finishes_inbox() && enum_str(&commit.new_state)? == state {
             // Nothing to write to the thread. The claim and the version were checked above (a
             // "nothing to do" is only as good as the thread it was decided on); the row is
@@ -2001,33 +2031,16 @@ impl ThreadStore for PgStore {
                 events: Vec::new(),
             });
         }
-        let keys: Vec<&str> = commit
-            .events
-            .iter()
-            .filter_map(|e| e.idempotency_key.as_deref())
-            .collect();
-        if !keys.is_empty() {
-            let seen = query(
-                "SELECT 1 FROM events WHERE thread_id = $1 AND idempotency_key = ANY($2) LIMIT 1",
-            )
-            .bind(thread.0)
-            .bind(&keys)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(store_err)?;
-            if seen.is_some() {
-                rollback(tx).await;
-                return Ok(CommitOutcome::Duplicate);
-            }
-        }
         let has_outbox = !commit.outbox.is_empty() || commit.finishes_outbox.is_some();
         // The usage ledger is written in this transaction (ADR 0065). First what it has not been
         // through: events a build without the ledger appended, or the log the thread had before
         // migration 0023; none at all in steady state, when `usage_through` is `last_seq`.
-        let owner = UserId::new(&locked.try_get::<_, String>("owner").map_err(store_err)?);
-        let through: i64 = locked.try_get("usage_through").map_err(store_err)?;
-        let cut: Option<i64> = locked.try_get("forked_at").map_err(store_err)?;
-        let behind = usage_counted_through(through, cut);
+        let owner = UserId::new(
+            &locked
+                .try_get::<_, String>("cur_owner")
+                .map_err(store_err)?,
+        );
+        let behind: i64 = locked.try_get("cur_counted_through").map_err(store_err)?;
         if behind < last_seq {
             usage::catch_up(&mut tx, thread, &owner, behind, last_seq).await?;
         }
@@ -2035,8 +2048,8 @@ impl ThreadStore for PgStore {
         // first (at most COMMIT_CATCH_UP_EVENTS events, the watermark advancing only as far as it got), with
         // the title and description of the row, then this commit's events, always. A thread stored under
         // another fold version starts again from nothing.
-        let mut search_through: i64 = locked.try_get("search_through").map_err(store_err)?;
-        let search_fold: i32 = locked.try_get("search_fold").map_err(store_err)?;
+        let mut search_through: i64 = locked.try_get("cur_search_through").map_err(store_err)?;
+        let search_fold: i32 = locked.try_get("cur_search_fold").map_err(store_err)?;
         if search_fold != orch_core::search::FOLD_VERSION {
             search::delete_index(&mut tx, thread).await?;
             search_through = 0;
@@ -2049,12 +2062,13 @@ impl ThreadStore for PgStore {
             search_reached =
                 search::catch_up_before_commit(&mut tx, thread, &owner, search_through, last_seq)
                     .await?;
-            let title: String = locked.try_get("title").map_err(store_err)?;
-            let description: Option<String> = locked.try_get("description").map_err(store_err)?;
+            let title: String = locked.try_get("cur_title").map_err(store_err)?;
+            let description: Option<String> =
+                locked.try_get("cur_description").map_err(store_err)?;
             title_keys = Some(search::keys_of(Some(&title)));
             description_keys = Some(search::keys_of(description.as_deref()));
         }
-        let events = insert_events(&mut tx, thread, last_seq + 1, commit.events).await?;
+        let events = insert_events(&mut tx, thread, commit.events).await?;
         usage::fold_events(&mut tx, &owner, &events).await?;
         search::index_events(&mut tx, thread, &owner, &events).await?;
         // a title or description this commit writes is the one that is searched
@@ -2064,7 +2078,8 @@ impl ThreadStore for PgStore {
         if let Some(description) = &commit.description {
             description_keys = Some(search::keys_of(Some(description)));
         }
-        let new_last_seq = last_seq + i64::try_from(events.len()).unwrap_or(0);
+        // the log's end after the append: the last seq it assigned
+        let new_last_seq = events.last().map_or(last_seq, |e| e.seq);
         // the index is through the whole log only if the old part was finished; else exactly where it stopped
         let search_through_after = if search_reached >= last_seq {
             new_last_seq
@@ -2075,27 +2090,26 @@ impl ThreadStore for PgStore {
         // without one leaves the stored job alone.
         let job = commit.job.as_ref().map(job_json).transpose()?;
         let row = query(concat!(
-            "UPDATE threads SET state = $2, job = COALESCE($5, job), title = COALESCE($6, title), \
-             description = CASE WHEN $7::text IS NULL THEN description ELSE NULLIF($7, '') END, \
-             visibility = CASE $8::text WHEN 'set' THEN $9::text WHEN 'clear' THEN 'private' \
+            "UPDATE threads SET state = $2, job = COALESCE($4, job), title = COALESCE($5, title), \
+             description = CASE WHEN $6::text IS NULL THEN description ELSE NULLIF($6, '') END, \
+             visibility = CASE $7::text WHEN 'set' THEN $8::text WHEN 'clear' THEN 'private' \
                  ELSE visibility END, \
-             share_nonce = CASE $8::text WHEN 'set' THEN $10::bytea WHEN 'clear' THEN NULL \
+             share_nonce = CASE $7::text WHEN 'set' THEN $9::bytea WHEN 'clear' THEN NULL \
                  ELSE share_nonce END, \
-             shared_at = CASE $8::text WHEN 'set' THEN $4 WHEN 'clear' THEN NULL \
+             shared_at = CASE $7::text WHEN 'set' THEN $3 WHEN 'clear' THEN NULL \
                  ELSE shared_at END, \
-             version = version + 1, last_seq = $3, usage_through = $3, search_through = $13, \
-             search_fold = $14, \
-             title_terms = CASE WHEN $11::text[] IS NULL THEN title_terms \
+             version = version + 1, usage_through = last_seq, search_through = $12, \
+             search_fold = $13, \
+             title_terms = CASE WHEN $10::text[] IS NULL THEN title_terms \
+                 ELSE array_to_tsvector($10) END, \
+             description_terms = CASE WHEN $11::text[] IS NULL THEN description_terms \
                  ELSE array_to_tsvector($11) END, \
-             description_terms = CASE WHEN $12::text[] IS NULL THEN description_terms \
-                 ELSE array_to_tsvector($12) END, \
-             updated_at = $4 \
+             updated_at = $3 \
              WHERE id = $1 RETURNING ",
             thread_cols!()
         ))
         .bind(thread.0)
         .bind(enum_str(&commit.new_state)?)
-        .bind(new_last_seq)
         .bind(to_db(commit.now))
         .bind(job)
         .bind(commit.title.as_deref())
@@ -2877,6 +2891,6 @@ mod tests {
             .unwrap();
         let first = &migrator.migrations()[0];
         assert_eq!((first.version(), first.description()), (1, "init"));
-        assert_eq!(migrator.migrations().len(), 36);
+        assert_eq!(migrator.migrations().len(), 37);
     }
 }

@@ -435,6 +435,8 @@ encode! {
     Vec<String> => Type::TEXT_ARRAY,
     &[String] => Type::TEXT_ARRAY,
     Vec<&str> => Type::TEXT_ARRAY,
+    Vec<Option<String>> => Type::TEXT_ARRAY,
+    Vec<Option<&str>> => Type::TEXT_ARRAY,
     &[&str] => Type::TEXT_ARRAY,
     Vec<uuid::Uuid> => Type::UUID_ARRAY,
     &[uuid::Uuid] => Type::UUID_ARRAY,

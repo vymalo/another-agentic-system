@@ -18,6 +18,26 @@ const ROUTINES: &[(&str, Option<&str>)] = &[
     // function from before ADR 0107, so it has no `orch_` prefix; `outbox` inserts fire it in every
     // conformance case that writes an outbox row.
     ("outbox_set_owner()", None),
+    // 0037 (P1): the opening of a commit, called here for a thread that is not there.
+    (
+        "orch_commit_open(p_thread uuid, p_expected_version bigint, p_outbox_id uuid, \
+         p_outbox_owner text, p_outbox_attempts integer, p_inbox_id uuid, p_inbox_owner text, \
+         p_inbox_attempts integer, p_keys text[])",
+        Some(
+            "DO $$ BEGIN IF (SELECT outcome FROM orch_commit_open(gen_random_uuid(), 1, NULL, \
+             NULL, NULL, NULL, NULL, NULL, '{}')) <> 'not_found' THEN RAISE EXCEPTION 'outcome'; \
+             END IF; END $$",
+        ),
+    ),
+    // 0037 (P1): how far the usage ledger has counted a log; the greater of the two.
+    (
+        "orch_usage_counted_through(p_usage_through bigint, p_forked_at bigint)",
+        Some(
+            "DO $$ BEGIN IF orch_usage_counted_through(3, NULL) <> 3 \
+             OR orch_usage_counted_through(3, 7) <> 7 OR orch_usage_counted_through(9, 7) <> 9 \
+             THEN RAISE EXCEPTION 'counted'; END IF; END $$",
+        ),
+    ),
 ];
 
 /// The functions (of any kind) and the views of `schema`, sorted.

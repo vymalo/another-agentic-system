@@ -24,7 +24,7 @@ use deadpool_postgres::Object;
 use orch_core::{
     ModelTokens, SandboxEntry, SandboxEnvironment, SandboxShape, SandboxUsage, ThreadId,
     TokenCounts, UnmeasuredSandbox, UsageChange, UsageMonth, UsageMonthTotals, UsageRow,
-    UsageSource, UsageTaskKey, UserId, usage_change, usage_counted_through,
+    UsageSource, UsageTaskKey, UserId, usage_change,
 };
 use orch_ports::{StoreError, UsageBackfill, UsageLedger};
 use tokio_postgres::Row as PgRow;
@@ -688,12 +688,12 @@ impl UsageLedger for PgStore {
             .map_err(store_err)?
             .rows_affected();
         }
-        // `GREATEST(usage_through, COALESCE(forked_at, 0))` is `orch_core::usage_counted_through` in
-        // SQL: the page is chosen with it and each thread is judged again with the Rust function
-        // under the thread's lock, so the two must say the same.
+        // The page is chosen with `orch_usage_counted_through`, the one definition of how far the
+        // ledger has counted (ADR 0107 row 13), and each thread is judged again with it under the
+        // thread's lock.
         let due: Vec<uuid::Uuid> = query_scalar(
             "SELECT id FROM threads WHERE ($1::uuid IS NULL OR id > $1) \
-             AND GREATEST(usage_through, COALESCE(forked_at, 0)) < last_seq ORDER BY id LIMIT $2",
+             AND orch_usage_counted_through(usage_through, forked_at) < last_seq ORDER BY id LIMIT $2",
         )
         .bind(after.map(|t| t.0))
         .bind(i64::from(limit))
@@ -716,7 +716,8 @@ impl UsageLedger for PgStore {
                 .map_err(store_err)?;
             // the lock every commit of the thread takes: the page and the service can run together
             let locked = match query(
-                "SELECT owner, last_seq, usage_through, forked_at FROM threads \
+                "SELECT owner, last_seq, orch_usage_counted_through(usage_through, forked_at) AS counted_through \
+                 FROM threads \
                  WHERE id = $1 FOR UPDATE",
             )
             .bind(id)
@@ -736,9 +737,7 @@ impl UsageLedger for PgStore {
             };
             let owner = UserId::new(&locked.try_get::<_, String>("owner").map_err(store_err)?);
             let last_seq: i64 = locked.try_get("last_seq").map_err(store_err)?;
-            let through: i64 = locked.try_get("usage_through").map_err(store_err)?;
-            let cut: Option<i64> = locked.try_get("forked_at").map_err(store_err)?;
-            let from = usage_counted_through(through, cut);
+            let from: i64 = locked.try_get("counted_through").map_err(store_err)?;
             if from >= last_seq {
                 continue; // a commit caught it up since the page was read
             }
