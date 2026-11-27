@@ -105,12 +105,13 @@ The request is an agent **`Message`** whose `metadata` holds the extension's URI
   ```
 - **The status message of an `input-required` task is a carrier too (amended 2026-11-27).** A
   `Message` in the stream and the status message of an `input-required` task are the two places a
-  request may ride; **exactly one request per task state** — the same status seen twice (a
-  reconnect, a re-read of the task) is the same request, keyed by the task and the state, never a
-  second one. Why: adam parks a turn only through its question (`ToolError::NeedsInput`), and that
-  question *is* the `input-required` status message, so the request has nowhere else to go. On any
-  other state a status message is still not a carrier: its words are not a status detail, and its
-  metadata is not the status's tier echo or stream entry.
+  request may ride. Why: adam parks a turn only through its question (`ToolError::NeedsInput`), and
+  that question *is* the `input-required` status message, so the request has nowhere else to go.
+  **One request per status message**, keyed by the message's id: the same status seen twice (a
+  reconnect, a re-read of the task) is the same request, never a second one, while a task that
+  returns to `input-required` with a new question asks again — keying by the state alone would drop
+  that second form. On any other state a status message is still not a carrier: its words are not a
+  status detail, and its metadata is not the status's tier echo or stream entry.
 - `component` must be one this build draws, matched exactly. `hints` must be an object; its members
   are optional and bounded:
 
