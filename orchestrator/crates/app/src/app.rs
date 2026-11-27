@@ -706,7 +706,7 @@ impl<P: Ports> App<P> {
         Ok(())
     }
 
-    /// The id of `user`'s own agent for a thread bound to `agent` would be listed under, when the
+    /// The id under which `user`'s own agent for a thread bound to `agent` would be listed, when the
     /// deployment provisions that kind (ANR-1061). Nothing is asked of the platform: a fork that
     /// has no `ensure_own_agent` answer (it carries no message) records this as its route; one that
     /// has records the answer's name instead. `None` when provisioning is off or the agent's names

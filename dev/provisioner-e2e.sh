@@ -250,7 +250,7 @@ fi
 # The message went to the person's own agent (ANR-1061), and its answer is the thread's. The deployment's `adam` is the real coder image and keeps no
 # journal a script can read, so "it was not asked" is shown by the answer: the thread holds the stand-in's `Data: ...`, which `adam` never says.
 if [ "$(in_own_agent "$marker_a")" -ge 1 ]; then
-  ok "the message is in the journal of the person's own agent (coder-<owner>), not only at the shared one, and the thread holds its answer, not the shared agent's"
+  ok "the message is in the journal of the person's own agent (coder-<owner>), not only at the shared one"
 else
   bad "the person's own agent was sent no message that holds $marker_a"
 fi

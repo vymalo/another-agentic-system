@@ -67,9 +67,13 @@ This amendment replaces its first version, which recomputed the route from the c
   registry does not list is tried for up to `own_agent_listing_attempts` attempts of the row in all (`DispatcherConfig`, **default 5**, about 15 s
   with the default backoff; not that many extra retries), with a debug log each time and a warning when it is given up, and then fails with its own reason: "your agent
   ... is ready but is not listed yet" when this row's own provisioning call returned the agent ready, and, when no call was made
-  or provisioning no longer covers the kind, "the person's own agent ... is not listed, and nothing made it ready for this row". It is never sent to the shared agent in its place, and the retry applies to the thread's own
-  agent only. A stop whose agent is not listed is answered here: an agent the platform does not list holds no task to stop, so the
-  thread is cancelled without asking it (`CancelledBeforeStart`), **at the first look, before any listing retry**.
+  or provisioning no longer covers the kind, "your agent ... is not listed and provisioning is not on for it", and for a follow,
+  which never wakes the agent, "your agent ... is not listed (following a task does not wake it)". A row on a thread that has
+  ended does not wake the agent either. It is never sent to the shared agent in its place, and the retry applies to the thread's own
+  agent only. A stop whose agent is not listed is decided by `cancel`, which never wakes the agent: with no task running at it the thread is cancelled locally
+  (`CancelledBeforeStart`) at once; a delegation in flight is waited for as for any thread; and with a task running at the
+  unlisted agent the stop is tried for up to `own_agent_listing_attempts` attempts of the row in all and then ends the thread
+  locally with a warning that the task at the agent could not be stopped.
 - **The tier and the cap come from the own agent's card.** The request checks a tier against the thread's agent, the send against
   the card of the agent the row goes to (`tier_for_send`), so an own agent that does not list `access-tier/v1` gets no tier, and one
   that lists it is given the message under it. The same holds for the model pick and the other extensions read from the live card.

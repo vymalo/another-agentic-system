@@ -188,6 +188,10 @@ struct Loaded {
     /// The last event the thread copied from its parent, when it is a fork (ADR 0029): the
     /// events `1..=cut` are the conversation its first task is told.
     forked_at: Option<i64>,
+    /// A stop for a thread routed to the person's own agent, which the registry does not list
+    /// (ANR-1061): `ctx.endpoint` is then a placeholder that nothing may call, and `cancel` decides
+    /// the stop locally. Never set for another row.
+    own_unlisted: bool,
 }
 
 /// A delegation that opens a task of its own: what [`Dispatcher::consume`] needs to tell, from the
@@ -752,6 +756,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         let route = thread.job.route.clone();
         let lookup = route.as_ref().unwrap_or(&binding.agent_id);
         let wakes = route.is_some()
+            && !thread.state.is_terminal()
             && !matches!(
                 row.payload,
                 OutboxPayload::Cancel { .. } | OutboxPayload::Observe { .. }
@@ -797,20 +802,14 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 }
             }
         }
-        let entry = match self.app.resolve_agent(lookup).await {
-            Ok(Some(entry)) => entry,
-            // a stop is answered here, at the first look and before any retry: an agent the
-            // platform does not list holds no task to stop
+        let mut own_unlisted = false;
+        let endpoint = match self.app.resolve_agent(lookup).await {
+            Ok(Some(entry)) => entry.endpoint,
+            // a stop for an agent the platform does not list: `cancel` decides it, never waking the
+            // agent (a task running at it cannot be reached; none running is nothing to stop)
             Ok(None) if route.is_some() && matches!(row.payload, OutboxPayload::Cancel { .. }) => {
-                tracing::warn!(id = %row.id, agent = %lookup, "the stop is answered without the person's own agent: it is not listed");
-                self.apply_quiet(
-                    row,
-                    Input::CancelledBeforeStart,
-                    format!("cancelstart:{}", row.id),
-                )
-                .await?;
-                self.finish(row, OutboxFinal::Delivered).await?;
-                return Ok(None);
+                own_unlisted = true;
+                orch_ports::AgentEndpoint::a2a(lookup.clone(), String::new(), None)
             }
             // ready on the platform and not listed yet: the registry reads the platform live, so
             // the row is tried again `own_agent_listing_attempts` times, and then given up with
@@ -831,9 +830,11 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 }
                 let reason = if route.is_some() && woke {
                     format!("your agent '{lookup}' is ready but is not listed yet")
+                } else if route.is_some() && wakes {
+                    format!("your agent '{lookup}' is not listed and provisioning is not on for it")
                 } else if route.is_some() {
                     format!(
-                        "the person's own agent '{lookup}' is not listed, and nothing made it ready for this row (provisioning is not on for it)"
+                        "your agent '{lookup}' is not listed (following a task does not wake it)"
                     )
                 } else {
                     format!("agent '{lookup}' is no longer listed")
@@ -889,7 +890,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             job: thread.job.number,
             agent: binding.agent_id.clone(),
             person: thread.owner.clone(),
-            endpoint: entry.endpoint.clone(),
+            endpoint,
             revision: binding.revision.clone(),
             files: files::Budget::default(),
             // the row is the message whose pick names the run's model alias, and only a delegation
@@ -912,6 +913,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             binding,
             is_child: thread.child_of.is_some(),
             forked_at: thread.forked_from.map(|origin| origin.seq),
+            own_unlisted,
         }))
     }
 
@@ -1021,6 +1023,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             binding,
             is_child,
             forked_at,
+            own_unlisted: _,
         }) = self.load(&row).await?
         else {
             return Ok(());
@@ -1520,6 +1523,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             binding,
             is_child: _,
             forked_at: _,
+            own_unlisted: _,
         }) = self.load(&row).await?
         else {
             return Ok(());
@@ -2094,6 +2098,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             binding,
             is_child: _,
             forked_at: _,
+            own_unlisted,
         }) = self.load(&row).await?
         else {
             return Ok(());
@@ -2116,6 +2121,28 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         let running = binding
             .task_id
             .filter(|_| !binding.task_state.is_some_and(AgentTaskState::is_terminal));
+        // a task running at an own agent the registry does not list cannot be reached, and the
+        // agent is not woken for it: the stop waits for the listing as a row of the thread does,
+        // then ends the thread locally (the task at the agent is not stopped)
+        if running.is_some() && own_unlisted {
+            if row.attempts < self.cfg.own_agent_listing_attempts {
+                return self
+                    .retry(
+                        &row,
+                        self.backoff(row.attempts),
+                        format!("agent '{}' is not listed yet", ctx.endpoint.id),
+                    )
+                    .await;
+            }
+            tracing::warn!(id = %row.id, agent = %ctx.endpoint.id, "the task at the person's own agent could not be stopped: the agent is not listed; the thread is cancelled without it");
+            self.apply_quiet(
+                &row,
+                Input::CancelledBeforeStart,
+                format!("cancelstart:{}", row.id),
+            )
+            .await?;
+            return self.finish(&row, OutboxFinal::Delivered).await;
+        }
         if let Some(task_id) = running {
             let handle = TaskHandle {
                 endpoint: ctx.endpoint.clone(),

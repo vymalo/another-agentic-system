@@ -1235,7 +1235,8 @@ async fn the_dispatcher_wakes_the_routed_agent_and_waits_for_the_registry_to_lis
 }
 
 #[tokio::test]
-async fn a_stop_is_answered_without_waking_a_suspended_own_agent() {
+async fn a_stop_for_a_running_task_at_an_unlisted_own_agent_cancels_locally_after_the_listing_attempts_without_waking_it()
+ {
     let w = World::new();
     let registry = MemoryRegistry::new();
     let provisioner = listing(&registry, 1);
@@ -1247,19 +1248,7 @@ async fn a_stop_is_answered_without_waking_a_suspended_own_agent() {
     );
     w.agent
         .set_extensions(&mine(), &[orch_core::KnownExtension::Steer]);
-    // the listing retries never run out: a stop that waited for them would never be answered
-    let token = tokio_util::sync::CancellationToken::new();
-    let task = tokio::spawn(
-        Dispatcher::new(
-            Arc::clone(&app),
-            orch_app::DispatcherConfig {
-                own_agent_listing_attempts: u32::MAX,
-                ..fast()
-            },
-            "d1",
-        )
-        .run(token.clone()),
-    );
+    let (task, token) = spawn_over(&app);
     let id = new_coder_thread(&app, "gate refactor the parser").await;
     wait_in(&w, id, ThreadState::Working).await;
     // the platform suspends the agent and stops listing it
@@ -1328,6 +1317,98 @@ async fn a_helper_of_a_routed_thread_is_routed_to_the_same_own_agent() {
         sends_to(&w, "coder"),
         0,
         "nothing of the helper reaches the shared agent"
+    );
+    token.cancel();
+    let _ = task.await;
+}
+
+/// A provisioner that holds every `ensure_ready` until the test opens the gate.
+#[derive(Clone)]
+struct Gated {
+    inner: MemoryProvisioner,
+    open: tokio::sync::watch::Receiver<bool>,
+}
+
+impl AgentProvisioner for Gated {
+    async fn ensure_ready(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+    ) -> Result<ProvisionedAgent, ProvisionError> {
+        let mut open = self.open.clone();
+        let _ = open.wait_for(|v| *v).await;
+        self.inner.ensure_ready(owner, kind).await
+    }
+    async fn state(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+    ) -> Result<Option<AgentState>, ProvisionError> {
+        self.inner.state(owner, kind).await
+    }
+    async fn suspend(&self, owner: &AgentOwner, kind: AgentKind) -> Result<(), ProvisionError> {
+        self.inner.suspend(owner, kind).await
+    }
+    async fn delete(&self, owner: &AgentOwner, kind: AgentKind) -> Result<(), ProvisionError> {
+        self.inner.delete(owner, kind).await
+    }
+}
+
+#[tokio::test]
+async fn a_stop_does_not_cancel_a_thread_whose_delegation_waits_for_the_agent_to_wake() {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    // the request path (one application) makes the thread and lists the agent at once; the
+    // dispatcher (another) wakes the agent through a provisioner that holds it
+    let requests = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            listing(&registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let (open_tx, open_rx) = tokio::sync::watch::channel(false);
+    let dispatching = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            Gated {
+                inner: MemoryProvisioner::new(),
+                open: open_rx,
+            },
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    w.agent
+        .set_extensions(&mine(), &[orch_core::KnownExtension::Steer]);
+    let (task, token) = spawn_over(&dispatching);
+    let id = new_coder_thread(&requests, "gate refactor the parser").await;
+    // the delegation is claimed and waits in `ensure_ready`; the agent then goes unlisted
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    registry.remove(&AgentId::new(mine()));
+    requests.cancel(&alice(), id).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let thread = w.store.get_thread(None, id).await.unwrap().unwrap();
+    assert_ne!(
+        thread.state,
+        ThreadState::Cancelled,
+        "a delegation that is waiting to be sent is not cancelled behind its back"
+    );
+    assert_eq!(sends_to(&w, &mine()), 0);
+
+    // the agent is listed and awake: the delegation is sent, and the stop reaches its task
+    registry.add(own_entry(&mine()));
+    open_tx.send(true).unwrap();
+    wait_in(&w, id, ThreadState::Cancelled).await;
+    assert!(
+        w.agent
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::Cancel { .. })),
+        "the task the delegation started was cancelled at the agent"
     );
     token.cancel();
     let _ = task.await;
