@@ -199,6 +199,9 @@ jobs:
       # binary hosting an echo agent, and the roles splitting the work) against the database.
       - run: cargo clippy -p orchestrator --features agent-local --all-targets --locked -- -D warnings
       - run: cargo test -p orchestrator --features agent-local --locked
+      # The window tools on the fake adapter (ADR 0092, slice 3) are a Cargo feature of the binary too, off by default and
+      # not in the image that ships: lint it, so that it cannot rot until dev/windows-e2e.sh builds it.
+      - run: cargo clippy -p orchestrator --features window-fake --bins --locked -- -D warnings
 
   # The store suites on PostgreSQL 18, the floor (ADR 0107 decision 4, the owner's decision 5), beside `check`'s 19.0: the crates of
   # the two PostgreSQL stores and their migrator and connection (the floor test and the fresh-database tests among them) and the

@@ -149,6 +149,9 @@ jobs:
           load: true
           push: false
           tags: another-agentic-system/orchestrator:dev
+          # as `build.args` of the orchestrator in compose.yaml: the window tools on the fake adapter (ADR 0092, dev/windows-e2e.sh). A feature
+          # that is not the default one rebuilds the dependency layer, so this build does not reuse the cache of the Orchestrator workflow's.
+          build-args: ORCH_FEATURES=window-fake
           cache-from: type=gha,scope=orchestrator
       - name: Build the web image
         uses: docker/build-push-action@v7
@@ -259,6 +262,9 @@ jobs:
         # model (`[mock:own-search]`) call `<u-id>__web_search`, a name it reads from the request: one step with `icon: mcp-server:<u-id>`, the mock sent exactly that token, and the token is in no
         # answer, export, frame, model request, journal or log; the same person with the role taken away (`OIDC_ROLES=user`) has the server detached by their next message; an alias of the mock
         # that only a `*.strangers.test` entry admits is accepted, attached and refused at the connection, with nothing sent to the mock under it; a wrong key is a 401 and `needs_reauth`.
+        # The window tools (dev/windows-e2e.sh, ADR 0092 slice 3), on the fake adapter of an orchestrator built with `ORCH_FEATURES=window-fake`: `GET /api/config` says `windows`, a chat created with
+        # `[mock:window]` has its scripted model open a window on a public address, look at it and close it through `window_open`, `window_look` and `window_close` of the thread's endpoint; the model
+        # was offered the four tools, each call names the window the open result named, the frame is an `artifact:` reference and never bytes, and the last result is `{"closed":true}`.
         # The gates are the orchestrator's, so scripted agents are enough for all but the coder's scenarios; the script also reads the mock
         # verifier's request journal. VERBOSE=1 streams every script's own output into this log.
         env:

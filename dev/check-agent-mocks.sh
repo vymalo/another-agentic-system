@@ -343,6 +343,34 @@ check "mock-persona [mock:own-search]: offered again, the next question searches
   "u-k3j9x2m1q7__web_search"
 check "mock-persona [mock:websearch] is not [mock:own-search]: a person's tool offered beside the deployment's, the websearch script calls the deployment's" \
   "$(completion mock-persona "[$ws_system, $ws_user]" "$os_with" | jq -r '.message.tool_calls[0].function.name')" "websearch__web_search"
+# `[mock:window]`: the chat's model that drives a window of the orchestrator's window tools (dev/windows-e2e.sh): offered `window_open` it opens
+# `http://93.184.216.34/`, with the open result in it looks at the window it names, with the look result in it closes that same window (the id is read
+# from the open result three messages back, which is how a model holds it), with the close result in it says it is done, and without `window_open`
+# offered it says that none is.
+win_user=$(user '[mock:window] open a page, look at it and close it')
+win_with="[$(os_tool turn_output), $(os_tool window_open), $(os_tool window_look)]"
+win_open_result='{"window":"w-7","frame":{"mediaType":"image/png","width":1280,"height":800,"scale":1,"url":"artifact:fake-7","at":"2026-01-01T00:00:00Z"}}'
+win_look_result='{"frame":{"mediaType":"image/png","width":1280,"height":800,"scale":1,"url":"artifact:fake-7","at":"2026-01-01T00:00:00Z"}}'
+win_opened="[$ws_system, $win_user, $(call window-call-open window_open), $(result window-call-open "$win_open_result")]"
+win_looked="[$ws_system, $win_user, $(call window-call-open window_open), $(result window-call-open "$win_open_result"), $(call window-call-look window_look), $(result window-call-look "$win_look_result")]"
+win_closed="[$ws_system, $win_user, $(call window-call-open window_open), $(result window-call-open "$win_open_result"), $(call window-call-look window_look), $(result window-call-look "$win_look_result"), $(call window-call-close window_close), $(result window-call-close '{"closed":true}')]"
+check "mock-persona [mock:window]: with window_open offered, the first turn opens a window on the public address (id window-call-open)" \
+  "$(completion mock-persona "[$ws_system, $win_user]" "$win_with" | jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name, (.message.tool_calls[0].function.arguments | fromjson | .url)] | join(" | ")')" \
+  "tool_calls | window-call-open | window_open | http://93.184.216.34/"
+check "mock-persona [mock:window]: with the open result in, it looks at the window the result names" \
+  "$(completion mock-persona "$win_opened" "$win_with" | jq -r '[.finish_reason, .message.tool_calls[0].function.name, (.message.tool_calls[0].function.arguments | fromjson | .window)] | join(" | ")')" \
+  "tool_calls | window_look | w-7"
+check "mock-persona [mock:window]: with the look result in, it closes the window the open result named, not another" \
+  "$(completion mock-persona "$win_looked" "$win_with" | jq -r '[.finish_reason, .message.tool_calls[0].function.name, (.message.tool_calls[0].function.arguments | fromjson | .window)] | join(" | ")')" \
+  "tool_calls | window_close | w-7"
+check "mock-persona [mock:window]: with the close result in, it says it opened, looked and closed" \
+  "$(completion mock-persona "$win_closed" "$win_with" | jq -r '[.finish_reason, (.message.content | startswith("I opened a window, looked at it and closed it."))] | join(" | ")')" \
+  "stop | true"
+check "mock-persona [mock:window]: without window_open offered it says that no window tool is offered" \
+  "$(completion mock-persona "[$ws_system, $win_user]" "$os_without" | jq -r '[.finish_reason, (.message.content | startswith("No window tools are offered"))] | join(" | ")')" \
+  "stop | true"
+check "mock-persona [mock:window]: with no tools at all it says so too" \
+  "$(completion mock-persona "[$ws_system, $win_user]" | jq -r '.message.content | startswith("No window tools are offered")')" "true"
 check "mock-persona: without the keyword the search is ignored: a greeting, whatever is offered" \
   "$(completion mock-persona "[$ws_system, $(user hi)]" "$ws_with" | jq -r '.message.content | startswith("Hi! I'"'"'m Chat.")')" "true"
 
@@ -414,6 +442,11 @@ twin "mock-persona [mock:own-search], another id" mock-persona "[$ws_system, $os
 twin "mock-persona [mock:own-search], the words with the first link" mock-persona \
   "[$ws_system, $os_user, $(call own-search-call-1 u-k3j9x2m1q7__web_search), $(result own-search-call-1 "$os_results")]" 2 "$os_with"
 twin "mock-persona [mock:own-search], none offered" mock-persona "[$ws_system, $os_user]" 2 "$os_without"
+twin "mock-persona [mock:window], open" mock-persona "[$ws_system, $win_user]" "" "$win_with"
+twin "mock-persona [mock:window], look (the id is read from the request in the stream too)" mock-persona "$win_opened" "" "$win_with"
+twin "mock-persona [mock:window], close (the id of the open result, three messages back)" mock-persona "$win_looked" "" "$win_with"
+twin "mock-persona [mock:window], the words" mock-persona "$win_closed" 2 "$win_with"
+twin "mock-persona [mock:window], none offered" mock-persona "[$ws_system, $win_user]" 2 "$os_without"
 check "twin: a request that does not ask for a stream still gets the plain JSON answer" \
   "$(completion mock-persona "[$persona_system, $(user hi)]" | jq -r '.message.content | startswith("Hi! I'"'"'m Chat.")')" "true"
 

@@ -83,6 +83,12 @@ auth-jwt = ["dep:orch-auth-jwt"]
 # default: without it the binary links no adam-rs runtime, and an AGENTS_FILE that asks for a local
 # agent is refused at startup (exit 78).
 agent-local = ["dep:orch-agent-adam"]
+# The window tools (`window_open`, `window_look`, `window_act`, `window_close`; ADR 0092, `windows-v1`) on
+# the FAKE adapter of `orch-window`: frames are made up and nothing touches a network. For the dev stack
+# (`dev/windows-e2e.sh`) and tests; **off by default and not in the image that ships**, until a real
+# adapter exists. It needs the thread-tools surface; the tools are then on that endpoint and `GET /api/config`
+# says `windows`.
+window-fake = ["surface-thread-tools", "dep:orch-window"]
 
 [dependencies]
 adam-host.workspace = true
@@ -100,6 +106,7 @@ orch-tools-mcp = { workspace = true, optional = true }
 # Reads the signing key of a tool server at startup, so that a key that is not one stops the process (`tool-relay`, ADR 0080).
 orch-signed-request = { workspace = true, optional = true }
 orch-surface-webhook = { workspace = true, optional = true }
+orch-window = { workspace = true, features = ["testkit"], optional = true }
 orch-agent-a2a.workspace = true
 orch-model-openai.workspace = true
 orch-registry-platform = { workspace = true, optional = true }

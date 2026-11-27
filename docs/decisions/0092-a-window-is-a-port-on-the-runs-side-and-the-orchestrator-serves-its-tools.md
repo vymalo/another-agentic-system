@@ -73,3 +73,11 @@ Following the epic's table ([#339](https://github.com/vymalo/another-agentic-sys
 [#522](https://github.com/vymalo/another-agentic-system/pull/522) adds `orchestrator/crates/window` (`orch-window`): the
 `Window` port, its URL guard, a conformance testkit and a fake adapter, with no network (`tests/fake.rs`). No other crate
 depends on it yet: the tools (slice 3) and every later slice are not built, so no agent can open a window.
+
+## Status note, 2026-11-28: slice 3 is built, on the fake adapter
+
+*Verified 2026-11-28 against the branch that adds it, not yet `main`.* Slice 3 adds the four tools to the thread-tools endpoint over the `Window` port, on the fake adapter,
+and `windows` to `GET /api/config`: [`windows-v1.md`](../api/windows-v1.md#what-slice-3-built-and-what-it-did-not) says what it does and, as plainly, what it does not. Three departures from the text above, none of them a change of
+decision: the tools are a **provider** of the endpoint and not a variant of the closed enum (decision 2: the enum's `call` has no adapter to call); the access tier and the network tier of a message
+**gate nothing** (nothing reads them: the token carries neither and no network tier is built); and the orchestrator records **no step** for a window call. The fake adapter is mounted only in a build with the Cargo
+feature `window-fake`, so no deployment serves windows until slice 4's adapter exists.

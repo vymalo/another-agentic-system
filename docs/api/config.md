@@ -843,6 +843,9 @@ GET /api/config
 - `prompts` is **not configuration either**: it is the capability of the build ([ADR 0070](../decisions/0070-a-persons-prompt-library.md)). Its presence says this orchestrator serves the prompt library
   ([`prompts-v1.md`](prompts-v1.md)); an older one leaves it out and a client then offers no library. There is no switch to turn it off. `limit` (prompts per person and per page), `maxVariables`,
   `maxBodyBytes` and `maxRenderedBytes` are what the server enforces.
+- `windows` is **not configuration either**, and is **absent** unless this process serves the window tools ([ADR 0092](../decisions/0092-a-window-is-a-port-on-the-runs-side-and-the-orchestrator-serves-its-tools.md) decision 8,
+  [`windows-v1.md`](windows-v1.md)): `{ "adapters": ["fake"] }`, the adapters it has. Today the only one is `fake`, in a build with the Cargo feature `window-fake` (off in the image that ships), so a
+  client draws no window feature where the member is missing. It has no key in the file.
 - **Behind the identity layer**, like every `/api/*` route (401 without an identity, fail closed). The web asks for it
   after the edge has let the browser in, and nothing in it is needed before that.
 - `ui.history` is the one key that can be **absent**: it is served only by a process that serves the history route

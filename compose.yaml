@@ -64,6 +64,10 @@ x-wiremock: &wiremock
 x-orchestrator: &orchestrator
   build:
     context: ./orchestrator
+    # The window tools on the FAKE adapter (ADR 0092, dev/windows-e2e.sh): a Cargo feature of the binary, off in the image that ships. The
+    # coder-e2e workflow builds the image with the same argument (.github/workflows/coder-e2e.yml).
+    args:
+      ORCH_FEATURES: window-fake
   image: another-agentic-system/orchestrator:dev
   volumes:
     - ./dev/orchestrator.yaml:/etc/orchestrator/config.yaml:ro

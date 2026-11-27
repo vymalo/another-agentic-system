@@ -5,7 +5,9 @@ watch and an agent can drive. This page is the contract: the `Window` port, the 
 a frame is, what a client may draw, and what is refused.
 
 Design: [ADR 0092](../decisions/0092-a-window-is-a-port-on-the-runs-side-and-the-orchestrator-serves-its-tools.md).
-**Status: proposed 2026-11-24; nothing is built.** Slice 1 of the windows epic
+**Status: proposed 2026-11-24. Built so far: the port, its testkit and a fake adapter (slice 2), and the four tools on the
+fake adapter (slice 3, 2026-11-28; [what slice 3 does not do](#what-slice-3-built-and-what-it-did-not)).** No real adapter exists, so
+no agent can open a real page. Slice 1 of the windows epic
 ([#339](https://github.com/vymalo/another-agentic-system/issues/339)); slices 2 to 10 are in the ADR.
 
 ## Constants
@@ -104,6 +106,31 @@ handed over by reference, cut at `MAX_FRAME_BYTES`, and never inlined into a mes
 
 Checked left to right in that table: a caller that is not `main` learns nothing about URLs, and a deployment with
 windows off learns nothing about windows.
+
+## What slice 3 built, and what it did not
+
+Built: `WindowTools` in `orchestrator/crates/surface-thread-tools` (`src/window.rs`), a provider of the thread's endpoint over the `Window`
+port; the binary mounts it with the **fake adapter** of `orch-window` only in a build with the Cargo feature `window-fake` (off by
+default and not in the image that ships); `GET /api/config` then has `windows: {"adapters": ["fake"]}` and a client draws nothing where it
+is absent. Proved by `crates/surface-thread-tools/tests/windows.rs` (open, look, act and close; every code; an asked agent refused
+**before any adapter call**, shown by a counting adapter) and by `dev/windows-e2e.sh` on the stack.
+
+What the code does where this page is silent or says otherwise:
+
+- **A provider, not a variant of the closed enum** (ADR 0092 decision 2 says "join the closed enum"): the built-in set's `call` takes only the
+  application, and the tools need the adapter, which the composition root picks. The listing and the order are the same: after the built-ins.
+- **`windows_off` is never answered.** With no provider mounted the name is unknown (`-32602`); with it mounted, windows are on.
+- **`look` of a window that is gone is an answer** (`{"frame": null, "state": "closed"}`), as its section says, not `window_unknown`; `act`
+  on one is `window_unknown`; `close` of one is `{"closed": false}`.
+- **Every failure is a tool error** (`isError: true`) whose text is `<code>: <reason>`, as `request_upload`'s are; the arguments that do not
+  parse are `invalid`. `unavailable` is the tool's own: a call that took over 30 seconds.
+- **`label` is read and dropped**: the port has no place for it (at most 200 bytes).
+- **The tier of the message is not read.** The access tier and the network tier of a message are not in the thread token, the orchestrator
+  enforces neither (ADR 0061, and ADR 0062 is accepted and unbuilt), so a window tool is not gated by them. What gates a call today is the
+  caller (`main` only), the adapter's URL guard, the per-thread cap and the action bound. A tier gate needs a decision on what each tier
+  means for a window, and a way to read the message's tier from a call: neither is made here.
+- **No step is recorded by the orchestrator** for a window call (ADR 0092 decision 2 asks for one): the relay's step machinery is private to
+  the relay, and what the agent reports of its own tool calls is its own.
 
 ## What the server logs
 
