@@ -49,6 +49,26 @@ const SLOW_STATEMENT: Duration = Duration::from_secs(1);
 /// The target of the statements' log lines.
 const LOG_TARGET: &str = "orch_store_postgres::sql";
 
+/// What a [`PgPool`] holds at one moment ([`PgPool::stats`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolStats {
+    /// The most connections the pool will hold.
+    pub max: u32,
+    /// Connections held now, idle or checked out.
+    pub size: u32,
+    /// Connections held and not checked out.
+    pub idle: u32,
+    /// Callers waiting for a connection.
+    pub waiting: u32,
+}
+
+impl PoolStats {
+    /// Connections checked out now.
+    pub fn in_use(&self) -> u32 {
+        self.size.saturating_sub(self.idle)
+    }
+}
+
 /// A pool of connections to one database, and the options it connects with (the listener of a
 /// [`PgWakeup`](crate::PgWakeup) makes its own connection with them).
 ///
@@ -116,6 +136,19 @@ impl PgPool {
     /// How many connections the pool holds now, idle or in use (sqlx's `size`).
     pub fn size(&self) -> u32 {
         u32::try_from(self.pool.status().size).unwrap_or(u32::MAX)
+    }
+
+    /// The pool's connections now: the most it will hold, how many it holds, how many of those
+    /// are idle and how many callers wait for one. `in_use` is `size - idle`.
+    pub fn stats(&self) -> PoolStats {
+        let status = self.pool.status();
+        let n = |v: usize| u32::try_from(v).unwrap_or(u32::MAX);
+        PoolStats {
+            max: n(status.max_size),
+            size: n(status.size),
+            idle: n(status.available),
+            waiting: n(status.waiting),
+        }
     }
 
     /// How long a call waits for a connection.

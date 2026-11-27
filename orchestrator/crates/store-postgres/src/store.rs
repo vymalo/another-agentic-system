@@ -2228,6 +2228,18 @@ impl ThreadStore for PgStore {
             .collect()
     }
 
+    async fn key_recorded(&self, thread: ThreadId, key: &str) -> Result<bool, StoreError> {
+        Ok(
+            query("SELECT 1 FROM events WHERE thread_id = $1 AND idempotency_key = $2 LIMIT 1")
+                .bind(thread.0)
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(store_err)?
+                .is_some(),
+        )
+    }
+
     async fn thread_pick(&self, thread: ThreadId) -> Result<orch_core::ModelPick, StoreError> {
         let row = query("SELECT pick FROM threads WHERE id = $1")
             .bind(thread.0)

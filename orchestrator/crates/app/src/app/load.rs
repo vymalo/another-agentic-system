@@ -10,11 +10,37 @@ use orch_ports::Ports;
 
 use super::App;
 
-#[derive(Debug, Default)]
+/// One database pool of this process, as read at one moment. The name is one of a closed set the
+/// composition root chooses (never a person, a thread or an address).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolReading {
+    /// Which pool: a fixed label such as `thread-store`.
+    pub pool: &'static str,
+    /// The most connections it will hold.
+    pub max: u32,
+    /// Connections checked out now.
+    pub in_use: u32,
+    /// Connections held and idle.
+    pub idle: u32,
+    /// Callers waiting for a connection.
+    pub waiting: u32,
+}
+
+/// Reads the pools of this process; the composition root hands one in.
+pub type PoolProbe = Arc<dyn Fn() -> Vec<PoolReading> + Send + Sync>;
+
+#[derive(Default)]
 pub(crate) struct LoadGauges {
+    pools: std::sync::OnceLock<PoolProbe>,
     slots_in_use: AtomicU64,
     slots_configured: AtomicU64,
     subscribers: AtomicU64,
+}
+
+impl std::fmt::Debug for LoadGauges {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadGauges").finish_non_exhaustive()
+    }
 }
 
 /// The gauges of this process, as read at one moment.
@@ -47,6 +73,16 @@ impl<P: Ports> App<P> {
             slots_configured: g.slots_configured.load(Ordering::Relaxed),
             subscribers: g.subscribers.load(Ordering::Relaxed),
         }
+    }
+
+    /// The database pools of this process now (none until the composition root sets a probe).
+    pub fn pool_readings(&self) -> Vec<PoolReading> {
+        self.load_gauges.pools.get().map_or_else(Vec::new, |p| p())
+    }
+
+    /// The composition root says how to read its database pools. Set once; a second call is ignored.
+    pub fn set_pool_probe(&self, probe: PoolProbe) {
+        let _ = self.load_gauges.pools.set(probe);
     }
 
     /// The dispatcher says how many of its `configured` slots are busy.

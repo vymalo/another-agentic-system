@@ -566,6 +566,15 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
         &store,
     )
     .await?;
+    // A person's own agents (ANR-806): built from the file here, so that a bad `provisioner` section
+    // stops the process at startup (78) and not at a person's first message, and handed to the
+    // application, whose message path makes or resumes the agent before it dispatches.
+    #[cfg_attr(not(feature = "provisioner-platform"), allow(unused_mut))]
+    let mut app_config = cfg.app_config();
+    #[cfg(feature = "provisioner-platform")]
+    if let Some(settings) = &cfg.provisioner {
+        app_config.provisioning = Some(crate::provisioner::provisioning(settings)?);
+    }
     let app: Arc<App<Stack>> = Arc::new(
         App::new(
             PortSet {
@@ -582,13 +591,24 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
                 registry: CompositeRegistry::new(directory.fixed_registry(), platform),
             },
             directory,
-            cfg.app_config(),
+            app_config,
         )
         .map_err(|e| ConfigError::Gate {
             context: "the verification gate",
             reason: e.to_string(),
         })?,
     );
+    let pools = store.pool().clone();
+    app.set_pool_probe(Arc::new(move || {
+        let s = pools.stats();
+        vec![orch_app::PoolReading {
+            pool: "thread-store",
+            max: s.max,
+            in_use: s.in_use(),
+            idle: s.idle,
+            waiting: s.waiting,
+        }]
+    }));
     Ok(Shared { store, app, local })
 }
 
@@ -834,15 +854,6 @@ pub async fn run(cfg: Config, shutdown: impl Future<Output = ()>) -> anyhow::Res
     install_crypto_provider();
 
     let Shared { store, app, local } = setup(&cfg).await?;
-
-    // The platform's provisioner, built from the file so that a bad section stops the process here
-    // (exit 78) and not at a person's first message. Nothing calls it yet: the message path asks
-    // for it in a later change.
-    #[cfg(feature = "provisioner-platform")]
-    let _provisioner = match &cfg.provisioner {
-        Some(settings) => Some(crate::provisioner::build(settings)?),
-        None => None,
-    };
 
     // Arm the shutdown signal before the address is bound. A future that waits for SIGTERM installs
     // its handler the first time it is polled, and the host polls `shutdown` only once every

@@ -170,6 +170,12 @@ impl<P: Ports> App<P> {
             ));
         }
         let key = format!("start:{}", start.request);
+        // The person's own agent, made or resumed and ready, before the start is written (ANR-806);
+        // a repeat of a start that is recorded writes nothing and asks nothing.
+        if !self.is_replay_of_key(parent, Some(&key)).await? {
+            self.ensure_own_agent(who.user(), &thread.target.agent_id)
+                .await?;
+        }
         let input = Input::StartSession {
             user: who.user().clone(),
             request: start.request,

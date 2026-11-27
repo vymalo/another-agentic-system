@@ -1,0 +1,43 @@
+# A person's own agent on the message path (ANR-806, part 2): the stack with a platform to ask. The orchestrator is configured with a `provisioner`
+# section (dev/orchestrator.provisioner.yaml), so a person's message to the agent called `coder` (here `adam`, whose alias it is) first makes
+# or resumes the person's own agent on the platform and waits until it is ready, and only then is written and sent.
+#
+#   docker compose -f compose.yaml -f dev/compose.provisioner.yaml --profile app up -d --build --wait
+#   dev/provisioner-e2e.sh        # a first message makes the agent, a suspended one resumes, a wait that runs out ends at readyTimeoutSecs
+#
+# Without this file the stack is what it was: no `provisioner` section, no platform, and a message goes straight to the agent.
+#
+# What it changes, and nothing else:
+#   * mock-platform   a WireMock stand-in for the platform's owner routes (`/v1/owners/{owner}/agents/{name}`, the contract of
+#                     another-agentic-platform's `docs/api/platform-api-v1.openapi.json`). It starts with no stub: dev/provisioner-e2e.sh adds
+#                     the ones of each person through WireMock's admin API (a state machine per person: absent, saving, ready, suspended, stuck).
+#   * orchestrator    dev/orchestrator.provisioner.yaml in place of dev/orchestrator.yaml (dev/check-provisioner-config.sh asserts that it is the
+#                     same file plus the marked `provisioner` block), PROVISIONER_CLIENT_SECRET (the secret `provisioner.credentials.clientSecret`
+#                     names: the client secret of the mock issuer, which this stack's oauth2-proxy uses too, local development only), and a
+#                     dependency on mock-platform.
+#
+# It does not combine with another override that replaces the orchestrator's configuration (compose.browser-auth.yaml, compose.live.yaml): the
+# last one on the command line would win and the provisioner or the other change would be missing.
+
+services:
+  mock-platform:
+    image: wiremock/wiremock:3.13.2 # the pin of x-wiremock in compose.yaml
+    command: ["--global-response-templating", "--disable-banner", "--verbose"]
+    ports:
+      - "127.0.0.1:${MOCK_PLATFORM_PORT:-8105}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/__admin/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  orchestrator:
+    # The same mount point as the base file's: Compose replaces the entry with this one.
+    volumes:
+      - ./dev/orchestrator.provisioner.yaml:/etc/orchestrator/config.yaml:ro
+    environment:
+      PROVISIONER_CLIENT_SECRET: dev-client-secret # the mock issuer's secret for `dev-chat`; local development only
+    depends_on:
+      mock-platform:
+        condition: service_healthy

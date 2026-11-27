@@ -102,6 +102,24 @@ impl ProvisionerSettings {
     }
 }
 
+/// What the application's message path holds: the adapter of [`build`], the kinds the file lists
+/// and the wait-ready bound (`provisioner.readyTimeoutSecs`), the same one the adapter waits by.
+#[cfg(feature = "provisioner-platform")]
+pub fn provisioning(settings: &ProvisionerSettings) -> Result<orch_app::Provisioning, ConfigError> {
+    use orch_ports::AgentKind;
+
+    let provisioner = build(settings)?;
+    let kinds = settings.forms.iter().map(|(kind, _)| match kind {
+        orch_config::ProvisionedKind::Coder => AgentKind::Coder,
+        orch_config::ProvisionedKind::Workspace => AgentKind::Workspace,
+    });
+    Ok(orch_app::Provisioning::new(
+        provisioner,
+        kinds,
+        settings.ready_timeout,
+    ))
+}
+
 /// The adapter, built from the settings. Whatever is wrong is a configuration error naming the key.
 #[cfg(feature = "provisioner-platform")]
 pub fn build(

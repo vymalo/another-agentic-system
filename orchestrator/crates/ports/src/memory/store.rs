@@ -1598,6 +1598,14 @@ impl ThreadStore for MemoryStore {
             .unwrap_or_default())
     }
 
+    async fn key_recorded(&self, thread: ThreadId, key: &str) -> Result<bool, StoreError> {
+        Ok(self
+            .lock()
+            .threads
+            .get(&thread)
+            .is_some_and(|e| e.events.iter().any(|s| s.key.as_deref() == Some(key))))
+    }
+
     async fn thread_pick(&self, thread: ThreadId) -> Result<orch_core::ModelPick, StoreError> {
         Ok(self
             .lock()

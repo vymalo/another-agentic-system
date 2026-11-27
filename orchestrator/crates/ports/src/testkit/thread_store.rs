@@ -778,6 +778,41 @@ pub async fn duplicate_key_writes_nothing<S: ThreadStore>(store: S) {
     assert!(matches!(other, CommitOutcome::Applied { .. }));
 }
 
+/// A replay is told from a first request without writing: `key_recorded` sees the key of the
+/// first event of a commit, in that thread only, and a key nobody wrote is not recorded.
+pub async fn a_recorded_key_is_seen_before_a_commit_and_only_in_its_thread<S: ThreadStore>(
+    store: S,
+) {
+    seed(&store, &alice(), 1).await;
+    seed(&store, &alice(), 2).await;
+    assert!(!store.key_recorded(thread_id(1), "k1").await.unwrap());
+    store
+        .commit(
+            thread_id(1),
+            1,
+            commit(
+                ThreadState::Working,
+                vec![user_event("x", Some("k1"))],
+                vec![],
+            ),
+        )
+        .await
+        .unwrap();
+    assert!(store.key_recorded(thread_id(1), "k1").await.unwrap());
+    assert!(
+        !store.key_recorded(thread_id(1), "k2").await.unwrap(),
+        "another key is not recorded"
+    );
+    assert!(
+        !store.key_recorded(thread_id(2), "k1").await.unwrap(),
+        "the key is scoped to the thread"
+    );
+    assert!(
+        !store.key_recorded(thread_id(9), "k1").await.unwrap(),
+        "a thread that does not exist records nothing"
+    );
+}
+
 pub async fn concurrent_writers_keep_seq_contiguous<S: ThreadStore>(store: S) {
     seed(&store, &alice(), 1).await;
     let store = Arc::new(store);

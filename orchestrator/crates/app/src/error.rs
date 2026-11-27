@@ -3,7 +3,9 @@ use std::time::Duration;
 use orch_core::{
     AgentId, Classify, ErrorClass, ForkError, NotDeletable, SessionRefusal, TransitionError,
 };
-use orch_ports::{AgentError, ArtifactError, RegistryError, StoreError};
+use orch_ports::{
+    AgentError, AgentState, ArtifactError, ProvisionError, RegistryError, StoreError,
+};
 
 use crate::app::AttachmentRefusal;
 use crate::authz::Permission;
@@ -173,6 +175,29 @@ pub enum AppError {
         max: u32,
         /// How long until the oldest message in the window leaves it, in whole seconds.
         retry_after: Duration,
+    },
+    /// The person's own agent did not become ready within the wait-ready bound
+    /// (`provisioner.readyTimeoutSecs`, ANR-806): nothing was written and nothing was sent to any
+    /// agent. `waited` is the bound, not the dispatch's; `last` is where the agent stood, `None`
+    /// when the provisioner did not answer at all in time. The caller can send the message again.
+    #[error("your {kind} agent is not ready after {waited:?}")]
+    AgentNotReady {
+        /// The kind of agent (`coder`, `workspace`).
+        kind: &'static str,
+        /// The wait-ready bound that ran out.
+        waited: Duration,
+        /// The last state seen, if the platform said one.
+        last: Option<AgentState>,
+    },
+    /// The platform could not make or wake the person's own agent (ANR-806). The detail is the
+    /// port's error, which holds no token or URL.
+    #[error("your {kind} agent could not be made ready")]
+    Provisioning {
+        /// The kind of agent (`coder`, `workspace`).
+        kind: &'static str,
+        /// What the provisioner said.
+        #[source]
+        source: ProvisionError,
     },
     /// The thread kept changing under the optimistic commit loop; try again.
     #[error("the thread is being changed concurrently")]
@@ -349,7 +374,15 @@ impl Classify for AppError {
             AppError::Transition(e) => e.class(),
             AppError::Upstream { source, .. } => source.class(),
             AppError::RegistryUnavailable { source } => source.class(),
-            AppError::CardUnavailable { .. } => ErrorClass::Transient,
+            AppError::CardUnavailable { .. } | AppError::AgentNotReady { .. } => {
+                ErrorClass::Transient
+            }
+            // The platform's refusal of the orchestrator's own credentials or form is the
+            // deployment's fault, not the caller's: a 500, never a 401 or a 422 for the person.
+            AppError::Provisioning { source, .. } => match source {
+                ProvisionError::Refused | ProvisionError::Invalid => ErrorClass::Internal,
+                _ => ErrorClass::Transient,
+            },
             AppError::MessageLimit { .. } => ErrorClass::RateLimited,
             AppError::Contended => ErrorClass::Conflict,
             AppError::Internal { .. } => ErrorClass::Internal,
@@ -361,7 +394,10 @@ impl Classify for AppError {
             AppError::Store(e) => e.retry_after(),
             AppError::Upstream { source, .. } => source.retry_after(),
             AppError::MessageLimit { retry_after, .. } => Some(*retry_after),
-            AppError::RegistryUnavailable { .. } | AppError::CardUnavailable { .. } => None,
+            AppError::RegistryUnavailable { .. }
+            | AppError::CardUnavailable { .. }
+            | AppError::AgentNotReady { .. }
+            | AppError::Provisioning { .. } => None,
             AppError::NotFound
             | AppError::Forbidden { .. }
             | AppError::SharingDisabled
@@ -500,6 +536,19 @@ mod tests {
             AppError::CardUnavailable {
                 agent: AgentId::new("coder"),
             },
+            AppError::AgentNotReady {
+                kind: "coder",
+                waited: Duration::from_secs(120),
+                last: Some(AgentState::Saving),
+            },
+            AppError::Provisioning {
+                kind: "coder",
+                source: ProvisionError::unavailable("down"),
+            },
+            AppError::Provisioning {
+                kind: "coder",
+                source: ProvisionError::Refused,
+            },
             AppError::Contended,
             AppError::MessageLimit {
                 limit: "messages_per_minute",
@@ -559,7 +608,13 @@ mod tests {
                 AppError::Transition(inner) => inner.class(),
                 AppError::Upstream { source, .. } => source.class(),
                 AppError::RegistryUnavailable { source } => source.class(),
-                AppError::CardUnavailable { .. } => ErrorClass::Transient,
+                AppError::CardUnavailable { .. } | AppError::AgentNotReady { .. } => {
+                    ErrorClass::Transient
+                }
+                AppError::Provisioning { source, .. } => match source {
+                    ProvisionError::Refused | ProvisionError::Invalid => ErrorClass::Internal,
+                    _ => ErrorClass::Transient,
+                },
                 AppError::Contended => ErrorClass::Conflict,
                 AppError::MessageLimit { .. } => ErrorClass::RateLimited,
                 AppError::Internal { .. } => ErrorClass::Internal,
