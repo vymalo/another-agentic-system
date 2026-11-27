@@ -24,7 +24,7 @@ use orch_ports::{
 use support::billing::{
     Broker, ENDPOINT, Injector, LEASE_TOKEN, TestApp, app_with, create, quiet, spawn, wait_state,
 };
-use support::{World, alice, bob, eventually};
+use support::{World, alice_sub as alice, bob_sub as bob, eventually};
 
 /// The lease id a title call of `thread` is made under.
 fn title_lease(thread: orch_core::ThreadId) -> String {

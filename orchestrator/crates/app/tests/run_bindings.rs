@@ -20,6 +20,12 @@ use orch_ports::{
 };
 use serde_json::json;
 use support::*;
+
+/// Alice by her identity-provider `sub`: the broker answers a lease an account only for one
+/// (ADR 0106), and the runs here are leased.
+fn alice() -> orch_core::UserId {
+    alice_sub()
+}
 use tokio_util::sync::CancellationToken;
 
 /// The broker, as the test sees it: the `RunBindings` port the dispatcher holds, over the broker's

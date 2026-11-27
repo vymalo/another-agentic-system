@@ -17,7 +17,7 @@ use orch_ports::memory::MemoryRunLeases;
 use support::billing::{
     Broker, ENDPOINT, Injector, LEASE_TOKEN, app_with, create, quiet, spawn, wait_state,
 };
-use support::{World, alice, eventually};
+use support::{World, alice_sub as alice, eventually};
 
 /// Every log line's message, as the process emits it.
 #[derive(Clone, Default)]

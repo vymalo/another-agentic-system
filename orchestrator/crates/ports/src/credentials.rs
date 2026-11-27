@@ -90,7 +90,7 @@ use std::fmt;
 use std::future::Future;
 
 use jiff::Timestamp;
-use orch_core::{AgentId, BoxError, Classify, ErrorClass, UserId};
+use orch_core::{AccountId, AgentId, BoxError, Classify, ErrorClass, UserId};
 use subtle::ConstantTimeEq;
 use url::{Host, Url};
 
@@ -736,6 +736,11 @@ impl CredentialBroker for NoBroker {
 
 // ---------------------------------------------------------------- the run lease (B1, ADR 0084)
 
+/// How long after its end a run is still answered to the meter (ADR 0106 decision 6): the longest a
+/// run pod lives idle after its job (900 s) is far inside it, and the platform's meter backfills up to
+/// 24 hours. Only the account route reads what is kept; no lease is lent after the end.
+pub const ACCOUNT_TOMBSTONE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
 /// A run's id: the root run's — the A2A task id the orchestrator binds (ADR 0067 decision 1), the
 /// same value `X-Run-Id` carries. Opaque to the broker: no format is assumed.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -802,7 +807,7 @@ pub struct RunBinding {
 /// binding's deadline, `no-store`, and never logged. No `Clone`: a lease is used once and moved.
 pub struct RunLease {
     token: ToolSecret,
-    account: UserId,
+    account: AccountId,
     expires_at: Timestamp,
 }
 
@@ -818,13 +823,13 @@ impl std::fmt::Debug for RunLease {
 }
 
 impl RunLease {
-    /// A lease of `token` until `expires_at`, for the account `account`: the run's person, a
-    /// `UserId`, which is the key the usage ledger is kept by (`orch_core::UsageRow.owner`,
-    /// `crates/core/src/usage_record.rs`; the column `usage_tasks.owner` of migration `0023`; ADR
-    /// 0065). That person id and not a provider account or an account number of the ledger service:
-    /// the orchestrator holds no other identity for the person. The account is returned to the
-    /// injector beside the key and goes in no log line, no error and no message to an agent.
-    pub fn bearer(token: ToolSecret, account: UserId, expires_at: Timestamp) -> Self {
+    /// A lease of `token` until `expires_at`, for the account `account`: the run's person as the
+    /// identity provider's `sub`, an [`AccountId`] (ADR 0106). Only an `AccountId` can be put here,
+    /// so an e-mail address cannot reach the injector's `x-account-id`: the lease of a run whose
+    /// person is not one is refused by [`account_of`] before a lease is built. The account is
+    /// returned to the injector beside the key and goes in no log line, no error and no message to
+    /// an agent.
+    pub fn bearer(token: ToolSecret, account: AccountId, expires_at: Timestamp) -> Self {
         RunLease {
             token,
             account,
@@ -832,9 +837,8 @@ impl RunLease {
         }
     }
 
-    /// The ledger account the run spends for: the run's person (`UserId`), the key the ledger keeps
-    /// the rows by.
-    pub fn account(&self) -> &UserId {
+    /// The ledger account the run spends for: the run's person as an opaque [`AccountId`].
+    pub fn account(&self) -> &AccountId {
         &self.account
     }
 
@@ -861,6 +865,10 @@ pub enum RunLeaseError {
     Conflict,
     /// The store or the credential source failed; the caller fails closed.
     Unavailable(String),
+    /// The run's person is not an [`AccountId`]: the deployment does not read the identity
+    /// provider's `sub` as the person (ADR 0106). Nothing of the person is answered; the slug is
+    /// the contract's `account_not_opaque`.
+    AccountNotOpaque,
 }
 
 impl std::fmt::Display for RunLeaseError {
@@ -870,11 +878,23 @@ impl std::fmt::Display for RunLeaseError {
             RunLeaseError::Expired => f.write_str("lease_expired"),
             RunLeaseError::Conflict => f.write_str("run_already_bound"),
             RunLeaseError::Unavailable(reason) => write!(f, "unavailable: {reason}"),
+            RunLeaseError::AccountNotOpaque => f.write_str("account_not_opaque"),
         }
     }
 }
 
 impl std::error::Error for RunLeaseError {}
+
+/// The account a run's person is charged to, or [`RunLeaseError::AccountNotOpaque`] when the person
+/// is not an [`AccountId`] (an e-mail address has an `@`). Every [`RunLeases`] implementation
+/// answers the lease's account and the meter's account through this one function, so no adapter
+/// can answer a person's text that the platform's alphabet refuses (ADR 0106).
+///
+/// # Errors
+/// [`RunLeaseError::AccountNotOpaque`].
+pub fn account_of(person: &UserId) -> Result<AccountId, RunLeaseError> {
+    AccountId::of_user(person).map_err(|_| RunLeaseError::AccountNotOpaque)
+}
 
 /// The broker's first part (B1, ADR 0084): the binding the orchestrator makes at run creation, and
 /// the lease the injector asks for, answered to the orchestrator and the injector and never to an
@@ -895,35 +915,58 @@ pub trait RunLeases: Send + Sync + 'static {
         caller: &RunCaller,
     ) -> impl Future<Output = Result<RunLease, RunLeaseError>> + Send;
 
-    /// The account (the run's person) a bound run is charged to, for [`RunCaller::Meter`] alone:
-    /// every other caller is [`RunLeaseError::NotBound`], so the answer never says whether a run
-    /// exists. It holds no credential, so a binding past its deadline still answers (a pod may
-    /// outlive its run's lease); an unbound run is `NotBound`. A required method: an implementer
-    /// of `RunLeases` must add it.
+    /// The account (the run's person as an [`AccountId`], the identity provider's `sub`) a run is
+    /// charged to, for [`RunCaller::Meter`] alone: every other caller is
+    /// [`RunLeaseError::NotBound`], so the answer never says whether a run exists. It holds no
+    /// credential, so a binding past its deadline still answers (a pod may outlive its run's
+    /// lease), and so does a run that **ended** within the tombstone bound ([`ACCOUNT_TOMBSTONE`],
+    /// 24 hours by default, ADR 0106 decision 6): a pod lives up to 900 s idle after its job and the
+    /// meter backfills up to 24 hours. A run unbound for longer, or never bound, is `NotBound`. A
+    /// run whose person is not an `AccountId` is [`RunLeaseError::AccountNotOpaque`], never the
+    /// person's text. A required method: an implementer of `RunLeases` must add it.
     fn account(
         &self,
         run: &RunId,
         caller: &RunCaller,
-    ) -> impl Future<Output = Result<UserId, RunLeaseError>> + Send;
+    ) -> impl Future<Output = Result<AccountId, RunLeaseError>> + Send;
 }
 
 /// The binding store the broker keeps: one row per run, and the same binding written again is
-/// idempotent (ADR 0084 decision 1).
+/// idempotent (ADR 0084 decision 1). A run that ends keeps its row as a **tombstone** (run,
+/// person, `ended_at`) for the account route alone (ADR 0106 decision 6); [`get`](Self::get) never
+/// returns it, so no lease is lent after the end.
 pub trait RunBindingStore: Send + Sync + 'static {
-    /// Writes `binding`; [`RunLeaseError::Conflict`] when the run is bound to something else.
+    /// Writes `binding`; [`RunLeaseError::Conflict`] when the run is bound to something else. A run
+    /// that ended is bound anew: its tombstone is replaced and the run is live again.
     fn upsert(
         &self,
         binding: &RunBinding,
     ) -> impl Future<Output = Result<(), RunLeaseError>> + Send;
 
-    /// Removes the run's binding; idempotent.
-    fn delete(&self, run: &RunId) -> impl Future<Output = Result<(), RunLeaseError>> + Send;
+    /// Ends the run's binding at `ended_at`: it stops being returned by [`get`](Self::get) and
+    /// stays, as a tombstone, for [`person_of`](Self::person_of). Idempotent (the first end's time
+    /// stands), and a no-op for a run that was never bound. It also deletes every tombstone that
+    /// ended before `sweep_before`, so the table does not grow past the bound.
+    fn end(
+        &self,
+        run: &RunId,
+        ended_at: Timestamp,
+        sweep_before: Timestamp,
+    ) -> impl Future<Output = Result<(), RunLeaseError>> + Send;
 
-    /// The run's binding, if it has one.
+    /// The run's **live** binding, if it has one: never a tombstone.
     fn get(
         &self,
         run: &RunId,
     ) -> impl Future<Output = Result<Option<RunBinding>, RunLeaseError>> + Send;
+
+    /// The person of a run that is bound, or that ended **after** `ended_after`: the account
+    /// route's read. A tombstone older than that, and a run never bound, are `None`.
+    fn person_of(
+        &self,
+        run: &RunId,
+        ended_after: Timestamp,
+    ) -> impl Future<Output = Result<Option<UserId>, RunLeaseError>> + Send;
 }
 
 /// The deployment's model credentials by model name: the bearer token the injector adds upstream

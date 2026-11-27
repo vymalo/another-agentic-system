@@ -1,4 +1,5 @@
-//! [`RunBindingStore`] over Postgres: the run leases of B1 (ADR 0084), one row per run.
+//! [`RunBindingStore`] over Postgres: the run leases of B1 (ADR 0084), one row per run. A run that
+//! ends keeps its row as a tombstone (`ended_at`, migration `0035`, ADR 0106 decision 6).
 
 use jiff::Timestamp;
 use orch_core::{AgentId, UserId};
@@ -11,7 +12,7 @@ use deadpool_postgres::Object;
 use crate::sql::{PgPool, query, query_as};
 
 /// The run bindings in the orchestrator's own Postgres: one row per run in `run_leases`, created by
-/// [`PgStore::migrate`](crate::PgStore::migrate) (migration `0030`).
+/// [`PgStore::migrate`](crate::PgStore::migrate) (migration `0030`; `ended_at` is `0035`).
 ///
 /// Cheap to clone: clones share the pool. **It holds no secret**: the row names the run, its agent,
 /// its person, the model and the deadline.
@@ -51,10 +52,12 @@ impl RunBindingStore for PgRunBindings {
         let written: Result<Option<(String,)>, SqlError> = query_as(
             "INSERT INTO run_leases (run, agent, person, model, expires_at) \
              VALUES ($1, $2, $3, $4, $5) \
-             ON CONFLICT (run) DO UPDATE SET expires_at = EXCLUDED.expires_at \
-             WHERE run_leases.agent = EXCLUDED.agent \
-               AND run_leases.person = EXCLUDED.person \
-               AND run_leases.model IS NOT DISTINCT FROM EXCLUDED.model \
+             ON CONFLICT (run) DO UPDATE SET agent = EXCLUDED.agent, person = EXCLUDED.person, \
+                 model = EXCLUDED.model, expires_at = EXCLUDED.expires_at, ended_at = NULL \
+             WHERE run_leases.ended_at IS NOT NULL \
+                OR (run_leases.agent = EXCLUDED.agent \
+                    AND run_leases.person = EXCLUDED.person \
+                    AND run_leases.model IS NOT DISTINCT FROM EXCLUDED.model) \
              RETURNING run",
         )
         .bind(binding.run.as_str())
@@ -78,10 +81,23 @@ impl RunBindingStore for PgRunBindings {
         }
     }
 
-    async fn delete(&self, run: &RunId) -> Result<(), RunLeaseError> {
+    async fn end(
+        &self,
+        run: &RunId,
+        ended_at: Timestamp,
+        sweep_before: Timestamp,
+    ) -> Result<(), RunLeaseError> {
         let mut conn = Object::take(self.pool.acquire().await.map_err(unavailable)?);
-        query("DELETE FROM run_leases WHERE run = $1")
+        // The first end's time stands: a second end does not extend the tombstone.
+        query("UPDATE run_leases SET ended_at = $2 WHERE run = $1 AND ended_at IS NULL")
             .bind(run.as_str())
+            .bind(to_db(ended_at))
+            .execute(&mut *conn)
+            .await
+            .map_err(unavailable)?;
+        // The sweep: a tombstone past the bound is gone (the partial index `run_leases_ended_at`).
+        query("DELETE FROM run_leases WHERE ended_at IS NOT NULL AND ended_at < $1")
+            .bind(to_db(sweep_before))
             .execute(&mut *conn)
             .await
             .map_err(unavailable)?;
@@ -90,11 +106,13 @@ impl RunBindingStore for PgRunBindings {
 
     async fn get(&self, run: &RunId) -> Result<Option<RunBinding>, RunLeaseError> {
         let mut conn = Object::take(self.pool.acquire().await.map_err(unavailable)?);
-        let row: Result<Option<BindingRow>, SqlError> =
-            query_as("SELECT agent, person, model, expires_at FROM run_leases WHERE run = $1")
-                .bind(run.as_str())
-                .fetch_optional(&mut *conn)
-                .await;
+        let row: Result<Option<BindingRow>, SqlError> = query_as(
+            "SELECT agent, person, model, expires_at FROM run_leases \
+             WHERE run = $1 AND ended_at IS NULL",
+        )
+        .bind(run.as_str())
+        .fetch_optional(&mut *conn)
+        .await;
         let row = row.map_err(unavailable)?;
         Ok(row.map(|(agent, person, model, expires_at)| RunBinding {
             run: run.clone(),
@@ -103,5 +121,24 @@ impl RunBindingStore for PgRunBindings {
             model,
             expires_at,
         }))
+    }
+
+    async fn person_of(
+        &self,
+        run: &RunId,
+        ended_after: Timestamp,
+    ) -> Result<Option<UserId>, RunLeaseError> {
+        let mut conn = Object::take(self.pool.acquire().await.map_err(unavailable)?);
+        let row: Result<Option<(String,)>, SqlError> = query_as(
+            "SELECT person FROM run_leases \
+             WHERE run = $1 AND (ended_at IS NULL OR ended_at > $2)",
+        )
+        .bind(run.as_str())
+        .bind(to_db(ended_after))
+        .fetch_optional(&mut *conn)
+        .await;
+        Ok(row
+            .map_err(unavailable)?
+            .map(|(person,)| UserId::new(&person)))
     }
 }

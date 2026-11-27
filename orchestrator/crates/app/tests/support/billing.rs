@@ -104,7 +104,9 @@ impl ChatModel for Injector {
             // `404 run_not_bound` / `410 lease_expired`: a refusal, never an empty account id.
             return Err(ModelError::Unauthenticated);
         };
-        let account = lease.account().clone();
+        // The lease's account is the person's `sub` (an `AccountId`, ADR 0106); the bookkeeping here
+        // is by person, and the test people's ids are lower case, so the two read the same.
+        let account = UserId::new(lease.account().as_str());
         self.stamped
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

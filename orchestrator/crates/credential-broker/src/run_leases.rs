@@ -4,10 +4,10 @@
 use std::time::Duration;
 
 use jiff::Timestamp;
-use orch_core::UserId;
+use orch_core::AccountId;
 use orch_ports::{
-    ModelCredentials, RunBinding, RunBindingStore, RunCaller, RunId, RunLease, RunLeaseError,
-    RunLeases,
+    ACCOUNT_TOMBSTONE, ModelCredentials, RunBinding, RunBindingStore, RunCaller, RunId, RunLease,
+    RunLeaseError, RunLeases, account_of,
 };
 
 /// The longest a lease lives (ADR 0084 decision 3).
@@ -17,10 +17,15 @@ pub const LEASE_TTL: Duration = Duration::from_secs(30);
 pub const MAX_BINDING: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// The broker of run leases. `S` keeps the bindings, `C` the deployment's model credentials.
+///
+/// A run that ends keeps a tombstone (run, person, end time) for [`ACCOUNT_TOMBSTONE`], 24 hours by
+/// default, which only the meter's account route reads (ADR 0106 decision 6); a lease is never lent
+/// after the end.
 #[derive(Debug)]
 pub struct RunLeaseBroker<S, C> {
     bindings: S,
     credentials: C,
+    retention: Duration,
 }
 
 impl<S, C> RunLeaseBroker<S, C> {
@@ -29,7 +34,21 @@ impl<S, C> RunLeaseBroker<S, C> {
         RunLeaseBroker {
             bindings,
             credentials,
+            retention: ACCOUNT_TOMBSTONE,
         }
+    }
+
+    /// The same broker with another tombstone bound: how long after its end a run is still
+    /// answered to the meter. `Duration::ZERO` forgets a run the moment it ends.
+    #[must_use]
+    pub fn with_tombstone_retention(mut self, retention: Duration) -> Self {
+        self.retention = retention;
+        self
+    }
+
+    /// `now` less the bound, saturating at the beginning of time.
+    fn cutoff(&self, now: Timestamp) -> Timestamp {
+        now.checked_sub(self.retention).unwrap_or(Timestamp::MIN)
     }
 }
 
@@ -52,7 +71,8 @@ where
     }
 
     async fn unbind(&self, run: &RunId) -> Result<(), RunLeaseError> {
-        self.bindings.delete(run).await
+        let now = Timestamp::now();
+        self.bindings.end(run, now, self.cutoff(now)).await
     }
 
     async fn lease(&self, run: &RunId, caller: &RunCaller) -> Result<RunLease, RunLeaseError> {
@@ -72,6 +92,7 @@ where
             RunCaller::Orchestrator | RunCaller::Injector => {}
             RunCaller::Agent(_) | RunCaller::Meter => return Err(RunLeaseError::NotBound),
         }
+        let account = account_of(&binding.person)?;
         let model = binding
             .model
             .as_deref()
@@ -83,17 +104,18 @@ where
             .checked_add(LEASE_TTL)
             .unwrap_or(binding.expires_at)
             .min(binding.expires_at);
-        Ok(RunLease::bearer(token, binding.person.clone(), expires_at))
+        Ok(RunLease::bearer(token, account, expires_at))
     }
 
-    async fn account(&self, run: &RunId, caller: &RunCaller) -> Result<UserId, RunLeaseError> {
+    async fn account(&self, run: &RunId, caller: &RunCaller) -> Result<AccountId, RunLeaseError> {
         if *caller != RunCaller::Meter {
             return Err(RunLeaseError::NotBound);
         }
-        self.bindings
-            .get(run)
+        let person = self
+            .bindings
+            .person_of(run, self.cutoff(Timestamp::now()))
             .await?
-            .map(|binding| binding.person)
-            .ok_or(RunLeaseError::NotBound)
+            .ok_or(RunLeaseError::NotBound)?;
+        account_of(&person)
     }
 }

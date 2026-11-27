@@ -8,13 +8,17 @@
 //! | `POST /internal/runs` | the orchestrator | `204`; `409 run_already_bound` for a different binding of the same run |
 //! | `DELETE /internal/runs/{run}` | the orchestrator | `204`, idempotent |
 //! | `GET /internal/runs/{run}/lease` | the orchestrator or the injector, never an agent | `200 {token, accountId, expiresAt}`, `Cache-Control: no-store` |
-//! | `GET /internal/runs/{run}/account` | the operator's meter identity alone | `200 {accountId}`, `Cache-Control: no-store`; `run_not_bound` for an unknown run and for every other caller |
+//! | `GET /internal/runs/{run}/account` | the operator's meter identity alone | `200 {accountId}`, `Cache-Control: no-store`; `run_not_bound` for an unknown run, an ended one past the tombstone bound and every other caller; `422 account_not_opaque` when the run's person is not an `AccountId` |
 //!
-//! A refusal is one of the ruled slugs: `run_not_bound` (`404`), `lease_expired` (`410`) and
-//! `unavailable` (`503`), plus `unauthenticated` (`401`) and `not_allowed` (`403`) for the door.
+//! A refusal is one of the ruled slugs: `run_not_bound` (`404`), `lease_expired` (`410`),
+//! `account_not_opaque` (`422`, ADR 0106) and `unavailable` (`503`), plus `unauthenticated` (`401`) and `not_allowed` (`403`) for the door.
 //! The run id alone is never enough: the caller's identity comes from [`RunCallerAuth`], the
 //! broker's own authentication of the request, and a caller that is not the run's agent is
 //! `run_not_bound` — the answer never says whether a run exists.
+//!
+//! `accountId` is the person's identity-provider `sub`, an `AccountId` of the closed alphabet
+//! `[A-Za-z0-9._:/-]{1,128}` and never an e-mail address (ADR 0106): a person that is not one is
+//! refused, and the text of the person is in no answer.
 //!
 //! The lease value and the account it names are written to the response body and nothing else:
 //! neither is ever logged, and no error holds either. `POST` and `DELETE` are the orchestrator's: an
@@ -146,7 +150,7 @@ pub struct BindBody {
 #[serde(rename_all = "camelCase")]
 struct LeaseBody {
     token: String,
-    /// The run's person (`UserId`), the key the usage ledger is kept by (ADR 0065). Never logged.
+    /// The run's person as an `AccountId`: the identity provider's `sub` (ADR 0106). Never logged.
     account_id: String,
     expires_at: Timestamp,
 }
@@ -155,7 +159,7 @@ struct LeaseBody {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AccountBody {
-    /// The run's person (`UserId`). Never logged.
+    /// The run's person as an `AccountId`: the identity provider's `sub` (ADR 0106). Never logged.
     account_id: String,
 }
 
@@ -327,9 +331,9 @@ where
         None => return unauthenticated(),
     };
     match state.leases.account(&RunId::new(&run), &caller).await {
-        Ok(person) => {
+        Ok(account) => {
             let body = AccountBody {
-                account_id: person.to_string(),
+                account_id: account.to_string(),
             };
             let mut response = (StatusCode::OK, Json(body)).into_response();
             response.headers_mut().insert(
@@ -349,5 +353,8 @@ fn refusal(error: RunLeaseError) -> Response {
         RunLeaseError::Expired => refuse(StatusCode::GONE, "lease_expired"),
         RunLeaseError::Conflict => refuse(StatusCode::CONFLICT, "run_already_bound"),
         RunLeaseError::Unavailable(_) => refuse(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        RunLeaseError::AccountNotOpaque => {
+            refuse(StatusCode::UNPROCESSABLE_ENTITY, "account_not_opaque")
+        }
     }
 }
