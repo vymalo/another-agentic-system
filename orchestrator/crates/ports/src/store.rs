@@ -809,8 +809,13 @@ pub struct OutboxItem {
     pub payload: OutboxPayload,
     /// Status.
     pub status: OutboxStatus,
-    /// How many times it has been claimed (including the current claim).
+    /// How many times it has been claimed (including the current claim). It never goes down: it
+    /// is the fencing token of [`Lease`].
     pub attempts: u32,
+    /// How many of those claims do not count against the dispatcher's caps: a claim that only
+    /// waited ([`ThreadStore::wait_outbox`]: a stop waiting for a delegation still in flight)
+    /// failed at nothing, so it is given back. See [`counted_attempts`](Self::counted_attempts).
+    pub refunded: u32,
     /// Set once the A2A message reached the agent and a task id is known.
     pub sent_at: Option<Timestamp>,
     /// The verifier's, or the asked agent's, A2A task, for a `verify` or an `ask` row once its
@@ -830,6 +835,15 @@ pub struct OutboxItem {
 }
 
 impl OutboxItem {
+    /// The claims that count against the dispatcher's caps and backoff, the current one
+    /// included: those that ended in a failure to retry, or in a worker that vanished (its lease
+    /// lapsed). A claim that ended in [`ThreadStore::wait_outbox`] is not among them. The lease
+    /// is still the raw [`attempts`](Self::attempts); a question of whether an earlier claim may
+    /// have sent the message is too.
+    pub fn counted_attempts(&self) -> u32 {
+        self.attempts.saturating_sub(self.refunded)
+    }
+
     /// The claim this row was handed out under: `None` while nobody holds it (`lease_owner`
     /// is unset).
     pub fn lease(&self) -> Option<Lease> {
@@ -1392,6 +1406,26 @@ pub trait ThreadStore:
         lease: &Lease,
         next_attempt_at: Timestamp,
         error: String,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// [`retry_outbox`](Self::retry_outbox) for a claim that did not fail: the worker looked and
+    /// found the row has to wait (a stop for a delegation still in flight, which is not an
+    /// error of the stop). The row goes back to `pending`, due at `next_attempt_at`, with `note`
+    /// as its last error, and the claim is **refunded**
+    /// ([`OutboxItem::refunded`] is raised by one), so
+    /// [`OutboxItem::counted_attempts`] and with it the dispatcher's caps and backoff see only the
+    /// claims that tried something. `attempts` is left as it is, because it is the fencing token.
+    /// `false` if `lease` is no longer the row's current claim; then nothing is written.
+    ///
+    /// **Required**, with no default: a store, or a wrapper of one, that forwarded only
+    /// `retry_outbox` would count every wait as a failure again, and a stop that waited would be
+    /// refused its listing and cancel attempts (ADR 0103). The case
+    /// `a_wait_is_refunded_and_a_retry_and_a_lapse_are_counted` holds every implementation.
+    fn wait_outbox(
+        &self,
+        lease: &Lease,
+        next_attempt_at: Timestamp,
+        note: String,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     /// Finishes the row.

@@ -1562,6 +1562,129 @@ pub async fn lease_expiry_reclaim<S: ThreadStore>(store: S) {
     assert_eq!(claim(&store, "c", at(101)).await.len(), 1);
 }
 
+/// Only the claims that tried something count (ANR-1078). `attempts` is the fencing token and only
+/// goes up; `wait_outbox` ends a claim that only waited and refunds it, while a retry and a lapse
+/// are failures and stay counted. A stale claim cannot wait: it answers `false` and changes nothing.
+pub async fn a_wait_is_refunded_and_a_retry_and_a_lapse_are_counted<S: ThreadStore>(store: S) {
+    seed(&store, &alice(), 1).await;
+    let id = outbox_id(1);
+
+    let first = claim(&store, "a", t0()).await;
+    assert_eq!(
+        (
+            first[0].attempts,
+            first[0].refunded,
+            first[0].counted_attempts()
+        ),
+        (1, 0, 1)
+    );
+
+    // A wait is refunded: the row is pending and due again, the claim is gone, `attempts` stays.
+    assert!(
+        store
+            .wait_outbox(&lease(1, "a", 1), at(5), "waiting".into())
+            .await
+            .unwrap()
+    );
+    let waited = store.get_outbox(id).await.unwrap().unwrap();
+    assert_eq!(waited.status, OutboxStatus::Pending);
+    assert_eq!(waited.next_attempt_at, at(5));
+    assert_eq!(waited.last_error.as_deref(), Some("waiting"));
+    assert!(waited.lease_owner.is_none() && waited.lease_until.is_none());
+    assert_eq!(
+        (waited.attempts, waited.refunded, waited.counted_attempts()),
+        (1, 1, 0)
+    );
+    assert!(
+        claim(&store, "b", at(4)).await.is_empty(),
+        "the row is due at the time the wait named"
+    );
+
+    // The next claim is the first that counts; `attempts` went up, never down.
+    let second = claim(&store, "b", at(5)).await;
+    assert_eq!(
+        (
+            second[0].attempts,
+            second[0].refunded,
+            second[0].counted_attempts()
+        ),
+        (2, 1, 1)
+    );
+
+    // A retry is a failure: counted.
+    assert!(
+        store
+            .retry_outbox(&lease(1, "b", 2), at(10), "boom".into())
+            .await
+            .unwrap()
+    );
+    let third = claim(&store, "c", at(10)).await;
+    assert_eq!(
+        (
+            third[0].attempts,
+            third[0].refunded,
+            third[0].counted_attempts()
+        ),
+        (3, 1, 2),
+        "a retry counts"
+    );
+
+    // A lapse is a failure: counted.
+    let fourth = claim(&store, "d", at(41)).await;
+    assert_eq!(
+        (
+            fourth[0].attempts,
+            fourth[0].refunded,
+            fourth[0].counted_attempts()
+        ),
+        (4, 1, 3),
+        "a lapse counts"
+    );
+
+    // A stale claim, and a claim of the wrong owner, cannot wait: nothing is written.
+    let before = store.get_outbox(id).await.unwrap().unwrap();
+    assert!(
+        !store
+            .wait_outbox(&lease(1, "c", 3), at(50), "late".into())
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .wait_outbox(&lease(1, "d", 3), at(50), "late".into())
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .wait_outbox(&lease(1, "wrong", 4), at(50), "late".into())
+            .await
+            .unwrap()
+    );
+    assert_eq!(store.get_outbox(id).await.unwrap().unwrap(), before);
+
+    // The current claim can, and a row nobody holds cannot.
+    assert!(
+        store
+            .wait_outbox(&lease(1, "d", 4), at(50), "waiting".into())
+            .await
+            .unwrap()
+    );
+    let after = store.get_outbox(id).await.unwrap().unwrap();
+    assert_eq!(
+        (after.attempts, after.refunded, after.counted_attempts()),
+        (4, 2, 2)
+    );
+    assert!(
+        !store
+            .wait_outbox(&lease(1, "d", 4), at(60), "twice".into())
+            .await
+            .unwrap(),
+        "a claim that has waited is over"
+    );
+    assert_eq!(store.get_outbox(id).await.unwrap().unwrap(), after);
+}
+
 /// Asserts that a commit under `stale` is refused and writes nothing to thread `n`.
 async fn assert_fenced<S: ThreadStore>(store: &S, n: u128, stale: Lease) {
     let before = store.get_thread(None, thread_id(n)).await.unwrap().unwrap();

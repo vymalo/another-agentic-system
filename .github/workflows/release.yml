@@ -1,0 +1,475 @@
+name: Release
+
+# On a `v*` tag (cut by release-please.yml when its pull request merges), publish the release (ADR 0106):
+#
+#   ghcr.io/vymalo/another-agentic-system/orchestrator:X.Y.Z and :X.Y        the orchestrator image
+#   ghcr.io/vymalo/another-agentic-system/web:X.Y.Z and :X.Y                 the web image
+#   oci://ghcr.io/vymalo/another-agentic-system/charts/another-agentic-system   the chart, X.Y.Z
+#
+# Never `latest`. `:X.Y` moves only to the highest patch of its minor. Production pins `X.Y.Z` (and the chart pins the digests).
+#
+# The images are NOT rebuilt. orchestrator.yml and web.yml build, smoke-test and push `sha-<7>` on main only after their checks
+# pass. A release commit touches only the changelog and the version files, which are in neither workflow's paths, so the image of a
+# release is the one built for the newest commit at or before the tag that changed that workflow's paths (tools/release-source.sh,
+# which reads the paths from the workflow itself): the same tree, under those paths, as the tag. This workflow waits for that
+# `sha-<7>`, checks that its `org.opencontainers.image.revision` label is that commit (for the web also that its export inlines that
+# commit and the edge's sign-in path, `/oauth2/start`, the one production value the chart needs), and copies it by digest
+# (`imagetools create --prefer-index=false`: a carbon copy, the digest unchanged). If that commit's run did not push (a red check, or
+# a run cancelled by a newer push to main), nothing is published: re-run its failed jobs, then run this workflow again with
+# `workflow_dispatch` and the tag. There is no fallback build: a release is an image that passed CI on main.
+#
+# Because the images are copied and not built here, BuildKit's provenance and SBOM cannot be attached at build time. Instead each
+# digest gets a cosign keyless signature, an SPDX SBOM made by syft from the image and attested with actions/attest, and a SLSA
+# build provenance attestation by actions/attest. That provenance is of THIS run (the workflow that published the digest at the
+# tag); the run that built it is named in the step summary. The chart is packaged here, so its provenance is its build's. Verify
+# (the identity is this workflow at a tag, or on main for a re-run):
+#
+#   cosign verify ghcr.io/vymalo/another-agentic-system/orchestrator:X.Y.Z \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     --certificate-identity-regexp '^https://github\.com/vymalo/another-agentic-system/\.github/workflows/release\.yml@refs/(tags/v|heads/main$)'
+#   gh attestation verify oci://ghcr.io/vymalo/another-agentic-system/orchestrator:X.Y.Z -R vymalo/another-agentic-system
+#
+# The chart: a COPY of deploy/chart has `orchestrator.image` and `web.image` set to X.Y.Z and their digests by
+# deploy/chart/release-pin.sh, and is packaged; git keeps `sha-<7>`, written by bump-tag.sh only, and main's bump commits are
+# unchanged. A published version is never pushed over.
+#
+# On a pull request that touches what a release reads, the `version` and `chart` jobs run as a dry run (placeholder digests,
+# nothing pushed or signed), so a broken marker, version or pin is found before a tag. Every action is pinned by full commit SHA;
+# the tag in the comment is the one that SHA was read from (git ls-remote, 2026-11-27).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The release tag to publish (again), vX.Y.Z: after an image workflow was re-run for its commit, or after a failed publish"
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - "release-please-config.json"
+      - ".release-please-manifest.json"
+      - "deploy/chart/**"
+      - "tools/check-release-version.sh"
+      - "tools/release-source.sh"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-please.yml"
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  ORCH_IMAGE: ghcr.io/vymalo/another-agentic-system/orchestrator
+  WEB_IMAGE: ghcr.io/vymalo/another-agentic-system/web
+  CHARTS: ghcr.io/vymalo/another-agentic-system/charts
+  CHART_NAME: another-agentic-system
+  HELM_VERSION: v4.3.2
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: the version, and one version everywhere
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+      minor: ${{ steps.v.outputs.minor }}
+      sha: ${{ steps.v.outputs.sha }}
+      move_minor: ${{ steps.v.outputs.move_minor }}
+      dry_run: ${{ steps.v.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Every branch and tag: the tag's commit must be on main, and `:X.Y` moves only for the highest vX.Y.* tag.
+          fetch-depth: 0
+          ref: ${{ inputs.tag || '' }}
+          persist-credentials: false
+      - id: v
+        name: read the tag and refuse what contradicts it
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = pull_request ]; then
+            # A dry run: the release scripts are clean, each image workflow names a commit, every version file is listed and
+            # marked, and on release-please's own pull request there is one version everywhere.
+            shellcheck tools/check-release-version.sh tools/release-source.sh deploy/chart/release-pin.sh
+            for w in orchestrator web; do
+              src=$(sh tools/release-source.sh ".github/workflows/$w.yml" HEAD)
+              echo "$w.yml: a release of this commit would copy sha-${src:0:7} ($(git log -1 --format=%s "$src"))" | tee -a "$GITHUB_STEP_SUMMARY"
+            done
+            version=$(sed -n 's/^ *"\." *: *"\([^"]*\)".*$/\1/p' .release-please-manifest.json)
+            if [ "$HEAD_REF" = release-please--branches--main ]; then
+              sh tools/check-release-version.sh "$version"
+            else
+              sh tools/check-release-version.sh
+            fi
+            {
+              echo "tag=v$version"; echo "version=$version"; echo "minor=${version%.*}"; echo "sha=$GITHUB_SHA"
+              echo "move_minor=false"; echo "dry_run=true"
+            } >> "$GITHUB_OUTPUT"
+            echo "dry run for v$version: nothing is pushed, signed or attested" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$EVENT" = workflow_dispatch ]; then
+            [ "$REF" = refs/heads/main ] || { echo "::error::run this workflow from main (the signing identity is release.yml on main or at a tag), not $REF"; exit 1; }
+            tag=$INPUT_TAG
+          else
+            tag=$REF_NAME
+          fi
+          printf '%s\n' "$tag" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+' || { echo "::error::'$tag' is not a release tag (vX.Y.Z)"; exit 1; }
+          version=${tag#v}
+          sha=$(git rev-parse "refs/tags/$tag^{commit}") || { echo "::error::no tag $tag"; exit 1; }
+          git merge-base --is-ancestor "$sha" origin/main || { echo "::error::$tag ($sha) is not on main: nothing is released from another branch"; exit 1; }
+          # The tag, the manifest, the Tauri app and the chart say one version (release-please wrote them all in the release commit).
+          sh tools/check-release-version.sh "$version"
+          minor=${version%.*}
+          highest=$(git tag -l "v$minor.*" | grep -Ex "v$minor\.[0-9]+" | sort -V | tail -1)
+          move_minor=false
+          [ "$highest" = "$tag" ] && move_minor=true
+          {
+            echo "tag=$tag"; echo "version=$version"; echo "minor=$minor"; echo "sha=$sha"
+            echo "move_minor=$move_minor"; echo "dry_run=false"
+          } >> "$GITHUB_OUTPUT"
+          echo "release $tag at $sha; :$minor moves: $move_minor (the highest v$minor.* tag is $highest)" >> "$GITHUB_STEP_SUMMARY"
+
+  images:
+    name: the images main built for that tree
+    needs: version
+    if: needs.version.outputs.dry_run == 'false'
+    runs-on: ubuntu-24.04
+    # orchestrator.yml's check job is the long one (the whole workspace's tests, then the image); the wait gives up at 160 minutes.
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    outputs:
+      orch_digest: ${{ steps.find.outputs.orch_digest }}
+      web_digest: ${{ steps.find.outputs.web_digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # tools/release-source.sh walks the history back from the tag.
+          fetch-depth: 0
+          ref: ${{ needs.version.outputs.sha }}
+          persist-credentials: false
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - id: find
+        name: find each image's commit, wait for its sha-<7>, check what it was built from
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.version.outputs.sha }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          err="$RUNNER_TEMP/inspect.err"
+          digest_of() { docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' 2> "$err" | jq -er .digest; }
+          # The label docker/metadata-action (orchestrator.yml) and web.yml set. A multi-platform index is read through its first image.
+          revision_of() {
+            docker buildx imagetools inspect "$1" --format '{{json .Image}}' \
+              | jq -r 'if has("config") then .config.Labels["org.opencontainers.image.revision"] // "" else ([.[]][0].config.Labels["org.opencontainers.image.revision"] // "") end'
+          }
+          # wait_for <workflow> <image> <commit>: prints the digest of <image>:sha-<7 of commit> once that commit's run on main pushed it.
+          wait_for() {
+            workflow=$1 image=$2 commit=$3
+            ref="$image:sha-${commit:0:7}"
+            started=$(date +%s)
+            while ! digest_of "$ref"; do
+              now=$(date +%s)
+              run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --commit "$commit" --event push --limit 1 \
+                --json databaseId,status,conclusion --jq '.[0] | select(.) | "\(.databaseId) \(.status) \(.conclusion)"')
+              if [ -z "$run" ]; then
+                if [ $((now - started)) -gt 1200 ]; then
+                  echo "::error::no run of $workflow on a push of $commit after 20 minutes: start it (re-run), then run this workflow with tag=$TAG" >&2
+                  return 1
+                fi
+              else
+                read -r run_id run_status run_conclusion <<< "$run"
+                if [ "$run_status" = completed ]; then
+                  digest_of "$ref" && return 0
+                  echo "::error::$workflow run $run_id for $commit ended '$run_conclusion' and $ref is not in the registry ($(cat "$err")). Re-run its failed jobs; once it has pushed, run this workflow with workflow_dispatch and tag=$TAG." >&2
+                  return 1
+                fi
+              fi
+              if [ $((now - started)) -gt 9600 ]; then echo "::error::$ref did not appear within 160 minutes" >&2; return 1; fi
+              echo "waiting for $ref ($workflow: ${run:-no run yet})" >&2
+              sleep 60
+            done
+          }
+          orch_src=$(sh tools/release-source.sh .github/workflows/orchestrator.yml "$SHA")
+          web_src=$(sh tools/release-source.sh .github/workflows/web.yml "$SHA")
+          orch=$(wait_for orchestrator.yml "$ORCH_IMAGE" "$orch_src")
+          web=$(wait_for web.yml "$WEB_IMAGE" "$web_src")
+          # A seven-digit tag names a commit, it does not prove one: the revision label must be the full commit.
+          for pair in "$ORCH_IMAGE@$orch=$orch_src" "$WEB_IMAGE@$web=$web_src"; do
+            ref=${pair%%=*}; want=${pair#*=}
+            rev=$(revision_of "$ref")
+            [ "$rev" = "$want" ] || { echo "::error::$ref says revision '$rev', not $want: it is not the build of that commit"; exit 1; }
+          done
+          # The web is a static export: what Next inlined at build time is in its files. The commit (NEXT_PUBLIC_BUILD_REVISION) and
+          # the edge's sign-in path (NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start, which the chart's edge serves) must both be there.
+          docker pull -q "$WEB_IMAGE@$web" > /dev/null
+          cid=$(docker create "$WEB_IMAGE@$web")
+          docker cp "$cid:/srv" "$RUNNER_TEMP/web-srv" > /dev/null
+          docker rm "$cid" > /dev/null
+          grep -rqF -- "$web_src" "$RUNNER_TEMP/web-srv" || { echo "::error::the web export does not inline its commit $web_src"; exit 1; }
+          grep -rqF -- "/oauth2/start" "$RUNNER_TEMP/web-srv" || { echo "::error::the web export was not built with NEXT_PUBLIC_SIGN_IN_PATH=/oauth2/start"; exit 1; }
+          run_of() { gh run list --repo "$GITHUB_REPOSITORY" --workflow "$1" --commit "$2" --event push --limit 1 --json databaseId --jq '.[0].databaseId // empty' || true; }
+          orch_run=$(run_of orchestrator.yml "$orch_src")
+          web_run=$(run_of web.yml "$web_src")
+          { echo "orch_digest=$orch"; echo "web_digest=$web"; } >> "$GITHUB_OUTPUT"
+          {
+            echo "### The images main built for $TAG ($SHA)"
+            echo
+            echo "- \`$ORCH_IMAGE:sha-${orch_src:0:7}\` = \`$orch\`, built from $orch_src by orchestrator.yml${orch_run:+ run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$orch_run}"
+            echo "- \`$WEB_IMAGE:sha-${web_src:0:7}\` = \`$web\`, built from $web_src by web.yml${web_run:+ run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$web_run}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  chart:
+    name: package the chart, the images pinned in the copy
+    needs: [version, images]
+    # On a pull request `images` is skipped and the digests are placeholders: the packaging is exercised, nothing leaves the job.
+    if: >-
+      ${{ !cancelled() && needs.version.result == 'success'
+      && (needs.images.result == 'success' || (needs.images.result == 'skipped' && needs.version.outputs.dry_run == 'true')) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+          persist-credentials: false
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: pin, lint, render and package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          DRY_RUN: ${{ needs.version.outputs.dry_run }}
+          ORCH: ${{ needs.images.outputs.orch_digest }}
+          WEB: ${{ needs.images.outputs.web_digest }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = true ]; then
+            ORCH=sha256:0000000000000000000000000000000000000000000000000000000000000000
+            WEB=sha256:0000000000000000000000000000000000000000000000000000000000000001
+          fi
+          [ -n "$ORCH" ] && [ -n "$WEB" ] || { echo "::error::no digests for a release"; exit 1; }
+          stage="$RUNNER_TEMP/stage"; pkg="$RUNNER_TEMP/charts"; ns=another-agentic-system
+          mkdir -p "$stage" "$pkg"
+          cp -R deploy/chart "$stage/chart"
+          # The copy only: release-pin.sh refuses a file git tracks.
+          sh deploy/chart/release-pin.sh "$stage/chart/values.yaml" "$VERSION" "$ORCH" "$WEB"
+          # The chart refuses to render without a host and an issuer, and mobile app links are on by default: the netcup example and
+          # the test-only app-link identities, as deploy.yml renders it.
+          values="-f deploy/chart/examples/netcup.values.yaml -f deploy/chart/tests/mobile-app-links.values.yaml"
+          # shellcheck disable=SC2086
+          helm lint "$stage/chart" $values
+          # shellcheck disable=SC2086
+          helm template "$CHART_NAME" "$stage/chart" --namespace "$ns" $values > "$RUNNER_TEMP/rendered.yaml"
+          grep -Fqx "          image: \"$ORCH_IMAGE:$VERSION@$ORCH\"" "$RUNNER_TEMP/rendered.yaml" || { echo "::error::the packaged chart does not run $ORCH_IMAGE:$VERSION@$ORCH"; exit 1; }
+          grep -Fqx "          image: \"$WEB_IMAGE:$VERSION@$WEB\"" "$RUNNER_TEMP/rendered.yaml" || { echo "::error::the packaged chart does not run $WEB_IMAGE:$VERSION@$WEB"; exit 1; }
+          if grep -Eq "another-agentic-system/(orchestrator|web):sha-[0-9a-f]{7}" "$RUNNER_TEMP/rendered.yaml"; then echo "::error::a sha-<7> tag is left in the packaged chart"; exit 1; fi
+          # The version is the tag's (the version job checked that Chart.yaml says it; a dry run before the first release does not).
+          helm package "$stage/chart" --version "$VERSION" --app-version "$VERSION" --destination "$pkg"
+          tgz="$pkg/$CHART_NAME-$VERSION.tgz"
+          [ -f "$tgz" ] || { echo "::error::the package is not at version $VERSION:"; ls "$pkg"; exit 1; }
+          # No tests and no script in the package (.helmignore), and the two pins in its values.yaml.
+          if tar -tzf "$tgz" | grep -Eq "^$CHART_NAME/tests/|\.sh\$"; then echo "::error::the package holds tests or scripts"; exit 1; fi
+          [ "$(tar -xOzf "$tgz" "$CHART_NAME/values.yaml" | grep -Ec "^    (tag: \"$VERSION\"|digest: \"($ORCH|$WEB)\")\$")" -eq 4 ] \
+            || { echo "::error::the packaged values.yaml does not hold the four pins"; exit 1; }
+          {
+            if [ "$DRY_RUN" = true ]; then echo "### Chart packaged (dry run: placeholder digests, nothing pushed)"; else echo "### Chart packaged"; fi
+            echo
+            echo "- \`$CHART_NAME-$VERSION.tgz\`: \`$ORCH_IMAGE:$VERSION@$ORCH\`, \`$WEB_IMAGE:$VERSION@$WEB\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: chart
+          path: ${{ runner.temp }}/charts/*.tgz
+          retention-days: 1
+          if-no-files-found: error
+
+  # The one job that writes to the registry and signs (`id-token: write` is here and nowhere else). It checks out no code: it runs
+  # pinned actions and the CLIs of the runner on the digests the jobs above found and the package they made.
+  publish:
+    name: publish, sign and attest
+    needs: [version, images, chart]
+    if: needs.version.outputs.dry_run == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
+      MINOR: ${{ needs.version.outputs.minor }}
+      MOVE_MINOR: ${{ needs.version.outputs.move_minor }}
+      ORCH: ${{ needs.images.outputs.orch_digest }}
+      WEB: ${{ needs.images.outputs.web_digest }}
+      ISSUER: https://token.actions.githubusercontent.com
+      IDENTITY: ^https://github\.com/vymalo/another-agentic-system/\.github/workflows/release\.yml@refs/(tags/v|heads/main$)
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: chart
+          path: ${{ runner.temp }}/charts
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: tag the images X.Y.Z (and X.Y), by digest
+        run: |
+          set -euo pipefail
+          digest_of() { docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' 2> /dev/null | jq -er .digest; }
+          for pair in "$ORCH_IMAGE=$ORCH" "$WEB_IMAGE=$WEB"; do
+            img=${pair%%=*}; digest=${pair#*=}
+            # A release tag never moves: one that exists must already be this digest (a re-run), or nothing is done.
+            if existing=$(digest_of "$img:$VERSION"); then
+              [ "$existing" = "$digest" ] || { echo "::error::$img:$VERSION is already $existing, not $digest: a release tag is never moved"; exit 1; }
+            fi
+            names=("$VERSION")
+            [ "$MOVE_MINOR" = true ] && names+=("$MINOR")
+            tags=()
+            for t in "${names[@]}"; do tags+=(-t "$img:$t"); done
+            # --prefer-index=false: a carbon copy of the manifest, so the new tags have the tested digest (the default would wrap it
+            # in a new index with a digest of its own; the platform verified this 2026-11-27 with buildx v0.38.1, AD-070).
+            docker buildx imagetools create --prefer-index=false "${tags[@]}" "$img@$digest"
+            for t in "${names[@]}"; do
+              got=$(digest_of "$img:$t")
+              [ "$got" = "$digest" ] || { echo "::error::$img:$t is $got after the copy, not $digest"; exit 1; }
+              echo "- \`$img:$t\` = \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+            done
+          done
+
+      - name: cosign sign the images (keyless, GitHub OIDC)
+        run: |
+          set -euo pipefail
+          cosign sign --yes "$ORCH_IMAGE@$ORCH"
+          cosign sign --yes "$WEB_IMAGE@$WEB"
+
+      - name: SBOM of the orchestrator image
+        uses: anchore/sbom-action@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
+        with:
+          image: ${{ env.ORCH_IMAGE }}@${{ env.ORCH }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/sbom-orchestrator.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: SBOM of the web image
+        uses: anchore/sbom-action@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
+        with:
+          image: ${{ env.WEB_IMAGE }}@${{ env.WEB }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/sbom-web.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: attest the orchestrator image's SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.ORCH_IMAGE }}
+          subject-digest: ${{ env.ORCH }}
+          sbom-path: ${{ runner.temp }}/sbom-orchestrator.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+      - name: attest the web image's SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.WEB_IMAGE }}
+          subject-digest: ${{ env.WEB }}
+          sbom-path: ${{ runner.temp }}/sbom-web.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+      - name: attest the orchestrator image's provenance (this run, which published the digest)
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.ORCH_IMAGE }}
+          subject-digest: ${{ env.ORCH }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: attest the web image's provenance (this run, which published the digest)
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.WEB_IMAGE }}
+          subject-digest: ${{ env.WEB }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - id: chart
+        name: push and cosign sign the chart (OCI)
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          helm registry login ghcr.io --username "$ACTOR" --password-stdin <<< "$GHCR_TOKEN"
+          pkg="$RUNNER_TEMP/charts"
+          ref="oci://$CHARTS/$CHART_NAME"; img="$CHARTS/$CHART_NAME"; tgz="$pkg/$CHART_NAME-$VERSION.tgz"
+          if out=$(helm show chart "$ref" --version "$VERSION" 2>&1); then
+            # Published already (a re-run): never pushed over. It must be this release's chart, the same pins, or this run stops.
+            digest=$(sed -n 's/^Digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p' <<< "$out" | head -1)
+            [ -n "$digest" ] || { echo "::error::$img:$VERSION is published but helm printed no digest for it: $out"; exit 1; }
+            mkdir -p "$RUNNER_TEMP/published"
+            helm pull "$ref" --version "$VERSION" --destination "$RUNNER_TEMP/published"
+            if ! cmp -s <(tar -xOzf "$RUNNER_TEMP/published/$CHART_NAME-$VERSION.tgz" "$CHART_NAME/values.yaml") <(tar -xOzf "$tgz" "$CHART_NAME/values.yaml"); then
+              echo "::error::$img:$VERSION is published with other values than this release's: a published chart is never replaced"; exit 1
+            fi
+            echo "$img:$VERSION is published ($digest) with the same values: signing it again, not pushing"
+          elif grep -q 'not found' <<< "$out"; then
+            helm push "$tgz" "oci://$CHARTS" 2>&1 | tee "$RUNNER_TEMP/push.log"
+            digest=$(sed -n 's/^Digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p' "$RUNNER_TEMP/push.log" | head -1)
+            [ -n "$digest" ] || { echo "::error::helm push printed no digest; nothing to sign"; exit 1; }
+          else
+            echo "::error::cannot tell whether $img:$VERSION is published (helm failed for a reason that is not 'not found'): $out"; exit 1
+          fi
+          cosign sign --yes "$img@$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "- \`oci://$img:$VERSION\` = \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: attest the chart's provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.CHARTS }}/${{ env.CHART_NAME }}
+          subject-digest: ${{ steps.chart.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: every signature verifies, as a consumer would check it
+        env:
+          CHART_DIGEST: ${{ steps.chart.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for ref in "$ORCH_IMAGE@$ORCH" "$WEB_IMAGE@$WEB" "$CHARTS/$CHART_NAME@$CHART_DIGEST"; do
+            cosign verify "$ref" --certificate-oidc-issuer "$ISSUER" --certificate-identity-regexp "$IDENTITY" > /dev/null
+            echo "verified $ref"
+          done
+          {
+            echo
+            echo "A new GHCR package is private until it is made public (deploy/chart/README.md, \"Releases\"): the chart package, the first time."
+          } >> "$GITHUB_STEP_SUMMARY"

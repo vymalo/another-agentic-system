@@ -1549,7 +1549,7 @@ macro_rules! outbox_claimed {
         "UPDATE outbox SET status = 'inflight', lease_owner = ?2, lease_until = ?3, \
            attempts = attempts + 1, updated_at = ?1 \
          WHERE id IN (SELECT id FROM c) RETURNING id, thread_id, kind, payload, status, attempts, \
-           next_attempt_at, lease_owner, lease_until, sent_at, task_id, last_error, created_at, ord"
+           next_attempt_at, lease_owner, lease_until, sent_at, task_id, last_error, created_at, refunded, ord"
     };
 }
 
@@ -2088,7 +2088,7 @@ impl ThreadStore for SqliteStore {
                 &[&now, &owner, &until, &i64::from(limit)],
                 |row| {
                     let item = outbox_from_row(row)?;
-                    let ord: i64 = row.get(13).map_err(store_err)?;
+                    let ord: i64 = row.get(14).map_err(store_err)?;
                     Ok((ord, item))
                 },
             )?;
@@ -2195,6 +2195,36 @@ impl ThreadStore for SqliteStore {
                     &attempt(lease.attempt),
                     &to_db(next_attempt_at)?,
                     &error,
+                ],
+            )
+            .map(|n| n == 1)
+        })
+        .await
+    }
+
+    async fn wait_outbox(
+        &self,
+        lease: &Lease,
+        next_attempt_at: Timestamp,
+        note: String,
+    ) -> Result<bool, StoreError> {
+        let lease = lease.clone();
+        self.call(move |conn| {
+            // `retry_outbox` and the claim given back: `attempts`, the fencing token, is not
+            // touched.
+            exec(
+                conn,
+                "UPDATE outbox SET status = 'pending', next_attempt_at = ?4, \
+                 lease_owner = NULL, lease_until = NULL, last_error = ?5, \
+                 refunded = refunded + 1, \
+                 updated_at = CAST(unixepoch('subsec') * 1000000 AS INTEGER) \
+                 WHERE id = ?1 AND lease_owner = ?2 AND attempts = ?3 AND status = 'inflight'",
+                &[
+                    &lease.id.0.to_string(),
+                    &lease.owner,
+                    &attempt(lease.attempt),
+                    &to_db(next_attempt_at)?,
+                    &note,
                 ],
             )
             .map(|n| n == 1)

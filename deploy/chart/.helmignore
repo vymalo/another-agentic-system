@@ -3,3 +3,4 @@ tests/
 bump-tag.sh
 README.md
 .helmignore
+release-pin.sh

@@ -4,7 +4,7 @@ sidebarTitle: "0103 · Own agents kept ready"
 
 # ADR 0103 — A person's own agent is made and kept ready before their message is accepted
 
-- **Status:** **Proposed (2026-11-26)** (ANR-806, part 2; built in `orchestrator/crates/app/src/provisioning.rs`, off unless the deployment has a `provisioner` section). Not yet tried against a real platform: the dev stack plays it with a WireMock stand-in (`dev/provisioner-e2e.sh`). **Amended (2026-11-27): ANR-1061, a person's message goes to their own agent by a route recorded in `Job.route`, and the dispatcher's sends for a routed thread provision too (decision 5, the amendment below).**
+- **Status:** **Proposed (2026-11-26)** (ANR-806, part 2; built in `orchestrator/crates/app/src/provisioning.rs`, off unless the deployment has a `provisioner` section). Not yet tried against a real platform: the dev stack plays it with a WireMock stand-in (`dev/provisioner-e2e.sh`). **Amended (2026-11-27): ANR-1061, a person's message goes to their own agent by a route recorded in `Job.route`, and the dispatcher's sends for a routed thread provision too (decision 5, the amendment below).** **Amended (2026-11-27): ANR-1078, the two known gaps of a stop that waited are fixed by refunding the wait (note under Consequences).**
 
 ## Context
 
@@ -110,6 +110,21 @@ This amendment replaces its first version, which recomputed the route from the c
     transient `CancelTask` error right after a long wake is not retried when the wait used up `max_cancel_attempts`, and the
     stop is rejected; and (B) an agent that is not yet listed right after the wake is cancelled locally, without the listing
     attempts, when the wait used up `own_agent_listing_attempts`. A stop that never waited has exactly the plain caps.
+    - *Note 2026-11-27 (ANR-1078, PR 1): gaps A and B are fixed by a refund, and the text above is kept as it was written.*
+      The outbox row now says how many of its claims only waited: `outbox.refunded` (`OutboxItem::refunded`, the inbox's
+      `refunded` of ADR 0016 over again), raised by the new `ThreadStore::wait_outbox`, which the stop's wait for a
+      delegation in flight calls instead of `retry_outbox`. `attempts` still only goes up (it is the fencing token of the
+      lease); every cap and backoff of the dispatcher reads `OutboxItem::counted_attempts()` (`attempts - refunded`), so
+      the listing wait and the `CancelTask` of a stop count only the claims that tried something (they share that one counted
+      counter, and a lapse counts). The checks that ask whether an earlier
+      claim may have sent the message (the lookup by message id of a delegation, a verify and an ask) stay on the raw
+      `attempts`, and so does the bound of the wait itself, the one cap that has to count the waits (so `wake_headroom`
+      is still needed). A stop that never waited is as it was. A rolling deploy: a replica of an older build that is
+      already running ignores `refunded` and may dead-letter a waited row earlier than this build would (the row ends as it ended
+      before); a restarted old-build pod refuses to start, its own `orch-pg-migrate` returning `VersionMissing` as for every migration. Not
+      changed: a claim handed back at shutdown (`release_leases`) is still counted for an outbox row. *Unverified until CI has run it:*
+      `crates/app/tests/provisioning.rs` and the store conformance case
+      `a_wait_is_refunded_and_a_retry_and_a_lapse_are_counted` (memory, Postgres and SQLite); nothing was compiled or run on the host that wrote it.
   - The dispatcher re-reads the thread and the binding after a row's wake (`ensure_ready`), so it never acts on state from before the wait.
   - Turning provisioning off, or removing a kind from `provisioner.kinds`, **strands the routed threads**: they never return to
     the shared agent (a row for one that is not listed ends with the reason above).

@@ -28,7 +28,7 @@ macro_rules! thread_cols {
 macro_rules! outbox_cols {
     () => {
         "id, thread_id, kind, payload, status, attempts, next_attempt_at, lease_owner, \
-         lease_until, sent_at, task_id, last_error, created_at"
+         lease_until, sent_at, task_id, last_error, created_at, refunded"
     };
 }
 
@@ -212,6 +212,7 @@ pub(crate) fn outbox_from_row(row: &PgRow) -> Result<OutboxItem, StoreError> {
     let payload: OutboxPayload = serde_json::from_value(payload)
         .map_err(|e| StoreError::corrupt_with("outbox payload", e))?;
     let attempts: i32 = get(row, "attempts")?;
+    let refunded: i32 = get(row, "refunded")?;
     Ok(OutboxItem {
         id: OutboxId(get(row, "id")?),
         thread_id: ThreadId(get(row, "thread_id")?),
@@ -219,6 +220,7 @@ pub(crate) fn outbox_from_row(row: &PgRow) -> Result<OutboxItem, StoreError> {
         payload,
         status: parse_enum("outbox status", &status)?,
         attempts: u32::try_from(attempts).unwrap_or(0),
+        refunded: u32::try_from(refunded).unwrap_or(0),
         sent_at: get_ts_opt(row, "sent_at")?,
         task_id: get(row, "task_id")?,
         next_attempt_at: get_ts(row, "next_attempt_at")?,

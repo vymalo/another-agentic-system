@@ -59,6 +59,7 @@ helm lint deploy/chart -f deploy/chart/examples/netcup.values.yaml
 helm template another-agentic-system deploy/chart --namespace another-agentic-system -f deploy/chart/examples/netcup.values.yaml
 sh deploy/chart/tests/render-check.sh                     # the guarantees, asserted on the render and on the refusals
 sh deploy/chart/tests/bump-tag-test.sh                    # the tag bump
+sh deploy/chart/tests/release-pin-test.sh                 # a release pins a copy by version and digest (needs git and helm)
 sh deploy/chart/tests/print-config.sh deploy/chart/examples/netcup.values.yaml bin ./orchestrator            # a local binary reads the rendered configuration
 sh deploy/chart/tests/print-config.sh deploy/chart/examples/netcup.values.yaml docker ghcr.io/vymalo/another-agentic-system/orchestrator:sha-d44f285   # CI's form
 ```
@@ -120,7 +121,7 @@ commented; the ones that matter:
 | `networkPolicy.bff.namespace`, `.matchLabels` | `""`, `{}` | the BFF as a peer of the orchestrator's NetworkPolicy: a namespace and the labels of its pods, rendered as one `namespaceSelector` and one `podSelector`. **Required with `edge.enabled: false` and `networkPolicy.enabled: true`**, because the BFF is then the caller the deployment names. Refused: a namespace without labels or labels without one (an empty selector admits the whole namespace), and a namespace that is not a DNS label |
 | `model.baseUrl`, `model.timeoutSecs` | `""`, 20 | one OpenAI-compatible endpoint with `/v1`; empty (and `baseUrlFromSecret` off): no titles, no chat agent |
 | `model.baseUrlFromSecret`, `externalSecrets.properties.modelBaseUrl` | `false`, `model_base_url` | `true`: the address is the AWS property instead of a value ([below](#the-gateways-address-from-the-aws-secret)). **OFF by default; turn it on only once `orchestrator.image.tag` is at or after this feature's merge commit.** Refused: with `model.baseUrl` also set, with no property name, or as a string |
-| `orchestrator.image.tag` | a `sha-<7>` | **bumped by CI**; `web.image.tag` too |
+| `orchestrator.image.tag` | a `sha-<7>` | **bumped by CI**; `web.image.tag` too. A [release](#releases)'s packaged chart has `X.Y.Z` and a `digest` beside each instead (`release-pin.sh`); a version without its digest is refused |
 | `orchestrator.surfaces` | `[agui, thread-tools]` | others are refused until the edge routes them |
 | `orchestrator.agents.registry.url`, `.tokenProperty` | `""`, `""` | the platform's **agent registry** (`agents.registry.url` and `.token`, [config](../../docs/api/config.md#agents)) beside the agents file: the file's agents first, then the registry's. **OFF with an empty `url`**: no `registry` key is written. `tokenProperty` is the AWS property of the registry's bearer, mounted as a file and read as `{ file }`, never a value. Needs an `orchestrator.image.tag` whose build has `registry-platform` (otherwise exit 78). Refused: a URL with no property, a property with no URL, a URL that is not http or https with a host, or one with a credential, query or fragment |
 | `orchestrator.internal.enabled`, `.port` | `false`, `8081` | the credential broker's **run routes** (`POST /internal/runs`, `DELETE /internal/runs/{run}`, `GET /internal/runs/{run}/lease`, [ADR 0084](../../docs/decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md), cards ANR-378 and ANR-578) on a second port that **no Ingress and no edge route names**. It writes `server.internal` into the orchestrator's configuration, so the broker's router and **only** it is served there (no surface, no health); **OFF by default**, and a deployment turns it on only with an `orchestrator.image.tag` at or after the run routes' merge commit and a model endpoint whose key every lease answers. Refused: a port that is 8080 or outside 1025–65535, a non-boolean `enabled`, or `enabled` without `tokenProperty` |
@@ -1192,6 +1193,83 @@ digest is the image index of `8.8.3-alpine` (Docker Hub registry API); the confi
 `/data` and in memory at `/run/redis-auth`, `fsGroup` 1000, the probes through `sh -c` and `grep`, Pod Security `restricted`); the sizes (starting points); that **Keycloak rotates refresh tokens** in the realm `vymalo`
 (this is the symptom's likely cause, not a verified one: `deploy/keycloak` does not set "Revoke Refresh Token"); that a session with the
 three tokens fits in the default `maxmemory` for the number of people invited (a few kilobytes each, *unverified*).
+
+## Releases
+
+Production runs **fixed versions**: a release `vX.Y.Z` publishes the two images and this chart at `X.Y.Z`, and a deployment pins
+those, not a `sha-<7>` from `main` ([ADR 0106](../../docs/decisions/0106-a-release-tag-publishes-the-images-and-the-chart-at-one-version.md)).
+
+| What | Where | Tags |
+|---|---|---|
+| The orchestrator | `ghcr.io/vymalo/another-agentic-system/orchestrator` | `X.Y.Z`, `X.Y` (the highest patch of its minor); never `latest` |
+| The web | `ghcr.io/vymalo/another-agentic-system/web` | the same |
+| This chart | `oci://ghcr.io/vymalo/another-agentic-system/charts/another-agentic-system` | `X.Y.Z`, with both images pinned to `X.Y.Z` **and their digests** |
+
+```mermaid
+sequenceDiagram
+  participant M as main
+  participant CI as orchestrator.yml, web.yml
+  participant RP as release-please.yml
+  participant R as release.yml
+  participant G as ghcr.io
+  M->>CI: a commit that changes their paths
+  CI->>G: sha-<7>, after the checks pass
+  CI->>M: bump-tag.sh writes values.yaml (sha-<7>)
+  RP->>M: the release PR merges: vX.Y.Z (changelog, Chart.yaml, the Tauri app)
+  M->>R: the tag
+  R->>R: the newest commit at the tag that changed each workflow's paths
+  R->>G: wait for its sha-<7>, check the revision label (and the web's inlined commit)
+  R->>G: copy by digest to X.Y.Z and X.Y, sign, SBOM and provenance
+  R->>G: the chart X.Y.Z, its copy pinned by version and digest, signed
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> Tagged: release PR merged
+  Tagged --> Waiting: images job
+  Waiting --> Refused: the run of that commit failed, or a label is wrong
+  Waiting --> Copied: sha-7 present, revision checked
+  Refused --> Waiting: re-run its failed jobs, then workflow_dispatch with the tag
+  Copied --> Published: chart pushed (never over a published version), all signed
+  Published --> [*]
+```
+
+- **Nothing is rebuilt.** A release commit changes only the changelog and the version files, which are in neither image
+  workflow's paths, so `release.yml` takes, for each image, the newest commit at or before the tag that changed that workflow's
+  `on.push.paths` ([`tools/release-source.sh`](../../tools/release-source.sh) reads them from the workflow itself): the same tree, under
+  those paths, as the tag. It waits for that commit's `sha-<7>` (pushed only after its checks passed), refuses an image whose
+  `org.opencontainers.image.revision` label is another commit, and for the web also one whose export does not inline that commit
+  and `/oauth2/start` (`NEXT_PUBLIC_SIGN_IN_PATH`, the one build-time value this chart needs). Then it copies the image **by digest**.
+- **Signed and attested.** Each image digest and the chart get a cosign keyless signature from this workflow; each image an SPDX
+  SBOM and a provenance attestation (of the publishing run; the summary names the run that built it). Check one before you pin it:
+
+  ```sh
+  cosign verify ghcr.io/vymalo/another-agentic-system/orchestrator:X.Y.Z \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    --certificate-identity-regexp '^https://github\.com/vymalo/another-agentic-system/\.github/workflows/release\.yml@refs/(tags/v|heads/main$)'
+  gh attestation verify oci://ghcr.io/vymalo/another-agentic-system/orchestrator:X.Y.Z -R vymalo/another-agentic-system
+  ```
+
+- **Git keeps `sha-<7>`.** The packaged chart is a copy whose `orchestrator.image` and `web.image` are set to `X.Y.Z` and their
+  digests by [`release-pin.sh`](release-pin.sh), which refuses the file git tracks: on `main`, `bump-tag.sh` stays the only writer of
+  those tags, so a render from git and the published chart are told apart by their tags. `_validate.tpl` accepts a first-party tag
+  `X.Y.Z` only with its digest, and never `X.Y` or `latest`.
+- **Versions are release-please's.** `Chart.yaml`'s `version` and `appVersion` carry `# x-release-please-version` and are in the
+  config's `extra-files`, beside the Tauri app's three files; [`tools/check-release-version.sh`](../../tools/check-release-version.sh)
+  holds them, and a tag whose files disagree publishes nothing. The chart said 0.2.0 when the manifest said 0.8.0: the first release
+  after the markers makes them one version. A new version changes the labels `helm.sh/chart` and `app.kubernetes.io/version`, and
+  the checksums of the configuration and the Secrets include them, so **a release rolls those pods once** even when nothing else moved.
+- **A re-run never overwrites.** An image tag `X.Y.Z` that exists must already be the same digest; a published chart version must
+  have the same `values.yaml`, and is then only signed again. A failed publish is re-run with `workflow_dispatch` and the tag, from `main`.
+- **A dry run on pull requests** that touch the chart, the release config or the scripts: the markers, the commit each workflow
+  would give, the pin, the lint and the package, with placeholder digests; nothing is pushed or signed.
+- **The first time**, GHCR makes the chart's package (`charts/another-agentic-system`) private: make it public in the package's
+  settings, then check an anonymous pull.
+
+A deployment that pins a release sets the chart's version and leaves the image values alone (they are the package's). *Unverified
+until a tag runs it*: the whole of `release.yml` outside its dry run (waiting, the copy by digest, cosign, the attestations, the OCI
+push and its "not found" answer with Helm 4), and that release-please moves the two marked lines of `Chart.yaml` as it moves the
+Tauri app's `Cargo.toml`.
 
 ## What the owner does
 

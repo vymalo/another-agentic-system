@@ -53,6 +53,7 @@ macro_rules! thread_store_conformance {
             concurrent_writers_keep_seq_contiguous list_events_after_limit latest_events_newest_first
             messages_since_counts_the_owners_in_the_window
             claim_once_and_concurrent_claimers lease_expiry_reclaim delegate_ordering_per_thread
+            a_wait_is_refunded_and_a_retry_and_a_lapse_are_counted
             a_fair_claim_serves_the_person_with_fewer_jobs_running_first
             a_fair_claim_gives_one_person_every_slot a_fair_claim_interleaves_the_people
             a_fair_claim_counts_only_live_leases a_fair_claim_counts_running_rows_of_every_kind
