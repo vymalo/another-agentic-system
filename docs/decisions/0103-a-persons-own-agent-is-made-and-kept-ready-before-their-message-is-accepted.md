@@ -4,7 +4,7 @@ sidebarTitle: "0103 · Own agents kept ready"
 
 # ADR 0103 — A person's own agent is made and kept ready before their message is accepted
 
-- **Status:** **Proposed (2026-11-26)** (ANR-806, part 2; built in `orchestrator/crates/app/src/provisioning.rs`, off unless the deployment has a `provisioner` section). Not yet tried against a real platform: the dev stack plays it with a WireMock stand-in (`dev/provisioner-e2e.sh`). **Amended (2026-11-27): ANR-1061, a person's message goes to their own agent by a route recorded in `Job.route`, and the dispatcher's sends for a routed thread provision too (decision 5, the amendment below).** **Amended (2026-11-27): ANR-1078, the two known gaps of a stop that waited are fixed by refunding the wait (note under Consequences).**
+- **Status:** **Proposed (2026-11-26)** (ANR-806, part 2; built in `orchestrator/crates/app/src/provisioning.rs`, off unless the deployment has a `provisioner` section). Not yet tried against a real platform: the dev stack plays it with a WireMock stand-in (`dev/provisioner-e2e.sh`). **Amended (2026-11-27): ANR-1061, a person's message goes to their own agent by a route recorded in `Job.route`, and the dispatcher's sends for a routed thread provision too (decision 5, the amendment below).** **Amended (2026-11-27): ANR-1062, a `Blocked` agent is waited for, except two reasons that waiting cannot clear, which are a 500 `agent_blocked` (the amendment below).** **Amended (2026-11-27): ANR-1078, the two known gaps of a stop that waited are fixed by refunding the wait (note under Consequences).**
 
 ## Context
 
@@ -43,6 +43,24 @@ and how long a person may be made to wait.
    `@mention` or `ask_agent` to a coder) do not provision: the dispatcher does not ask the platform.~~ *Superseded
    2026-11-27 by the amendment below (ANR-1061): the message goes to the person's own agent, and the dispatcher's sends for a
    routed thread provision too. What stays true: an `@mention` or `ask_agent` to a coder does not provision.*
+
+## Amended 2026-11-27 (ANR-1062): a blocked agent is waited for, except for two reasons
+
+The adapter polled `Blocked` and `Degraded` like `Saving`, so an agent that could never be ready held each request for the whole
+bound. Refusing every `Blocked` at once is wrong too, and it was the first draft of this change: the platform reports `Blocked`
+on a normal first start. *Verified 2026-11-27* in the platform's code at `755872d`: `derive.rs` gives `Blocked` whenever
+`StoreReady` or `ConfigResolved` is not `True` or an issue is `NameConflict`; a fresh CloudNativePG cluster is `StoreReady`
+`False`, reason `ClusterNotReady`, and the platform's own `tests/reconcile.rs` asserts `Blocked` and then `Ready`; a referent not
+made yet is `ConfigResolved` `False`, reason `ConfigInvalid`, and clears when it is made. So:
+
+- `Blocked` is waited for, to the same bound as `Saving`, and ends as `NotReady { last: Blocked }` (503 `agent_not_ready`).
+  `Degraded` is the platform's "applied, not ready" (a rollout, a crash loop) and returns to `Ready`: waited for as before.
+- Two conditions of the agent's detail end the wait at once: `RuntimeReady` `False` with reason `NameConflict` and `StoreReady`
+  `False` with reason `CNPGNotInstalled`. They are `ProvisionError::Blocked { reason: BlockedReason }`, a closed enum, class
+  `Internal`, and a 500 `code: agent_blocked` whose detail names the reason: the deployment's to repair, never the person's, and
+  nothing is written. Any other reason, an unknown one and a missing `conditions` are waited for (fail towards waiting).
+- `ConfigInvalid` is not terminal: the platform uses it for a referent that is not made yet as well, so it cannot be told from
+  an invalid config. A distinct reason on the platform's side would let it be.
 
 ## Amended 2026-11-26 (ANR-1061): the message goes to the person's own agent
 

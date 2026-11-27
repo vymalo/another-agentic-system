@@ -17,7 +17,9 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use orch_ports::testkit::provisioner::ProvisionerFixture;
-use orch_ports::{AgentKind, AgentOwner, AgentProvisioner, AgentState, ProvisionError};
+use orch_ports::{
+    AgentKind, AgentOwner, AgentProvisioner, AgentState, BlockedReason, ProvisionError,
+};
 use orch_provisioner_platform::{PlatformConfig, PlatformProvisioner};
 use secrecy::SecretString;
 use serde_json::{Value, json};
@@ -59,6 +61,9 @@ struct Platform {
     requests: Mutex<Vec<String>>,
     /// When set, a create answers `409` with this problem slug whatever the agents are.
     conflict: Mutex<Option<&'static str>>,
+    /// When set, a read answers this state and these `conditions` (the shape of the platform's
+    /// detail: `{type, status, reason}`) for every agent that exists.
+    forced_state: Mutex<Option<(&'static str, Vec<Value>)>>,
 }
 
 type Shared = Arc<Platform>;
@@ -79,11 +84,16 @@ fn authorised(headers: &HeaderMap) -> bool {
         == Some(&format!("Bearer {TOKEN}"))
 }
 
-fn detail(name: &str, agent: &Agent) -> Response {
+fn detail(name: &str, agent: &Agent, forced: Option<&(&'static str, Vec<Value>)>) -> Response {
+    let (state, conditions) = match forced {
+        Some((state, conditions)) => (*state, conditions.clone()),
+        None => (agent.state(), Vec::new()),
+    };
     (
         StatusCode::OK,
         [(header::ETAG, agent.etag())],
-        json!({"name": name, "state": agent.state(), "suspend": agent.suspend}).to_string(),
+        json!({"name": name, "state": state, "conditions": conditions, "suspend": agent.suspend})
+            .to_string(),
     )
         .into_response()
 }
@@ -100,8 +110,9 @@ async fn read(
     if !authorised(&headers) {
         return problem(StatusCode::UNAUTHORIZED, "unauthorized");
     }
+    let forced = p.forced_state.lock().unwrap().clone();
     match p.agents.lock().unwrap().get(&name) {
-        Some(a) if a.owner == owner => detail(&name, a),
+        Some(a) if a.owner == owner => detail(&name, a, forced.as_ref()),
         _ => problem(StatusCode::NOT_FOUND, "not-found"),
     }
 }
@@ -346,6 +357,176 @@ async fn an_agent_that_never_becomes_ready_gives_not_ready() {
             err,
             ProvisionError::NotReady {
                 last: AgentState::Saving
+            }
+        ),
+        "{err:?}"
+    );
+}
+
+/// A condition as the platform writes it.
+fn condition(kind: &str, status: &str, reason: &str) -> Value {
+    json!({"type": kind, "status": status, "reason": reason})
+}
+
+/// The platform reads every agent as `state`, with `conditions`, from the first poll.
+async fn platform_reading(
+    state: &'static str,
+    conditions: Vec<Value>,
+    timeout: Duration,
+) -> (PlatformProvisioner, Shared) {
+    let (url, platform) = serve().await;
+    *platform.forced_state.lock().unwrap() = Some((state, conditions));
+    let p = PlatformProvisioner::new(config(&url, TOKEN).with_ready_timeout(timeout)).unwrap();
+    (p, platform)
+}
+
+fn gets(platform: &Shared) -> usize {
+    platform
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.starts_with("GET "))
+        .count()
+}
+
+/// After `after`, the platform reads the agent as it really is (ready).
+fn clear_after(platform: &Shared, after: Duration) {
+    let platform = platform.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(after).await;
+        *platform.forced_state.lock().unwrap() = None;
+    });
+}
+
+#[tokio::test]
+async fn a_blocked_agent_whose_store_is_not_ready_is_waited_for_until_it_is_ready() {
+    // A fresh database cluster blocks the agent (`StoreReady` False, `ClusterNotReady`) and the
+    // agent then goes ready: the first message of a person must not be refused. The earlier
+    // "Blocked is refused at once" returned `Err` at the first poll and fails this test.
+    let conditions = vec![condition("StoreReady", "False", "ClusterNotReady")];
+    let (p, platform) = platform_reading("blocked", conditions, Duration::from_secs(10)).await;
+    clear_after(&platform, Duration::from_millis(300));
+    let agent = p
+        .ensure_ready(&owner("fresh"), AgentKind::Coder)
+        .await
+        .unwrap();
+    assert_eq!(agent.state, AgentState::Ready);
+    assert!(gets(&platform) > 2, "it polled while blocked");
+}
+
+async fn refused_at_once(conditions: Vec<Value>, reason: BlockedReason) {
+    // The bound is 10 s; a reason that waiting cannot clear must not hold the request for it.
+    let (p, platform) = platform_reading("blocked", conditions, Duration::from_secs(10)).await;
+    let started = Instant::now();
+    let err = p
+        .ensure_ready(&owner("blocked"), AgentKind::Coder)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, ProvisionError::Blocked { reason: r } if *r == reason),
+        "{err:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "waited {:?}",
+        started.elapsed()
+    );
+    // One read after the create: no polling.
+    assert_eq!(gets(&platform), 2);
+}
+
+#[tokio::test]
+async fn a_blocked_agent_with_a_name_conflict_is_refused_at_once() {
+    refused_at_once(
+        vec![
+            condition("ConfigResolved", "True", "Resolved"),
+            condition("RuntimeReady", "False", "NameConflict"),
+        ],
+        BlockedReason::NameConflict,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_blocked_agent_whose_database_operator_is_absent_is_refused_at_once() {
+    refused_at_once(
+        vec![condition("StoreReady", "False", "CNPGNotInstalled")],
+        BlockedReason::StoreOperatorMissing,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_blocked_agent_whose_condition_is_not_false_or_not_of_the_right_type_is_waited_for() {
+    // The reason alone is not enough: `RuntimeReady` `True` with `NameConflict` (the status check)
+    // and `Ready` `False` with `NameConflict` (the type check) are not the terminal condition.
+    let conditions = vec![
+        condition("RuntimeReady", "True", "NameConflict"),
+        condition("Ready", "False", "NameConflict"),
+    ];
+    let (p, _platform) = platform_reading("blocked", conditions, Duration::from_millis(200)).await;
+    let err = p
+        .ensure_ready(&owner("lookalike"), AgentKind::Coder)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ProvisionError::NotReady {
+                last: AgentState::Blocked
+            }
+        ),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_blocked_agent_with_an_invalid_config_is_still_waited_for() {
+    // `ConfigInvalid` also reports a referent that is not made yet, so it ends at the bound.
+    let conditions = vec![condition("ConfigResolved", "False", "ConfigInvalid")];
+    let (p, _platform) = platform_reading("blocked", conditions, Duration::from_millis(200)).await;
+    let err = p
+        .ensure_ready(&owner("invalid"), AgentKind::Coder)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ProvisionError::NotReady {
+                last: AgentState::Blocked
+            }
+        ),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_degraded_agent_is_waited_for_until_it_is_ready() {
+    // The platform's lifecycle: `Degraded` is "applied, not ready" (a rollout, a crash loop) and
+    // goes back to `Ready` by itself, so the wait continues.
+    let (p, platform) = platform_reading("degraded", vec![], Duration::from_secs(10)).await;
+    clear_after(&platform, Duration::from_millis(300));
+    let agent = p
+        .ensure_ready(&owner("degraded"), AgentKind::Coder)
+        .await
+        .unwrap();
+    assert_eq!(agent.state, AgentState::Ready);
+    assert!(gets(&platform) > 2, "it polled while degraded");
+}
+
+#[tokio::test]
+async fn a_degraded_agent_that_stays_so_gives_not_ready_at_the_bound() {
+    let (p, _platform) = platform_reading("degraded", vec![], Duration::from_millis(200)).await;
+    let err = p
+        .ensure_ready(&owner("stuck"), AgentKind::Coder)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ProvisionError::NotReady {
+                last: AgentState::Degraded
             }
         ),
         "{err:?}"

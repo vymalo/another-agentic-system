@@ -26,7 +26,7 @@
 #   ghcr.io/kagent-dev/substrate/podcertcontroller:v0.4.0-alpha1 index sha256:f8bc68d892f65a19755c80989343e16963f1a3d80221d970a6b6974da803a70e
 #   ghcr.io/kagent-dev/substrate/kubernetes-secrets:v0.4.0-alpha1 index sha256:dc421a5cd9f0765446aa79e3f11e46c88a6def13bcfd06d3b875a793122dbafd
 #   ghcr.io/kagent-dev/substrate/agentgateway:50999825cb55   index sha256:f1907a50b2e74a071da53fcd2008d585b6a63d31b4e1ba3ee46cf22b342cf04b  (the Substrate chart's own digest pin)
-#   wiremock/wiremock:3.13.2                                 index sha256:0d4ecb3e4dc8213fd7a4d37d6a78f6e6b553a6d2e15bd51b0999781282ac61b3  (dev/kagent/manifests.yaml; compose.yaml pins the tag only)
+#   wiremock/wiremock:3.13.2                                 index sha256:0d4ecb3e4dc8213fd7a4d37d6a78f6e6b553a6d2e15bd51b0999781282ac61b3  (dev/kagent/manifests.yaml; compose.yaml pins the same tag and digest)
 # (the Substrate chart also pins postgres:18-alpine, rustfs/rustfs:1.0.0-beta.3 and amazon/aws-cli:2.17.0 by digest itself.)
 # The tools CI installs (.github/workflows/kagent-e2e.yml, each checked against its checksum): kind v0.33.0 (kagent's CI version), kubectl v1.37.3
 # (the node's minor) and helm v4.3.2 (this repository's floor, ADR 0105); their checksums are in the workflow.
