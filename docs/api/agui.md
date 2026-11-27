@@ -83,7 +83,7 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > `user_message` (the log is the state), so an export shows it.
 
 > **Model pick** (2026-11-23, [ADR 0086](../decisions/0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md), contract
-> [`model-pick-v1.md`](model-pick-v1.md), the orchestrator's side built, no agent lists `model-pick/v1` yet): `forwardedProps["vymalo.model"]`
+> [`model-pick-v1.md`](model-pick-v1.md), the orchestrator's side built; adam lists `model-pick/v1` when the deployment's profiles (`MODEL_ALIASES_FILE`) name models, which the stack's `chat` does (`compose.yaml`, `dev/model-profiles.json`, proven against the real chat by `dev/pick-real-e2e.sh`), *verified 2026-11-27*: adam-rs `9f90f1e` `crates/adam-service/src/config.rs` reads the file): `forwardedProps["vymalo.model"]`
 > and `["vymalo.reasoningEffort"]` on the run that carries a message, checked against the agent's live card before anything is
 > written (**422** `model_not_offered` / `reasoning_not_offered` with `offered`; not a hint); see [Model pick](#model-pick).
 
@@ -1495,7 +1495,7 @@ POST /agui/agents/coder   forwardedProps: {"vymalo.locale": "fr-FR"}
 ## Model pick
 
 **Built 2026-11-23, on the orchestrator's side only** ([ADR 0086](../decisions/0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md),
-contract [`model-pick-v1.md`](model-pick-v1.md)); no agent lists `model-pick/v1` yet and the web has no control yet.
+contract [`model-pick-v1.md`](model-pick-v1.md)); adam lists `model-pick/v1` when its profiles name models, which the stack's `chat` does (*verified 2026-11-27*: `compose.yaml`, `dev/model-profiles.json`, `dev/pick-real-e2e.sh`), and the web's chips are built (`web/src/features/pick`).
 
 - **In:** `forwardedProps["vymalo.model"]` (an alias the agent offers: 1 to 64 characters of `a-z0-9._-`) and
   `forwardedProps["vymalo.reasoningEffort"]` (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) on the run that carries
