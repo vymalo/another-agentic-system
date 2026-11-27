@@ -41,10 +41,11 @@ test("the selected release is sent with the new thread", async ({ page }) => {
   await page.getByRole("button", { name: "Send" }).click();
   const body = (await request).postDataJSON();
   // the release travels in forwardedProps under the extension URI (ADR 0008); the text is the message
-  // (and the UI catalog, which every new thread is told about: e2e/catalog.spec.ts)
+  // (and the UI catalog, which every new thread is told about: e2e/catalog.spec.ts, and the tag of the
+  // page the message was written on, ADR 0085: every message carries it)
   expect(body.forwardedProps).toMatchObject({ [RELEASE_CHANNELS_URI]: { release: "staging" } });
   expect(Object.keys(body.forwardedProps).sort()).toEqual(
-    [RELEASE_CHANNELS_URI, "vymalo.uiCatalog"].sort(),
+    [RELEASE_CHANNELS_URI, "vymalo.locale", "vymalo.uiCatalog"].sort(),
   );
   expect(body.messages).toMatchObject([{ role: "user", content: "Use staging" }]);
   await expect(page).toHaveURL(/\/threads\//);
@@ -61,6 +62,10 @@ test("an agent without releases sends no release", async ({ page }) => {
     (r) => r.method() === "POST" && new URL(r.url()).pathname === "/agui/agents/reviewer",
   );
   await page.getByRole("button", { name: "Send" }).click();
-  // no release; the UI catalog is the only thing a new thread's first run carries
-  expect(Object.keys((await request).postDataJSON().forwardedProps)).toEqual(["vymalo.uiCatalog"]);
+  // no release; the tag of the page the message was written on (ADR 0085) and the UI catalog, which
+  // every new thread is told about, are what a new thread's first run carries
+  expect(Object.keys((await request).postDataJSON().forwardedProps)).toEqual([
+    "vymalo.locale",
+    "vymalo.uiCatalog",
+  ]);
 });

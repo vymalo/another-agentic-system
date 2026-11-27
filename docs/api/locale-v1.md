@@ -2,8 +2,12 @@
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/locale/v1`
 - **Status:** **proposed 2026-11-22**, on the owner's decisions of that day: the interface offers `en-GB`, `fr-FR`, `gsw-CH` and `fur-IT` from day 0, and **the agent's language is
-  the interface's language by default, then the person's**. **The orchestrator's side is built** (the tag and its checks, the
-  card read, the activation, the local stack's scenario); **adam lists it whenever `DEFAULT_LOCALE` is set, which the stack's `chat` does (proven against the real chat by `dev/locale-real-e2e.sh`)**, and the web does not send it yet.
+  the interface's language by default, then the person's**. **Built on every side:** the orchestrator's (the tag and its checks, the
+  card read, the activation, the local stack's scenario); adam lists it whenever `DEFAULT_LOCALE` is set, which the stack's `chat` does
+  (proven against the real chat by `dev/locale-real-e2e.sh`); and **the web sends it** — the tag the page is drawn in,
+  `document.documentElement.lang`, on each message that carries the person's words (`web/src/features/locale`, `web/e2e/locale.spec.ts`;
+  the owner's ruling of 2026-11-26, option b). The interface language a person **picks** is still ahead (ANR-957), so today the tag is
+  the page's own.
 - **Decided in:** [ADR 0085](../decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md); the
   optional-extension pattern is [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
 - **Defined by:** the orchestrator. **Used by:** agents that can write in more than one language and want to know which one
@@ -30,7 +34,7 @@ asking for German.
 
 | Part | Does |
 |---|---|
-| **Client** | Knows the interface's language, as a BCP 47 tag, and sends it with every message: `forwardedProps["vymalo.locale"]` on a run. Never sends one it invented. Draws the agent's answer as text and Markdown, and keeps **every high-risk string its own** ([section 7](#7-security)). |
+| **Client** | Knows the interface's language, as a BCP 47 tag, and sends it with every message: `forwardedProps["vymalo.locale"]` on a run. Never sends one it invented — **the web sends the tag the page is drawn in** (`document.documentElement.lang`), and only when it is a tag the orchestrator accepts (a language, an optional script and an optional region: the deployment's four tags and the wider world's alike); a page whose `lang` is anything else sends nothing rather than risk a **400** that would hold the person's words back. Draws the agent's answer as text and Markdown, and keeps **every high-risk string its own** ([section 7](#7-security)). |
 | **Orchestrator** | Reads the tag on the run and checks that it is a tag (**400**). Carries it on the message the person's words become, and records it on the `user_message` — the log is the state, so the hint is replayable — while projecting nothing of it. Activates the extension and puts the tag in the metadata only to an agent whose live card, read for that very call, lists it well formed. |
 | **Agent** | Lists the extension in its card, with the language it writes in by itself when it says one. Answers in the language the hint names when it can, in the person's language, else its own default. Says which one it used when it matters. |
 
@@ -209,10 +213,6 @@ names none carries none.
 card that lists the extension gets the tag, a card that does not list it — or lists it badly — gets the plain message. The
 dispatcher does not fail the job for a locale, and the adapter never refuses a message over one.
 
-**At the send**, the dispatcher puts the row's tag on the request and the adapter reads the card again for that very call: a
-card that lists the extension gets the tag, a card that does not list it — or lists it badly — gets the plain message. The
-dispatcher does not fail the job for a locale, and the adapter never refuses a message over one.
-
 ## 7. Security
 
 - **A hint is not a boundary, and not a promise.** The agent may ignore it; the orchestrator cannot see inside a task and does
@@ -241,7 +241,7 @@ dispatcher does not fail the job for a locale, and the adapter never refuses a m
 | Orchestrator | the closed, validated `LocaleHint` and `LocaleListing` (`crates/core/src/locale.rs`), the card read and the activation (`crates/agent-a2a/src/locale.rs`), `locale` on `SendRequest` and on the `delegate`/`steer` outbox rows, the `forwardedProps` key and its **400** (`crates/app/src/locale.rs`, `crates/surface-agui`), the scenario `dev/locale-e2e.sh` |
 | [`agui.md`](agui.md) | the inbound key, and the statement that nothing of it is projected |
 | [`extensions.md`](extensions.md), [`README.md`](README.md) | the row |
-| Web | the tag from its own interface state, with each message (not built yet) |
+| Web | the tag the page is drawn in, `document.documentElement.lang`, on the run that carries a message (`web/src/features/locale/lib/locale.ts`, `web/e2e/locale.spec.ts`); the interface language a person picks is ANR-957 |
 | adam-rs | reads the tag and answers in it (**built**, *verified 2026-11-27*: at `9f90f1e` `crates/adam-service/src/config.rs:366` reads `DEFAULT_LOCALE` and `serve` lists `locale/v1` with it; the stack's `chat` sets it) |
 
 ## Conformance
