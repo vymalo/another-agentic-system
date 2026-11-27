@@ -1,8 +1,9 @@
 # A2A extension: network tier (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/network-tier/v1`
-- **Status:** **proposed (2026-10-11), at the owner's request; nothing is built.** The direction is the owner's (the quote below). Every name, status code and default
-  here is proposed, for the owner to confirm.
+- **Status:** **accepted (2026-11-26)**, with the ADR's two amendments; nothing is built. Proposed 2026-10-11, at the owner's request. Acceptance covers the three
+  tiers, the card's `params` and the message member; every name, status code and default here is still proposed, for the owner to confirm. The amendments:
+  **`allow-list` is the deployment's list, never the person's**, and **a tier the agent cannot enforce is not listed on its card**.
 - **Decided in:** [ADR 0062](../decisions/0062-the-person-picks-a-network-tier-for-each-message-the-agent-keeps-to-it.md); the optional-extension pattern is
   [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md). It is the sibling of the access tier ([ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), [`access-tier-v1.md`](access-tier-v1.md), *proposed; the
   orchestrator and the web are built against mocks*): the same shape, a different axis.
@@ -89,7 +90,7 @@ stateDiagram-v2
 
 | Param | Meaning |
 |---|---|
-| `tiers` | Required. A non-empty list of the tiers the agent honours, each of the three at most once. An agent that cannot open the network lists `["offline", "allow-list"]`. |
+| `tiers` | Required. A non-empty list of the tiers the agent **enforces**, each of the three at most once. A tier the agent cannot enforce is **not listed** (the owner's amendment of 2026-11-26): an agent with no egress proxy — a laptop, a worker with no network policy — lists what it can actually keep, and one that can cut the network but cannot apply the deployment's list lists `["offline"]`, not `["offline", "allow-list"]`. A message that names an unlisted tier is refused, as any unlisted pick is. |
 | `default` | Required. One of `tiers`: what the agent works under when no message names a tier. adam's is `open`, which is what its run pods allow today. A deployment may set it lower. |
 
 `required` stays `false`. The orchestrator reads the card on **every send**, never caches it, and fails closed: the extension is used when the URI is listed exactly **and** `params` are well-formed.

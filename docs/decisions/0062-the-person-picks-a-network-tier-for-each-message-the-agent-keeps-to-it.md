@@ -4,7 +4,12 @@ sidebarTitle: "0062 · A network tier for each message"
 
 # ADR 0062 — The person picks a network tier for each message; the agent keeps to it, and nothing is passed down
 
-- **Status:** proposed (2026-10-11), at the owner's request (the quote in *Context*). **The owner's own, 2026-10-11:** the direction (more concepts like
+- **Status:** **accepted (2026-11-26)**, with two amendments (below); proposed 2026-10-11, at the owner's request (the quote in *Context*).
+  **Accepted 2026-11-26, the owner's decision, with two amendments:** **(1)** `allow-list` is **the deployment's** list, never
+  the person's — which decision 2 already says, and which the acceptance makes binding. **(2)** A tier the agent **cannot
+  enforce** (no egress proxy, a laptop) is **not listed** on its card: the card lists what the agent keeps to, not what it
+  would like to. What acceptance covers: the three tiers, the card's `params` and the message member; every name, status
+  code, default and shape below, and the open questions at the end, are still proposed, for the owner to confirm. **The owner's own, 2026-10-11:** the direction (more concepts like
   `thread-tools/v1`, one for the network), the three tiers `offline`, `allow-list` (package registries and the forge) and `open`, that the agent enforces
   it, adam's way (run pods that reach only an egress proxy that applies the tier), that nothing is passed to children, a role cap `maxNetworkTier`, and what the
   orchestrator checks. **Proposed**, for the owner to confirm: every name, status code, default and shape below, and the open questions at the end. **Nothing of
