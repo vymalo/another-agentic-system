@@ -7,7 +7,7 @@
   web's slice; the adam-rs side (an agent that reports its tool calls and its sub-agent's as steps) is that
   repository's slice; see [`mvp.md`](../mvp.md#the-new-build-order). The owner may revisit anything here.
   **Revised 2026-10-02 (additive, still v1): a step may carry `input` and `output`**
-  ([section 3](#3-the-report), [ADR 0030](../decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md)).
+  ([section 3](#_3-the-report), [ADR 0030](../decisions/0030-a-step-carries-its-input-and-output-bounded-and-redacted.md)).
   An orchestrator that ignores them reads the step as before, and an agent that sends none still works.
 - **Decided in:** [ADR 0025](../decisions/0025-nested-steps-events-carry-their-source-path.md) and its status note;
   the optional-extension pattern is [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
@@ -33,7 +33,7 @@ Facts about A2A are marked *verified* (with a date and a source) or *unverified*
 | Part | Does |
 |---|---|
 | **Agent** | Lists the extension in its card. Reports a step as a `working` status update whose message carries the step in its metadata (a plain text label too, for anyone who ignores the extension). Sends the start of a step, an update now and then, and its end. |
-| **Orchestrator** | Reads the card on every send and activates the extension only for an agent that lists it. Turns each valid report into an `agent_step` event with the **path** of the step (the chain of step ids it runs under), keeps the log bounded ([coalescing](#4-what-the-orchestrator-logs)), and projects the tree to AG-UI. Reports steps of its own (a tool call it relays, an agent it asked) through the same event. |
+| **Orchestrator** | Reads the card on every send and activates the extension only for an agent that lists it. Turns each valid report into an `agent_step` event with the **path** of the step (the chain of step ids it runs under), keeps the log bounded ([coalescing](#_4-what-the-orchestrator-logs)), and projects the tree to AG-UI. Reports steps of its own (a tool call it relays, an agent it asked) through the same event. |
 | **Screen** | Draws the tree: one line per level, a spinner while it works, the failures always visible. |
 
 ## The flow
@@ -142,7 +142,7 @@ Semantics:
 - The first report of an id **starts** the step, later ones **update** it, `completed`, `failed` or `canceled` **end**
   it. A report after the end starts it again (a retry).
 - Agents SHOULD send at most one update per step per second; the start and the end always. The orchestrator keeps
-  only a few updates anyway ([coalescing](#4-what-the-orchestrator-logs)).
+  only a few updates anyway ([coalescing](#_4-what-the-orchestrator-logs)).
 - A step that is reported ended without having started is one event, an end.
 - **`input` and `output` are read leniently.** A member of the wrong type (an `input` that is not an object, an `output`
   with no string `text`) is dropped **and the step is kept**: unlike the members above, which identify the step, they

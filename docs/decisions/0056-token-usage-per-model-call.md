@@ -166,7 +166,7 @@ The adam coder writes a member `sandbox` in the totals object of `usage/v1`, bes
 `{"environment": "kubernetes", "usage": [{"cpuMillis", "memoryBytes", "commands", "milliseconds"}]}` for a run whose commands were
 measured in a pod; `"usage": []` for a pod asked for and no command run (a measured zero); `{"environment": "local"}` or `"devcontainer"`
 with no `usage` for commands that were not measured (**not measured, never zero**); no `sandbox` for a run that asked for no environment.
-`totals` is always there (`[]` for a run with no model call). The contract is [section 5 of `usage-v1.md`](../api/usage-v1.md#5-the-sandbox),
+`totals` is always there (`[]` for a run with no model call). The contract is [section 5 of `usage-v1.md`](../api/usage-v1.md#_5-the-sandbox),
 with the rule that a client **ignores unknown members** of the totals object and of its entries.
 
 ### Decisions

@@ -7,7 +7,7 @@ sidebarTitle: "0017 · CI results by webhook"
 - **Status:** accepted (2026-09-30). **Built (2026-09-30):** MVP slice 6 (the generic route,
   `SurfaceRoutes::machine`, the CI source in the gate), slice 7 (the AG-UI card), slice 8 (the web's card, 2026-09-30) and slice 9 (the GitHub adapter);
   see [Built (slice 6)](#built-slice-6), [Built (slice 7)](#built-slice-7) and [Built (slice 9)](#built-slice-9).
-  The web draws the card as [`web/README.md`](../../web/README.md#ci-results-vymalo-ci) says
+  The web draws the card as [`web/README.md`](../../web/README.md#ci-results-vymaloci) says
   ([`mvp.md`](../mvp.md#the-slices-of-steps-2-3-and-6)).
   Uses the inbox of [ADR 0016](0016-inbox-timers-and-job-ledger-on-the-thread.md); feeds the gate of
   [ADR 0018](0018-verification-gate-and-rework-loop.md). The wire contract is
@@ -211,7 +211,7 @@ GitHub route is slice 9 ([below](#built-slice-9)). Where the build differs from,
 ## Built (slice 9)
 
 *2026-09-30.* `POST /webhooks/github` (`ORCH_SURFACES` name `webhook-github`, secret `WEBHOOK_GITHUB_SECRETS`, same
-feature `surface-webhook`) is built; contract in [`api/webhooks.md`](../api/webhooks.md#github-adapter-post-webhooksgithub).
+feature `surface-webhook`) is built; contract in [`api/webhooks.md`](../api/webhooks.md#github-adapter-post-webhooks-github).
 
 - **`ping` answers 204, as this ADR says.** (The slice's brief said 200; the ADR and the contract page say 204, the
   ADR wins, and GitHub accepts any 2xx.) `ping` is not parsed.

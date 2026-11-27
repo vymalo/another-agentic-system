@@ -5,14 +5,14 @@ sidebarTitle: "0024 · MCP tools per conversation"
 # ADR 0024 — MCP tools attached per conversation, from the UI
 
 - **Status:** accepted (2026-10-01), on the owner's delegation: open question 35 is decided for the relay, which
-  amends decisions 3 and 6; see the [status note](#status-note-2026-10-01-accepted-on-the-owners-delegation). The owner may revisit it.
+  amends decisions 3 and 6; see the [status note](#status-note-2026-10-01-accepted-on-the-owner-s-delegation). The owner may revisit it.
 
 ## Context
 
 The owner (2026-10-01): "I can imagine how A2A does coding, another does web research, ... And if I
 wanna do casual chat, I might use each one of them, pass in MCP tools for e.g. web search, e.g. from
 the UI directly, and let the agent somehow use it." Tools with an icon should show it as the step's
-trailing icon ([vision](../vision.md#3-tools-mcp-per-conversation-from-the-ui)).
+trailing icon ([vision](../vision.md#_3-tools-mcp-per-conversation-from-the-ui)).
 
 Today an agent's MCP servers are part of the agent (adam-rs `mcp.json`, compiled in), and the
 orchestrator is an MCP server for other systems ([ADR 0019](0019-mcp-server-over-streamable-http.md)),

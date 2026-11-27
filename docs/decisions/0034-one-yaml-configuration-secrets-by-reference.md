@@ -214,7 +214,7 @@ stateDiagram-v2
 ### 6. The public subset: `GET /api/config`
 
 - The `ui` section is the only part of the file the web can see, served as `GET /api/config` →
-  `200 {"ui": {…}}`, every `ui` key with its effective value ([`docs/api/config.md`](../api/config.md#get-apiconfig)).
+  `200 {"ui": {…}}`, every `ui` key with its effective value ([`docs/api/config.md`](../api/config.md#get-api-config)).
   The `ui` type has no secret field, and a test asserts that its generated schema has no `SecretRef`.
 - **It is behind the same identity layer as every `/api/*` route** (401 without an identity), not public. Reasons:
   the web asks for it only after the edge has let the browser in (oauth2-proxy guards the web and the API alike), so

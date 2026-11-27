@@ -11,7 +11,7 @@
   references, who coordinates: option A); the optional-extension pattern is
   [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
 - **Defined by:** the orchestrator. **Used by:** agents that coordinate other agents (`adam-agent` and adam-coder first).
-  Coordination itself is the tool [`ask_agent`](thread-tools-v1.md#ask_agent) of `thread-tools/v1`.
+  Coordination itself is the tool [`ask_agent`](thread-tools-v1.md#ask-agent) of `thread-tools/v1`.
 
 ## Purpose
 
@@ -112,7 +112,7 @@ the Language Server Protocol, for the same reason ([verified](#verified-and-unve
 ## 3. Where a mention enters, and what is checked
 
 The web sends, on the run that carries the user message (AG-UI,
-[`agui.md`](agui.md#inbound-ag-ui--core-input), [Mentions](agui.md#mentions)):
+[`agui.md`](agui.md#inbound-ag-ui-→-core-input), [Mentions](agui.md#mentions)):
 `forwardedProps["vymalo.mentions"] = [reference, …]`. Before **anything** is written the orchestrator checks:
 
 | Check | Refused as |
@@ -134,7 +134,7 @@ them, listed or not, and learns nothing of what the registry lists. An `agentId`
 the run carries when it has **no message** to put it on (an A2UI action, a cancel, an attach to a run) is checked for its shape
 (400) and ignored with a warning.
 
-The `agent.invoke` rule is also checked when the agent is asked ([`ask_agent`](thread-tools-v1.md#ask_agent)), because a
+The `agent.invoke` rule is also checked when the agent is asked ([`ask_agent`](thread-tools-v1.md#ask-agent)), because a
 role can change between the message and the ask.
 
 A reference that passes is stored **as sent** in the `user_message` event (`mentions`, omitted when empty), shown on the
@@ -199,14 +199,14 @@ member if a client sends it, and never told to the agent. The ask is sent under 
 
 An asked agent's **form** is not a model's to answer: when the agent *shows an interface* and waits, the ask ends with `form: true`
 (`ask_finished`), its task is cancelled and the agent is not asked again in that job
-([`thread-tools-v1.md`](thread-tools-v1.md#ask_agent), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md)).
+([`thread-tools-v1.md`](thread-tools-v1.md#ask-agent), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md)).
 A person who wants to answer it talks to that agent in a thread of their own. An ask is sent the job's UI catalog (when the thread
 has one), so a question *with choices*, adam-coder's consent among them, is a form and ends the ask; the cost is that any such
 question does, even one a model could answer. This does not cover an agent that asks **in words** (no choices), one that ignores
-the catalog or a thread with no catalog: a narrowed known gap, [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-a-form-is-the-persons-to-answer).
+the catalog or a thread with no catalog: a narrowed known gap, [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-a-form-is-the-person-s-to-answer).
 
 Every agent that works on the message appears nested under the step that started it, because every ask is a child
-task of the thread recorded in the log ([`thread-tools-v1.md`](thread-tools-v1.md#ask_agent),
+task of the thread recorded in the log ([`thread-tools-v1.md`](thread-tools-v1.md#ask-agent),
 [ADR 0025](../decisions/0025-nested-steps-events-carry-their-source-path.md)).
 
 ## Verified and unverified (2026-10-02)

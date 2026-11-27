@@ -250,7 +250,7 @@ Only `linked` yields a lease. The state is the person's, the same for every thre
 A running coder learns of a `needs_relink` at its next `401` or its next lease, so a revocation at GitHub reaches it within its cache, 5 minutes at most (the 10 minutes of
 a lease are only how long it may hold the token). GitHub tells an App when a person revokes its authorization (the `github_app_authorization` event, *verified*); using it to mark the
 link at once is a small addition to the route that exists, `POST /webhooks/github`, which acknowledges and ignores the events it does not read
-([`webhooks.md`](../api/webhooks.md#github-adapter-post-webhooksgithub)), and is not part of B1 (question 88).
+([`webhooks.md`](../api/webhooks.md#github-adapter-post-webhooks-github)), and is not part of B1 (question 88).
 
 ## Configuration, a sketch
 

@@ -12,7 +12,7 @@ sidebarTitle: "0045 · Admin, Keycloak roles, registry"
   question 6 was taken as recommended with the owner's addition that "RBAC should normally answer this" (decision 1); the rest were taken
   as recommended. "The same one" is confirmed as one dashboard inside this repository's web, with its sign-in and look, not a second app. **Nothing of this is
   built** *(amended 2026-10-16: decision 1, the audience, is built in the orchestrator, slice D8a, see
-  [the note at the end](#implemented-2026-10-16-d8a--decision-1-in-the-orchestrator); the rest is not)*. The dashboard itself (its Platform API, the custom resources it writes, its screens and slices) is specified in
+  [the note at the end](#implemented-2026-10-16-d8a-—-decision-1-in-the-orchestrator); the rest is not)*. The dashboard itself (its Platform API, the custom resources it writes, its screens and slices) is specified in
   another-agentic-platform, architecture §60a "Admin dashboard v0", and decided there as AD-026 to AD-033
   ([`11-decisions.md`](https://github.com/vymalo/another-agentic-platform/blob/main/docs/architecture/11-decisions.md); they
   were the proposals P-007 to P-012 until today). This ADR is the system's side: decision 1 is AD-028 there, decision 2 is

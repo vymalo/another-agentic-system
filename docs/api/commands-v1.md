@@ -125,7 +125,7 @@ The extension is activated by naming its URI in the `A2A-Extensions` request hea
 whether or not the extension is activated, because the text is the person's own and is sent as it stands. That is why the
 orchestrator activates nothing: it does not read the text as a command, so it has nothing to announce.
 
-Activation buys the **metadata form** ([section 3](#3-the-invocation)) and nothing else: a request that did not activate the
+Activation buys the **metadata form** ([section 3](#_3-the-invocation)) and nothing else: a request that did not activate the
 extension has its `metadata[<uri>]` ignored, so a client cannot name a command without having said it understands one.
 
 ## 3. The invocation
@@ -172,7 +172,7 @@ is not read as `/name`; a metadata command beside it is `invalid params`. So a v
 an invocation by accident.
 
 The two forms expand the same template. **The metadata member wins**: a message that carries it is that command, whatever its
-text begins with. A client uses one form; the orchestrator uses the text form only ([section 5](#5-the-orchestrator)).
+text begins with. A client uses one form; the orchestrator uses the text form only ([section 5](#_5-the-orchestrator)).
 
 ## 4. The expansion
 

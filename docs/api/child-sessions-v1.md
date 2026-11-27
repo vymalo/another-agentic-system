@@ -104,7 +104,7 @@ neither. A client learns them from the refusals (section 7), whose words say the
 
 A client activates the extension by naming the URI in the `A2A-Extensions` header and, on a message, in `message.extensions`:
 
-- on a message to the **parent context**, so that the parent's task reports its sessions ([section 3](#3-what-the-parent-task-says))
+- on a message to the **parent context**, so that the parent's task reports its sessions ([section 3](#_3-what-the-parent-task-says))
   and so that the person may be asked by a kept-open helper (adam-rs ADR 0045 decision 9: only a client that shows the sessions
   can answer for one);
 - on `GetTask`, `SubscribeToTask` and `ListTasks {contextId}` of a **parent task**, so that the tasks it returns carry the sessions
@@ -138,7 +138,7 @@ under the URI, one **event**:
 
 | `event` | When | Also carries |
 |---|---|---|
-| `opened` | A session was started, by the parent's model or by a person ([section 4](#4-a-person-starts-a-session)). | `round` (round 1) |
+| `opened` | A session was started, by the parent's model or by a person ([section 4](#_4-a-person-starts-a-session)). | `round` (round 1) |
 | `round` | A round other than the first started (a message to an idle session, by the model or a person). | `round` |
 | `reported` | A round ended. | `round` (its final state), `report`: `done`, `failed`, `canceled` or `blocked` (a round waiting for the person, `input-required`) |
 | `closed` | The session closed: not kept open and its round ended, a close, or the agent's idle limit. | nothing more |
@@ -168,7 +168,7 @@ closed (a fixed 16):
 
 `state` is `working`, `idle` or `closed` (a round waiting for the person is `working`, its `round.state` `input-required`). This
 object, read again, is the truth; the events only say when to read it. A session also says its own state on each of its rounds
-([section 5](#5-talking-to-a-session)), so a client that follows a round needs no parent task to learn that it ended or that the
+([section 5](#_5-talking-to-a-session)), so a client that follows a round needs no parent task to learn that it ended or that the
 session closed.
 
 ## 4. A person starts a session

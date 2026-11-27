@@ -14,10 +14,10 @@
   `RelayTools` in `orch-surface-thread-tools`, composed by the binary behind the Cargo feature `tool-relay` (on by
   default). **Built 2026-10-03 (slice 10, PR-21):** `ask_agent` with the `ask:<n>` callers (`AskTools` in
   `orch-surface-thread-tools`, `App::ask`, the guard's rule 8 for an asked agent, the `asks.*` configuration, the
-  projection), [below](#ask_agent); what the adam-rs side does with it is that repository's PR. **Built 2026-10-15
+  projection), [below](#ask-agent); what the adam-rs side does with it is that repository's PR. **Built 2026-10-15
 ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), slice 5a):** the servers a
 person added themselves, attached to their threads and relayed with a fresh credential for every request,
-[below](#a-persons-own-servers). **Built 2026-10-17:** the `person` member of an asked agent's message, what the person
+[below](#a-person-s-own-servers). **Built 2026-10-17:** the `person` member of an asked agent's message, what the person
 said in the thread ([below](#the-person-member);
 [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-fourth-an-asked-agent-is-told-what-the-person-said)).
 "Not yet" is marked where it matters. The adam-rs side (an agent
@@ -179,7 +179,7 @@ is still sent without the grant in that case, and a card without the URI still g
   of their ids, and **omitted when there are none**. A thread with servers attached and an agent whose card lacks the
   extension gets nothing, and the screen says so before the person sends (ADR 0024).
 - It carries **never a URL, a header or a credential**: the agent reaches a server only through the endpoint.
-- An asked agent ([`ask_agent`](#ask_agent)) gets `attached` for the servers allowed for **it**.
+- An asked agent ([`ask_agent`](#ask-agent)) gets `attached` for the servers allowed for **it**.
 
 *Built and tested (2026-10-02):* the dispatcher reads the thread's set when it **sends** (a retry sends what is attached
 at the retry, and a server attached or detached between two messages is told or dropped by the next one), keeps those
@@ -195,7 +195,7 @@ attached. The relay is built, 2026-10-02: see below.)*
 *Built 2026-10-17* ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-fourth-an-asked-agent-is-told-what-the-person-said),
 the owner's decision with adam-rs ADR 0036, the bullet "Decided, a follow-up" under its "Amended 2026-10-17 (an asked agent)":
 *verified 2026-10-17*, adam-rs `main` at `a3c3f01`). The message of an **asked** agent
-([`ask_agent`](#ask_agent), `caller = ask:<n>`) also says what the person said in the thread:
+([`ask_agent`](#ask-agent), `caller = ask:<n>`) also says what the person said in the thread:
 
 ```json
 {"https://agents.vymalo.com/a2a/extensions/thread-tools/v1": {
@@ -432,10 +432,10 @@ configuration ([ADR 0009](../decisions/0009-swappable-implementations-at-build-t
 | Slice | Tools | Provider | Contract |
 |---|---|---|---|
 | 3 (built) | `get_ui_catalog` | built in | below |
-| built (2026-10-02) | `turn_output`: the agent announces its answer for the turn. | built in | [below](#turn_output) |
+| built (2026-10-02) | `turn_output`: the agent announces its answer for the turn. | built in | [below](#turn-output) |
 | 8 (built) | `<server>__<tool>`: the tools of each MCP server attached to the thread, relayed. The orchestrator holds the servers' credentials (from its configuration), sees each call and reports it as a tool step with the server's icon. | relay | [below](#attached-servers-and-the-relay-slice-8), [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md) |
-| 10 (built 2026-10-03) | `ask_agent`: the addressed agent asks a mentioned agent. The orchestrator runs it as a nested child task on the same thread, its steps under the step of the agent that asked, and returns its result to the call, with progress notifications. The asked agent's own token has `caller = ask:<n>` and a `depth`. | asks | [below](#ask_agent), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md) |
-| built (6a, 2026-10-14) | `request_upload`: a presigned `PUT` for one file too large for the message, for an agent whose message activated `uploads/v1`. `main` only; listed to the thread's addressed agent only while the deployment offers uploads and its live card lists `uploads/v1` and `thread-tools/v1`. A refusal is a tool error whose text starts with a code (`not_activated`, `too_large`, `over_limit`, `unsupported`, `bad_request`, `caller_not_allowed`, `task_over`, `unavailable`). | uploads (a provider, `UploadTools`, mounted when `artifacts.upload` is set) | [`uploads-v1.md`](uploads-v1.md#3-the-tool-request_upload) |
+| 10 (built 2026-10-03) | `ask_agent`: the addressed agent asks a mentioned agent. The orchestrator runs it as a nested child task on the same thread, its steps under the step of the agent that asked, and returns its result to the call, with progress notifications. The asked agent's own token has `caller = ask:<n>` and a `depth`. | asks | [below](#ask-agent), [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md) |
+| built (6a, 2026-10-14) | `request_upload`: a presigned `PUT` for one file too large for the message, for an agent whose message activated `uploads/v1`. `main` only; listed to the thread's addressed agent only while the deployment offers uploads and its live card lists `uploads/v1` and `thread-tools/v1`. A refusal is a tool error whose text starts with a code (`not_activated`, `too_large`, `over_limit`, `unsupported`, `bad_request`, `caller_not_allowed`, `task_over`, `unavailable`). | uploads (a provider, `UploadTools`, mounted when `artifacts.upload` is set) | [`uploads-v1.md`](uploads-v1.md#_3-the-tool-request-upload) |
 
 An agent should expose to its model **every tool the endpoint lists, under the listed name**, and re-read the list at
 each model turn: it is not hard-wired to `get_ui_catalog`.
@@ -518,7 +518,7 @@ turn is over is an error. Annotations: not read-only, not destructive, **not ide
 
 `<jti>` is the token's `jti` (the A2A message id) and `<n>` counts the announcements of that token in the turn, from 1.
 The AG-UI projection puts `purpose` and `via` on the message's `TEXT_MESSAGE_START` as `vymalo.purpose` and `vymalo.via`
-([`agui.md`](agui.md#the-agents-words)).
+([`agui.md`](agui.md#the-agent-s-words)).
 
 **When it is accepted.** Only while the thread is `queued` or `working`, for the job the token names (`job` is the
 current job), and, once the turn has an announcement, under the token that made it. Otherwise it is a result with
@@ -530,7 +530,7 @@ tool it is cut off after 30 seconds (`temporarily unavailable; try again` when t
 
 **A later call replaces the answer.** The log is append-only, so the earlier announcement stays and the rule is the
 reader's: **the answer of a turn is the last message marked `answer` in it, and an earlier one is working text**
-([`agui.md`](agui.md#the-agents-words)).
+([`agui.md`](agui.md#the-agent-s-words)).
 
 **What the rest of the turn becomes.** Once a turn has an announced answer nothing else it says is the answer
 (a core rule, ADR 0031): a message of the turn is `purpose: working` whatever the adapter read off its status, and the words
@@ -566,7 +566,7 @@ of a call, the error table: `RelayTools`, behind the binary's feature `tool-rela
   `Content-Type`, `Host`, `Mcp-Session-Id`, `Mcp-Protocol-Version` and `Last-Event-ID` are refused), `tools` (an allow-list
   of upstream tool names, default all), `agents` (the agent ids it may be attached for, default every agent) and
   `timeoutSecs` (1 to 600, default 120). The keys are in [`config.md`](config.md#toolservers) and its schema; the
-  loader refuses a bad list at startup (exit 78). A person cannot enter a URL here: this list is the deployment's. (With `userToolServers.enabled` a person who holds `tools.user.add` adds servers of their own on top, [ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), [`config.md`](config.md#usertoolservers); they are attached and relayed [below](#a-persons-own-servers).)
+  loader refuses a bad list at startup (exit 78). A person cannot enter a URL here: this list is the deployment's. (With `userToolServers.enabled` a person who holds `tools.user.add` adds servers of their own on top, [ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), [`config.md`](config.md#usertoolservers); they are attached and relayed [below](#a-person-s-own-servers).)
 - **Who may attach:** anyone with `thread.write` on the thread, for the servers whose `agents` list includes the thread's
   agent. There is no per-role filter yet. The set is at most 16 servers; the thread records `tools_attached` and
   `tools_detached` ([ADR 0004](../decisions/0004-closed-enums-over-dyn-registry.md)) and carries the set from job to job.
@@ -603,7 +603,7 @@ servers allowed for that caller's agent.
 
   | Member | Meaning |
   |---|---|
-  | `reportsStep` | `true`: **the orchestrator reports each call of this tool as a step**, with the server's icon ([`steps-v1.md`](steps-v1.md#6-steps-the-orchestrator-reports-itself)). The agent SHOULD NOT report a step of its own for the call: it would be drawn twice. Absent or `false`: the orchestrator reports nothing for this tool, and the agent reports as it likes. Every relayed tool and `ask_agent` say `true`; `get_ui_catalog` and `turn_output` say nothing |
+  | `reportsStep` | `true`: **the orchestrator reports each call of this tool as a step**, with the server's icon ([`steps-v1.md`](steps-v1.md#_6-steps-the-orchestrator-reports-itself)). The agent SHOULD NOT report a step of its own for the call: it would be drawn twice. Absent or `false`: the orchestrator reports nothing for this tool, and the agent reports as it likes. Every relayed tool and `ask_agent` say `true`; `get_ui_catalog` and `turn_output` say nothing |
   | `timeoutSecs` | The longest the orchestrator lets a call of this tool run: the server's `timeoutSecs` plus 5 for a relayed tool, the ask's timeout plus 30 for `ask_agent`. The agent SHOULD use it as the time it waits for the call, in place of a fixed default, **capped by its own limit** (adam-rs: `THREAD_TOOLS_MAX_CALL_SECS`, default 3600; 60 seconds today for every call). Absent: the agent's default |
 
   **The key.** MCP reserves `_meta` for protocol metadata and gives its keys a format: an optional prefix of dot-separated
@@ -623,7 +623,7 @@ servers allowed for that caller's agent.
 ### The step of a call
 
 For a tool that says `reportsStep`, the orchestrator records a step for each call through the same input an agent's step
-takes (`Input::Step`, [steps-v1 section 6](steps-v1.md#6-steps-the-orchestrator-reports-itself)), attributed to the calling
+takes (`Input::Step`, [steps-v1 section 6](steps-v1.md#_6-steps-the-orchestrator-reports-itself)), attributed to the calling
 agent: `kind: tool`, `label` `"<server name> · <tool>"`, `icon: "mcp-server:<id>"` (an agent cannot claim that icon),
 `state: running` when the call starts, and the same id again with `completed`, `failed` or `canceled` when it ends, with
 `detail` the public error (at most 200 characters) when it failed. **The step carries its `input` and `output`**
@@ -633,7 +633,7 @@ result's text, under the same bounds and redaction, and **no credential is ever 
 **whole** result (up to 256 KiB); the step keeps its 8 KiB. A step that cannot be committed (a busy store) is logged and does
 not fail the call. Exactly one step is reported per call.
 
-This is what makes the existing rule of [`steps-v1.md`](steps-v1.md#3-the-report) enforceable: an agent that sees
+This is what makes the existing rule of [`steps-v1.md`](steps-v1.md#_3-the-report) enforceable: an agent that sees
 `reportsStep: true` knows the orchestrator reports the call, and one that sees nothing knows it does not. The orchestrator
 does not merge or drop a step an agent reports (steps are data from the agent, steps-v1 section 3): an agent that reports
 one anyway has two lines on screen.
@@ -884,7 +884,7 @@ The addressed agent asks an agent the person **mentioned** to do part of the wor
 runs the asked agent as a **child task of the same thread**, in a context of its own, with its steps nested under the step of
 the agent that asked, and returns its result to the tool call with progress notifications.
 
-**The access tier of an ask** ([`access-tier-v1.md`](access-tier-v1.md#6-the-orchestrators-own-messages-and-sub-agents), ADR 0061): the
+**The access tier of an ask** ([`access-tier-v1.md`](access-tier-v1.md#_6-the-orchestrator-s-own-messages-and-sub-agents), ADR 0061): the
 tier of the asking agent's thread is not passed down, and `ask_agent` takes no tier argument. What passes is the **cap of the
 person's roles on the asked agent**, pinned on its mention when the message was accepted: the orchestrator sends the ask under the
 highest tier the asked agent's live card offers within the lower of its `default` and that cap, and the ask fails (no task starts,
@@ -1035,7 +1035,7 @@ about 200 bytes is refused ("the callId is too long").
   since adam-rs #115, `8847c28`, in the pin since 2026-10-17: its consent tools ask nobody there and no words are a consent; defence in
   depth), which needs the token: since 2026-10-17 an ask to a card that lists `thread-tools/v1` never goes out without it (above). *Decided 2026-10-17 on the owner's choices "end the ask" and "send asks the catalog"; the
   alternative, showing the form to the person, is not built
-  ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-a-form-is-the-persons-to-answer)).*
+  ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-a-form-is-the-person-s-to-answer)).*
   The orchestrator does not read the words of a message for an agent's convention of what a form answer looks like: that an
   agent takes no such answer from a text part is that agent's duty. Otherwise it is a new task in the same context with `referenceTaskIds` naming the earlier ask tasks to that agent in
   this job ([ADR 0021](../decisions/0021-context-across-a2a-tasks.md)).

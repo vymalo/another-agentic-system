@@ -115,7 +115,7 @@ A message that does not activate the extension is the message it is today. An ag
 ## 3. The tool `request_upload`
 
 On the thread-tools endpoint ([`thread-tools-v1.md`](thread-tools-v1.md)), authenticated by the thread's token like every tool there. The caller must be `main`: the
-orchestrator keeps no file of an asked agent ([`thread-tools-v1.md`](thread-tools-v1.md#ask_agent)).
+orchestrator keeps no file of an asked agent ([`thread-tools-v1.md`](thread-tools-v1.md#ask-agent)).
 
 **Input** (all required):
 

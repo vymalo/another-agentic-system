@@ -43,7 +43,7 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > **Working text and the answer** (2026-10-02, [ADR 0031](../decisions/0031-working-text-and-the-turns-answer.md)): an
 > agent's words may be marked by what they are for, `metadata["vymalo.purpose"]` `"working"` or `"answer"` on the
 > `TEXT_MESSAGE_START`, and a live message that turns out to be working text says so on its `END`; see
-> [The agent's words](#the-agents-words).
+> [The agent's words](#the-agent-s-words).
 > **When a message or a turn happened** (2026-10-07): the person's `TEXT_MESSAGE_START` and an invocation's `SUBAGENT_STARTED` say
 > when the log event happened, `metadata["vymalo.at"]` (RFC 3339, the event's `at`). The runtime stamps a message with the time its
 > frame reached the browser, which for a log read again (a reload, a shared link) is the moment of opening and the same for every
@@ -62,7 +62,7 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > anything is written (400, 422, 503), recorded as `user_message.mentions`, and shown as `metadata["vymalo.mentions"]` on the
 > `TEXT_MESSAGE_START` of the message; see [Mentions](#mentions).
 > **Asked agents are subagents** (2026-10-03, [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md), MVP slice 10,
-> contract [`thread-tools-v1.md`](thread-tools-v1.md#ask_agent)): an agent the thread's agent asked with `ask_agent` is a
+> contract [`thread-tools-v1.md`](thread-tools-v1.md#ask-agent)): an agent the thread's agent asked with `ask_agent` is a
 > `SUBAGENT_STARTED` named after it, `sub-ask-<n>`, nested by `parentSubagentRunId` under the one that asked, with a
 > `vymalo.ask` activity; see [Asked agents as subagents](#asked-agents-as-subagents).
 > **Child sessions are subagents** (2026-11-19, [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md),
@@ -185,14 +185,14 @@ gets everything.
 |---|---|---|
 | `user_message{text, mentions?}` | No run open | Open a run. Viewer: `TEXT_MESSAGE_START{messageId, role:"user", metadata:{"vymalo.actor", "vymalo.at", "vymalo.mentions"?}}` → `TEXT_MESSAGE_CONTENT{delta:text}` → `TEXT_MESSAGE_END` |
 | `user_message` | Run open (a person sent while the agent works, [ADR 0036](../decisions/0036-sending-while-an-agent-works.md)) | The open run ends and the message opens its own: any open text message ends (a live draft as abandoned), `SUBAGENT_FINISHED{outcome:{type:"suspended"}}` (no `interruptIds`: nobody is asked) for the open invocation, `STATE_SNAPSHOT` (the thread's state, unchanged), `RUN_FINISHED{outcome:{type:"success"}}`; then `RUN_STARTED{runId: the message's, else "run-<seq>"}` → `STATE_SNAPSHOT` → the user triad, with `vymalo.delivery` (when the log says how it was delivered) and `vymalo.mentions` (when the message mentions agents) in the `START`'s metadata. The agent's next event re-opens the same invocation (`SUBAGENT_STARTED` under the same id), as after an answered question. See [Sending while an agent works](#sending-while-an-agent-works) |
-| `agent_message{messageId, text, final:true, purpose?, via?}` | — | `SUBAGENT_STARTED{subagentRunId, name:agentId, metadata:{"vymalo.actor", "vymalo.at"}}` if no invocation is open; then `TEXT_MESSAGE_START{messageId, role:"assistant", name:agentId, subagentRunId, metadata:{"vymalo.actor", "vymalo.purpose"?, "vymalo.via"?}}` → `CONTENT` → `END`. `purpose` and `via` are [what the words are for](#the-agents-words): a member of the metadata each when the event says, none when it does not |
+| `agent_message{messageId, text, final:true, purpose?, via?}` | — | `SUBAGENT_STARTED{subagentRunId, name:agentId, metadata:{"vymalo.actor", "vymalo.at"}}` if no invocation is open; then `TEXT_MESSAGE_START{messageId, role:"assistant", name:agentId, subagentRunId, metadata:{"vymalo.actor", "vymalo.purpose"?, "vymalo.via"?}}` → `CONTENT` → `END`. `purpose` and `via` are [what the words are for](#the-agent-s-words): a member of the metadata each when the event says, none when it does not |
 | `agent_message{messageId, text, final:true}` of a stream whose [live text](#live-text) is open | — | No `START`: the live message is already open. `TEXT_MESSAGE_CONTENT{delta: what was not said yet, metadata:{"vymalo.live":{offset, final:true}}}` → `TEXT_MESSAGE_END{metadata:{"vymalo.live":{final:true}}}`, which keeps the resume point |
 | `agent_message{final:false}` (cumulative partial) — **legacy** | — | First partial: `START` + `CONTENT(text)`. A later partial or final that extends the text: `CONTENT(suffix)`, plus `END` on final. A partial that does not extend it: a new message, id `<id>~<seq>` (question 14, closed). The orchestrator no longer logs partials: what an agent says while it writes is [live text](#live-text), and the log holds the final message. A log written before still reads this way. |
 | `agent_reasoning{messageId, text, truncated?}` ([ADR 0044](../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md)) | — | `SUBAGENT_STARTED` if the invocation is not open, any open text message ends, then the five [reasoning](#reasoning) events of `messageId` (`REASONING_START` → `REASONING_MESSAGE_START{role:"reasoning"}` → `REASONING_MESSAGE_CONTENT{delta:text}` → `REASONING_MESSAGE_END` → `REASONING_END`), each with `subagentRunId`, before the turn's words. A `truncated` text ends with the line `[the rest of the reasoning was not kept]`. The same `messageId` twice is said once |
 | `agent_status{working, detail?}` | — | `ACTIVITY_SNAPSHOT{messageId:"evt-n", activityType:"vymalo.status", content:{status, detail?}, subagentRunId}`, then a `STATE_SNAPSHOT` if the thread moved to `working` (a run that this event opens already says `working`) |
-| `agent_status{input_required \| auth_required, detail}` | Followed by `thread_state{blocked}` | The [status words](#the-agents-words), then the status activity **without** `detail`, then `SUBAGENT_FINISHED{outcome:{type:"suspended", interruptIds:["int-n"]}}` |
+| `agent_status{input_required \| auth_required, detail}` | Followed by `thread_state{blocked}` | The [status words](#the-agent-s-words), then the status activity **without** `detail`, then `SUBAGENT_FINISHED{outcome:{type:"suspended", interruptIds:["int-n"]}}` |
 | `thread_state{blocked}` | After input or auth required | `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"interrupt", interrupts:[{id:"int-n", reason:"input_required" \| "auth_required", message:detail, subagentRunId, responseSchema}]}}` |
-| `agent_status{completed, detail?}` + `thread_state{done}` | — | The [status words](#the-agents-words), if any → status activity without `detail` → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"success"}}` |
+| `agent_status{completed, detail?}` + `thread_state{done}` | — | The [status words](#the-agent-s-words), if any → status activity without `detail` → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"success"}}` |
 | `agent_status{failed, detail}` + `thread_state{failed}` | — | Status activity (with `detail`: a failure stays an error, not a message) → `SUBAGENT_ERROR{message:detail, code:"agent_failed"}` → `STATE_SNAPSHOT` → `RUN_ERROR{message, code:"agent_failed"}` |
 | `agent_status{canceled}` + `thread_state{cancelled}` | — | Status activity → `SUBAGENT_FINISHED{result:{status:"canceled"}}` (1.0 has no cancelled subagent outcome; open question 16) → `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"cancelled"}}` |
 | `thread_state{cancelled}` alone | Cancelled before the agent started | `RUN_FINISHED{outcome:{type:"cancelled"}}` |
@@ -299,13 +299,13 @@ does any log written before the field existed. The projection puts it on the mes
 | `agent_message` | `TEXT_MESSAGE_START.metadata` |
 |---|---|
 | `purpose: "working"` | `{"vymalo.actor", "vymalo.purpose": "working"}` |
-| `purpose: "answer"` | `{"vymalo.actor", "vymalo.purpose": "answer"}`, and `"vymalo.via": "turn_output"` when `via` is `turn_output` (the agent announced it with the [`turn_output` tool](thread-tools-v1.md#turn_output), below) |
+| `purpose: "answer"` | `{"vymalo.actor", "vymalo.purpose": "answer"}`, and `"vymalo.via": "turn_output"` when `via` is `turn_output` (the agent announced it with the [`turn_output` tool](thread-tools-v1.md#turn-output), below) |
 | no `purpose` | `{"vymalo.actor"}`, as before |
 
 - **A generic AG-UI client reads today's transcript**: the working sentences and the answer are all assistant
   messages, in order. A screen that knows the key can keep the answer in the conversation and put the working text with
   the steps. The web does: one answer per turn in the chat, the rest as notes among the steps in
-  its Activity tab ([`web/README.md`](../../web/README.md#the-answer-and-the-working-text)). The words stated on a status with no stream marker are the [status words](#the-agents-words) above, `st-<seq>`,
+  its Activity tab ([`web/README.md`](../../web/README.md#the-answer-and-the-working-text)). The words stated on a status with no stream marker are the [status words](#the-agent-s-words) above, `st-<seq>`,
   and carry no purpose: an agent that does not state its reply as a stream gets the screen's fallback (in an ended turn
   the last text is the answer).
 - **Reasoning is `REASONING_*`, not text** ([ADR 0044](../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md), 2026-10-05;
@@ -316,7 +316,7 @@ does any log written before the field existed. The projection puts it on the mes
 
 **The announced answer** ([ADR 0031](../decisions/0031-working-text-and-the-turns-answer.md), amendment of 2026-10-02).
 An agent that lists `thread-tools/v1` can say "this is my answer" before it is done, with the
-[`turn_output`](thread-tools-v1.md#turn_output) tool. The log gets an `agent_message` with `purpose: "answer"` and
+[`turn_output`](thread-tools-v1.md#turn-output) tool. The log gets an `agent_message` with `purpose: "answer"` and
 `via: "turn_output"`, and the message's `START` says both (`vymalo.purpose: "answer"`, `vymalo.via: "turn_output"`). The
 rules a screen applies where it draws the turn:
 
@@ -391,7 +391,7 @@ ignores them still reads every reply, whole, when the log says it.
 ### Reasoning
 
 What the agent's model *thought* before it answered ([ADR 0044](../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md),
-fed by the `kind: "reasoning"` chunks of [`text-stream/v1`](text-stream-v1.md#6-reasoning)). The log holds it **once**, as an
+fed by the `kind: "reasoning"` chunks of [`text-stream/v1`](text-stream-v1.md#_6-reasoning)). The log holds it **once**, as an
 `agent_reasoning` event (at most 32 KiB, `truncated` when cut), and AG-UI says it with the protocol's own reasoning events, which
 the reference client reads as a message of `role: "reasoning"` (verified 2026-10-05: <https://docs.ag-ui.com/concepts/reasoning> and
 `@ag-ui/client` 1.0.0, `tools/agui-conformance`). It is **not** an assistant message, not the answer, not working text and not what a fork
@@ -444,7 +444,7 @@ and says what it is, so a client renders a card without parsing agent output:
 | `kind` | When | Fields added |
 |---|---|---|
 | `branch` | `branch {repository, branch, commit}` that the gate accepts | `repository` (`host/owner/name`, lower case), `branch`, `sha` (full), `shortSha` (7) |
-| `checks` | `checks {passed, commit, summary?, findings?, base_commit?}` that the gate accepts (a finding is a string or an object `{check?, message?, preexisting?, base_commit?}`, see [The agent's `checks` artifact](#the-agents-checks-artifact)) | `passed`, `sha`, `shortSha`. The findings stay in `text` and in the `vymalo.check` card |
+| `checks` | `checks {passed, commit, summary?, findings?, base_commit?}` that the gate accepts (a finding is a string or an object `{check?, message?, preexisting?, base_commit?}`, see [The agent's `checks` artifact](#the-agent-s-checks-artifact)) | `passed`, `sha`, `shortSha`. The findings stay in `text` and in the `vymalo.check` card |
 | `pull_request` | `pull_request` (a data part with `url`, `number?`, `repository?`, `branch?`) or "Pull request" (a url part), with an `https` URL of at most 2 KiB on one line, without a backslash, whose authority is a host without user information (no `@`) | `url`, `number?` and `repository?` **read from the URL** (the digits after `/pull/`, `/pulls/` or `/merge_requests/`, and the `host/owner/name` before it; both absent when the URL is not of that shape), never from the payload: a payload `repository` or `number` that disagrees with the URL is ignored, so a card cannot put a trusted label on a link that goes elsewhere. `branch?` is the payload's |
 | `file` | A file an agent handed over that the artifact store **kept** ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md): the event's `file`) | `href` (relative to the API's origin, the route the **viewer** reads the file by: `/api/threads/<thread>/artifacts/<sha256>` for the owner ([`getArtifact`](chat-api.yaml)), and for a reader of a share link the link's own, `/api/shared/<token>/artifacts/<sha256>` signed in ([`getSharedArtifact`](chat-api.yaml)) or `/api/public/shared/<token>/artifacts/<sha256>` for anybody ([`getPublicSharedArtifact`](chat-api.yaml)), see [Reading a shared thread](#reading-a-shared-thread)), `sha256` (64 lower-case hex digits), `size` (bytes), `filename?` (the agent's name, cleaned; untrusted text), `preview`: `"image"` (png, jpeg, gif, webp, svg: the API serves it inline, an SVG sanitized), `"text"` (`text/plain`, `application/json`) or `null` (an attachment only). `mimeType` is the type the worker **sniffed** |
 | `file` | Anything else, including a `branch` or `checks` artifact the gate cannot use, a pull request without a usable URL and a file that was **not** kept (no `href`: it is followed by an `error` that says why, [ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)) | nothing |
@@ -914,7 +914,7 @@ stateDiagram-v2
 
 **Built** (2026-10-03, [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md), MVP slice 10, PR-21). The agent a
 thread is addressed to may ask an agent the person mentioned to do part of the work, with the thread tool
-[`ask_agent`](thread-tools-v1.md#ask_agent). The consumer sees the asked agent as a **subagent** of the one that asked, named
+[`ask_agent`](thread-tools-v1.md#ask-agent). The consumer sees the asked agent as a **subagent** of the one that asked, named
 after it, for as long as the ask runs, and a `vymalo.ask` activity that says what was asked and how it ended.
 
 ```mermaid
@@ -1161,7 +1161,7 @@ stateDiagram-v2
   to the subagent the path names while that is open (a sub-agent step's `sub-step-<seq>`, an ask's `sub-ask-<n>`), else to the
   agent's invocation, else to the run. Labels and numbers only.
 - **`vymalo.usage_total`.** One per `model_usage_total`, the same way: `value` is `{job, agent, task, path?, totals, sandbox?, by, at}`.
-  `sandbox` is the time the run's commands used in the environment they ran in ([`usage-v1.md`](usage-v1.md#5-the-sandbox)): present only when
+  `sandbox` is the time the run's commands used in the environment they ran in ([`usage-v1.md`](usage-v1.md#_5-the-sandbox)): present only when
   the agent sent a valid one, `{environment}` alone when nothing was measured (not a zero), and **never part of the run's `usage`**: AG-UI's
   `TokenUsage` has no member for it, so `RUN_FINISHED.usage` is the tokens alone. A client that does not know it loses nothing.
   An asked agent's totals are said under its `sub-ask-<n>`: **an ask's sub-run carries its own usage**, as AG-UI says of an agent
@@ -1284,7 +1284,7 @@ server, then a `PUT` that adds another and drops the first), `agui/tools-attach.
 ### A relayed call is a step
 
 A call of a relayed tool (`<server>__<tool>` on the thread's endpoint) is reported by the orchestrator as **one step**
-([`steps-v1.md`](steps-v1.md#6-steps-the-orchestrator-reports-itself)), so it is the same two `agent_step` events and the same
+([`steps-v1.md`](steps-v1.md#_6-steps-the-orchestrator-reports-itself)), so it is the same two `agent_step` events and the same
 `vymalo.step` activities as any tool step ([Nested steps](#nested-steps)), with what makes it recognisable:
 
 | Member | Value |
@@ -1426,7 +1426,7 @@ each holds.
 side; the composer is a later pull request). The contract, with the offsets, the checks and what the addressed agent is
 sent, is [`mentions-v1.md`](mentions-v1.md); this section says what the AG-UI binding does with it.
 
-- **In:** `forwardedProps["vymalo.mentions"]` on the run that carries the message (the [inbound table](#inbound-ag-ui--core-input)).
+- **In:** `forwardedProps["vymalo.mentions"]` on the run that carries the message (the [inbound table](#inbound-ag-ui-→-core-input)).
   The references are the person's, read as sent: the label is the text at its offsets, **UTF-16 code units**, and the
   orchestrator never rewrites the text.
 - **Log:** `user_message.mentions`, the references exactly as sent, written only after the checks. A message sent while a job
@@ -1451,7 +1451,7 @@ TEXT_MESSAGE_START {messageId, role: "user", metadata: {"vymalo.actor": {...},
 orchestrator and web). The contract, with the card, the activation, the agent's duties and the refusals, is
 [`access-tier-v1.md`](access-tier-v1.md); this section says what the AG-UI binding does with it.
 
-- **In:** `forwardedProps["vymalo.tier"]` on the run that carries the message (the [inbound table](#inbound-ag-ui--core-input)).
+- **In:** `forwardedProps["vymalo.tier"]` on the run that carries the message (the [inbound table](#inbound-ag-ui-→-core-input)).
   The person picks it for each message; the web remembers the pick in the browser and sends it with every message of the thread.
 - **Log:** `user_message.tier`, the tier the message was sent under (named, continued from the job or decided for a capped role), written only after the checks; `user_message.tierCap` when a cap applied and the agent's card offered no tier then (the dispatcher decides the tier from the live card at every send); `mentions[].tierCap`, the person's cap on a mentioned agent; and `ui_action.tier` / `ui_action.tierCap`, what an action went out under. The agent's echo is `agent_status.data.tier`.
 - **Out:** `TEXT_MESSAGE_START.metadata["vymalo.tier"]` of the user message, so a reload and another tab show the badge. A run
@@ -1463,7 +1463,7 @@ orchestrator and web). The contract, with the card, the activation, the agent's 
   was. What the orchestrator sends on the thread's behalf (the gate's rework, the delegation of an A2UI action, an answer to a
   blocked job) goes under the tier of the person's last message of the job, so the web sends nothing for them; an answer or an
   action given without a tier continues the last choice, capped by the person's role and rounded down to what the card honours
-  ([`access-tier-v1.md`](access-tier-v1.md#6-the-orchestrators-own-messages-and-sub-agents)).
+  ([`access-tier-v1.md`](access-tier-v1.md#_6-the-orchestrator-s-own-messages-and-sub-agents)).
 
 ```
 POST /agui/agents/coder   forwardedProps: {"vymalo.tier": "plan"}
@@ -1898,7 +1898,7 @@ is what the orchestrator does with it. The renderer, and the rules that only a r
 ([ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md), built 2026-11-20) has its contract in
 [`ui-catalog-v2.md`](ui-catalog-v2.md): the card entry `https://a2ui.org/a2a-extension/a2ui/v1.0`,
 `a2uiRendererCapabilities` keyed `"1.0"`, no surface in a turn without them, and actions with five members only
-([section 5](ui-catalog-v2.md#5-to-the-agent-the-extension)). A `v0.9.1` agent — the release this system spoke before
+([section 5](ui-catalog-v2.md#_5-to-the-agent-the-extension)). A `v0.9.1` agent — the release this system spoke before
 the cutover — is a card that speaks no A2UI to this build: it is sent no capabilities and draws nothing.
 
 ### Facts this rests on
@@ -2015,7 +2015,7 @@ The projector keeps, per surface, the operations received so far. A snapshot car
 client that holds only the last snapshot of a surface renders it completely, and a viewer that connects
 late or resumes with a cursor gets the same story. A surface whose operations are not `"1.0"` — one of a thread from
 before the cutover — is relayed as the log holds it, so a client can show it as made by an earlier version, and an action
-on it is refused ([Surfaces from before the cutover](ui-catalog-v2.md#9-surfaces-from-before-the-cutover)). A surface keeps only the operations that are **alive**: a `createSurface` for a surface the projector holds starts it over,
+on it is refused ([Surfaces from before the cutover](ui-catalog-v2.md#_9-surfaces-from-before-the-cutover)). A surface keeps only the operations that are **alive**: a `createSurface` for a surface the projector holds starts it over,
 so the operations before it are dropped, and a `deleteSurface` ends the surface. The alive operations are capped at
 256 KiB (`MAX_SURFACE_BYTES`, 262,144 bytes); past that the viewer gets one `vymalo.error` line, the surface keeps its last good snapshot and
 its later updates are not shown, until a `createSurface` starts it over (then it is shown again if the new copy fits). The projector also knows which surfaces the thread has and the dialect
@@ -2032,7 +2032,7 @@ every replay alike: it holds the alive operations and not the dead copies before
 ([`history.md`](history.md) rule 7: a client discards what it stored under another version). It rose to **3** at the A2UI v1.0
 cutover: a surface whose operations are not `"1.0"` — one of a thread from before the cutover — is now relayed as the log holds it,
 where 2 skipped it, so the frames of a log that already held such a surface changed ([Surfaces from before the
-cutover](ui-catalog-v2.md#9-surfaces-from-before-the-cutover)). A payload
+cutover](ui-catalog-v2.md#_9-surfaces-from-before-the-cutover)). A payload
 that names several surfaces is cut per surface, so each snapshot names one surface and the client can skip its dead part. A copy in a later run is the live one and the
 earlier says it was updated, except for a **plan** (`surfaceId` starting with `plan-`), whose copies are matched by `surfaceId` and drawn once per
 stretch of the thread between two messages of a person, so that a plan the person answered is never rewritten on the page (rule 4 of the catalog's rule).

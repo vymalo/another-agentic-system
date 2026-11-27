@@ -37,7 +37,7 @@ Build with `pnpm build` (or `build:debug`): a bare `tauri build` has no `connect
    DPoP-bound tokens, the redirect `http://127.0.0.1/callback` (Keycloak matches it with any port: RFC 8252 section 7.3) and the web origins
    `tauri://localhost`, `http://tauri.localhost` and `https://tauri.localhost` (what lets the page call the token endpoint).
 2. The chart in browser mode, with `orchestrator.cors.allowedOrigins: [tauri://localhost, http://tauri.localhost]`
-   ([`deploy/chart/README.md`, "Calls from the desktop app"](../../deploy/chart/README.md#calls-from-the-desktop-app)), and an orchestrator image
+   ([`deploy/chart/README.md`, "Calls from the desktop and mobile apps"](../../deploy/chart/README.md#calls-from-the-desktop-and-mobile-apps)), and an orchestrator image
    that has `server.cors`.
 
 ## Signing in

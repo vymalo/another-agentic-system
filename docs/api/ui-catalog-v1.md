@@ -39,7 +39,7 @@ Facts about A2UI and MCP are marked *verified* (with a date and a source) or *un
 
 | Part | Does |
 |---|---|
-| **Web** | Owns the catalog (`catalog.json`, its `version` and digest), sends it to the orchestrator at conversation start and when a newer one exists, validates every surface against it and refuses visibly what it cannot draw ([the web's rules](#8-what-the-web-does-with-a-surface)). |
+| **Web** | Owns the catalog (`catalog.json`, its `version` and digest), sends it to the orchestrator at conversation start and when a newer one exists, validates every surface against it and refuses visibly what it cannot draw ([the web's rules](#_8-what-the-web-does-with-a-surface)). |
 | **Orchestrator** | Checks the catalog as a document (it does not interpret it), records it once per digest as a `ui_catalog` event, tells the agent about the thread's current catalog on each message, and serves the refetch (`get_ui_catalog` on [the thread tools](thread-tools-v1.md)). |
 | **Agent** | Lists the extension in its card, reads the catalog, turns it into something its model can call (one tool per component, or one `show` tool whose schema is the catalog), emits A2UI surfaces that name our `catalogId`, and refetches when its copy may be stale. |
 
@@ -103,7 +103,7 @@ v1. Rules for the document:
   `weight` (a number, A2UI's layout hint): it is in `Text`, `Column`, `Choices`, `Cards`, `Mermaid`, `Image` and `Stack` and in no other component,
   so a `Checklist`, a `Timeline`, a `Table`... refuse it as they refuse any member nobody has.
 - A length is counted in **Unicode code points**, not in UTF-16 units or bytes (a character outside the Basic Multilingual Plane counts once:
-  `maxLength: 200` takes 200 emoji). The sizes of a surface (64 KiB, 400 components) are those of [section 8](#8-what-the-web-does-with-a-surface).
+  `maxLength: 200` takes 200 emoji). The sizes of a surface (64 KiB, 400 components) are those of [section 8](#_8-what-the-web-does-with-a-surface).
 
 ### Version 1: Text and Column
 
@@ -1472,7 +1472,7 @@ for `rank`: a one-element list on a `number` is a refused question, not a form t
 
 A `number` is **a decimal string, never a JSON number**, in the question (`minValue`, `maxValue`, `step`, `default`) and in
 the answer. The reason is the wire: an A2A server holds a number of a message's metadata as a double
-([section 5](#5-to-the-agent-the-extension)), so `0.1`, `12.50` or a number of sixteen digits would not come out as it went in. A
+([section 5](#_5-to-the-agent-the-extension)), so `0.1`, `12.50` or a number of sixteen digits would not come out as it went in. A
 string comes out as it went in, and the receiver reads it with its own decimal type.
 
 | | Grammar | Notes |
@@ -1693,7 +1693,7 @@ Surfaces (`surfaces`: the thread's catalog version, a question, and what a clien
 
 #### Versions and degradation
 
-**How an agent learns what the screen can ask.** From the catalog of the thread, in the two ways [section 5](#5-to-the-agent-the-extension)
+**How an agent learns what the screen can ask.** From the catalog of the thread, in the two ways [section 5](#_5-to-the-agent-the-extension)
 already gives it: the `version` of the `ui-catalog/v1` metadata of every message (or of `get_ui_catalog`), and the catalog itself,
 whose `Choices` schema lists the `type`s it takes. The agent may use a kind when the version is **7 or more**; testing the
 `enum` is the same test and also covers a later version that adds more. A thread with no catalog, or with a version below 7,
@@ -1717,7 +1717,7 @@ answer itself, by the same rules:
 **The version limits the agent, not the client**: a client of version 7 draws a kind whatever version its thread has recorded (the case `"threadVersion": 6` of `surfaces`).
 
 **When a client meets a kind it does not know** (an old client opening a thread that moved on, or a client of version 7 opening
-a later one's), it refuses the **whole surface**, visibly, as [section 8](#8-what-the-web-does-with-a-surface) says. **This is the `schema` refusal and never the "needs a newer version" placeholder**: that placeholder is for a *component* the client lacks (rule 3 of section 8), and a `type` is a member of a component the client has, so an unknown `type` is refused as `schema` even when the thread's version is higher (the case `"type": "slider"` of `surfaces`): a client
+a later one's), it refuses the **whole surface**, visibly, as [section 8](#_8-what-the-web-does-with-a-surface) says. **This is the `schema` refusal and never the "needs a newer version" placeholder**: that placeholder is for a *component* the client lacks (rule 3 of section 8), and a `type` is a member of a component the client has, so an unknown `type` is refused as `schema` even when the thread's version is higher (the case `"type": "slider"` of `surfaces`): a client
 of version 6 draws the refusal of rule `schema` whose reason names the place of the `type` (`questions.1.type`), with the raw operations. It
 **never guesses** a control (a text box for an unknown kind would send an answer the receiver expects in another shape).
 The person then answers **in words, by a message**. So the one rule on the agent that asks with these kinds is: **the
@@ -1727,7 +1727,7 @@ a version 6 form that could not be drawn.
 
 #### The whole catalog
 
-The page holds the schema of `Choices` and the five components' vocabulary is in the sections above; **the whole catalog is one file**, `web/src/features/chat/lib/a2ui/catalog/catalog.json` of this repository, with its version and digest in `catalog.lock.json` next to it (version 8: `sha256:22c333102bed676791dc9d47f21fc0a39be6e5062ef2c52f5a599ecca1b8341d`). At run time it is delivered to an agent in the message (`inlineCatalogs`) or by `get_ui_catalog` ([section 6](#6-the-refetch)). The digest is computed as [section 2](#2-digest-version-and-the-lock) says; **a client of the catalog does not need to compute it**: the screen that owns the catalog and the orchestrator that records it do, and a reader that wants to know whether its copy is current compares the `digest` it was sent.
+The page holds the schema of `Choices` and the five components' vocabulary is in the sections above; **the whole catalog is one file**, `web/src/features/chat/lib/a2ui/catalog/catalog.json` of this repository, with its version and digest in `catalog.lock.json` next to it (version 8: `sha256:22c333102bed676791dc9d47f21fc0a39be6e5062ef2c52f5a599ecca1b8341d`). At run time it is delivered to an agent in the message (`inlineCatalogs`) or by `get_ui_catalog` ([section 6](#_6-the-refetch)). The digest is computed as [section 2](#_2-digest-version-and-the-lock) says; **a client of the catalog does not need to compute it**: the screen that owns the catalog and the orchestrator that records it do, and a reader that wants to know whether its copy is current compares the `digest` it was sent.
 
 #### Answered forms
 
@@ -2111,7 +2111,7 @@ the shown things above the deck.
 ##### Rules for what a question shows
 
 Checked by the web's validator and by the agent before it asks. Each is a refusal of the **whole surface** (never half drawn), with the
-rule name of [section 8](#8-what-the-web-does-with-a-surface), except the first:
+rule name of [section 8](#_8-what-the-web-does-with-a-surface), except the first:
 
 | Result | When |
 |---|---|
@@ -2150,7 +2150,7 @@ two, as they say.
 
 A `question` of version 7 has no `show` (its schema refuses every member nobody has), so a client that only knows version 7 meets `show`
 as it meets any member it does not know: **the whole surface is refused, rule `schema`**, whose reason names the place, `questions.0.show`,
-with the raw operations ([section 8](#8-what-the-web-does-with-a-surface)); it **never ignores** the member, for a form that hides what it
+with the raw operations ([section 8](#_8-what-the-web-does-with-a-surface)); it **never ignores** the member, for a form that hides what it
 asks about is not the form the agent asked. So **an agent never sends `show` to a client of version 7**: it reads the thread's `version`
 (or whether `show` is in the schema it was given), exactly as it does for the kinds of version 7. When it wants to show something and
 cannot, it puts the words in the question's `help`, and, where it can place components in the surface, puts them **before** the
@@ -2524,7 +2524,7 @@ attaches to a thread ignores it.
   agent, are references. A request to the verifier agent carries none.
   Because "inline" means "this input made it current", it covers the first message of a thread and the first message
   after a digest change with no bookkeeping of what each agent has seen; a lost delivery is healed by the
-  [refetch](#6-the-refetch).
+  [refetch](#_6-the-refetch).
 
 ## 5. To the agent: the extension
 
@@ -2564,7 +2564,7 @@ the orchestrator's adapter and its fake agent in `orchestrator/crates/e2e/tests/
 **What the agent does with it.** Turns the catalog into model calls, emits A2UI surfaces whose `createSurface` names
 our `catalogId`, and treats the thread's digest as the version of its copy: a message whose `digest` differs from its
 copy means its copy is stale. The agent never invents a component the catalog lacks; the web refuses it
-([section 8](#8-what-the-web-does-with-a-surface)).
+([section 8](#_8-what-the-web-does-with-a-surface)).
 
 ### Choices answers
 
@@ -2615,11 +2615,11 @@ nothing else (nobody sees an asked agent's surfaces):
 | `catalogId` | the thread's `catalogId` with `/forms` appended (a trailing slash is not doubled): an https URL under the screen's own id, never fetched |
 | `version` | the thread's `version`, unchanged: an agent reads from it what a `Choices` may hold (titles, typed questions, [version 5](#version-5-questions-with-a-title-a-description-and-typed-options), and the kinds of [version 7](#version-7-more-kinds-of-question)) |
 | `components` | `{Choices: <the thread's Choices schema>}` and nothing else. From [version 8](#a-question-shows) the schema is the thread's **without `show`**: the member is taken out of the question's properties and the sentence of the component's description that offers it is cut (a `Choices` with no `show`, versions 1 to 7, is sent unchanged), because the components `show` may name are not in this catalog and nobody sees an asked agent's surface. A form of an asked agent that names `show` anyway is not read by the orchestrator, which only notes that the agent showed a surface: the surface is not drawn, the ask ends with `form` like any form, its task is cancelled (`cancel_form`) and the ledger refuses a further ask of that agent in the job (`AskRefusal::FormPending`) ([ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-11-14-third-the-forms-catalog-no-longer-offers-show)) |
-| `digest` | recomputed over the canonical JSON of the derived catalog, exactly as [section 2](#2-digest-version-and-the-lock) says; it is never the thread's digest, and nothing compares the two |
+| `digest` | recomputed over the canonical JSON of the derived catalog, exactly as [section 2](#_2-digest-version-and-the-lock) says; it is never the thread's digest, and nothing compares the two |
 
 It is derived from the thread's current catalog at every send and **never recorded**: no `ui_catalog` event, nothing on the
 ledger, the thread's current catalog stays the screen's; the same catalog gives the same forms catalog every time. It
-travels like any delivery of [section 5](#5-to-the-agent-the-extension), inline (an asked agent has no `get_ui_catalog`),
+travels like any delivery of [section 5](#_5-to-the-agent-the-extension), inline (an asked agent has no `get_ui_catalog`),
 only to a card that lists the extension and inline only to one that accepts inline catalogs: the metadata, the first
 `supportedCatalogIds` entry and the entry of `inlineCatalogs` all name the derived catalog. A thread with no catalog, or
 whose catalog has no `Choices`, sends an asked agent none, and so does a derived id that would exceed 256 bytes; that last case
@@ -2632,7 +2632,7 @@ catalog.
 
 The agent can ask for the thread's current catalog at any time with the tool `get_ui_catalog` of the orchestrator's
 per-thread MCP endpoint, the **thread tools**: the contract, the token that opens it and the tool's input and output
-are in [`thread-tools-v1.md`](thread-tools-v1.md#get_ui_catalog). The agent is meant to expose it to its model. The
+are in [`thread-tools-v1.md`](thread-tools-v1.md#get-ui-catalog). The agent is meant to expose it to its model. The
 answer is the catalog of the newest version the thread recorded, so a chat that crossed UI versions gives the agent
 the newest components.
 
@@ -2641,7 +2641,7 @@ the newest components.
 `ui_catalog` produces **no frame**. The projection folds it with the same ledger rule as the core. The
 `STATE_SNAPSHOT` carries `snapshot.thread.uiCatalog = {catalogId, version, digest}` of the current catalog, present
 only when the thread has one, so the goldens of threads without one do not change. This is how the web decides
-whether to send its catalog ([section 3](#3-from-the-web-to-the-orchestrator)) and what it does with a surface from a
+whether to send its catalog ([section 3](#_3-from-the-web-to-the-orchestrator)) and what it does with a surface from a
 newer one. The capabilities document lists the extension under `custom` when the live card lists it
 ([`agui.md`](agui.md#capabilities-document)). The wire changes are in `agui.md` (the run member, the snapshot field,
 the capabilities) and `chat-api.yaml` (the `ui_catalog` event kind and its fields).

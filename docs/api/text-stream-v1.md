@@ -6,7 +6,7 @@
   web's (the words growing on screen, [`web/README.md`](../../web/README.md#live-text)).** The adam-rs side (an agent
   that streams the model's answer) is that repository's slice; see [`mvp.md`](../mvp.md#the-new-build-order). The owner may revisit anything here.
   **Amended (2026-10-05, [ADR 0044](../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md)):** a chunk
-  may say `"kind": "reasoning"` and then carries what the model *thought*, not what it said; see [section 6](#6-reasoning).
+  may say `"kind": "reasoning"` and then carries what the model *thought*, not what it said; see [section 6](#_6-reasoning).
   Additive: a chunk with no `kind` is a reply, as before. **Roll the orchestrator out before the agents** (section 6).
 - **Decided in:** [ADR 0027](../decisions/0027-live-text-relayed-not-stored.md); the optional-extension pattern is
   [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md). It is the fifth extension of the orchestrator's
@@ -91,8 +91,8 @@ The orchestrator names the URI in the `A2A-Extensions` header of the requests th
 (a resubscribe after a dropped stream). An agent that streams only when activated sends no chunks to a plain client.
 
 Chunks are read as **data** whether or not the request activated the extension, as steps are
-([`steps-v1.md`](steps-v1.md#2-activation)): a chunk that validates is a chunk. The words that state a stream
-([section 4](#4-the-whole-text)) are read the same way, so a stream, a resubscribe and a poll agree.
+([`steps-v1.md`](steps-v1.md#_2-activation)): a chunk that validates is a chunk. The words that state a stream
+([section 4](#_4-the-whole-text)) are read the same way, so a stream, a resubscribe and a poll agree.
 
 ## 3. Chunks
 
@@ -118,7 +118,7 @@ A chunk is a `TaskArtifactUpdateEvent` whose **artifact** says it belongs to a s
 | `artifact.parts` | yes | **Exactly one** text part: the piece. It may be empty on the last chunk. |
 | `artifact.extensions` | no | The URI, as A2A has artifacts say which extensions contribute to them. Not required for reading. |
 | `artifact.metadata[URI].offset` | yes | The **UTF-8 byte offset** of the piece in the whole text of the stream: 0 for the first, then the sum of the lengths of the pieces before it. A non-negative whole number, written as an integer (an A2A SDK may hand it on as `10.0`: a whole number is read either way). |
-| `artifact.metadata[URI].kind` | no | **`"reasoning"`** when the stream is the model's reasoning ([section 6](#6-reasoning)); absent for a reply. Any other value is a kind this reader does not know: the chunk is ignored (neither a reply nor a plain artifact). Added 2026-10-05. |
+| `artifact.metadata[URI].kind` | no | **`"reasoning"`** when the stream is the model's reasoning ([section 6](#_6-reasoning)); absent for a reply. Any other value is a kind this reader does not know: the chunk is ignored (neither a reply nor a plain artifact). Added 2026-10-05. |
 | `artifact.metadata[URI].abandoned` | no | `true` on the last chunk when the generation failed: the stream ends and **no whole text follows**. |
 | `append` | A2A's own | `false` on the first chunk, `true` after. |
 | `lastChunk` | A2A's own | `true` on the last chunk. |
@@ -131,7 +131,7 @@ A chunk is a `TaskArtifactUpdateEvent` whose **artifact** says it belongs to a s
 - Agents SHOULD send a chunk at most every 100 ms or every 200 bytes, whichever comes first, and not one character at a
   time: the orchestrator merges what it gets, but the wire is the agent's.
 - **Chunks are transient.** They are never in the `artifacts` of a `GetTask`, and an agent does not replay them to a
-  client that resubscribes. A client that wants the reply after the fact reads the whole text ([section 4](#4-the-whole-text)).
+  client that resubscribes. A client that wants the reply after the fact reads the whole text ([section 4](#_4-the-whole-text)).
 
 ## 4. The whole text
 
@@ -158,7 +158,7 @@ text that is not blank:
    status **keeps its `detail`** (an interrupt and the verifier's summary read it; the projection says words that equal the
    invocation's last final message only once).
 
-A status that carries a step ([`steps-v1.md`](steps-v1.md#3-the-report)) is a step and its text is its label: the marker is
+A status that carries a step ([`steps-v1.md`](steps-v1.md#_3-the-report)) is a step and its text is its label: the marker is
 ignored. A marker that does not validate is ignored and the status is read as plain A2A.
 
 **What the words are for** ([ADR 0031](../decisions/0031-working-text-and-the-turns-answer.md)). The status the text is
@@ -167,9 +167,9 @@ stated on is what says it, so the agent sends nothing more: the orchestrator mar
 `auth_required`. The words of any other status (a `failed` one) are not marked, and neither is a plain A2A `Message`.
 An agent therefore chooses the status each stream is stated on with some care: the words before a tool call on a
 `working` status, the reply that ends the turn on the status that ends it. A screen shows the answer in the
-conversation and the working text with the steps ([`agui.md`](agui.md#the-agents-words)).
+conversation and the working text with the steps ([`agui.md`](agui.md#the-agent-s-words)).
 
-An agent that lists `thread-tools/v1` can also announce its answer with the [`turn_output`](thread-tools-v1.md#turn_output)
+An agent that lists `thread-tools/v1` can also announce its answer with the [`turn_output`](thread-tools-v1.md#turn-output)
 tool. From then on the orchestrator writes **everything else the agent says in that turn as `working`**, whatever status
 the stream was stated on, including the words of the status that ends the turn (they are kept, as working text), and does
 not say the same words twice: an agent whose `completed` states the answer it announced is read once.
@@ -195,7 +195,7 @@ message id with the log's final message: see [Live text](agui.md#live-text).
 
 *Added 2026-10-05, [ADR 0044](../decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md); the agent side is adam-rs
 ADR 0020.* A model in thinking mode writes its reasoning before its answer. An agent that lists this extension can send it as
-chunks of **its own stream**, in the shape of [section 3](#3-chunks) with one more member in the metadata entry:
+chunks of **its own stream**, in the shape of [section 3](#_3-chunks) with one more member in the metadata entry:
 
 ```json
 {"taskId": "task-1", "contextId": "ctx-1",

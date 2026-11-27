@@ -7,7 +7,7 @@ sidebarTitle: "0044 · Reasoning beside the answer"
 - **Status:** accepted (2026-10-05), decided on the owner's delegation ("the owner sees no reasoning ("thinking") in the
   chat"); the owner may revisit. Extends [ADR 0027](0027-live-text-relayed-not-stored.md) (live text is relayed, not stored;
   reasoning is the second lane of the same relay) and [ADR 0012](0012-ag-ui-user-facing-protocol.md) (the projection, and the
-  "Rejected: `REASONING_*`" bullet of [`agui.md`](../api/agui.md#the-agents-words), which this replaces). The contract it
+  "Rejected: `REASONING_*`" bullet of [`agui.md`](../api/agui.md#the-agent-s-words), which this replaces). The contract it
   amends is [`text-stream-v1.md`](../api/text-stream-v1.md) (note of 2026-10-05, same change set), and the agent side is
   adam-rs ADR 0020 (`docs/decisions/0020-reasoning-is-streamed-beside-the-answer-and-never-stored.md` of `vymalo/another-adam-rs`).
   It adds to the log a kind the log did not have: the one deliberate change of the persisted model, and the reason for
@@ -34,7 +34,7 @@ Facts the design rests on, each *verified 2026-10-05* from the page or the code 
   `"kind": "reasoning"`, in an artifact of its own named `reasoning`, and no whole text is ever stated for it. A reader that
   does not know `kind` would read those chunks as a reply: so the orchestrator is rolled out first (*Consequences*).
 * **What a reasoning looks like in size.** A model that thinks for a minute writes a few thousand words. The live relay carries
-  the stream like a reply's, bounded like it (64 KiB refresh, pieces of at most 6 KiB, [`text-stream-v1.md`](../api/text-stream-v1.md#5-what-the-orchestrator-does-with-a-chunk)).
+  the stream like a reply's, bounded like it (64 KiB refresh, pieces of at most 6 KiB, [`text-stream-v1.md`](../api/text-stream-v1.md#_5-what-the-orchestrator-does-with-a-chunk)).
   The log must not hold more than a bound that cannot fill it.
 
 ## Decision

@@ -111,10 +111,10 @@ A closed list ([ADR 0004](../decisions/0004-closed-enums-over-dyn-registry.md)),
 | `open` | The public internet, as the agent's deployment allows. **Private and link-local ranges and the cloud metadata address stay refused at every tier.** |
 
 What is outside a tier, the agent does **not** reach by another route: no mirror it was not given, no tunnel, no tool that fetches for it. The step fails, and the agent says which tier it needed
-([duty 3](#5-the-agents-duties)).
+([duty 3](#_5-the-agent-s-duties)).
 
 The tier is independent of the access tier: a person may pick `edits` and `offline`, or `plan` and `open`. Neither widens the other. The network tier never grants what the deployment's own network
-policy withheld ([section 9](#9-security)).
+policy withheld ([section 9](#_9-security)).
 
 ## 4. The message
 
@@ -162,19 +162,19 @@ orchestrator remembers nothing. It rides with whatever the other extensions put 
 
 ## 6. Sub-agents: nothing is passed down
 
-The orchestrator sends a tier only on **the person's message to the thread's agent**. It sends none on an [`ask_agent`](thread-tools-v1.md#ask_agent) child task, a verifier's task or any other task it starts
+The orchestrator sends a tier only on **the person's message to the thread's agent**. It sends none on an [`ask_agent`](thread-tools-v1.md#ask-agent) child task, a verifier's task or any other task it starts
 for an agent, nor on a message that comes through the MCP surface, a webhook or a timer. An asked agent works under its own deployment's network and its own default. The reasons are the access tier's:
 a restriction that flows down a delegation needs every agent on the way to understand it and ties the orchestrator to one vendor's idea of it.
 
 ## 7. The orchestrator
 
-The web sends the choice on the run that carries the message: `forwardedProps["vymalo.networkTier"] = "offline"` ([`agui.md`](agui.md#inbound-ag-ui--core-input)); `null` or no member means no choice. Before
+The web sends the choice on the run that carries the message: `forwardedProps["vymalo.networkTier"] = "offline"` ([`agui.md`](agui.md#inbound-ag-ui-→-core-input)); `null` or no member means no choice. Before
 **anything** is written the orchestrator checks:
 
 | Check | Refused as |
 |---|---|
 | The member is a string, one of the three | **400** |
-| The person's roles allow the tier ([section 8](#8-roles-and-the-web)) | **422** "the network tier 'open' is above what your role allows" |
+| The person's roles allow the tier ([section 8](#_8-roles-and-the-web)) | **422** "the network tier 'open' is above what your role allows" |
 | The thread's agent: its live card lists the extension and its `tiers` contain it | **422** "this agent does not take the network tier 'offline'" |
 | The card cannot be read | **503**, retryable; nothing is written |
 
@@ -198,10 +198,10 @@ shows the tier it was sent under. No screenshot yet: the web's own screens (`pnp
 
 ## 9. Security
 
-- **A tier is a promise by the agent, not a boundary the orchestrator can check.** What makes it a boundary is where the agent runs: [adam's way](#adams-way-a-sketch) puts the network between the agent's code
+- **A tier is a promise by the agent, not a boundary the orchestrator can check.** What makes it a boundary is where the agent runs: [adam's way](#adam-s-way-a-sketch) puts the network between the agent's code
   and the world. A deployment that needs a boundary gives the agent's pods no route.
 - **A tier only narrows.** It never grants what the deployment's network policy, the credentials or the forge's own rules withheld. The metadata address and private ranges are refused at every tier.
-- **Only the person's message sets it** ([section 4](#4-the-message), rule 4). The MCP surface, webhooks and timers send none.
+- **Only the person's message sets it** ([section 4](#_4-the-message), rule 4). The MCP surface, webhooks and timers send none.
 - **The servers a person attached to the thread are not governed.** They are called by the orchestrator, by the person's explicit choice ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md)),
   not by the agent's code. Open question 78 asks whether `offline` should hide them.
 - **The echo is read as one of three words.** Anything else is dropped and counted, and never fails a task.
@@ -241,7 +241,7 @@ sequenceDiagram
 
 | Place | Change |
 |---|---|
-| Orchestrator | the closed `NetworkTier` enum, the checks of [section 7](#7-the-orchestrator), `networkTier` on `user_message` and `agent_status`, the adapter that activates the extension, the dispatcher's second read of the card, `maxNetworkTier` on a role |
+| Orchestrator | the closed `NetworkTier` enum, the checks of [section 7](#_7-the-orchestrator), `networkTier` on `user_message` and `agent_status`, the adapter that activates the extension, the dispatcher's second read of the card, `maxNetworkTier` on a role |
 | [`chat-api.yaml`](chat-api.yaml), [`agui.md`](agui.md), [`config.md`](config.md), [`config.schema.json`](config.schema.json) | the event member, the inbound row and the projected metadata, `custom[<uri>]` with its params, `Me.maxNetworkTier`, `auth.roles.<role>.maxNetworkTier` |
 | Web | the chip, `Me.maxNetworkTier`, the tier on a message |
 | adam-rs | the card, the message, the echo and, for its run pods, the proxy above (its ADR) |

@@ -6,7 +6,7 @@ sidebarTitle: "0031 · Working text and the answer"
 
 - **Status:** accepted (2026-10-02), on the owner's answer of the same day: the structural rule first, the
   `turn_output` tool after it. This ADR is the rule and the marks it writes. **Amended (2026-10-02, the tool):** the
-  `turn_output` tool is built, and the rules it needs are written in [the amendment](#amendment-the-turn_output-tool-2026-10-02)
+  `turn_output` tool is built, and the rules it needs are written in [the amendment](#amendment-the-turn-output-tool-2026-10-02)
   at the end (points 2 and 6 below say what the tool changes). **Amended (2026-10-07, an answer given as an artifact):** an unnamed
   text artifact of a task that completes with nothing said is the answer, see [the amendment](#amendment-an-answer-given-as-an-artifact-2026-10-07). Extends [ADR 0012](0012-ag-ui-user-facing-protocol.md) (its status note of 2026-09-30, "the agent's words":
   what an agent says when it finishes or asks is its answer) and [ADR 0027](0027-live-text-relayed-not-stored.md)
@@ -115,7 +115,7 @@ stateDiagram-v2
   interrupt and the verifier read). Not changed here.
 - `via` was a member nothing wrote. Reserving it cost a line in the contract and spared a second change to the event.
 - Required elsewhere: the A2A adapter, the core types, the projection and the overlay, `chat-api.yaml`,
-  [`agui.md`](../api/agui.md#the-agents-words), [`text-stream-v1.md`](../api/text-stream-v1.md), the goldens (a
+  [`agui.md`](../api/agui.md#the-agent-s-words), [`text-stream-v1.md`](../api/text-stream-v1.md), the goldens (a
   `working` scenario) and the web mock. The `turn_output` tool is the amendment's.
 - *Status note, 2026-10-02 (plan 10 S6):* the web's rendering is built, as this ADR says it. One answer per turn in the
   chat, the working text as `note` rows among the steps of the Activity tab, the screen's rule for unmarked text in
@@ -153,7 +153,7 @@ the answer (the answer, then a surface drawn with `show`, then "there it is"). T
 it works as before, by the rule above). No new A2A extension and no new event: `via` was reserved for it.
 
 7. **The tool.** A built-in tool `turn_output { text }` on the thread-tools endpoint
-   ([`thread-tools-v1.md`](../api/thread-tools-v1.md#turn_output)). `text` is Markdown, 1 to 65 536 bytes (white space
+   ([`thread-tools-v1.md`](../api/thread-tools-v1.md#turn-output)). `text` is Markdown, 1 to 65 536 bytes (white space
    alone is empty); an empty or oversize text is a tool error that says so. It answers `{"delivered": true}`.
 8. **What it records.** `Input::Answer { actor, text, job, token }` (the surface does not touch the store; the thread-tools
    endpoint goes through `App::record_answer`, as a relayed step goes through `App::record_step`) appends

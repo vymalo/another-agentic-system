@@ -34,20 +34,20 @@ forms catalog of an ask, and the web's rules on a surface.
 | The document | `{catalogId, components}` | `{catalogId, protocolVersion, components}`, `protocolVersion` exactly `"1.0"` |
 | `catalogId` | `https://agents.vymalo.com/a2ui/catalogs/chat` | the same (owner, 2026-11-19) |
 | Catalog `version` | 1 to 8 | **9** onwards (owner, 2026-11-19) |
-| Digest | over the v1 document | over the v2 document, so every digest changes; [a new vector](#2-digest-version-and-the-lock) |
+| Digest | over the v1 document | over the v2 document, so every digest changes; [a new vector](#_2-digest-version-and-the-lock) |
 | The A2UI entry of the card | `https://a2ui.org/a2a-extension/a2ui/v0.9.1` | `https://a2ui.org/a2a-extension/a2ui/v1.0` |
 | A2UI capabilities on a message | `a2uiClientCapabilities` keyed `"v0.9.1"` | `a2uiRendererCapabilities` keyed `"1.0"` |
 | `version` of every A2UI message | `"v0.9.1"` | `"1.0"` |
 | The basic catalog id | `…/v0_9_1/catalogs/basic/catalog.json` | `https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json` |
 | A turn without capabilities | (no rule) | the agent draws nothing ([No capabilities, no surface](#no-capabilities-no-surface)) |
 | An action | `{version, action: {five members}}` | the same five members, `"version": "1.0"`, and nothing else ([Actions](#actions)) |
-| A surface of an earlier version | (none) | shown as made by an earlier version, its actions refused ([section 9](#9-surfaces-from-before-the-cutover)) |
+| A surface of an earlier version | (none) | shown as made by an earlier version, its actions refused ([section 9](#_9-surfaces-from-before-the-cutover)) |
 
 ## Who does what
 
 | Part | Does |
 |---|---|
-| **Web** | Owns the catalog (`catalog.json`, its `version` and digest), sends it to the orchestrator at conversation start and when a newer one exists, validates every surface against it and refuses visibly what it cannot draw ([section 8](#8-what-the-web-does-with-a-surface)). |
+| **Web** | Owns the catalog (`catalog.json`, its `version` and digest), sends it to the orchestrator at conversation start and when a newer one exists, validates every surface against it and refuses visibly what it cannot draw ([section 8](#_8-what-the-web-does-with-a-surface)). |
 | **Orchestrator** | Checks the catalog as a document (it does not interpret it), records it once per digest as a `ui_catalog` event, tells the agent about the thread's current catalog on each message, and serves the refetch (`get_ui_catalog` on [the thread tools](thread-tools-v1.md)). |
 | **Agent** | Lists this extension and A2UI v1.0 in its card, reads the catalog, turns it into something its model can call, emits A2UI v1.0 surfaces that name our `catalogId` only in a turn that offers them, and refetches when its copy may be stale. |
 
@@ -124,7 +124,7 @@ The rules of the document. The first three are new in v2; the rest are v1's.
   `weight` (a number, A2UI's layout hint): it is in `Text`, `Column`, `Choices`, `Cards`, `Mermaid`, `Image` and `Stack` and in no other component,
   so a `Checklist`, a `Timeline`, a `Table`... refuse it as they refuse any member nobody has.
 - A length is counted in **Unicode code points**, not in UTF-16 units or bytes. The sizes of a surface are those of
-  [section 8](#8-what-the-web-does-with-a-surface).
+  [section 8](#_8-what-the-web-does-with-a-surface).
 
 ### What each component means
 
@@ -1542,7 +1542,7 @@ sees a change.
 
 ## 4. In the log
 
-v1's [section 4](ui-catalog-v1.md#4-in-the-log), unchanged: the `ui_catalog` event (its data the object of section 3),
+v1's [section 4](ui-catalog-v1.md#_4-in-the-log), unchanged: the `ui_catalog` event (its data the object of section 3),
 the ledger (the current catalog and the newest 32 digests seen; a higher `version` becomes current, an older one never
 does), and the delivery (**inline** when the input made the catalog current, a **reference** otherwise, **none** without
 a catalog).
@@ -1608,7 +1608,7 @@ A card without the `ui-catalog/v2` URI gets the basic capabilities only. A card 
 capabilities at all.
 
 **Numbers in the metadata** are v1's note: an A2A server may hold them as doubles, so an agent that recomputes the digest
-of a catalog it received writes every whole number as an integer before hashing ([v1](ui-catalog-v1.md#5-to-the-agent-the-extension)).
+of a catalog it received writes every whole number as an integer before hashing ([v1](ui-catalog-v1.md#_5-to-the-agent-the-extension)).
 
 **What the agent does with it** is v1's: it turns the catalog into model calls, emits surfaces whose `createSurface` names
 our `catalogId`, treats the thread's digest as the version of its copy, and never invents a component the catalog lacks.
@@ -1650,7 +1650,7 @@ A person's gesture goes back to the agent as an A2UI v1.0 action, in a data part
   it (ADR 0013, rule 7; ADR 0075, decision 4, proposed).
 - The limits are v1's: 256 bytes for each of the three strings, 16 KiB for `context` ([`agui.md`](agui.md#actions)).
 - An action on a surface whose operations are not `"1.0"` is refused with **422** before anything is written
-  ([section 9](#9-surfaces-from-before-the-cutover)).
+  ([section 9](#_9-surfaces-from-before-the-cutover)).
 - **A Choices answer** keeps v1's `context`, `{answers: [{id, values, other?, text?}], note?}`, in question order
   ([Choices answers](ui-catalog-v1.md#choices-answers), [receiving an answer](ui-catalog-v1.md#receiving-an-answer)).
 
@@ -1663,12 +1663,12 @@ v2 document, so it carries `protocolVersion` like the thread's.
 
 ## 6. The refetch
 
-The agent asks for the thread's current catalog with `get_ui_catalog` on the [thread tools](thread-tools-v1.md#get_ui_catalog).
+The agent asks for the thread's current catalog with `get_ui_catalog` on the [thread tools](thread-tools-v1.md#get-ui-catalog).
 It answers with the v2 document in `catalog`. The tool's own input and output do not change, so `thread-tools` stays v1.
 
 ## 7. In AG-UI
 
-v1's [section 7](ui-catalog-v1.md#7-in-ag-ui), unchanged: `ui_catalog` produces no frame, and `STATE_SNAPSHOT` carries
+v1's [section 7](ui-catalog-v1.md#_7-in-ag-ui), unchanged: `ui_catalog` produces no frame, and `STATE_SNAPSHOT` carries
 `snapshot.thread.uiCatalog = {catalogId, version, digest}`. The capabilities document lists
 `custom["https://agents.vymalo.com/a2a/extensions/ui-catalog/v2"] = {}` and
 `custom["https://a2ui.org/a2a-extension/a2ui/v1.0"] = {supportedCatalogIds}` when the live card lists them
@@ -1677,7 +1677,7 @@ v1's [section 7](ui-catalog-v1.md#7-in-ag-ui), unchanged: `ui_catalog` produces 
 
 ## 8. What the web does with a surface
 
-v1's [section 8](ui-catalog-v1.md#8-what-the-web-does-with-a-surface), with A2UI v1.0 underneath. Slice S2 builds it.
+v1's [section 8](ui-catalog-v1.md#_8-what-the-web-does-with-a-surface), with A2UI v1.0 underneath. Slice S2 builds it.
 
 1. The surface's catalog is its `createSurface.catalogId`. A2UI v1.0 makes `catalogId` optional (a component then
    names its catalog with `@catalogId`); a surface that mixes catalogs is [out of scope](#out-of-scope). **A
@@ -1709,7 +1709,7 @@ surfaces in the log, and nothing is migrated:
 - **Not drawn.** A surface whose operations are not `"1.0"` is shown as a card that says it was made by an earlier version
   of the app, with its operations folded and no live control.
 - **Its actions refused.** An action on such a surface is refused with **422**, before anything is written.
-- The agents' words in the thread are untouched, and its v1 catalogs stay in its log ([section 4](#4-in-the-log)).
+- The agents' words in the thread are untouched, and its v1 catalogs stay in its log ([section 4](#_4-in-the-log)).
 
 R1 is the first release, so no released thread is affected; a thread from a test deployment shows the card.
 
@@ -1722,7 +1722,7 @@ Not in this version of the extension (ADR 0075, decision 8, and the epic's *Out 
 | The function-call messages: `callRendererFunction` / `rendererFunctionResponse`, `callAgentFunction` / `agentFunctionResponse` | No component of catalog 9 needs one; the catalog declares no function. The orchestrator refuses them as unknown operations, and the web sends no `callAgentFunction` |
 | Data-model sync (`a2uiRendererDataModel`, `sendDataModel`) | The web does not implement it; it is never sent |
 | Multi-catalog surfaces (a component whose `@catalogId` names another catalog than the surface's) | One catalog per surface, as in v1 |
-| Catalog `functions`, `instructions`, `theme`, and the composition rules `allowedParents` and `allowedChildren` | Refused in the document ([section 1](#1-the-document)); look and feel belongs to the client, and A2UI v1.0 removed `theme` |
+| Catalog `functions`, `instructions`, `theme`, and the composition rules `allowedParents` and `allowedChildren` | Refused in the document ([section 1](#_1-the-document)); look and feel belongs to the client, and A2UI v1.0 removed `theme` |
 | An agent writing inline `createSurface` (`components`, `dataModel` in it) | The web reads it; adam writes `[createSurface, updateComponents]` |
 
 ## Verified and unverified (2026-11-19)
@@ -1777,7 +1777,7 @@ The first two hashes are the ones ADR 0075 quotes. What they say:
   prefix is reserved; names follow UAX #31 (`specification/v1_0/docs/evolution_guide.md`). Every property name of
   catalog 9 is an ASCII letter followed by ASCII letters, digits or `_`, so it meets UAX #31.
 - The specification is stable: "Breaking changes go into a future major version" (`specification/v1_0/README.md`).
-- **Checked by running them:** catalog 9 against `catalog_definition.json`, the capabilities of [section 5](#5-to-the-agent-the-extension)
+- **Checked by running them:** catalog 9 against `catalog_definition.json`, the capabilities of [section 5](#_5-to-the-agent-the-extension)
   with catalog 9 inline against `renderer_capabilities.json`, and the card's `params` against
   `agent_capabilities.json#/properties/1.0`, each with no error (Python `jsonschema` 4.26.0 with the schemas above in a
   local registry).

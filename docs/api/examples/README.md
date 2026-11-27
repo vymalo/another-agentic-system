@@ -162,7 +162,7 @@ its subagent suspends with the invocation (`suspended`, no interrupt ids of its 
 the command and of the sub-agent only say their activities again, attributed to the invocation. The reference client's
 `expected/steps.json` shows the tree it holds: both steps `completed` (or `failed`), with their paths and their `startedAt`.
 
-The `working.agui.json` golden is working text and the turn's answer a viewer reads ([`../agui.md`](../agui.md#the-agents-words), ADR 0031):
+The `working.agui.json` golden is working text and the turn's answer a viewer reads ([`../agui.md`](../agui.md#the-agent-s-words), ADR 0031):
 the two assistant messages of the turn say what they are for on their `START`, `msg-3` `metadata["vymalo.purpose"]: "working"` (the sentence before
 the command) and `msg-5` `"answer"` (the reply that ends the turn), the status that repeats the answer says no more, and a
 message that is not marked has no member. The reference client reads both as plain assistant messages (`expected/working.json`).

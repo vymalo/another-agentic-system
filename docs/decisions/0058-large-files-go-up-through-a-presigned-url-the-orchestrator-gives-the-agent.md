@@ -30,7 +30,7 @@ sidebarTitle: "0058 · Large files by presigned URL"
 
   **Amended (2026-10-14, step 6d):** A5.4 is built: `orchestrator artifacts migrate --from fs --to s3`, the binary's first command, and the chart's Job for it (`orchestrator.artifacts.migrate`, **off by default**). It loads the store of the configuration and nothing else (a departure: the full loader would have
   asked the Job for the database), the Job is a hook and not a plain Job, and the exit codes, the skip rule and the stop after five failures of the bucket are the build's. Run against the in-memory store, the in-process S3 stub and a local RustFS; **not** on a cluster, and the owner's rollout is not done. See
-  [the last amendment](#amendment-2026-10-14-step-6d-the-migration-is-built-and-where-it-departs-from-a54).
+  [the last amendment](#amendment-2026-10-14-step-6d-the-migration-is-built-and-where-it-departs-from-a5-4).
 
   **Amended (2026-10-14, step 6d review, #248):** the review found that the Job ran after the switch, which loses files (a fork) and brings deleted ones back, an empty or wrongly mounted claim that counted as a success, and
   `--config` before the command refused. The Job now runs **before** the switch and once more for the delta, an empty claim is exit 66, links are failures, an upload is proven by content. Three statements of the step 6d amendment are corrected in place

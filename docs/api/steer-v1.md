@@ -86,7 +86,7 @@ The orchestrator names the URI in the `A2A-Extensions` header and in `message.ex
 - its `contextId` is that task's context (the one the agent assigned to the thread, [ADR 0055](../decisions/0055-the-agent-assigns-the-a2a-context.md); an older thread's own id).
 
 An agent MUST NOT take a `taskId` message to a working task as a steer unless the request activated the extension: without
-it the message is refused ([section 4](#4-refusals)), as the specification leaves an unextended one undefined.
+it the message is refused ([section 4](#_4-refusals)), as the specification leaves an unextended one undefined.
 
 ## 3. The message
 
@@ -114,7 +114,7 @@ It carries **no metadata of its own**: the request, not the message, says it is 
 **What the agent does.**
 
 1. It accepts the message only when the task is `submitted` or `working` and belongs to the message's `contextId`.
-   Otherwise it refuses ([section 4](#4-refusals)).
+   Otherwise it refuses ([section 4](#_4-refusals)).
 2. It adds the message to the task's input **in the order received** and reads it at **its next step**: its next model turn,
    at the latest, never in the middle of a tool call it has started. It is the person's words to the agent, as a message
    would be at the start of a task; it is not an instruction to abort what is running (that is `CancelTask`).
