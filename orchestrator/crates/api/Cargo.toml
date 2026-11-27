@@ -29,6 +29,11 @@ url.workspace = true
 
 [dev-dependencies]
 orch-ports = { workspace = true, features = ["testkit"] }
+# The AG-UI surface and the chat conformance kit over the HTTP home (`tests/chat_kit.rs`,
+# ANR-758); `orch-testsupport` cannot be a dev-dependency here, since it depends on this crate.
+orch-surface-agui.workspace = true
+orch-chat-kit.workspace = true
+orch-agui-proto.workspace = true
 orch-auth-header.workspace = true
 orch-auth-jwt = { workspace = true, features = ["testkit"] }
 orch-artifacts-fs.workspace = true

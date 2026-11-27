@@ -15,6 +15,10 @@
 #     with the first link of the result, and says that no search server of the person's own is offered when none is (the deployment's `websearch__web_search` is not one);
 #     each turn is played with its SSE twin.
 #   * the `[mock:plan]` script of `mock-persona` (dev/agents-e2e.sh, ADR 0050): the chat calls its `planner` helper (a sub-agent of its folder), the helper's own run answers with a plan, and the chat shows it and waits for the person; each turn is played with its SSE twin.
+#   * the `[mock:plan-session]` script of `mock-persona` (dev/agents-e2e.sh, adam-rs ADR 0045 slice 6): the chat starts its `planner` as a
+#     session it keeps open (`subagent_start`, `keep_open: true`), the round's own run answers with a plan, the chat says it waits, then says
+#     the plan is ready when adam hands it the round's report (a tool result whose text says `report: done`), and the person's second round to
+#     the same session (`[mock:plan-session-r2]`) is answered as round two; each turn is played with its SSE twin.
 #   * the `[mock:football]` script of `mock-persona` (dev/mentions-e2e.sh, dev/README.md "Mentions"): the chat's model asks `mock-researcher`, `mock-browser` and
 #     `mock-coder` with the thread tool `ask_agent`, one call a turn, then names the three answers it finds in the results; each turn is played with its SSE twin.
 #   * the `[mock:browse]` script of `mock-persona` and `mock-browse`, the browser agent's own model (dev/browser-e2e.sh, dev/README.md "The browser agent"): the chat asks
@@ -713,6 +717,59 @@ twin "mock-persona [mock:plan], the planner's own run" mock-persona "$(jq -cn --
 twin "mock-persona [mock:plan], the plan is back" mock-persona "[$plan_system, $plan_user, $(call plan-call-1 planner), $(result plan-call-1 "$plan_result")]" 2 "$plan_with"
 twin "mock-persona [mock:plan], planner not offered" mock-persona "[$plan_system, $plan_user]" 2 "$plan_without"
 
+# `[mock:plan-session]`: the chat's planner as a session it keeps open (dev/agents-e2e.sh, adam-rs ADR 0045 slice 6). A folder that has
+# `subagents/` is offered the session tools beside the synchronous ones, so a chat whose tools offer `subagent_start` starts its planner
+# in a session it keeps open (`plan-session-start`, `keep_open: true`), with the marker of the session's first round in its prompt; the
+# round's own run (that marker, no tool result last) answers with a plan; the chat's next turn (the start's result last, the report not
+# yet read) says it waits; the turn adam makes once the round's report is read says the plan is ready and the session stays open; and the
+# person's second round to the session (`[mock:plan-session-r2]`) is answered as round two. A body that ends with the person's message starts
+# a session, whatever report its history holds, and one with no `subagent_start` among its tools is told that none was offered. The persona
+# rules stand aside. The fallback stub is the least specific (priority 2, as plan.json's "planner is not offered"; its twin is 1), so the
+# start's twin (0) still answers a streaming request that offers `subagent_start`.
+# The report's text is shaped like adam's `read_output` (crates/adam-llm-agent/src/sessions.rs): a head line
+# `session <id> (planner, "<description>"): round 1, <the session's state>` (`idle` for a session kept open: `state_word`), then
+# `report: done`, then the round's answer as a page, then its `end_line`, so the script tells a read of a report from the start's result
+# (JSON, no `report: `) by that line.
+ps_system=$(system Chat 'I chat with you and answer your questions in plain words')
+ps_user=$(user 'Organise a team offsite. [mock:plan-session]')
+ps_with='[{"type":"function","function":{"name":"turn_output","parameters":{"type":"object"}}},{"type":"function","function":{"name":"subagent_start","parameters":{"type":"object"}}},{"type":"function","function":{"name":"planner","parameters":{"type":"object"}}}]'
+ps_prompt='[mock:plan-session-r1] The person wants to organise a team offsite for twelve people and has given no dates and no budget. Make the plan.'
+ps_plan='Goal: Organise a team offsite for twelve people | Steps: 1) fix the dates, 2) fix the budget, 3) book a venue | Questions: Which dates work and what is the budget?'
+ps_started=$(result plan-session-start '{"session":"01936f1c-7a2e-7000-8000-00000000004b","agent":"planner","state":"working","keep_open":true}')
+ps_report=$(result wait_1 "$(printf 'session 01936f1c-7a2e-7000-8000-00000000004b (planner, "Plan the team offsite"): round 1, idle\nreport: done\n1\t%s\n[end: 1 lines]\n' "$ps_plan")")
+ps_t1=$(completion mock-persona "[$ps_system, $ps_user]" "$ps_with")
+check "mock-persona [mock:plan-session]: with subagent_start among the tools the chat starts the planner in a session (plan-session-start)" \
+  "$(printf '%s' "$ps_t1" | jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name] | join(" | ")')" \
+  "tool_calls | plan-session-start | subagent_start"
+check "mock-persona [mock:plan-session]: the start keeps the session open, names the planner, and passes the marker of round 1 in its prompt" \
+  "$(printf '%s' "$ps_t1" | jq -r '.message.tool_calls[0].function.arguments | fromjson | [(keys | join(",")), .agent, (.keep_open | tostring), (.prompt | startswith("[mock:plan-session-r1] "))] | join(" | ")')" \
+  "agent,description,keep_open,prompt | planner | true | true"
+check "mock-persona [mock:plan-session]: the round's own run is answered with a plan that has a goal and questions" \
+  "$(completion mock-persona "$(jq -cn --arg m "$ps_prompt" '[{role: "system", content: "You are the planner, a helper of the chat agent."}, {role: "user", content: $m}]')" | jq -r '[.finish_reason, (.message.content | startswith("Goal: ") and contains("Questions: "))] | join(" | ")')" \
+  "stop | true"
+check "mock-persona [mock:plan-session]: the start's result is in and no report yet: the chat says it waits for the session" \
+  "$(completion mock-persona "[$ps_system, $ps_user, $(call plan-session-start subagent_start), $ps_started]" "$ps_with" | jq -r '[.finish_reason, (.message.content | startswith("The planner is working in a session of its own"))] | join(" | ")')" \
+  "stop | true"
+check "mock-persona [mock:plan-session]: the report is read (a tool result last, its report: done line): the chat says the plan is ready and the session stays open" \
+  "$(completion mock-persona "[$ps_system, $ps_user, $(call plan-session-start subagent_start), $ps_started, $(call wait_1 subagent_read), $ps_report]" "$ps_with" | jq -r '[.finish_reason, (.message.content | contains("its plan is ready") and contains("stays open"))] | join(" | ")')" \
+  "stop | true"
+check "mock-persona [mock:plan-session]: a report in the history and the person's message last: the chat starts the session, it never answers the report again" \
+  "$(completion mock-persona "[$ps_system, $ps_user, $(call plan-session-start subagent_start), $ps_started, $(call wait_1 subagent_read), $ps_report, $(user 'and now?')]" "$ps_with" | jq -r '[.finish_reason, (.message.content // "none"), (.message.tool_calls[0].id)] | join(" | ")')" \
+  "tool_calls | none | plan-session-start"
+check "mock-persona [mock:plan-session]: the person's second round to the session is answered as round two" \
+  "$(completion mock-persona "$(jq -cn --arg m "$ps_prompt" --arg p "$ps_plan" '[{role: "system", content: "You are the planner, a helper of the chat agent."}, {role: "user", content: $m}, {role: "assistant", content: $p}, {role: "user", content: "Book the venue. [mock:plan-session-r2]"}]')" | jq -r '[.finish_reason, (.message.content | startswith("Round two:"))] | join(" | ")')" \
+  "stop | true"
+check "mock-persona [mock:plan-session]: with no subagent_start among the tools the chat says it started no session, and calls nothing" \
+  "$(completion mock-persona "[$ps_system, $ps_user]" "$plan_without" | jq -r '[.finish_reason, (.message.content | startswith("No session tools are offered")), (.message.tool_calls // [] | length)] | join(" | ")')" \
+  "stop | true | 0"
+twin "mock-persona [mock:plan-session], start the session" mock-persona "[$ps_system, $ps_user]" "" "$ps_with"
+twin "mock-persona [mock:plan-session], the round's own run" mock-persona "$(jq -cn --arg m "$ps_prompt" '[{role: "system", content: "You are the planner, a helper of the chat agent."}, {role: "user", content: $m}]')" 2
+twin "mock-persona [mock:plan-session], the chat waits" mock-persona "[$ps_system, $ps_user, $(call plan-session-start subagent_start), $ps_started]" 2 "$ps_with"
+twin "mock-persona [mock:plan-session], the plan is ready" mock-persona "[$ps_system, $ps_user, $(call plan-session-start subagent_start), $ps_started, $(call wait_1 subagent_read), $ps_report]" 2 "$ps_with"
+twin "mock-persona [mock:plan-session], round two" mock-persona "$(jq -cn --arg m "$ps_prompt" --arg p "$ps_plan" '[{role: "system", content: "You are the planner, a helper of the chat agent."}, {role: "user", content: $m}, {role: "assistant", content: $p}, {role: "user", content: "Book the venue. [mock:plan-session-r2]"}]')" 2
+twin "mock-persona [mock:plan-session], a report in the history and a new message" mock-persona "[$ps_system, $ps_user, $(call plan-session-start subagent_start), $ps_started, $(call wait_1 subagent_read), $ps_report, $(user 'and now?')]" "" "$ps_with"
+twin "mock-persona [mock:plan-session], subagent_start not offered" mock-persona "[$ps_system, $ps_user]" 2 "$plan_without"
+
 check "an unknown model is a 404, not an invented answer" \
   "$(jq -cn '{model: "no-such-model", messages: [{role: "user", content: "hi"}]}' | curl -s -o /dev/null -w '%{http_code}' -X POST "$MODEL/v1/chat/completions" -H 'content-type: application/json' --data-binary @-)" "404"
 check "the journal holds the requests, and exactly the unknown model was unmatched" \
@@ -829,6 +886,12 @@ else
     _t=$((_t + 1))
   done
 
+  # The `[mock:commands]` script (dev/wiremock/coder-commands, ours): one plain answer to a first turn, for dev/commands-e2e.sh.
+  commands_user=$(user '/explain acme/app [mock:commands] nonce')
+  check "mock-coder [mock:commands]: a first turn is answered in words and stops, no tool is called" \
+    "$(completion mock-coder "[$share_system, $commands_user]" | jq -r '[.finish_reason, (.message.content | startswith("Done:") | tostring), (.message.tool_calls // [] | length | tostring)] | join(" | ")')" \
+    "stop | true | 0"
+  twin "mock-coder [mock:commands]" mock-coder "[$share_system, $commands_user]" 2
   check "the coder's mock matched every request of these checks" \
     "$(curl -fsS "$CODER/__admin/requests/unmatched" | jq -r '.requests | length')" "0"
   curl -sS -X DELETE "$CODER/__admin/requests" -o /dev/null

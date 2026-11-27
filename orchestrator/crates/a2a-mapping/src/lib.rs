@@ -171,8 +171,11 @@
 //! or hints out of bounds, mean the request is not read at all (fail closed), and the adapter drops
 //! one for a component the card read for the call did not offer. A request with no words and no
 //! surface is still a message: it maps to one envelope, `AgentUpdate::TrustedRequest`, under
-//! `Task("a2a:msg:<id>:trusted")`, after the words and surfaces of the same message. A status
-//! update's message is not a carrier: the contract says an agent `Message`.
+//! `Task("a2a:msg:<id>:trusted")`, after the words and surfaces of the same message. The status
+//! message of an `input-required` task is a carrier too (ADR 0083, amended 2026-11-27): adam parks
+//! a turn only through its question, which is that status message. Its request maps to
+//! `Task("a2a:T:status-msg:M:trusted")`, so a re-read collapses and a later question on the same
+//! task does not. On any other state a status message is not a carrier.
 //!
 //! A snapshot (`Task`, from `GetTask`, `CancelTask` or the first frame of `SubscribeToTask`)
 //! maps to the same keys as the live stream, so a poll after a crash and the live events it
@@ -214,6 +217,7 @@
 //! | artifact `X` of task `T`, part `i` | `Task("a2a:T:artifact:X:ui:i")` |
 //! | agent message `M`, part `i` | `Task("a2a:msg:M:ui:i")` |
 //! | status message `M` of task `T`, part `i` | `Task("a2a:T:status-msg:M:ui:i")` |
+//! | a trusted request on status message `M` of task `T` | `Task("a2a:T:status-msg:M:trusted")` |
 //! | status message without an id | `Turn("T:status-ui:<state>:i")` |
 //!
 //! Artifacts and chunking. On the wire (ProtoJSON) `append: false` and `lastChunk: false` are
@@ -709,6 +713,41 @@ fn status_envelopes(
             ))
         }),
     };
+    // A trusted component asked from the status message of an `input-required` task (ADR 0083,
+    // amended 2026-11-27): adam parks a turn only through its question, and that question is the
+    // status message, so the request rides there. A status message is the agent's by A2A's own
+    // definition, so no role is read here, unlike a stream `Message`.
+    //
+    // One request per **status message**, keyed by its id as the status's own key and its UI parts
+    // are: a reconnect or a `GetTask` re-read gives the same message back and collapses, while a
+    // task that returns to `input-required` with a new question asks again — keying by the state
+    // alone would drop that second form. A message with no id falls back to a turn-scoped key.
+    if state == Some(AgentTaskState::InputRequired) {
+        let trusted = message
+            .and_then(|m| m.metadata.as_ref())
+            .and_then(|metadata| metadata.get(TRUSTED_COMPONENTS_EXTENSION))
+            .and_then(TrustedRequestData::from_metadata_value);
+        if let Some(request) = trusted {
+            let key = match message {
+                Some(m) if !m.message_id.is_empty() => {
+                    IdemKey::Task(format!("a2a:{task_id}:status-msg:{}:trusted", m.message_id))
+                }
+                _ => IdemKey::Turn(format!(
+                    "{task_id}:status-trusted:{}",
+                    state.map_or("unspecified", slug)
+                )),
+            };
+            out.push(AgentEnvelope {
+                task_id: task_id.to_owned(),
+                context_id: context_id.to_owned(),
+                task_state: None,
+                revision: revision.clone(),
+                key,
+                update: Some(AgentUpdate::TrustedRequest(request)),
+                live: None,
+            });
+        }
+    }
     // A step is a `working` status whose message says so; anything else is a plain status.
     let step = message
         .filter(|_| state == Some(AgentTaskState::Working))
@@ -2716,6 +2755,90 @@ mod tests {
             envs[0].update,
             Some(AgentUpdate::TrustedRequest(_))
         ));
+    }
+
+    #[test]
+    fn a_trusted_request_on_the_status_message_of_an_input_required_task_is_the_request() {
+        let message = trusted_message(
+            "m-6",
+            json!({"component": "McpCredential", "hints": {"name": "My search"}}),
+        );
+        let envs =
+            ok(StreamMapper::default().map(status_update(TaskState::InputRequired, Some(message))));
+        let trusted: Vec<_> = envs
+            .iter()
+            .filter(|e| matches!(e.update, Some(AgentUpdate::TrustedRequest(_))))
+            .collect();
+        assert_eq!(trusted.len(), 1, "{envs:?}");
+        assert_eq!(
+            trusted[0].key,
+            IdemKey::Task(format!("a2a:{T}:status-msg:m-6:trusted"))
+        );
+        let Some(AgentUpdate::TrustedRequest(request)) = &trusted[0].update else {
+            panic!("not a trusted request");
+        };
+        assert_eq!(
+            request.component,
+            orch_core::TrustedComponent::McpCredential
+        );
+        assert_eq!(request.hints.name.as_deref(), Some("My search"));
+    }
+
+    #[test]
+    fn a_trusted_request_on_a_status_that_is_not_input_required_is_not_read() {
+        let message = trusted_message("m-7", json!({"component": "McpCredential", "hints": {}}));
+        let envs =
+            ok(StreamMapper::default().map(status_update(TaskState::Working, Some(message))));
+        assert!(
+            !envs
+                .iter()
+                .any(|e| matches!(e.update, Some(AgentUpdate::TrustedRequest(_)))),
+            "{envs:?}"
+        );
+    }
+
+    #[test]
+    fn the_same_status_message_twice_is_one_request() {
+        let message = trusted_message("m-10", json!({"component": "McpCredential", "hints": {}}));
+        let mut mapper = StreamMapper::default();
+        let once = ok(mapper.map(status_update(
+            TaskState::InputRequired,
+            Some(message.clone()),
+        )));
+        let again = ok(mapper.map(status_update(TaskState::InputRequired, Some(message))));
+        let key = |envs: &[AgentEnvelope]| {
+            envs.iter()
+                .find(|e| matches!(e.update, Some(AgentUpdate::TrustedRequest(_))))
+                .map(|e| e.key.clone())
+        };
+        assert_eq!(
+            key(&once),
+            Some(IdemKey::Task(format!("a2a:{T}:status-msg:m-10:trusted")))
+        );
+        assert_eq!(key(&once), key(&again));
+    }
+
+    #[test]
+    fn a_later_question_on_the_same_task_is_a_second_request() {
+        let first = trusted_message("m-8", json!({"component": "McpCredential", "hints": {}}));
+        let second = trusted_message("m-9", json!({"component": "McpCredential", "hints": {}}));
+        let mut mapper = StreamMapper::default();
+        let one = ok(mapper.map(status_update(TaskState::InputRequired, Some(first))));
+        let two = ok(mapper.map(status_update(TaskState::InputRequired, Some(second))));
+        let key = |envs: &[AgentEnvelope]| {
+            envs.iter()
+                .find(|e| matches!(e.update, Some(AgentUpdate::TrustedRequest(_))))
+                .map(|e| e.key.clone())
+        };
+        assert_eq!(
+            key(&one),
+            Some(IdemKey::Task(format!("a2a:{T}:status-msg:m-8:trusted")))
+        );
+        assert_eq!(
+            key(&two),
+            Some(IdemKey::Task(format!("a2a:{T}:status-msg:m-9:trusted")))
+        );
+        assert_ne!(key(&one), key(&two));
     }
 
     #[test]

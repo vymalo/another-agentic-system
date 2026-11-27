@@ -45,8 +45,9 @@ surface-webhook = ["dep:orch-surface-webhook"]
 registry-platform = ["dep:orch-registry-platform"]
 # The platform's owner routes (`provisioner`): a person's own agents made, resumed and waited for, over
 # the Platform API. On by default; used only when the configuration has a `provisioner` section. Without
-# the feature a `provisioner` section is refused at startup (exit 78), never quietly ignored.
-provisioner-platform = ["dep:orch-provisioner-platform"]
+# the feature a `provisioner` section is refused at startup (exit 78), never quietly ignored. It also
+# brings the workload-certificate credentials (`credentials.type: openbao-pki`, ANR-809).
+provisioner-platform = ["dep:orch-provisioner-platform", "dep:orch-platform-credentials-openbao"]
 # The artifact stores (`artifacts.store`, ADR 0032): where the files agents hand over are kept, each an
 # implementation of the `ArtifactStore` port in its own crate. `artifacts-fs` (a directory, for development
 # and a single node) and `artifacts-s3` (an S3 bucket, the production store) are on by default, so that the
@@ -103,6 +104,7 @@ orch-agent-a2a.workspace = true
 orch-model-openai.workspace = true
 orch-registry-platform = { workspace = true, optional = true }
 orch-provisioner-platform = { workspace = true, optional = true }
+orch-platform-credentials-openbao = { workspace = true, optional = true }
 orch-artifacts-fs = { workspace = true, optional = true }
 orch-artifacts-s3 = { workspace = true, optional = true }
 orch-secrets-pg = { workspace = true, optional = true }

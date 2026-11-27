@@ -9,7 +9,7 @@
   and expansion (`crates/adam-a2a-runtime/src/commands.rs`); on the orchestrator's, the reading of the card into a typed
   offer and the AG-UI capabilities document (slice 11 of [ADR 0067](../decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md),
   2026-11-19); the web's `/` menu is built (`web/src/features/commands`, `web/src/features/slash`, proven on the web's mock server). Neither half has run against the other: nothing here was
-  proved against a live agent.
+  proved against a live agent. (Since 2026-11-27 `dev/commands-e2e.sh` is written to prove the card, the capabilities document and the expansion against the real coder; CI has not run it yet.)
 - **Decided in:** [ADR 0079](../decisions/0079-an-agents-own-commands-listed-from-its-card.md), and adam-rs
   [ADR 0044](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0044-paged-tools-a-stable-prompt-prefix-a-plan-skills-commands-and-project-context.md) decision 9; the optional-extension pattern is
   [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).

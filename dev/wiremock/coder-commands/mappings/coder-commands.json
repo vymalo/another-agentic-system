@@ -1,0 +1,55 @@
+{
+  "mappings": [
+    {
+      "name": "coder commands: one plain answer",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-coder"
+            }
+          },
+          {
+            "contains": "[mock:commands]"
+          },
+          {
+            "doesNotContain": "tool_call_id"
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "id": "chatcmpl-coder-commands",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "mock-coder",
+          "system_fingerprint": "fp_mock",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "Done: I read the command and have nothing more to do."
+              },
+              "logprobs": null,
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120
+          }
+        }
+      }
+    }
+  ]
+}

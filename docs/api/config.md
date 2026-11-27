@@ -457,9 +457,30 @@ the section (exit 78).
 | `url` | The Platform API's base URL: `http` or `https`, a host, no user name or password. |
 | `kinds` | The kinds made for each person: `coder`, `workspace`, each once, at least one. The shared chat agent is never provisioned. |
 | `forms.<kind>` | The agent form of each kind in `kinds` (the platform's form without `name`, `owner` and `suspend`, which the orchestrator sets). One per kind, and none for a kind that is not listed. |
-| `credentials` | What the orchestrator presents. One type: `dev-oidc`, the OAuth `client_credentials` grant for the local stack's `mock-oidc`: `tokenUrl`, `clientId`, `clientSecret` (a `{ env }` or `{ file }` reference), and optionally `user`, `audience`, `roles` (the token must carry `platform:agents.own`). A development adapter; use another in a deployment. |
+| `credentials` | What the orchestrator presents. Two types. `dev-oidc`, the OAuth `client_credentials` grant for the local stack's `mock-oidc`: `tokenUrl`, `clientId`, `clientSecret` (a `{ env }` or `{ file }` reference), and optionally `user`, `audience`, `roles` (the token must carry `platform:agents.own`); a development adapter. `openbao-pki`, **the orchestrator's workload certificate** (ANR-809, [ADR 0110](../decisions/0110-the-orchestrator-presents-its-workload-certificate-to-the-platform.md)), presented on the TLS connection with no `Authorization` header: see below. |
+| `credentials.address` | `openbao-pki`, required. OpenBao: an `https` URL with a host and no user name, password, query or fragment. The pod's service-account token goes to it. |
+| `credentials.caFile` | `openbao-pki`, none. A file of PEM certificates OpenBao's certificate is also checked against, besides the system's roots; read at startup, relative to the file's directory. |
+| `credentials.kubernetesMount` | `openbao-pki`, `kubernetes`. The Kubernetes auth method's mount. |
+| `credentials.authRole` | `openbao-pki`, required. The role of that method the pod's service account logs in as. |
+| `credentials.serviceAccountTokenFile` | `openbao-pki`, the pod's own (`/var/run/secrets/kubernetes.io/serviceaccount/token`). An absolute path, **read at each login**, so a rotated token is used. |
+| `credentials.pkiMount`, `credentials.pkiRole` | `openbao-pki`, required. The PKI engine's mount and **this certificate's own role** (client authentication only; not the prompt-signing role). |
+| `credentials.spiffeId` | `openbao-pki`, required. `spiffe://<trust domain>/<path>` in its plain form: the one name the certificate must carry. |
+| `credentials.ttlSecs` | `openbao-pki`, 60 to 604800 (default 86400). The life asked of each certificate; with no revocation list, a certificate's life is its revocation window. The role's `max_ttl` may cut it. |
+| `credentials.renewalMarginSecs` | `openbao-pki`, 1 to 604799 (default 28800), **less than `ttlSecs`**. A certificate is renewed, with a new key, once it has this long left. |
+| `credentials.serverCaFile` | `openbao-pki`, none. A file of PEM certificates the platform's listener is checked against, besides the system's roots. |
 | `requestTimeoutSecs` | One request to the platform, 1 to 60 (default 5). |
 | `readyTimeoutSecs` | How long to wait for a made or resumed agent to be ready, 1 to 600 (default 120). **The bound of a person's message path**: the application gives up at it (and, as a backstop for an adapter that does not, 10 s later), with the 503 above; it is not the dispatch's timeout. It also bounds how long a routed row waits for its agent in the dispatcher. |
+
+With `credentials.type: openbao-pki`, `url` must be `https` and **no secret is resolved**: the identity is the pod's. The
+orchestrator logs in to OpenBao with its service-account token, has the PKI role sign a request with a key made in memory,
+**checks the certificate it gets back** (our key, client authentication and not server authentication, exactly the one
+`spiffeId`, valid now), presents it on the TLS connection to the platform and renews it before it expires. **If it cannot have a
+certificate, it sends nothing** (a message that needs the person's agent then fails as an unavailable or refused platform, never
+as an unauthenticated call), and it never falls back to a token. No key, request, certificate or token is in an error, a log line or
+`--print-config`. The OpenBao role and the Kubernetes auth role it needs are in
+[ADR 0110](../decisions/0110-the-orchestrator-presents-its-workload-certificate-to-the-platform.md) and the crate's
+[README](../../orchestrator/crates/platform-credentials-openbao/README.md). **Status: unverified against a live OpenBao or platform**
+(tested against a stand-in of OpenBao and a real TLS listener).
 
 ### `userToolServers`
 

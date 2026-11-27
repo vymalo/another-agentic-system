@@ -11,7 +11,9 @@
 #
 #   greeting          "hi" gets a greeting that says the coder's name, not a task    greeting-e2e.sh
 #   agents            three agents (coder, chat, researcher); each answers in its     agents-e2e.sh
-#                     role on the mocks, the researcher with a source it searched for
+#                     role on the mocks, the researcher with a source it searched for;
+#                     the chat starts its planner once as a tool and once as a
+#                     kept-open child session on the real adam
 #   choices           the coder asks three questions as one form drawn from the web's  choices-e2e.sh
 #                     catalog, one action answers them, a newer catalog is recorded too
 #   cards             the researcher searches and answers with one surface of cards    cards-e2e.sh
@@ -108,6 +110,11 @@
 #                     line, and a tag for the researcher (whose card lists nothing) changes nothing;
 #                     the run body is the web's own (web/scripts/run-forwarded-props.mjs), which
 #                     puts an interface tag under vymalo.locale and refuses one it would not send
+#                     line, and a tag for the researcher (whose card lists nothing) changes nothing
+#   commands          commands/v1 on the REAL coder (ADR 0079): the capabilities            commands-e2e.sh
+#                     of adam list the folder's three commands, chat lists none, the
+#                     coder's first model request holds `/explain acme/app` expanded,
+#                     and `//explain acme/app` reaches it as the literal text
 #   locale            the interface locale (ADR 0085): mock-locale (a WireMock agent    locale-e2e.sh
 #                     that lists locale/v1) is sent the tag a message names, with the
 #                     extension activated and the tag in its metadata, and answers in it;
@@ -282,7 +289,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier tier-real pick pick-real locale locale-real child-sessions title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier tier-real pick pick-real commands locale locale-real child-sessions title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -414,6 +421,13 @@ for s in "$@"; do
           *) echo "scenario pick-real needs the agents chat and researcher; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
+    commands)
+      for a in adam chat; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario commands needs the agents adam and chat; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
     locale-real)
       for a in chat researcher; do
         case " $agents " in
@@ -515,6 +529,7 @@ for s in "$@"; do
     tier-real) run tier-real sh "$here/tier-real-e2e.sh" ;;
     pick) run pick sh "$here/pick-e2e.sh" ;;
     pick-real) run pick-real sh "$here/pick-real-e2e.sh" ;;
+    commands) run commands sh "$here/commands-e2e.sh" ;;
     locale) run locale sh "$here/locale-e2e.sh" ;;
     locale-real) run locale-real sh "$here/locale-real-e2e.sh" ;;
     child-sessions) run child-sessions sh "$here/child-sessions-e2e.sh" ;;
