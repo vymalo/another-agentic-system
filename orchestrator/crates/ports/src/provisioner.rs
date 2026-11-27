@@ -194,6 +194,7 @@ impl ProvisionError {
             ProvisionError::Invalid => ProvisionError::Invalid,
             ProvisionError::NotReady { last } => ProvisionError::NotReady { last: *last },
             ProvisionError::Deleting => ProvisionError::Deleting,
+            ProvisionError::Blocked { reason } => ProvisionError::Blocked { reason: *reason },
         }
     }
 }
@@ -336,6 +337,15 @@ mod tests {
         assert!(matches!(
             ProvisionError::Deleting.duplicate(),
             ProvisionError::Deleting
+        ));
+        assert!(matches!(
+            ProvisionError::Blocked {
+                reason: BlockedReason::StoreOperatorMissing
+            }
+            .duplicate(),
+            ProvisionError::Blocked {
+                reason: BlockedReason::StoreOperatorMissing
+            }
         ));
     }
 }

@@ -2109,9 +2109,87 @@ async fn two_waiters_on_an_unavailable_flight_both_get_it_with_its_cause_chain()
     }
 }
 
-// TODO(ANR-1062 merge): when `ProvisionError::Blocked` lands (PR #617), add the same case here:
-// two waiters of a flight that ends `Blocked` both get `Blocked` with its reason (500
-// `agent_blocked`), which `ProvisionError::duplicate`'s exhaustive match forces it to copy.
+#[tokio::test(start_paused = true)]
+async fn two_waiters_on_a_blocked_flight_both_get_blocked_with_its_reason() {
+    let (a, b) = two_waiters_on_one_failing_flight(|| ProvisionError::Blocked {
+        reason: orch_ports::BlockedReason::StoreOperatorMissing,
+    })
+    .await;
+    for e in [a, b] {
+        assert!(
+            matches!(
+                e,
+                AppError::Provisioning {
+                    source: ProvisionError::Blocked {
+                        reason: orch_ports::BlockedReason::StoreOperatorMissing
+                    },
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+    }
+}
+
+/// A routed row whose agent is blocked for a reason waiting cannot clear (ANR-1062) is dead after
+/// its first claim: no wait, no counted retry, one request to the platform, and the thread is told.
+#[tokio::test]
+async fn a_blocked_agent_ends_the_routed_row_at_once_with_no_wait() {
+    let w = World::new();
+    let registry = MemoryRegistry::new();
+    let requests = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            listing(&registry, 1),
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let dispatching = app_over(
+        &w,
+        &registry,
+        Some(Provisioning::new(
+            Failing {
+                make: || ProvisionError::Blocked {
+                    reason: orch_ports::BlockedReason::NameConflict,
+                },
+                calls: Arc::clone(&calls),
+            },
+            [AgentKind::Coder],
+            BOUND,
+        )),
+    );
+    // the row exists before any dispatcher runs, so that it can be read at the end
+    let id = new_coder_thread(&requests, "echo blocked").await;
+    let row_id = w
+        .store
+        .list_open_outbox(id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.kind == orch_ports::OutboxKind::Delegate)
+        .expect("the delegation")
+        .id;
+    let (task, token) = spawn_over(&dispatching);
+    wait_in(&w, id, ThreadState::Failed).await;
+    let row = eventually("the row is dead", || async {
+        let row = w.store.get_outbox(row_id).await.unwrap().unwrap();
+        (row.status == orch_ports::OutboxStatus::Dead).then_some(row)
+    })
+    .await;
+    assert_eq!(row.attempts, 1, "one claim: {row:?}");
+    assert_eq!(row.refunded, 0, "no wait: {row:?}");
+    assert_eq!(
+        row.last_error.as_deref(),
+        Some("agent blocked: NameConflict")
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "asked the platform once");
+    assert_eq!(sends_to(&w, &mine()), 0);
+    token.cancel();
+    let _ = task.await;
+}
 
 /// A provisioner that panics.
 struct Panicking;

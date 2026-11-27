@@ -701,22 +701,36 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// Ends a row whose person's own agent could not be made ready: the thread is told, and the
     /// row is dead.
     async fn give_up_not_ready(&self, row: &OutboxItem) -> Done {
+        self.give_up(
+            row,
+            "your agent could not be made ready".to_owned(),
+            "own agent not ready".to_owned(),
+        )
+        .await
+    }
+
+    /// Ends a row whose person's own agent is blocked for a reason waiting cannot clear
+    /// (`ProvisionError::Blocked`, ANR-1062): at once, with no retry and no wait.
+    async fn give_up_blocked(&self, row: &OutboxItem, reason: &str) -> Done {
+        self.give_up(
+            row,
+            format!("your agent is blocked: {reason}"),
+            format!("agent blocked: {reason}"),
+        )
+        .await
+    }
+
+    async fn give_up(&self, row: &OutboxItem, reason: String, error: String) -> Done {
         self.apply_quiet(
             row,
             Input::DeliveryFailed {
-                reason: "your agent could not be made ready".to_owned(),
+                reason,
                 retryable: false,
             },
             format!("dead:{}", row.id),
         )
         .await?;
-        self.finish(
-            row,
-            OutboxFinal::Dead {
-                error: "own agent not ready".to_owned(),
-            },
-        )
-        .await
+        self.finish(row, OutboxFinal::Dead { error }).await
     }
 
     // --------------------------------------------------------- the run's binding
@@ -893,6 +907,15 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 // failure of the row: it waits for the agent with its claim refunded.
                 Err(_) | Ok(Err(AppError::AgentNotReady { .. })) => {
                     self.wait_for_wake(row, lookup).await?;
+                    return Ok(None);
+                }
+                // blocked for a reason that waiting cannot clear: dead at once, no retry, no wait
+                Ok(Err(AppError::Provisioning {
+                    source: orch_ports::ProvisionError::Blocked { reason },
+                    ..
+                })) => {
+                    tracing::warn!(id = %row.id, agent = %lookup, attempt = row.attempts, reason = reason.as_str(), "the person's own agent is blocked; giving up");
+                    self.give_up_blocked(row, reason.as_str()).await?;
                     return Ok(None);
                 }
                 Ok(Err(e)) => {
