@@ -4,8 +4,8 @@ sidebarTitle: "0101 · A cloud run's calls are signed"
 
 # ADR 0101 — A cloud run's model calls are signed for the run, and the injector stays only for custom cases
 
-- **Status:** **Accepted (2026-11-26): by the owner, by merging**, on his direction of 2026-11-26 (below). **Nothing is built.** It **Amended 2026-11-27:** the run-certificate contract v1 (section 8's amendment).
-  **amends** [ADR 0084](0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md) (the run lease) and
+- **Status:** **Accepted (2026-11-26): by the owner, by merging**, on his direction of 2026-11-26 (below). **Nothing is built.**
+  **Amended 2026-11-27:** the run-certificate contract v1, the amendment under *Slices*. It **amends** [ADR 0084](0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md) (the run lease) and
   [ADR 0089](0089-the-run-identity-stays-the-agents-task-id-bound-on-first-sight.md) (the run identity), each with a
   dated note, and builds on [ADR 0087](0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md)
   (the prompt statement and the gateway's verifier) and [ADR 0009](0009-swappable-implementations-at-build-time.md)
@@ -259,7 +259,8 @@ one sentence of section 4.
    registry before the answer — and section 5's way of cutting a person's agents off ("revokes their live leaves, it
    knows each run's serial") assumes the broker issued every leaf. Two ways out, the owner's or ANR-714's: an OpenBao
    role **per run** templated on the run's SAN, or the broker as the only issuer in any deployment that needs revocation.
-   Until one is chosen, `openbao` is the adapter for a deployment that does not need the broker's checks.
+   That is open, and it is the owner's or ANR-714's: the rejected alternative at the end of this ADR — a pod holding the
+   right to sign any SAN the role allows — is the reason it is not answered here.
 2. **The contract is versioned in the body, and it is v1.** `POST /internal/runs/{run}/certificate` takes
    `{"v": 1, "csr": "<base64 DER>"}` and answers `{"v": 1, "chain": ["<base64 DER>", …]}` — the leaf first, then its
    intermediates, roots omitted. The route is section 3's; the shapes of section 3 (`{csr}`, `{chain, kid, notAfter}`) and the
@@ -268,10 +269,10 @@ one sentence of section 4.
    [`docs/api/fixtures/run-certificate-v1/`](../api/fixtures/run-certificate-v1/README.md), for adam's tests and the
    broker's to share.
 3. **The names:** `RUN_CERT_ISSUER` (`broker` or `openbao`), `RUN_CERT_ISSUER_URL`, `RUN_CERT_TOKEN_FILE`,
-   `RUN_CERT_CA_FILE`, `RUN_CERT_RENEW_FRACTION`. The last two of those, `RUN_CERT_ISSUER_URL` and
-   `RUN_CERT_TOKEN_FILE`, are the two the deployment's own AD-063 proposed; they are kept.
-4. **The run's leaf signs model requests only.** Run *history* keeps adam's process turn key (ADR 0068): a leaf names one
-   run, and the history outlives it.
+   `RUN_CERT_CA_FILE`, `RUN_CERT_RENEW_FRACTION`. Two of them, `RUN_CERT_ISSUER_URL` and `RUN_CERT_TOKEN_FILE`, are the
+   ones a deployment's record (its AD-063) already proposed; they are kept as they were.
+4. **The run's leaf signs model requests only.** Run *history* keeps adam-rs's process turn key (adam-rs ADR 0068): a
+   leaf names one run, and the history outlives it.
 5. **Renewal:** at **2/3 of the leaf's life**, with a **new key each time**; the old leaf is kept until the new one
    arrives, so a renewal that fails leaves a working identity in place. `RUN_CERT_RENEW_FRACTION` is that 2/3, a number
    in `(0, 1)`.

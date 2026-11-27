@@ -42,12 +42,16 @@ Every refusal is `application/problem+json` with a `code` member, as everywhere 
 |---|---|---|---|
 | `error-unauthenticated.v1.json` | 401 | `unauthenticated` | no acceptable service-account token |
 | `error-run-not-bound.v1.json` | 403 | `run_not_bound` | no live binding names the run, or the caller is not its agent (the answer never says whether the run exists) |
-| `error-lease-expired.v1.json` | 403 | `lease_expired` | the binding exists and its lease is over |
-| `error-not-signed.v1.json` | 403 | `not_signed` | the binding's path is `injected` |
+| `error-lease-expired.v1.json` | 403 | `lease_expired` | the binding exists, its time is up, **and the caller has already been checked as its agent** |
+| `error-not-signed.v1.json` | 403 | `not_signed` | the binding exists, its path is `injected`, **and the caller is its agent** |
 | `error-bad-csr.v1.json` | 400 | `bad_csr` | the CSR does not parse, or its key is not Ed25519 |
 | `error-unavailable.v1.json` | 503 | `unavailable` | the issuing port did not answer; the caller retries with the same CSR |
 
 The statuses are the amendment's proposal: a slice that disagrees changes them **and** these files in one change.
+
+**The order is part of v1:** the broker checks that the caller is the binding's agent **before** it looks at the path and
+the time, so `lease_expired` and `not_signed` are only ever answered to the agent itself. A broker that answered them to
+anyone would tell an accepted workload whether a run exists. A test of the order belongs with the broker's route tests.
 
 ## The certificates in `answer.v1.json`
 
@@ -56,5 +60,7 @@ intermediate, and a leaf whose CSR is the one in `request.v1.json` — so a test
 belongs to the request's key. Ed25519 throughout; the leaf's EKU is client authentication, its key usage is
 `digitalSignature`, and its URI SAN is `urn:another:person:alice@example.com:agent:run-1`, critical.
 
-**The certificates live 100 years and no private key is committed**, so a test that validates the chain against the
-clock never goes red and nothing secret travels; the keys are throwaway.
+**The certificates live 100 years, on purpose, and that departs from section 2** (a run's leaf lives at most as long as
+its binding, 24 h): these files pin the **shape** and the key match, and a test of a lifetime, of the renewal at 2/3 of
+the life, or of a chain that verifies against a configured root **mints its own** — the root is not committed, so the
+chain here does not verify on its own. No private key is committed, so nothing secret travels.
