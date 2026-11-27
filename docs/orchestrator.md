@@ -1029,7 +1029,7 @@ stateDiagram-v2
   Held --> Superseded: skipped by a cancel, or finished by its own worker
   Held --> Waiting: a wait, wait_outbox (refunded)
   Waiting --> Held: claimed again, attempts = n + 1
-  Waiting --> Superseded: skipped by a cancel
+  Waiting --> Fenced: any write under the old lease (the wait released it)
   Superseded --> Fenced: any write under the old lease
   Fenced --> [*]: refused, nothing written
 ```

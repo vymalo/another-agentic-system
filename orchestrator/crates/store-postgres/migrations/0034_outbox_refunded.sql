@@ -9,7 +9,7 @@
 --
 -- A replica of an older build that is already running ignores the column, counts the waits and may
 -- dead-letter such a row earlier than this build would: benign, the row ends as it ended before. A
--- restarted old-build pod is refused by the database (`orch-pg-migrate` returns `VersionMissing`,
+-- restarted old-build pod refuses to start (its own `orch-pg-migrate` returns `VersionMissing`,
 -- as for every migration).
 --
 -- Never edit an applied migration; add a new one.

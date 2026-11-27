@@ -121,10 +121,10 @@ This amendment replaces its first version, which recomputed the route from the c
       `attempts`, and so does the bound of the wait itself, the one cap that has to count the waits (so `wake_headroom`
       is still needed). A stop that never waited is as it was. A rolling deploy: a replica of an older build that is
       already running ignores `refunded` and may dead-letter a waited row earlier than this build would (the row ends as it ended
-      before); a restarted old-build pod is refused by the database, `orch-pg-migrate` returning `VersionMissing` as for every migration. Not
-      changed: a claim handed back at shutdown (`release_leases`) is still counted for an outbox row. *Verified 2026-11-27*
-      by `crates/app/tests/provisioning.rs` and the store conformance case
-      `a_wait_is_refunded_and_a_retry_and_a_lapse_are_counted` on the memory store; unverified on Postgres and SQLite until CI has run it.
+      before); a restarted old-build pod refuses to start (its own `orch-pg-migrate` returns `VersionMissing` as for every migration. Not
+      changed: a claim handed back at shutdown (`release_leases`) is still counted for an outbox row. *Unverified until CI has run it:*
+      `crates/app/tests/provisioning.rs` and the store conformance case
+      `a_wait_is_refunded_and_a_retry_and_a_lapse_are_counted` (memory, Postgres and SQLite); nothing was compiled or run on the host that wrote it.
   - The dispatcher re-reads the thread and the binding after a row's wake (`ensure_ready`), so it never acts on state from before the wait.
   - Turning provisioning off, or removing a kind from `provisioner.kinds`, **strands the routed threads**: they never return to
     the shared agent (a row for one that is not listed ends with the reason above).
