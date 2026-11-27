@@ -362,6 +362,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
             state: s,
             job: Job {
                 after_stop: None,
+                route: None,
                 after_stop_locale: None,
                 after_stop_pick: None,
                 number: 3,

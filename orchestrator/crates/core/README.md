@@ -154,3 +154,5 @@ Offline, no environment variables.
 ## See also
 
 [`orch-ports`](../ports/README.md), [`orch-app`](../app/README.md).
+
+**`Job.route: Option<AgentId>` (ANR-1061, additive):** the agent a thread's messages are sent to when it is not the agent the thread is aimed at, the person's own agent recorded when the thread's first message provisioned it ([ADR 0103](../../../docs/decisions/0103-a-persons-own-agent-is-made-and-kept-ready-before-their-message-is-accepted.md)); `None` is the thread's own agent. Belongs to the conversation (`Job::next` keeps it), `skip_serializing_if` none, so a ledger without it reads as none and nothing migrates. No event or input is new: the application writes it with the thread's first commit, and `transition` is unchanged. A `Job { .. }` literal outside this workspace needs `route: None`.

@@ -301,7 +301,7 @@ jobs:
           COMPOSE_FILES: -f compose.yaml -f dev/compose.provisioner.yaml
         run: |
           # shellcheck disable=SC2086
-          docker compose $COMPOSE_FILES up -d --no-build --wait --wait-timeout 300 orchestrator edge mock-oidc mock-platform
+          docker compose $COMPOSE_FILES up -d --no-build --wait --wait-timeout 300 orchestrator edge mock-oidc mock-platform mock-own-agent mock-registry
           dev/provisioner-e2e.sh
       - name: The chat's browser sub-agent (the stack with dev/compose.chat-browser.yaml; dev/chat-browser-e2e.sh, ADR 0057)
         # What the chart renders with `browser.chatSubagent: true`: a one-shot copies the chat's folder into a volume and adds
