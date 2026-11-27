@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use deadpool_postgres::{HookError, Object, Pool, PoolError, Transaction};
 use orch_core::UserId;
+use orch_pg_connect::sqlstate::{self, SqlStateClass};
 use orch_pg_connect::{ConnectError, PgOptions};
 use orch_pg_migrate::{MigrateError, Migrator};
 use orch_ports::{SecretError, SecretMaterial, SecretServer, SecretStore, SecretVersion};
@@ -600,29 +601,16 @@ where
 /// sqlx's pool tried again: the TCP connection refused, too many connections, cannot connect now.
 fn refused_while_starting(err: &tokio_postgres::Error) -> bool {
     if let Some(db) = err.as_db_error() {
-        return retried_sqlstate(db.code().code());
+        return sqlstate::is_retried_at_connect(db.code().code());
     }
     std::error::Error::source(err)
         .and_then(|s| s.downcast_ref::<std::io::Error>())
         .is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionRefused)
 }
 
-/// The SQLSTATEs at connection that sqlx's pool tried again: `53300` `too_many_connections` and
-/// `57P03` `cannot_connect_now`.
-fn retried_sqlstate(code: &str) -> bool {
-    matches!(code, "53300" | "57P03")
-}
-
 /// SQLSTATE `55P03`, `lock_not_available`: what a statement fails with when `lock_timeout` ends
 /// its wait for a lock.
 const LOCK_NOT_AVAILABLE: &str = "55P03";
-
-/// Whether a SQLSTATE says "try again later" (the connection, resources, a shutdown).
-fn transient_sqlstate(code: &str) -> bool {
-    code.starts_with("08")
-        || code.starts_with("53")
-        || matches!(code, "40001" | "40P01" | "57P01" | "57P02" | "57P03")
-}
 
 /// What `tokio-postgres` says of a failure that is not the server's (its `Display`, which is its
 /// kind and nothing else) when the database is down or cannot be understood: the network, TLS, a
@@ -674,8 +662,10 @@ fn failure(outage: bool, text: String) -> SecretError {
     SecretError::unavailable(detail).with_source(DbFailure { outage, text })
 }
 
-/// A server's error, by its SQLSTATE: a lock not got in time and the SQLSTATEs of
-/// [`transient_sqlstate`] are outages, every other one a refusal.
+/// A server's error, by its SQLSTATE and the table both PostgreSQL adapters share
+/// (`orch_pg_connect::sqlstate`, ADR 0107 decision 5): a lock not got in time and the transient
+/// codes are outages, a function's `OR001` is `Corrupt`, every other code (`OR002` and an `OR` code
+/// this build does not know among them) a refusal.
 fn sqlstate_failure(code: &str, text: String) -> SecretError {
     if code == LOCK_NOT_AVAILABLE {
         return SecretError::unavailable(
@@ -683,7 +673,14 @@ fn sqlstate_failure(code: &str, text: String) -> SecretError {
         )
         .with_source(DbFailure { outage: true, text });
     }
-    failure(transient_sqlstate(code), text)
+    match sqlstate::class(code) {
+        SqlStateClass::Transient => failure(true, text),
+        // the port's `Corrupt` keeps no source: the server's words are not needed to alert
+        SqlStateClass::Corrupt => {
+            SecretError::corrupt("the stored data breaks a rule the database checks")
+        }
+        SqlStateClass::Internal => failure(false, text),
+    }
 }
 
 /// A failure that is not the server's, by what the driver says of it (`kind`, its `Display`),
@@ -790,6 +787,16 @@ fn migrate_err(err: MigrateError) -> SecretError {
         | MigrateError::DuplicateVersion(_)) => {
             SecretError::unavailable("the migrations of the secret store failed").with_source(e)
         }
+        // the deployment points at a server below the floor (ADR 0107): kept as the source so the
+        // binary exits 78 (its `exit_code` looks for it in the whole chain first), and no outage
+        // (`is_outage` is false for a `MigrateError` source). It is the port's `Unavailable`, class
+        // `Transient`, because `SecretError` has no other variant that keeps a source: the thread
+        // store's `Internal` would need a new variant of the port, which ADR 0107 decision 3 rules
+        // out. A caller that decides by the class alone must read the source.
+        e @ MigrateError::ServerTooOld { .. } => {
+            SecretError::unavailable("the database server is older than the secret store needs")
+                .with_source(e)
+        }
         // `MigrateError` is non_exhaustive: a variant added later is a refusal until it is named
         // here, and is not kept as the source (it might hold a driver's error, and a DETAIL)
         _ => failure(
@@ -866,11 +873,45 @@ mod tests {
     #[test]
     fn what_sqlx_tried_again_at_connection_is_tried_again() {
         for code in ["53300", "57P03"] {
-            assert!(retried_sqlstate(code), "{code}");
+            assert!(sqlstate::is_retried_at_connect(code), "{code}");
         }
         for code in ["28P01", "3D000", "08006", "57P01", "42501"] {
-            assert!(!retried_sqlstate(code), "{code}");
+            assert!(!sqlstate::is_retried_at_connect(code), "{code}");
         }
+    }
+
+    /// ADR 0107 decision 5: a function's `OR001` is `Corrupt`, its `OR002` (and an `OR` code of a
+    /// later release) a refusal, never an outage.
+    #[test]
+    fn the_orchestrator_s_own_codes_are_the_port_s_errors() {
+        assert!(
+            matches!(db("OR001"), SecretError::Corrupt(_)),
+            "{:?}",
+            db("OR001")
+        );
+        for code in ["OR002", "OR999"] {
+            let e = db(code);
+            assert!(
+                matches!(e, SecretError::Unavailable { .. }),
+                "{code}: {e:?}"
+            );
+            assert!(!is_outage(&e), "{code}");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn a_server_below_the_floor_is_a_refusal_that_keeps_its_numbers() {
+        let e = migrate_err(MigrateError::ServerTooOld {
+            found: 170_006,
+            required: 180_000,
+        });
+        assert!(!is_outage(&e), "{e:?}");
+        let source = std::error::Error::source(&e).expect("the migrator's error is the source");
+        assert!(matches!(
+            source.downcast_ref::<MigrateError>(),
+            Some(MigrateError::ServerTooOld { found: 170_006, .. })
+        ));
     }
 
     /// The class of a failure is `Transient` for every `Unavailable`; what tells a database that is
