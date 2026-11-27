@@ -77,7 +77,7 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > message, and the capabilities document's `custom[<access-tier/v1 URI>] = {tiers, default, maxTier?}`; see [Access tier](#access-tier).
 
 > **Locale** (2026-11-22, [ADR 0085](../decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md), contract
-> [`locale-v1.md`](locale-v1.md), the orchestrator's side built, no agent lists it yet): `forwardedProps["vymalo.locale"]` on the run
+> [`locale-v1.md`](locale-v1.md), the orchestrator's side built; adam lists it whenever `DEFAULT_LOCALE` is set, which the stack's `chat` does, *verified 2026-11-27*): `forwardedProps["vymalo.locale"]` on the run
 > that carries a message, a BCP 47 tag checked before anything is written (**400**), sent to an agent whose live card lists
 > `locale/v1`. It is a hint: it is **not** on `TEXT_MESSAGE_START` and no activity is emitted for it, but the log records it on the
 > `user_message` (the log is the state), so an export shows it.
@@ -1474,7 +1474,7 @@ TEXT_MESSAGE_START {messageId, role: "user", metadata: {"vymalo.actor": {...}, "
 ## Locale
 
 **Built 2026-11-22, on the orchestrator's side only** ([ADR 0085](../decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md),
-contract [`locale-v1.md`](locale-v1.md)); no agent lists the extension yet and the web does not send the member yet.
+contract [`locale-v1.md`](locale-v1.md)); adam lists the extension whenever `DEFAULT_LOCALE` is set, which the stack's `chat` does (*verified 2026-11-27*: `compose.yaml`, `dev/locale-real-e2e.sh`), and the web does not send the member yet.
 
 - **In:** `forwardedProps["vymalo.locale"]` on the run that carries the message, a BCP 47 tag (`"en-GB"`, `"fr-FR"`, `"gsw-CH"`,
   `"fur-IT"` today; `null` or no member: none). Read on every run, so one that is not a tag is **400** before the stream. It is a
