@@ -1097,6 +1097,8 @@ impl ThreadStore for RacyStore {
             -> Result<bool, StoreError>;
         retry_outbox(lease: &orch_ports::Lease, next_attempt_at: Timestamp, error: String)
             -> Result<bool, StoreError>;
+        wait_outbox(lease: &orch_ports::Lease, next_attempt_at: Timestamp, note: String)
+            -> Result<bool, StoreError>;
         complete_outbox(lease: &orch_ports::Lease, outcome: orch_ports::OutboxFinal, now: Timestamp)
             -> Result<bool, StoreError>;
         requeue_as_delegate(lease: &orch_ports::Lease, now: Timestamp) -> Result<bool, StoreError>;

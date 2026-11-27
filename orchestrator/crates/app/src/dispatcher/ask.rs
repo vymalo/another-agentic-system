@@ -1343,6 +1343,7 @@ mod tests {
             payload: OutboxPayload::Cancel { job: None },
             status: orch_ports::OutboxStatus::Pending,
             attempts,
+            refunded: 0,
             sent_at: None,
             task_id: None,
             next_attempt_at: "2026-01-01T00:00:00Z".parse().unwrap(),
