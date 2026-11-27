@@ -1,6 +1,6 @@
 # Architecture
 
-A stateless Rust orchestrator over one Postgres event log drives any A2A agent and shows people the log over AG-UI. Read the goal and the principles, then the picture of what is built today; the detail is under the blocks, and the target design of a job comes last.
+A stateless Rust orchestrator over one Postgres event log drives any A2A agent and shows people the log over AG-UI. Read the goal and the principles, then the picture of what is built today; the detail is under the blocks, and the target design of a job comes after.
 
 > Status: **MVP steps 1–2 built** (one thread, one A2A agent, durable delegation, spoken to people
 > over AG-UI and A2UI); the rest is design. [As built](#as-built) is what the code does today, with diagrams; the sections after
@@ -606,8 +606,6 @@ mounted whatever it says. A name whose Cargo feature is not compiled in is also 
 (exit 78).
 
 ### The relay of an attached MCP server's tools
-
-The agent never gets a server's URL or credential: it calls the tools through a relay on its own per-thread endpoint, which holds the credentials and reports each call as one step.
 
 *Built 2026-10-02 ([ADR 0024](decisions/0024-mcp-tools-attached-per-conversation.md), slice 8; contract in
 [`api/thread-tools-v1.md`](api/thread-tools-v1.md#attached-servers-and-the-relay-slice-8)).* A person attaches MCP servers

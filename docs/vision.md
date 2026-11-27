@@ -1,6 +1,6 @@
 # Vision: the system
 
-What the system is meant to be, in the owner's words, and how far the code is from it. The summary below lists each requirement as built, partly built or not built; the proof, the history and the detail are under the blocks. Everything built was proven on mocks, and the owner has not tried this state.
+What the system is meant to be, in the owner's words, and how far the code is from it. The summary below lists each requirement as built on mocks, partly built, planned or not built; the proof, the history and the detail are under the blocks. Everything built was proven on mocks, and the owner has not tried this state.
 
 ::: in-depth Status notes: when this page was written and checked
 
@@ -118,7 +118,7 @@ Added by the owner after the first review (2026-10-02) and built; each has its o
 |---|---|---|---|
 | Write while the agent works: Send steers the running task, Stop & send cancels it and starts the next | 🧪 experimental · **Built**; the adam-rs fix that makes a task read `working` from its claim is merged there but **not in the compose pin yet** | `dev/steer-e2e.sh`, `crates/e2e/tests/steer.rs`, `web/e2e/steer.spec.ts` | [0036](decisions/0036-sending-while-an-agent-works.md) |
 | Fork a chat from any turn, edit a message into a branch | 🧪 experimental · **Built** | `dev/fork-e2e.sh`, `web/e2e/fork.spec.ts`, `branches.spec.ts` | [0029](decisions/0029-forking-a-thread-copies-its-log.md) |
-| The person's own list of threads: Pinned, Chats and an Archived section in an order they keep, a fork nested under its parent, a three-dot menu on each row; deleting a thread erases it, and a thread that works is stopped first (asked 2026-10-03) | 🧪 experimental · **Built** in the orchestrator and, since 2026-10-13, in the web, **except** dragging a row (not built) and, in the web only, the fork that is a draft until its first message (the orchestrator has it); both ADRs are *proposed*, the owner has not seen them; proven on mocks | `dev/rail-e2e.sh`, `dev/delete-e2e.sh` (the compose scenarios had not run when written), `web/e2e/rail.spec.ts`, `web/e2e/delete.spec.ts` | [0042](decisions/0042-the-thread-list-is-the-owners.md), [0043](decisions/0043-deleting-a-thread-erases-it.md) |
+| The person's own list of threads: Pinned, Chats and an Archived section in an order they keep, a fork nested under its parent, a three-dot menu on each row; deleting a thread erases it, and a thread that works is stopped first (asked 2026-10-03) | ⚠️ partial · **Built** in the orchestrator and, since 2026-10-13, in the web, **except** dragging a row (not built) and, in the web only, the fork that is a draft until its first message (the orchestrator has it); both ADRs are *proposed*, the owner has not seen them; proven on mocks | `dev/rail-e2e.sh`, `dev/delete-e2e.sh` (the compose scenarios had not run when written), `web/e2e/rail.spec.ts`, `web/e2e/delete.spec.ts` | [0042](decisions/0042-the-thread-list-is-the-owners.md), [0043](decisions/0043-deleting-a-thread-erases-it.md) |
 | Files from agents reach the person (SVG, PNG, JSON), stored outside the log | 🧪 experimental · **Built** | `dev/artifact-e2e.sh`, `crates/e2e/tests/files.rs`, `web/e2e/files.spec.ts` | 0032 |
 | Roles, an OAuth2 resource server behind oauth2-proxy | 🧪 experimental · **Built** against a mock issuer | `dev/rbac-e2e.sh`, `web/e2e/roles.spec.ts` | [0033](decisions/0033-the-orchestrator-is-an-oauth2-resource-server.md) |
 | One YAML configuration, a model for the title and for a description of its own | 🧪 experimental · **Built** | `dev/title-e2e.sh`, `dev/description-e2e.sh`, `web/e2e/description.spec.ts` | [0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md), [0035](decisions/0035-utility-model-tasks.md) |
@@ -144,7 +144,7 @@ order in the [MVP](mvp.md#the-new-build-order).
 A2A. The platform never learns about the UI, the catalog or the chat. Management (editing a system
 prompt, promoting a revision, tagging) happens in the platform; the system shows the result live.
 
-Agents are discovered live from the platform's registry, with no restart, and a person may use one only where its audience allows. This is built against a mock of the registry; a read of a real platform, a login beyond a bearer token and an explicit default-agent marker are not built.
+Agents are discovered live from the platform's registry, with no restart, and a person may use a registry agent only where its audience allows. This is built against a mock of the registry; a read of a real platform, a login beyond a bearer token and an explicit default-agent marker are not built.
 
 ::: in-depth Built (slice 9): the port, the reader, the proof and who may use a platform agent
 
@@ -365,7 +365,7 @@ and the agents agree.
   what outlives a workspace is what was pushed.
 - Where a workspace lives across workers was open question 24 (closed 2026-10-01: `shared` placement and one coder process by default).
 
-Built in MVP slices 7 and 7b: adam-coder starts with no repository, adds one only after the person says yes and reads GitHub over MCP with the credential of one installation. The work-environment contract of ADR 0028 stands, and its implementation is adam's own slice, not built yet.
+Built in MVP slice 7: adam-coder starts with no repository, adds one only after the person says yes and reads GitHub over MCP with the credential of one installation. Slice 7b's devcontainer path was removed on 2026-11-19; the work-environment contract of ADR 0028 stands, and its implementation is adam's own slice, not built yet.
 
 ::: in-depth Notes by date: the workspace, the work environment and its removal
 

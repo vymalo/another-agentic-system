@@ -75,11 +75,11 @@ A page is read in layers, so it is progressive: the reader stops when they have 
 
 | Icon | Word | Means |
 |---|---|---|
-| ✅ | built | fully supported or built |
+| ✅ | built | built and proven against the pinned real agent image |
 | ⚠️ | partial | partially: the cell says what is missing |
 | ❌ | not supported | not supported |
 | 🚧 | planned | in progress or planned |
-| 🧪 | experimental | works, and may change or be removed |
+| 🧪 | experimental | built, proven only on mocks (or experimental) |
 | ➖ | n/a · retired | not applicable, or retired |
 | 🔒 | needs a role | needs a permission or a role |
 
