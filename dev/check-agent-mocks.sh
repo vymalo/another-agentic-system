@@ -800,6 +800,12 @@ else
     "$(jq -cn --argjson msgs "$(share_history 8)" '{model: "mock-coder", messages: $msgs, stream: true}' |
        curl -sS -X POST "$CODER/v1/chat/completions" -H 'content-type: application/json' --data-binary @- |
        sed -n 's/^data: //p' | grep -v '^\[DONE\]' | jq -s '[.[] | select((.choices | length) > 0) | .choices[0].delta.tool_calls // [] | .[] | select(.function.arguments != "")] | length > 2')" "true"
+  # The `[mock:commands]` script (dev/wiremock/coder-commands, ours): one plain answer to a first turn, for dev/commands-e2e.sh.
+  commands_user=$(user '/explain acme/app [mock:commands] nonce')
+  check "mock-coder [mock:commands]: a first turn is answered in words and stops, no tool is called" \
+    "$(completion mock-coder "[$share_system, $commands_user]" | jq -r '[.finish_reason, (.message.content | startswith("Done:") | tostring), (.message.tool_calls // [] | length | tostring)] | join(" | ")')" \
+    "stop | true | 0"
+  twin "mock-coder [mock:commands]" mock-coder "[$share_system, $commands_user]" 2
   check "the coder's mock matched every request of these checks" \
     "$(curl -fsS "$CODER/__admin/requests/unmatched" | jq -r '.requests | length')" "0"
   curl -sS -X DELETE "$CODER/__admin/requests" -o /dev/null
