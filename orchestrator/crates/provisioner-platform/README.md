@@ -29,6 +29,9 @@ sequenceDiagram
   end
   loop until ready or ready_timeout
     P->>A: GET (state)
+    alt blocked, and conditions say NameConflict or CNPGNotInstalled
+      P-->>O: ProvisionError::Blocked (at once)
+    end
   end
   P-->>O: ProvisionedAgent
 ```
@@ -41,13 +44,14 @@ stateDiagram-v2
   Saving --> Ready
   Saving --> Blocked: store or referent not ready
   Blocked --> Ready: store or referent ready
-  Blocked --> Refused: NameConflict, CNPGNotInstalled
+  Blocked --> Gone: NameConflict or CNPGNotInstalled, error Blocked
   Saving --> Degraded: applied, not ready
   Degraded --> Ready
   Ready --> Suspended: suspend
   Ready --> Deleting: delete
   Suspended --> Deleting: delete
   Deleting --> Absent
+  Gone: refused at once
 ```
 
 ## What it does
@@ -75,7 +79,7 @@ stateDiagram-v2
   detail has them) say that waiting cannot help is refused at once, as `ProvisionError::Blocked
   { reason }` (a 500 `agent_blocked` for the person: the deployment's to repair): `RuntimeReady`
   `False` for `NameConflict`, and `StoreReady` `False` for `CNPGNotInstalled`. Every other reason
-  (`ClusterNotReady`, `ConfigNotResolved`, `ConfigInvalid`, an unknown or missing one) is waited for
+  (`ClusterNotReady`; `ConfigNotFound`, a `ConfigResolved` `False`; `ConfigInvalid`, which also reports a referent not made yet; `ConfigNotResolved`, a `StoreReady` `Unknown` while the config is not resolved; an unknown or missing one) is waited for
   and ends, at the bound, as `NotReady { last: Blocked }`. A bad token is `Refused`. No retry loop beyond the waits above.
 
 ## Configuration

@@ -17,7 +17,9 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use orch_ports::testkit::provisioner::ProvisionerFixture;
-use orch_ports::{AgentKind, AgentOwner, AgentProvisioner, AgentState, ProvisionError};
+use orch_ports::{
+    AgentKind, AgentOwner, AgentProvisioner, AgentState, BlockedReason, ProvisionError,
+};
 use orch_provisioner_platform::{PlatformConfig, PlatformProvisioner};
 use secrecy::SecretString;
 use serde_json::{Value, json};
@@ -404,7 +406,7 @@ async fn a_blocked_agent_whose_store_is_not_ready_is_waited_for_until_it_is_read
     // "Blocked is refused at once" returned `Err` at the first poll and fails this test.
     let conditions = vec![condition("StoreReady", "False", "ClusterNotReady")];
     let (p, platform) = platform_reading("blocked", conditions, Duration::from_secs(10)).await;
-    clear_after(&platform, Duration::from_millis(150));
+    clear_after(&platform, Duration::from_millis(300));
     let agent = p
         .ensure_ready(&owner("fresh"), AgentKind::Coder)
         .await
@@ -413,7 +415,7 @@ async fn a_blocked_agent_whose_store_is_not_ready_is_waited_for_until_it_is_read
     assert!(gets(&platform) > 2, "it polled while blocked");
 }
 
-async fn refused_at_once(conditions: Vec<Value>, reason: &str) {
+async fn refused_at_once(conditions: Vec<Value>, reason: BlockedReason) {
     // The bound is 10 s; a reason that waiting cannot clear must not hold the request for it.
     let (p, platform) = platform_reading("blocked", conditions, Duration::from_secs(10)).await;
     let started = Instant::now();
@@ -422,7 +424,7 @@ async fn refused_at_once(conditions: Vec<Value>, reason: &str) {
         .await
         .unwrap_err();
     assert!(
-        matches!(&err, ProvisionError::Blocked { reason: r } if r == reason),
+        matches!(&err, ProvisionError::Blocked { reason: r } if *r == reason),
         "{err:?}"
     );
     assert!(
@@ -441,7 +443,7 @@ async fn a_blocked_agent_with_a_name_conflict_is_refused_at_once() {
             condition("ConfigResolved", "True", "Resolved"),
             condition("RuntimeReady", "False", "NameConflict"),
         ],
-        "NameConflict",
+        BlockedReason::NameConflict,
     )
     .await;
 }
@@ -450,9 +452,33 @@ async fn a_blocked_agent_with_a_name_conflict_is_refused_at_once() {
 async fn a_blocked_agent_whose_database_operator_is_absent_is_refused_at_once() {
     refused_at_once(
         vec![condition("StoreReady", "False", "CNPGNotInstalled")],
-        "CNPGNotInstalled",
+        BlockedReason::StoreOperatorMissing,
     )
     .await;
+}
+
+#[tokio::test]
+async fn a_blocked_agent_whose_condition_is_not_false_or_not_of_the_right_type_is_waited_for() {
+    // The reason alone is not enough: `RuntimeReady` `True` with `NameConflict` (the status check)
+    // and `Ready` `False` with `NameConflict` (the type check) are not the terminal condition.
+    let conditions = vec![
+        condition("RuntimeReady", "True", "NameConflict"),
+        condition("Ready", "False", "NameConflict"),
+    ];
+    let (p, _platform) = platform_reading("blocked", conditions, Duration::from_millis(200)).await;
+    let err = p
+        .ensure_ready(&owner("lookalike"), AgentKind::Coder)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ProvisionError::NotReady {
+                last: AgentState::Blocked
+            }
+        ),
+        "{err:?}"
+    );
 }
 
 #[tokio::test]
@@ -480,7 +506,7 @@ async fn a_degraded_agent_is_waited_for_until_it_is_ready() {
     // The platform's lifecycle: `Degraded` is "applied, not ready" (a rollout, a crash loop) and
     // goes back to `Ready` by itself, so the wait continues.
     let (p, platform) = platform_reading("degraded", vec![], Duration::from_secs(10)).await;
-    clear_after(&platform, Duration::from_millis(150));
+    clear_after(&platform, Duration::from_millis(300));
     let agent = p
         .ensure_ready(&owner("degraded"), AgentKind::Coder)
         .await

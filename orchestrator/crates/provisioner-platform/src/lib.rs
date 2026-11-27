@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use orch_core::BoxError;
 use orch_ports::{
-    AgentKind, AgentOwner, AgentProvisioner, AgentState, PlatformCredentials,
+    AgentKind, AgentOwner, AgentProvisioner, AgentState, BlockedReason, PlatformCredentials,
     PlatformCredentialsError, PlatformToken, PlatformTokenFuture, ProvisionError, ProvisionedAgent,
 };
 use reqwest::header::{AUTHORIZATION, ETAG, HeaderValue, IF_MATCH, IF_NONE_MATCH};
@@ -142,7 +142,7 @@ pub enum BuildError {
 struct Seen {
     state: AgentState,
     /// For a `Blocked` agent: the reason of a condition that waiting cannot clear, if there is one.
-    terminal: Option<&'static str>,
+    terminal: Option<BlockedReason>,
     etag: Option<HeaderValue>,
 }
 
@@ -411,15 +411,15 @@ async fn problem_slug(response: reqwest::Response) -> Option<String> {
 /// `False` for `CNPGNotInstalled` (the database operator is absent). Every other blocked reason
 /// (`ClusterNotReady`, `ConfigNotResolved`, `ConfigInvalid`, which also covers a referent not made
 /// yet) passes by itself and is waited for; a missing or unreadable `conditions` is waited for too.
-fn terminal_reason(body: &Value) -> Option<&'static str> {
+fn terminal_reason(body: &Value) -> Option<BlockedReason> {
     body.get("conditions")?.as_array()?.iter().find_map(|c| {
         let field = |name: &str| c.get(name).and_then(Value::as_str);
         if field("status") != Some("False") {
             return None;
         }
         match (field("type")?, field("reason")?) {
-            ("RuntimeReady", "NameConflict") => Some("NameConflict"),
-            ("StoreReady", "CNPGNotInstalled") => Some("CNPGNotInstalled"),
+            ("RuntimeReady", "NameConflict") => Some(BlockedReason::NameConflict),
+            ("StoreReady", "CNPGNotInstalled") => Some(BlockedReason::StoreOperatorMissing),
             _ => None,
         }
     })
@@ -467,6 +467,12 @@ impl AgentProvisioner for PlatformProvisioner {
                 }
                 Some(seen) => {
                     last = seen.state;
+                    // Blocked is waited for like Saving, because a fresh store or a referent not
+                    // made yet blocks an agent that then goes `ready`; only a reason that waiting
+                    // cannot clear (`terminal_reason`) ends the wait at once.
+                    if let Some(reason) = seen.terminal {
+                        return Err(ProvisionError::Blocked { reason });
+                    }
                     match seen.state {
                         AgentState::Ready => {
                             return Ok(ProvisionedAgent {
@@ -482,14 +488,6 @@ impl AgentProvisioner for PlatformProvisioner {
                             }
                             let etag = seen.etag.ok_or_else(raced)?;
                             self.replace(owner, kind, &name, &etag, false).await?;
-                        }
-                        // Blocked is waited for like Saving, because a fresh store or a referent
-                        // not made yet blocks an agent that then goes `ready`; only a reason that
-                        // waiting cannot clear (`terminal_reason`) ends the wait at once.
-                        AgentState::Blocked if seen.terminal.is_some() => {
-                            return Err(ProvisionError::Blocked {
-                                reason: seen.terminal.unwrap_or_default().to_owned(),
-                            });
                         }
                         // Saving and Degraded (applied, not ready: a rollout or a crash loop that
                         // goes back to Ready by itself) are waited for, up to the bound.

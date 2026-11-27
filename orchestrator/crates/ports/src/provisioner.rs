@@ -108,6 +108,29 @@ pub struct ProvisionedAgent {
     pub state: AgentState,
 }
 
+/// Why a blocked agent will stay blocked however long the caller waits: the reasons of the
+/// platform's conditions that nothing but an operator can clear. A closed set, so the text of an
+/// error built from it is bounded and holds no secret and no address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BlockedReason {
+    /// An object the agent needs exists and is not the platform's (condition reason `NameConflict`).
+    NameConflict,
+    /// The database operator the agent's store needs is absent (condition reason `CNPGNotInstalled`).
+    StoreOperatorMissing,
+}
+
+impl BlockedReason {
+    /// The platform's reason string for it, which is also the wording of the error.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BlockedReason::NameConflict => "NameConflict",
+            BlockedReason::StoreOperatorMissing => "CNPGNotInstalled",
+        }
+    }
+}
+
 /// Why the provisioner did not give an agent.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -137,10 +160,10 @@ pub enum ProvisionError {
     /// The platform accepted the form, but the agent is blocked for a reason that waiting cannot
     /// fix (a name held by an object that is not the platform's, a missing component). The
     /// reason is the platform's condition reason, which holds no secret.
-    #[error("the agent is blocked ({reason})")]
+    #[error("the agent is blocked ({})", reason.as_str())]
     Blocked {
-        /// The platform's reason, for example `NameConflict`.
-        reason: String,
+        /// Which reason, from a closed set: nothing the platform sends reaches the error.
+        reason: BlockedReason,
     },
 }
 

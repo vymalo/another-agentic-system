@@ -286,7 +286,7 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
         return (
             Problem::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("your {kind} agent is blocked: {reason}"),
+                format!("your {kind} agent is blocked: {}", reason.as_str()),
             )
             .with_code("agent_blocked"),
             None,
@@ -920,7 +920,7 @@ mod tests {
         let (problem, retry_after) = problem_for(&AppError::Provisioning {
             kind: "coder",
             source: ProvisionError::Blocked {
-                reason: "NameConflict".to_owned(),
+                reason: orch_ports::BlockedReason::NameConflict,
             },
         });
         assert_eq!(problem.status, 500);

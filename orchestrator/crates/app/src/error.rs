@@ -554,7 +554,7 @@ mod tests {
             AppError::Provisioning {
                 kind: "coder",
                 source: ProvisionError::Blocked {
-                    reason: "NameConflict".to_owned(),
+                    reason: orch_ports::BlockedReason::NameConflict,
                 },
             },
             AppError::Contended,
