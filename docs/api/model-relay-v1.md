@@ -1,7 +1,9 @@
 # A2A extension: model relay (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/model-relay/v1`
-- **Status:** **proposed (2026-10-11), at the owner's request; nothing is built.** The direction is the owner's (the quote below, and the shape he listed: an OpenAI-compatible endpoint per thread, the card
+- **Status:** **accepted (2026-11-26), kept by the owner's decision of that day ("the relay stays for agents that are not adam and do not sign their calls"); nothing is built.** Proposed 2026-10-11, at the owner's request.
+  The proof is not built either: ANR-912's scenario (the real adam with no model key of its own answers through the thread's endpoint; `mock-model`'s journal shows the orchestrator's key, never one from A2A).
+  (Where *Used by* below says adam-rs needs a client side, read it with that decision: an adam agent's calls are carried by ADR 0084 and ADR 0101; this is the owner's decision, not a narrowing made here.) Original status text: The direction is the owner's (the quote below, and the shape he listed: an OpenAI-compatible endpoint per thread, the card
   declares it, the message metadata carries `{url, token, expiresAt, models}`, `POST {url}/v1/chat/completions` and `/v1/models`, the orchestrator forwards with its own key, records usage, enforces a
   budget, lets the person pick the model, passes SSE through, no key in A2A). Every other name, status code and default here is proposed.
 - **Decided in:** [ADR 0063](../decisions/0063-an-openai-compatible-model-endpoint-per-thread-on-the-orchestrator.md); the optional-extension pattern is
