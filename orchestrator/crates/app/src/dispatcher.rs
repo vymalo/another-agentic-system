@@ -705,6 +705,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             row,
             "your agent could not be made ready".to_owned(),
             "own agent not ready".to_owned(),
+            false,
         )
         .await
     }
@@ -716,21 +717,9 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             row,
             format!("your agent is blocked: {reason}"),
             format!("agent blocked: {reason}"),
+            false,
         )
         .await
-    }
-
-    async fn give_up(&self, row: &OutboxItem, reason: String, error: String) -> Done {
-        self.apply_quiet(
-            row,
-            Input::DeliveryFailed {
-                reason,
-                retryable: false,
-            },
-            format!("dead:{}", row.id),
-        )
-        .await?;
-        self.finish(row, OutboxFinal::Dead { error }).await
     }
 
     // --------------------------------------------------------- the run's binding
