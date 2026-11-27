@@ -17,28 +17,71 @@ function pages(dir: string, skip: string[] = []) {
     });
 }
 
-// The shared section structure: see STRUCTURE.md. The platform's site uses the same one.
+// A page of docs/ by its path without the extension, titled by its first heading.
+function page(path: string, text?: string) {
+  const title = readFileSync(join(root, `${path}.md`), "utf8").match(/^# (.+)$/m)?.[1];
+  return { text: text ?? (title ?? path).replace(/`/g, ""), link: `/${path}` };
+}
+
+// A group of pages, shown only when it holds one: an empty group is not drawn.
+function group(text: string, items: { text: string; link: string }[], collapsed = true) {
+  return { text, collapsed, items };
+}
+
+// Reference > API: the one place to add a page. Every file of docs/api/ is in exactly one of the three
+// Reference arrays below (the build throws on one that is in none), so a new page is one name in one array.
+// ANR-922 adds the pages it generates from the OpenAPI document here.
+const apiPages: { text: string; link: string }[] = [
+  { text: "Chat API (OpenAPI)", link: "/api/chat-api" },
+  { text: "API index", link: "/api/" },
+  ...["agui", "attachments", "history", "memory-v1", "message-text-v1", "missions-v1", "notifications-v1", "projects-v1", "prompts-v1", "teams-v1", "thread-markdown-v1", "thread-search-v1", "webhooks", "windows-v1"].map((f) => page(`api/${f}`)),
+];
+// Reference > Extensions: the A2A extensions and the other contracts a tool server or an agent implements.
+const extensionPages = [
+  "extensions", "access-tier-v1", "child-sessions-v1", "commands-v1", "locale-v1", "mentions-v1", "model-pick-v1", "model-relay-v1",
+  "network-tier-v1", "signed-tool-requests-v1", "steer-v1", "steps-v1", "text-stream-v1", "thread-tools-v1", "trusted-components-v1",
+  "ui-catalog-v1", "ui-catalog-v2", "uploads-v1", "usage-v1",
+].map((f) => page(`api/${f}`));
+// Reference > Configuration: what an operator sets or a deployment must honour.
+const configurationPages = ["config", "client-version", "model-injector"].map((f) => page(`api/${f}`));
+
+// Every page of docs/api/ must be placed: a page in none of the groups would be on the site and in no sidebar.
+{
+  const placed = new Set([...apiPages, ...extensionPages, ...configurationPages].map((p) => p.link.replace(/^\/api\/?/, "")));
+  const missing = readdirSync(join(root, "api"))
+    .filter((f) => f.endsWith(".md") && f !== "README.md" && f !== "chat-api.md")
+    .filter((f) => !placed.has(f.replace(/\.md$/, "")));
+  if (missing.length) throw new Error(`docs/api pages in no sidebar group: ${missing.join(", ")}; add them to apiPages, extensionPages or configurationPages in .vitepress/config.ts`);
+}
+
+// The shared section structure: see STRUCTURE.md. The platform's and adam-rs's sites use the same one.
+// Guides and Reference hold fixed groups; a group with no page is left out until it has one.
+const withPages = (g: { items: unknown[] }) => g.items.length > 0;
+const section = (text: string, groups: ReturnType<typeof group>[], collapsed = true) => ({ text, collapsed, items: groups.filter(withPages) });
 const sidebar = [
   {
     text: "Overview",
     items: [
-      { text: "Vision", link: "/vision" },
-      { text: "MVP and build order", link: "/mvp" },
-      { text: "Lessons as requirements", link: "/lessons-from-agent-canvas" },
-      { text: "Open questions", link: "/open-questions" },
+      page("vision", "Vision"),
+      page("mvp", "MVP and build order"),
+      page("lessons-from-agent-canvas", "Lessons as requirements"),
+      page("open-questions", "Open questions"),
+      group("Plans and checks", [...pages("plans"), page("vendor-check-2026-11-24", "Vendor check")]),
     ],
   },
-  { text: "Get started", items: [{ text: "Run it locally", link: "/getting-started" }, { text: "Tester note", link: "/tester-note" }] },
-  { text: "Guides", collapsed: true, items: [...pages("plans"), { text: "Vendor check", link: "/vendor-check-2026-11-24" }] },
-  {
-    text: "Reference",
-    collapsed: true,
-    items: [{ text: "Chat API (OpenAPI)", link: "/api/chat-api" }, { text: "API index", link: "/api/" }, ...pages("api", ["chat-api.md"])],
-  },
-  { text: "Architecture", items: [{ text: "Architecture", link: "/architecture" }, { text: "Orchestrator", link: "/orchestrator" }] },
+  { text: "Get started", items: [page("getting-started", "Run it locally")] },
+  // Guides: one task per page. No page of the repository is one yet, so the four groups are empty and not drawn.
+  section("Guides", [group("Deploy", []), group("Operate", []), group("Use", []), group("Extend", [])]),
+  section("Reference", [
+    group("API", apiPages),
+    group("Extensions", extensionPages),
+    group("Configuration", configurationPages),
+    group("Errors", []),
+  ]),
+  { text: "Architecture", items: [page("concepts", "Concepts"), page("architecture", "Architecture"), page("orchestrator", "Orchestrator")] },
   { text: "Decisions", collapsed: true, items: [{ text: "ADR index", link: "/decisions/" }, ...pages("decisions")] },
   { text: "Contributing", items: [{ text: "How to contribute", link: "/contributing" }] },
-];
+].filter((s) => s.items.length > 0);
 
 // Prose writes <agent> or <ThreadShare> meaning a placeholder; Vue would read it as a component and fail the build.
 // Only real HTML elements pass through, everything else is shown as the text it is.
@@ -70,7 +113,8 @@ export default withMermaid(
     rewrites: { "api/README.md": "api/index.md" },
     // Pages link to source files outside docs/ (checked by tools/docs-check); every other dead link fails the build.
     ignoreDeadLinks: [/^\.\/(\.\.\/)+/, /(^|\/)examples\//],
-    srcExclude: ["**/node_modules/**", "**/examples/**"],
+    // tester-note.md is a draft for the owner: it stays in the repository and is not on the site.
+    srcExclude: ["**/node_modules/**", "**/examples/**", "tester-note.md"],
     themeConfig: {
       md3: { style: "expressive", seed: "#0f766e" },
       nav: [
