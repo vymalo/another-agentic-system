@@ -2759,12 +2759,10 @@ mod tests {
 
     #[test]
     fn a_trusted_request_on_the_status_message_of_an_input_required_task_is_the_request() {
-        let mut message = trusted_message(
+        let message = trusted_message(
             "m-6",
             json!({"component": "McpCredential", "hints": {"name": "My search"}}),
         );
-        message.task_id = Some(T.into());
-        message.context_id = Some(C.into());
         let envs =
             ok(StreamMapper::default().map(status_update(TaskState::InputRequired, Some(message))));
         let trusted: Vec<_> = envs
@@ -2797,6 +2795,27 @@ mod tests {
                 .any(|e| matches!(e.update, Some(AgentUpdate::TrustedRequest(_)))),
             "{envs:?}"
         );
+    }
+
+    #[test]
+    fn the_same_status_message_twice_is_one_request() {
+        let message = trusted_message("m-10", json!({"component": "McpCredential", "hints": {}}));
+        let mut mapper = StreamMapper::default();
+        let once = ok(mapper.map(status_update(
+            TaskState::InputRequired,
+            Some(message.clone()),
+        )));
+        let again = ok(mapper.map(status_update(TaskState::InputRequired, Some(message))));
+        let key = |envs: &[AgentEnvelope]| {
+            envs.iter()
+                .find(|e| matches!(e.update, Some(AgentUpdate::TrustedRequest(_))))
+                .map(|e| e.key.clone())
+        };
+        assert_eq!(
+            key(&once),
+            Some(IdemKey::Task(format!("a2a:{T}:status-msg:m-10:trusted")))
+        );
+        assert_eq!(key(&once), key(&again));
     }
 
     #[test]
