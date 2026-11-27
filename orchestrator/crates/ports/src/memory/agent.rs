@@ -172,6 +172,7 @@ struct State {
     cards_down: HashSet<AgentId>,
     unreachable: HashSet<AgentId>,
     fail_sends: VecDeque<AgentError>,
+    fail_cancels: VecDeque<AgentError>,
     no_resubscribe: bool,
     /// Agents that are redeployed with tiers right after their card is next read
     /// ([`ScriptedAgent::redeploy_with_tiers_after_next_card_read`]).
@@ -519,6 +520,14 @@ impl ScriptedAgent {
         let mut st = self.state();
         for _ in 0..n {
             st.fail_sends.push_back(error());
+        }
+    }
+
+    /// The next `n` cancels fail with what `error` builds, after the call is recorded.
+    pub fn fail_next_cancels(&self, n: usize, error: impl Fn() -> AgentError) {
+        let mut st = self.state();
+        for _ in 0..n {
+            st.fail_cancels.push_back(error());
         }
     }
 
@@ -2059,6 +2068,9 @@ impl AgentClient for ScriptedAgent {
             });
             if st.unreachable.contains(&task.endpoint.id) {
                 return Err(AgentError::unreachable("agent unreachable"));
+            }
+            if let Some(err) = st.fail_cancels.pop_front() {
+                return Err(err);
             }
             let rec = st
                 .tasks

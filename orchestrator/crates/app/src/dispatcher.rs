@@ -742,7 +742,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             self.finish(row, OutboxFinal::Skipped).await?;
             return Ok(None);
         };
-        let binding = self
+        let mut binding = self
             .store()
             .get_binding(row.thread_id)
             .await?
@@ -756,7 +756,9 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         // thread makes sure that agent is up first, except a stop and a follow, which never wake
         // an agent.
         let route = thread.job.route.clone();
-        let lookup = route.as_ref().unwrap_or(&binding.agent_id);
+        // owned, so that the binding may be read again after a wake
+        let lookup_id = route.clone().unwrap_or_else(|| binding.agent_id.clone());
+        let lookup = &lookup_id;
         let wakes = route.is_some()
             && !thread.state.is_terminal()
             && !matches!(
@@ -783,6 +785,11 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                             return Ok(None);
                         }
                     };
+                    binding = self
+                        .store()
+                        .get_binding(row.thread_id)
+                        .await?
+                        .ok_or_else(|| StoreError::corrupt("binding missing"))?;
                 }
                 Err(e) => {
                     tracing::warn!(id = %row.id, agent = %lookup, attempt = row.attempts, error = %report(&e), "the person's own agent could not be made ready for the row");
@@ -2108,13 +2115,21 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// How many attempts a stop makes while a delegation is in flight: `max_cancel_attempts`, and
     /// for a routed thread that many more than the retries that fit in the wake bound.
     fn in_flight_cancel_budget(&self, routed: bool) -> u32 {
-        let base = self.cfg.max_cancel_attempts;
+        self.cfg
+            .max_cancel_attempts
+            .saturating_add(self.wake_headroom(routed))
+    }
+
+    /// The attempts a stop may spend waiting for a routed delegation to wake its agent: the
+    /// retries that fit in the wake bound; none for a thread that is not routed. The phases of a
+    /// stop that come after the wait (the listing, the `CancelTask`) count from the end of it, so
+    /// their caps are this headroom plus their own.
+    fn wake_headroom(&self, routed: bool) -> u32 {
         let Some(bound) = routed.then(|| self.app.own_agent_wake_bound()).flatten() else {
-            return base;
+            return 0;
         };
         let delay = self.cfg.cancel_retry_delay.as_millis().max(1);
-        let extra = u32::try_from(bound.as_millis().div_ceil(delay)).unwrap_or(u32::MAX);
-        base.saturating_add(extra)
+        u32::try_from(bound.as_millis().div_ceil(delay)).unwrap_or(u32::MAX)
     }
 
     async fn cancel(&self, row: OutboxItem) -> Done {
@@ -2154,7 +2169,11 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
         // agent is not woken for it: the stop waits for the listing as a row of the thread does,
         // then ends the thread locally (the task at the agent is not stopped)
         if running.is_some() && own_unlisted {
-            if row.attempts < self.cfg.own_agent_listing_attempts {
+            if row.attempts
+                < self
+                    .wake_headroom(routed)
+                    .saturating_add(self.cfg.own_agent_listing_attempts)
+            {
                 return self
                     .retry(
                         &row,
@@ -2186,7 +2205,13 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                     self.reject_cancel(&row, &ctx.agent, reason, false, OutboxFinal::Delivered)
                         .await
                 }
-                Err(e) if e.is_retryable() && row.attempts < self.cfg.max_cancel_attempts => {
+                Err(e)
+                    if e.is_retryable()
+                        && row.attempts
+                            < self
+                                .wake_headroom(routed)
+                                .saturating_add(self.cfg.max_cancel_attempts) =>
+                {
                     self.retry(&row, self.delay(row.attempts, &e), report(&e))
                         .await
                 }

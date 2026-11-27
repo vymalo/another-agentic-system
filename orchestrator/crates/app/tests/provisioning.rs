@@ -1383,8 +1383,13 @@ impl AgentProvisioner for Gated {
 /// the delegation's back and is not given up: it is tried again (`max_cancel_attempts` of the
 /// dispatcher, plus what fits in the wake bound for a routed thread) until the delegation has
 /// been sent, and then stops the task it started. `min_attempts` is how many claims the stop must
-/// have had while the delegation still waited.
-async fn a_stop_waits_for_a_waking_delegation(max_cancel_attempts: u32, min_attempts: u32) {
+/// have had while the delegation still waited, and the agent's first `cancel_failures` cancels
+/// fail with a retryable error (the stop's later phases have headroom of their own).
+async fn a_stop_waits_for_a_waking_delegation(
+    max_cancel_attempts: u32,
+    min_attempts: u32,
+    cancel_failures: usize,
+) {
     let w = World::new();
     let registry = MemoryRegistry::new();
     // the request path (one application) makes the thread and lists the agent at once; the
@@ -1415,6 +1420,9 @@ async fn a_stop_waits_for_a_waking_delegation(max_cancel_attempts: u32, min_atte
     );
     w.agent
         .set_extensions(&mine(), &[orch_core::KnownExtension::Steer]);
+    w.agent.fail_next_cancels(cancel_failures, || {
+        orch_ports::AgentError::unreachable("the agent dropped the cancel")
+    });
     let token = tokio_util::sync::CancellationToken::new();
     let task = tokio::spawn(
         Dispatcher::new(
@@ -1473,13 +1481,19 @@ async fn a_stop_waits_for_a_waking_delegation(max_cancel_attempts: u32, min_atte
 
 #[tokio::test]
 async fn a_stop_does_not_cancel_a_thread_whose_delegation_waits_for_the_agent_to_wake() {
-    a_stop_waits_for_a_waking_delegation(10_000, 2).await;
+    a_stop_waits_for_a_waking_delegation(10_000, 2, 0).await;
 }
 
 #[tokio::test]
 async fn a_stop_outlasts_max_cancel_attempts_while_a_routed_delegation_waits_for_the_agent() {
     // two attempts would end the stop; the wake bound (30 s plus the backstop) is what it may wait
-    a_stop_waits_for_a_waking_delegation(2, 5).await;
+    a_stop_waits_for_a_waking_delegation(2, 5, 0).await;
+}
+
+#[tokio::test]
+async fn a_cancel_that_fails_once_after_a_long_wake_is_tried_again() {
+    // the wait used up more attempts than `max_cancel_attempts`: the cancel still has its own
+    a_stop_waits_for_a_waking_delegation(2, 5, 1).await;
 }
 
 #[tokio::test]

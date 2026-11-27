@@ -73,7 +73,7 @@ This amendment replaces its first version, which recomputed the route from the c
   agent only. A stop whose agent is not listed is decided by `cancel`, which never wakes the agent: with no task running at it and nothing in flight the thread
   is cancelled locally (`CancelledBeforeStart`) at once; a delegation in flight is waited for, and the stop then stops the task it
   started (for a routed thread the wait's budget is `max_cancel_attempts` plus the retries that fit in `readyTimeoutSecs` plus
-  `OUTER_SLACK`, so a stop pressed while the agent wakes is not lost); and with a task running at the
+  `OUTER_SLACK`, so a stop pressed while the agent wakes is not lost; the later phases of the stop, the listing attempts and the retries of `CancelTask`, count from the end of that wait, so their caps are that headroom plus their own); and with a task running at the
   unlisted agent the stop is tried for up to `own_agent_listing_attempts` attempts of the row in all and then ends the thread
   locally with a warning that the task at the agent could not be stopped.
 - **The tier and the cap come from the own agent's card.** The request checks a tier against the thread's agent, the send against
