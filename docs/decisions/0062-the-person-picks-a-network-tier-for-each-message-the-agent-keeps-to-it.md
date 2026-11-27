@@ -16,7 +16,7 @@ sidebarTitle: "0062 · A network tier for each message"
   `thread-tools/v1`, one for the network), the three tiers `offline`, `allow-list` (package registries and the forge) and `open`, that the agent enforces
   it, adam's way (run pods that reach only an egress proxy that applies the tier), that nothing is passed to children, a role cap `maxNetworkTier`, and what the
   orchestrator checks. **Proposed**, for the owner to confirm: every name, status code, default and shape below, and the open questions at the end. **Nothing of
-  this is built.*** Extends [ADR 0008](0008-platform-integration-via-a2a-extension.md) (the optional-extension pattern) and
+  this is built.**)* Extends [ADR 0008](0008-platform-integration-via-a2a-extension.md) (the optional-extension pattern) and
   [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md) (roles). It is the sibling of the access tier ([ADR 0061](0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), *proposed; the orchestrator and the web are built against mocks*):
   the same shape on another axis. The wire contract is [`api/network-tier-v1.md`](../api/network-tier-v1.md).
 
