@@ -32,6 +32,13 @@
 #   * CHAT, a plan (`[mock:plan]`, ADR 0050): the chat was offered its three helpers, the sub-agents of its folder (`researcher`,
 #     `writer`, `planner`); it calls `planner`, which runs as a run of its own with its own prompt; the call is one sub-agent step; the
 #     plan comes back to the chat, which shows its goal and its questions and asks the person to say go;
+#   * CHAT, the planner as a kept-open session (`[mock:plan-session]`, adam-rs ADR 0045 slice 6, ADR 0072): the chat starts its planner
+#     with `subagent_start` and `keep_open: true`, adam reads the round's report back into the chat's own turn (a `subagent_read` that
+#     waits for the round, then the report), and the chat says the plan is ready and the session stays open; the session is ONE child
+#     thread of the parent (not one per round), the person sends that thread a second round and the round-two script answers, the child's
+#     log holds one user message (the person's) and two jobs (the round the agent started, then the person's), the person closes the
+#     session (202, `childOf.state` `closed`, the parent's log `child_session_closed` once, a message to it then 409), and the AG-UI
+#     stream has the session's card in the parent and `session-self` closed in the child;
 #   * ADAM (the coder), "hi" (cheap, and the contrast): the thread ends `blocked` and the words say "I'm Adam" (its folder's name, vendored,
 #     since adam-rs 4363924; the name the orchestrator lists is the agents file's, also Adam);
 #   * `mock-model` matched every request.
@@ -48,7 +55,8 @@
 #
 # It EMPTIES the request journal of `mock-model` and the call journal of `mock-mcp-search` first, so run it on a
 # stack you are not in the middle of another scenario on.
-# Needs curl and jq (and /proc or uuidgen for a UUID). Verified by CI only, in .github/workflows/coder-e2e.yml.
+# Needs curl and jq (and /proc or uuidgen for a UUID). *Verified 2026-11-27* against the `app` profile on the pinned adam (`sha-9f90f1e`);
+# CI runs it in `.github/workflows/coder-e2e.yml`.
 set -eu
 
 base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
@@ -69,6 +77,9 @@ researcher_dir=${RESEARCHER_AGENT_DIR:-$root/dev/agents/researcher/agent}
 fail=0
 ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fail=1; }
+expect() { # expect DESCRIPTION ACTUAL EXPECTED
+  if [ "$2" = "$3" ]; then ok "$1"; else bad "$1: expected '$3', got '$2'"; fi
+}
 finish() {
   if [ "$fail" -eq 0 ]; then echo "agents e2e passed"; else echo "agents e2e FAILED"; exit 1; fi
 }
@@ -108,9 +119,11 @@ persona() {
 #   outcome   how the run stream ended (success, interrupt, error: <code>, or empty)
 #   said      the words of every assistant message of the thread, joined
 #   events    the file holding the thread's frames (a JSON array)
+#   thread    the id of the thread it made (also left in `_thread`; a caller copies it at once, the next `say` overwrites it)
 say() {
   _agent=$1
   _thread=$(uuid)
+  thread=$_thread
   _input=$(jq -n --arg thread "$_thread" --arg run "$(uuid)" --arg msg "$(uuid)" --arg text "$2" '{
     threadId: $thread, runId: $run, state: {}, tools: [], context: [],
     messages: [{id: $msg, role: "user", content: $text}], forwardedProps: {}}')
@@ -380,6 +393,173 @@ case $plan_final in
   "Goal: "*) ok "chat, planner: the helper's result went back to the chat's model" ;;
   *) bad "chat, planner: the chat's last request holds no tool result with the plan (tool message: '${plan_final:-none}')" ;;
 esac
+
+# --- the chat's planner as a kept-open session (adam-rs ADR 0045 slice 6, ADR 0072) -----------------------------------------
+# A folder with `subagents/` is offered the session tools beside the synchronous ones, so the chat starts its planner with
+# `subagent_start` and `keep_open: true`: the round runs as a job of a child thread of its own, adam reads the round's report back into
+# the chat's turn (a `subagent_read` with `wait: true` at the end of the turn, then the report), and the chat answers once it has it.
+# The script `[mock:plan-session]` says all of that (dev/check-agent-mocks.sh plays it turn by turn); here the real adam decides. The
+# session is ONE child thread of the parent, however many rounds it has: a round is a job of that thread, never a thread of its own.
+echo "== the chat's planner as a kept-open session"
+say chat "Organise a team offsite. [mock:plan-session]"
+ps_parent=$thread
+if [ "$outcome" = success ]; then
+  ok "chat, plan session: the run stream ended with RUN_FINISHED (success)"
+else
+  bad "chat, plan session: the run stream ended with '${outcome:-no terminal event}', want RUN_FINISHED (success)"
+fi
+if [ "$state" = "done" ]; then
+  ok "chat, plan session: the thread ended done"
+else
+  bad "chat, plan session: the thread ended '${state:-unknown}', want done"
+  why "$events"
+fi
+case $said in
+  *"its plan is ready"*) ok "chat, plan session: the answer says the plan is ready, the words of the turn the round's report reached" ;;
+  *) bad "chat, plan session: the answer does not say the plan is ready (said: ${said:-<nothing>})" ;;
+esac
+case $said in
+  *"stays open"*) ok "chat, plan session: the answer says the session stays open, so the person may send it more" ;;
+  *) bad "chat, plan session: the answer does not say the session stays open" ;;
+esac
+
+# post PATH JSON: the HTTP status on stdout, the body in $tmp/post.json (the resource API).
+post() {
+  curl -sS --max-time 60 -o "$tmp/post.json" -w '%{http_code}' -X POST "$base$1" -H "$id_header" \
+    -H 'content-type: application/json' -d "${2:-}" 2>"$tmp/err" || true
+}
+problem_code() { jq -r '.code // empty' "$1" 2>/dev/null || true; }
+
+# run_props THREAD TEXT PROPS OUT: one run of the chat (the child thread's agent) on the thread, to its end. The HTTP status on stdout, the body in OUT.
+run_props() {
+  _input=$(jq -n --arg thread "$1" --arg run "$(uuid)" --arg msg "$(uuid)" --arg text "$2" --argjson props "$3" '{
+    threadId: $thread, runId: $run, state: {}, tools: [], context: [],
+    messages: [{id: $msg, role: "user", content: $text}], forwardedProps: $props}')
+  curl -sS -N --max-time "$timeout" -o "$4" -w '%{http_code}' -X POST "$base/agui/agents/chat" -H "$id_header" \
+    -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$_input" 2>"$tmp/err" || true
+}
+
+# export_of THREAD FILE: the thread's log in FILE.
+export_of() { api GET "/api/threads/$1/export" >"$2" 2>/dev/null || echo '{"events":[]}' >"$2"; }
+
+# wait_for_events THREAD KIND COUNT FILE: waits (up to TIMEOUT seconds) until the thread's log holds COUNT events of KIND; the log is in FILE.
+wait_for_events() {
+  _deadline=$(( $(date +%s) + timeout ))
+  while :; do
+    export_of "$1" "$4"
+    _n=$(jq -r --arg k "$2" '[.events[] | select(.kind == $k)] | length' "$4" 2>/dev/null || echo 0)
+    if [ "$_n" -ge "$3" ] || [ "$(date +%s)" -ge "$_deadline" ]; then break; fi
+    sleep 1
+  done
+}
+
+# wait_state THREAD: waits (up to TIMEOUT seconds) until the thread stops, and prints the state it ended in (or the last one it saw).
+wait_state() {
+  _deadline=$(( $(date +%s) + timeout ))
+  _state=
+  while :; do
+    _state=$(api GET "/api/threads/$1" 2>/dev/null | jq -r '.state // empty' || true)
+    case $_state in done | blocked | failed | cancelled) echo "$_state"; return 0 ;; esac
+    if [ "$(date +%s)" -ge "$_deadline" ]; then echo "${_state:-unknown}"; return 0; fi
+    sleep 1
+  done
+}
+
+# wait_child_state THREAD STATE: waits until the thread's childOf.state is STATE; prints the last one it saw.
+wait_child_state() {
+  _deadline=$(( $(date +%s) + timeout ))
+  while :; do
+    _cs=$(api GET "/api/threads/$1" 2>/dev/null | jq -r '.childOf.state // empty' || true)
+    if [ "$_cs" = "$2" ] || [ "$(date +%s)" -ge "$_deadline" ]; then echo "$_cs"; return 0; fi
+    sleep 1
+  done
+}
+
+# frames THREAD FILE: the thread's AG-UI events, replayed from the start, as one JSON array in FILE.
+frames() {
+  curl -sS --max-time 60 -H "$id_header" -H 'accept: text/event-stream' "$base/agui/threads/$1/connect?mode=run" 2>/dev/null |
+    sed -n 's/^data: *//p' | jq -s '.' >"$2" 2>/dev/null || echo '[]' >"$2"
+}
+
+# rail_children: how many threads of the person's list are children of the parent (`childOf.threadId`); the list is shared with every
+# other thread of the person, so ask for a page large enough for it (dev/rail-e2e.sh, dev/delete-e2e.sh).
+rail_children() {
+  api GET "/api/threads?order=rail&limit=100" 2>/dev/null | jq -r --arg p "$ps_parent" '[.[] | select(.childOf.threadId == $p)] | length' 2>/dev/null || echo "?"
+}
+
+wait_for_events "$ps_parent" child_session_reported 1 "$tmp/ps-parent.export.json"
+ps_child=$(jq -r '[.events[] | select(.kind == "child_session_opened") | .data.thread] | first // ""' "$tmp/ps-parent.export.json")
+ps_session=$(jq -r '[.events[] | select(.kind == "child_session_opened") | .data.session] | first // ""' "$tmp/ps-parent.export.json")
+if [ -n "$ps_child" ]; then ok "chat, plan session: the parent names the child thread of the session"; else bad "chat, plan session: the parent names no child thread ($(jq -c '[.events[] | select(.kind | test("child_session"))]' "$tmp/ps-parent.export.json"))"; fi
+# Without a child thread every check below would fail on an empty id, after a minute of waits: stop here, with the one failure that says why.
+[ -n "$ps_child" ] || finish
+expect "chat, plan session: the parent's log opened the session once, the helper planner, kept open, round 1" \
+  "$(jq -r '[.events[] | select(.kind == "child_session_opened")] | "\(length) \(.[0].data.agent) \(.[0].data.keepOpen) \(.[0].data.round)"' "$tmp/ps-parent.export.json")" \
+  "1 planner true 1"
+# The positive case is not asserted here: a session the orchestrator first learns from the parent task's sessions object legitimately has
+# no `by` (only the events carry it), so this scenario cannot tell `by: agent` from absent — a regression that drops `by` on the wire is
+# invisible to `dev/`. What it can say is that nobody claims the person started it.
+expect "chat, plan session: no child_session_opened says the person started it (the chat's model did)" \
+  "$(jq -r '[.events[] | select(.kind == "child_session_opened" and .data.by == "person")] | length' "$tmp/ps-parent.export.json")" "0"
+# The round is a job of the child thread, never of the parent: the parent's log has no job of its own here, and its conversation carries
+# the report instead (adam appends the read to the chat's turn).
+expect "chat, plan session: the parent's own log holds no job_started (the round ran in the child and the report came into the chat's turn)" \
+  "$(jq -r '[.events[] | select(.kind == "job_started")] | length' "$tmp/ps-parent.export.json")" "0"
+expect "chat, plan session: the first report the parent's log holds is round 1, done" \
+  "$(jq -r '[.events[] | select(.kind == "child_session_reported")] | first | "\(.data.round) \(.data.report)"' "$tmp/ps-parent.export.json")" "1 done"
+# The prompt of the session's first round is not a turn of the parent (child-sessions-v1.md, section 4): it is in no message of the
+# parent's conversation (the `agent_step` start of `subagent_start` carries it as the call's input, steps/v1, as for any tool step).
+expect "chat, plan session: the session's first prompt is in no message of the parent's conversation" \
+  "$(jq -r '[.events[] | select(.kind == "user_message" or .kind == "agent_message") | tostring] | join(" ") | contains("[mock:plan-session-r1]")' "$tmp/ps-parent.export.json")" "false"
+expect "chat, plan session: the person's list has exactly one child of the parent after round 1" "$(rail_children)" "1"
+
+# --- the person sends the kept-open session a second round, then closes it ------------------------------------------------
+expect "chat, plan session: the person's message to the child thread (round 2) answers 200" \
+  "$(run_props "$ps_child" "Book the venue. [mock:plan-session-r2]" '{}' "$tmp/ps-round2.sse")" "200"
+# Round 2 first: the child is `done` as soon as round 1 ends, so the state alone would pass before the person's round exists.
+wait_for_events "$ps_child" job_started 2 "$tmp/ps-child.export.json"
+expect "chat, plan session: the child thread ends done again (round 2 ended)" "$(wait_state "$ps_child")" "done"
+# ADR 0072 decision 3: the round the agent starts is an observed job of the child thread and carries its round; a round the person
+# starts in the child thread is an ordinary job of it, so its `job_started` carries none (the parent's log is where its report lands).
+expect "chat, plan session: the child's log holds two jobs, the first the round the agent started (job 1, round 1, by the agent)" \
+  "$(jq -r '[.events[] | select(.kind == "job_started") | "\(.data.job):\(.data.round.number // "-"):\(.data.round.by // "-")"] | join(",")' "$tmp/ps-child.export.json")" \
+  "1:1:agent,2:-:-"
+expect "chat, plan session: the child's log holds exactly one user message, the person's round-2 text" \
+  "$(jq -r '[.events[] | select(.kind == "user_message")] | "\(length) \(.[0].data.text // "")"' "$tmp/ps-child.export.json")" \
+  "1 Book the venue. [mock:plan-session-r2]"
+expect "chat, plan session: the round-two script's words are the child's answer, and the first round's prompt is nowhere in its log" \
+  "$(jq -r '[(tostring | contains("[mock:plan-session-r1]")), ([.events[] | select(.kind == "agent_message") | .data.text // "" | select(contains("Round two:"))] | length)] | join(" ")' "$tmp/ps-child.export.json")" \
+  "false 1"
+expect "chat, plan session: the parent's log holds the report of round 2 too, once it ended" \
+  "$(export_of "$ps_parent" "$tmp/ps-parent.export.json"; jq -r '[.events[] | select(.kind == "child_session_reported") | "\(.data.round):\(.data.report)"] | join(",")' "$tmp/ps-parent.export.json")" \
+  "1:done,2:done"
+expect "chat, plan session: the person's list still has exactly one child of the parent, not one per round" "$(rail_children)" "1"
+
+expect "chat, plan session: POST /api/threads/{child}/session/close answers 202" \
+  "$(post "/api/threads/$ps_child/session/close" '{"cancel":false}')" "202"
+expect "chat, plan session: the session ends closed" "$(wait_child_state "$ps_child" closed)" "closed"
+expect "chat, plan session: a message to the closed session is refused 409 session_closed" \
+  "$(run_props "$ps_child" "Anything else?" '{}' "$tmp/ps-closed.sse") $(problem_code "$tmp/ps-closed.sse")" "409 session_closed"
+# The child's state and the parent's event are two commits, the child's first: wait for the event (this writes the export) rather than
+# reading it once, or the assertion races the second commit.
+wait_for_events "$ps_parent" child_session_closed 1 "$tmp/ps-parent.export.json"
+expect "chat, plan session: the parent's log holds child_session_closed once, naming that child thread and session" \
+  "$(jq -r --arg c "$ps_child" --arg s "$ps_session" '[.events[] | select(.kind == "child_session_closed" and .data.thread == $c and .data.session == $s)] | length' "$tmp/ps-parent.export.json")" \
+  "1"
+api GET "/api/threads/$ps_child" >"$tmp/ps-child.json" 2>/dev/null || echo '{}' >"$tmp/ps-child.json"
+expect "chat, plan session: childOf says the helper planner, kept open, closed, nested under the parent" \
+  "$(jq -r '.childOf | "\(.agent) \(.keepOpen) \(.state)"' "$tmp/ps-child.json") $(jq -r '.nestedUnder' "$tmp/ps-child.json")" \
+  "planner true closed $ps_parent"
+expect "chat, plan session: the person's list still has exactly one child of the parent after the close" "$(rail_children)" "1"
+
+frames "$ps_parent" "$tmp/ps-parent.frames.json"
+expect "chat, plan session: the parent's stream has a vymalo.session card of that session, naming the child thread and the helper planner" \
+  "$(jq -r --arg c "$ps_child" --arg s "$ps_session" '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .activityType == "vymalo.session" and .content.threadId == $c and .content.session == $s) | .content.agent] | unique | join(",")' "$tmp/ps-parent.frames.json")" \
+  "planner"
+frames "$ps_child" "$tmp/ps-child.frames.json"
+expect "chat, plan session: the child's own card (session-self) ends closed, close asked, kept open" \
+  "$(jq -r '[.[] | select(.type == "ACTIVITY_SNAPSHOT" and .messageId == "session-self")] | last | .content | "\(.state) \(.closeAsked) \(.keepOpen) \(.agent)"' "$tmp/ps-child.frames.json")" \
+  "closed true true planner"
 
 # --- Adam, the coder, for contrast ---------------------------------------------------------------------
 say adam "hi"

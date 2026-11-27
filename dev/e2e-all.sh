@@ -11,7 +11,9 @@
 #
 #   greeting          "hi" gets a greeting that says the coder's name, not a task    greeting-e2e.sh
 #   agents            three agents (coder, chat, researcher); each answers in its     agents-e2e.sh
-#                     role on the mocks, the researcher with a source it searched for
+#                     role on the mocks, the researcher with a source it searched for;
+#                     the chat starts its planner once as a tool and once as a
+#                     kept-open child session on the real adam
 #   choices           the coder asks three questions as one form drawn from the web's  choices-e2e.sh
 #                     catalog, one action answers them, a newer catalog is recorded too
 #   cards             the researcher searches and answers with one surface of cards    cards-e2e.sh
@@ -105,6 +107,9 @@
 #                     card lists locale/v1 with the deployment's tag (DEFAULT_LOCALE of
 #                     compose.yaml), a message naming de-DE reaches the model as one more turn
 #                     after the history and never in `system`, a thread that names none gets no
+#                     line, and a tag for the researcher (whose card lists nothing) changes nothing;
+#                     the run body is the web's own (web/scripts/run-forwarded-props.mjs), which
+#                     puts an interface tag under vymalo.locale and refuses one it would not send
 #                     line, and a tag for the researcher (whose card lists nothing) changes nothing
 #   commands          commands/v1 on the REAL coder (ADR 0079): the capabilities            commands-e2e.sh
 #                     of adam list the folder's three commands, chat lists none, the

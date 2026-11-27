@@ -124,6 +124,12 @@ jobs:
       COMPOSE_PROFILES: app
     steps:
       - uses: actions/checkout@v7
+      # dev/locale-real-e2e.sh builds a run's `forwardedProps` with the web's own builder
+      # (`web/scripts/run-forwarded-props.mjs` imports `web/src/features/locale/lib/locale.ts` as it stands):
+      # Node 24 strips the types, so this needs no install and no build.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
       - name: Free disk space
         # The coder image is about 2.9 GB and the two builds add several more: drop what the job never uses.
         run: |

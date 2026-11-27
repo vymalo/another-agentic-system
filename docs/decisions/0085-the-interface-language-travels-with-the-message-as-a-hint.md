@@ -11,6 +11,10 @@ sidebarTitle: "0085 · Interface language as a hint"
   the projection still shows nothing of it. The rest of the record stands.
   **Amended 2026-11-27:** "no agent lists the extension yet" is out of date: adam lists `locale/v1` whenever `DEFAULT_LOCALE` is set, which
   the stack's `chat` does (`compose.yaml`; `dev/locale-real-e2e.sh`).
+  **Amended 2026-11-27 (the web's side):** the web sends the tag too — **the page's own**, `document.documentElement.lang`, with each
+  message that carries the person's words (`web/src/features/locale`, `web/e2e/locale.spec.ts`), which is the owner's ruling of
+  2026-11-26 (option b); the interface language a person **picks** is ANR-957. `dev/locale-real-e2e.sh` builds its run body with the
+  web's own builder (`web/scripts/run-forwarded-props.mjs`), so the real-chat proof carries the browser's shape.
 - **Contract:** [`docs/api/locale-v1.md`](../api/locale-v1.md). **Pattern:** [ADR 0008](0008-platform-integration-via-a2a-extension.md).
   **The extension this one is deliberately *not* shaped like:** [ADR 0061](0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md).
 
