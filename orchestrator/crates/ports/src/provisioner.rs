@@ -85,7 +85,9 @@ impl AgentKind {
 pub enum AgentState {
     /// Being made or changed.
     Saving,
-    /// Cannot start (its configuration is refused).
+    /// The operator has not applied the agent: a store or a referent it needs is not ready yet
+    /// (which passes by itself), or a name is taken or a component is missing (which does not).
+    /// The reason is a platform condition, not this state.
     Blocked,
     /// Running, not fully healthy.
     Degraded,
@@ -132,6 +134,14 @@ pub enum ProvisionError {
     /// The agent is being deleted; ask again once it is gone.
     #[error("the agent is being deleted")]
     Deleting,
+    /// The platform accepted the form, but the agent is blocked for a reason that waiting cannot
+    /// fix (a name held by an object that is not the platform's, a missing component). The
+    /// reason is the platform's condition reason, which holds no secret.
+    #[error("the agent is blocked ({reason})")]
+    Blocked {
+        /// The platform's reason, for example `NameConflict`.
+        reason: String,
+    },
 }
 
 impl ProvisionError {
@@ -151,6 +161,7 @@ impl Classify for ProvisionError {
             | ProvisionError::Deleting => ErrorClass::Transient,
             ProvisionError::Refused => ErrorClass::Unauthenticated,
             ProvisionError::Invalid => ErrorClass::Invalid,
+            ProvisionError::Blocked { .. } => ErrorClass::Internal,
         }
     }
 }

@@ -39,6 +39,11 @@ stateDiagram-v2
   Absent --> Saving: create
   Suspended --> Saving: resume
   Saving --> Ready
+  Saving --> Blocked: store or referent not ready
+  Blocked --> Ready: store or referent ready
+  Blocked --> Refused: NameConflict, CNPGNotInstalled
+  Saving --> Degraded: applied, not ready
+  Degraded --> Ready
   Ready --> Suspended: suspend
   Ready --> Deleting: delete
   Suspended --> Deleting: delete
@@ -63,9 +68,15 @@ stateDiagram-v2
   `PlatformConfig::with_form`; the adapter adds `name`, `owner` and `suspend` and refuses a form
   that sets them.
 * A wait that ends before `ready` is `NotReady { last }` (transient); a `Deleting` agent is
-  `Deleting`. `Saving` and `Degraded` (the platform's "applied, not ready", which returns to
-  `ready` by itself) are polled until `ready_timeout`; a `Blocked` agent (the operator did not
-  apply the form: a missing referent or an invalid config) is `Invalid` at once, with no wait. A bad token is `Refused`. No retry loop beyond the waits above.
+  `Deleting`. `Saving`, `Degraded` (applied, not ready: a rollout or a crash loop, which returns to
+  `ready` by itself) and `Blocked` are polled until `ready_timeout`: a fresh database cluster or a
+  referent not made yet blocks an agent that then goes `ready`, so a first message is not refused for
+  it. Only a `Blocked` agent whose `conditions` (each `{type, status, reason}`, as the platform's
+  detail has them) say that waiting cannot help is refused at once, as `ProvisionError::Blocked
+  { reason }` (a 500 `agent_blocked` for the person: the deployment's to repair): `RuntimeReady`
+  `False` for `NameConflict`, and `StoreReady` `False` for `CNPGNotInstalled`. Every other reason
+  (`ClusterNotReady`, `ConfigNotResolved`, `ConfigInvalid`, an unknown or missing one) is waited for
+  and ends, at the bound, as `NotReady { last: Blocked }`. A bad token is `Refused`. No retry loop beyond the waits above.
 
 ## Configuration
 

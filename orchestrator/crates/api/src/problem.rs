@@ -236,6 +236,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | the live card of an agent cannot be read, and the request needs to know whether it honours an access tier (`AppError::CardUnavailable`, ADR 0061) | 503 "the card of the agent <id> could not be read" + `Retry-After: 5` |
 /// | the person's own agent is not ready within the wait-ready bound (`AppError::AgentNotReady`, ANR-806) | 503 `code: agent_not_ready`, "your <kind> agent is not ready after <n>s" + `Retry-After: 5`; nothing was written |
 /// | the platform cannot make or wake the person's own agent (`AppError::Provisioning`) | 503 "your <kind> agent could not be made ready" + `Retry-After: 5` when it may pass (the platform is down or the agent is being deleted), 500 when the platform refused the orchestrator or its form |
+/// | the person's own agent is blocked for a reason that waiting cannot fix (`AppError::Provisioning` with `ProvisionError::Blocked`, ANR-1062: `NameConflict`, `CNPGNotInstalled`) | 500 `code: agent_blocked`, "your <kind> agent is blocked: <reason>"; the reason is the platform's condition reason, no secret; nothing was written |
 /// | an agent that rate limits | 503 + its `Retry-After` |
 /// | any other agent failure | 502 |
 /// | `Corrupt`, `Internal`, anything else | 500 |
@@ -271,6 +272,24 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
         return (
             Problem::new(StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
             Some(retry_after_secs(err.retry_after(), RETRY_AFTER_UNAVAILABLE)),
+        );
+    }
+    // The person's own agent is blocked for a reason that waiting cannot fix (ANR-1062): the
+    // deployment's to repair, a 500. The reason is a platform condition reason (`NameConflict`),
+    // which holds no secret and no address, so the detail names it.
+    if let AppError::Provisioning {
+        kind,
+        source: ProvisionError::Blocked { reason },
+    } = err
+    {
+        tracing::error!(error = %report(err), "the person's own agent is blocked");
+        return (
+            Problem::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("your {kind} agent is blocked: {reason}"),
+            )
+            .with_code("agent_blocked"),
+            None,
         );
     }
     // The person's own agent (ANR-806): not ready in time, or the platform could not make it. The
@@ -895,6 +914,21 @@ mod tests {
             source: ProvisionError::Refused,
         });
         assert_eq!(problem.status, 500);
+        assert_eq!(retry_after, None);
+
+        // blocked for a reason waiting cannot fix: a 500 with its own code and the reason
+        let (problem, retry_after) = problem_for(&AppError::Provisioning {
+            kind: "coder",
+            source: ProvisionError::Blocked {
+                reason: "NameConflict".to_owned(),
+            },
+        });
+        assert_eq!(problem.status, 500);
+        assert_eq!(problem.code.as_deref(), Some("agent_blocked"));
+        assert_eq!(
+            problem.detail.as_deref(),
+            Some("your coder agent is blocked: NameConflict")
+        );
         assert_eq!(retry_after, None);
     }
 

@@ -380,7 +380,9 @@ impl Classify for AppError {
             // The platform's refusal of the orchestrator's own credentials or form is the
             // deployment's fault, not the caller's: a 500, never a 401 or a 422 for the person.
             AppError::Provisioning { source, .. } => match source {
-                ProvisionError::Refused | ProvisionError::Invalid => ErrorClass::Internal,
+                ProvisionError::Refused
+                | ProvisionError::Invalid
+                | ProvisionError::Blocked { .. } => ErrorClass::Internal,
                 _ => ErrorClass::Transient,
             },
             AppError::MessageLimit { .. } => ErrorClass::RateLimited,
@@ -549,6 +551,12 @@ mod tests {
                 kind: "coder",
                 source: ProvisionError::Refused,
             },
+            AppError::Provisioning {
+                kind: "coder",
+                source: ProvisionError::Blocked {
+                    reason: "NameConflict".to_owned(),
+                },
+            },
             AppError::Contended,
             AppError::MessageLimit {
                 limit: "messages_per_minute",
@@ -612,7 +620,9 @@ mod tests {
                     ErrorClass::Transient
                 }
                 AppError::Provisioning { source, .. } => match source {
-                    ProvisionError::Refused | ProvisionError::Invalid => ErrorClass::Internal,
+                    ProvisionError::Refused
+                    | ProvisionError::Invalid
+                    | ProvisionError::Blocked { .. } => ErrorClass::Internal,
                     _ => ErrorClass::Transient,
                 },
                 AppError::Contended => ErrorClass::Conflict,

@@ -141,6 +141,8 @@ pub enum BuildError {
 /// What a read of one agent said.
 struct Seen {
     state: AgentState,
+    /// For a `Blocked` agent: the reason of a condition that waiting cannot clear, if there is one.
+    terminal: Option<&'static str>,
     etag: Option<HeaderValue>,
 }
 
@@ -315,7 +317,16 @@ impl PlatformProvisioner {
                     .await
                     .map_err(|e| ProvisionError::unavailable(e.without_url()))?;
                 let state = parse_state(body.get("state").and_then(Value::as_str))?;
-                Ok(Some(Seen { state, etag }))
+                let terminal = if state == AgentState::Blocked {
+                    terminal_reason(&body)
+                } else {
+                    None
+                };
+                Ok(Some(Seen {
+                    state,
+                    terminal,
+                    etag,
+                }))
             }
             StatusCode::NOT_FOUND => Ok(None),
             other => Err(Self::unexpected(other)),
@@ -393,6 +404,27 @@ async fn problem_slug(response: reqwest::Response) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The conditions of a `Blocked` agent that waiting cannot clear, as the platform writes them
+/// (`conditions` of the agent's detail: objects with `type`, `status` and `reason`; the platform's
+/// `crates/api/src/status.rs` names the reasons): a `RuntimeReady` that is `False` for `NameConflict`
+/// (an object the runtime needs exists and is not the platform's) and a `StoreReady` that is
+/// `False` for `CNPGNotInstalled` (the database operator is absent). Every other blocked reason
+/// (`ClusterNotReady`, `ConfigNotResolved`, `ConfigInvalid`, which also covers a referent not made
+/// yet) passes by itself and is waited for; a missing or unreadable `conditions` is waited for too.
+fn terminal_reason(body: &Value) -> Option<&'static str> {
+    body.get("conditions")?.as_array()?.iter().find_map(|c| {
+        let field = |name: &str| c.get(name).and_then(Value::as_str);
+        if field("status") != Some("False") {
+            return None;
+        }
+        match (field("type")?, field("reason")?) {
+            ("RuntimeReady", "NameConflict") => Some("NameConflict"),
+            ("StoreReady", "CNPGNotInstalled") => Some("CNPGNotInstalled"),
+            _ => None,
+        }
+    })
+}
+
 fn parse_state(text: Option<&str>) -> Result<AgentState, ProvisionError> {
     Ok(match text {
         Some("saving") => AgentState::Saving,
@@ -451,14 +483,17 @@ impl AgentProvisioner for PlatformProvisioner {
                             let etag = seen.etag.ok_or_else(raced)?;
                             self.replace(owner, kind, &name, &etag, false).await?;
                         }
-                        // Blocked: the operator did not apply the form (a referent is missing or
-                        // the config is invalid), so waiting cannot change it: refuse at once,
-                        // as the platform's `422` on a form would (`Invalid`, a 500 for the
-                        // person: the deployment's form is at fault).
-                        AgentState::Blocked => return Err(ProvisionError::Invalid),
+                        // Blocked is waited for like Saving, because a fresh store or a referent
+                        // not made yet blocks an agent that then goes `ready`; only a reason that
+                        // waiting cannot clear (`terminal_reason`) ends the wait at once.
+                        AgentState::Blocked if seen.terminal.is_some() => {
+                            return Err(ProvisionError::Blocked {
+                                reason: seen.terminal.unwrap_or_default().to_owned(),
+                            });
+                        }
                         // Saving and Degraded (applied, not ready: a rollout or a crash loop that
                         // goes back to Ready by itself) are waited for, up to the bound.
-                        AgentState::Saving | AgentState::Degraded => {
+                        AgentState::Saving | AgentState::Blocked | AgentState::Degraded => {
                             if Instant::now() >= deadline {
                                 return Err(ProvisionError::NotReady { last });
                             }
