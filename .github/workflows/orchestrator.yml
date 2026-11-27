@@ -67,9 +67,14 @@ on:
 permissions:
   contents: read
 
+# A pull request run is replaced by the next push to its branch. A push to main has a group of its own, its sha, and is
+# never cancelled or replaced: release.yml copies the sha-<7> image of the newest commit that changed this workflow's paths,
+# and no one can say in advance which commit that is. A shared group would not be enough: it keeps one running and one
+# pending run, and a newer pending run cancels the older pending one even with cancel-in-progress false (ANR-1197, ADR 0106
+# amended 2026-11-27).
 concurrency:
-  group: orchestrator-${{ github.ref }}
-  cancel-in-progress: true
+  group: orchestrator-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
@@ -499,7 +504,7 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     concurrency:
-      group: deploy-bump
+      group: deploy-bump-orchestrator
       cancel-in-progress: false
     permissions:
       contents: write
@@ -521,8 +526,9 @@ jobs:
             git reset --hard origin/main
             # A newer commit that changes what this workflow builds makes its own image and bumps for itself; do not put the tag
             # back to this older one (image jobs can finish out of order). Commits elsewhere (the chart, the web image) do not count.
-            newer="$(git log --format=%s "$SHA..origin/main" -- orchestrator docs/api/chat-api.yaml docs/api/examples web/src/features/chat/lib/a2ui/catalog docs/api/config.md docs/api/config.schema.json dev/orchestrator.yaml dev/orchestrator.live.yaml dev/agents.yaml dev/agents.live.yaml dev/mcp-tokens.yaml .github/workflows/orchestrator.yml | grep -v '^chore(deploy): bump ' || true)"
-            if [ -n "$newer" ]; then
+            # The paths are read from this workflow's own on.push.paths (tools/release-source.sh), so the list cannot drift.
+            newest="$(sh tools/release-source.sh .github/workflows/orchestrator.yml origin/main)"
+            if [ "$newest" != "$SHA" ] && git merge-base --is-ancestor "$SHA" "$newest"; then
               echo "main has moved on since $SHA; the newer build will bump"
               exit 0
             fi

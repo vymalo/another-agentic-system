@@ -25,6 +25,8 @@
 #     that mock are adam-rs's, vendored): the coder makes three files, shares them with `share_file` and places two of them in a
 #     surface with `Image` (dev/artifact-e2e.sh). Each turn is played, with its SSE twin, and the files the script writes, the PNG it
 #     decodes and the hashes the `Image`s name are compared with dev/wiremock/coder-share/files/, the one source of the bytes.
+#   * the `[mock:tier]` script of the same model (dev/wiremock/coder-tier, ours; dev/tier-real-e2e.sh): the coder starts a scratch project, writes a file and answers, the
+#     same whatever the access tier of the message (the coder refuses the write at `plan`, not the script); each turn is played with its SSE twin.
 # CI runs it after `docker compose --profile app up -d --wait mock-mcp-search mock-model mock-openai`.
 #
 #   dev/check-agent-mocks.sh [SEARCH_URL [MODEL_URL [CODER_MODEL_URL]]]
@@ -800,6 +802,33 @@ else
     "$(jq -cn --argjson msgs "$(share_history 8)" '{model: "mock-coder", messages: $msgs, stream: true}' |
        curl -sS -X POST "$CODER/v1/chat/completions" -H 'content-type: application/json' --data-binary @- |
        sed -n 's/^data: //p' | grep -v '^\[DONE\]' | jq -s '[.[] | select((.choices | length) > 0) | .choices[0].delta.tool_calls // [] | .[] | select(.function.arguments != "")] | length > 2')" "true"
+  # The `[mock:tier]` script (dev/wiremock/coder-tier, dev/tier-real-e2e.sh): start_scratch, write_file note.txt, an answer. The same whatever
+  # the tier of the message: it is the coder, not the script, that refuses the write at `plan`.
+  tier_user=$(user '[mock:tier] write note.txt')
+  tier_history() { # tier_history N: the conversation after the results of calls 1..N
+    _h="$share_system, $tier_user"
+    _i=1
+    while [ "$_i" -le "$1" ]; do
+      _h="$_h, $(call "tier-call-$_i" some_tool), $(result "tier-call-$_i" ok)"
+      _i=$((_i + 1))
+    done
+    printf '[%s]' "$_h"
+  }
+  tturn() { completion mock-coder "$(tier_history "$1")"; }
+  check "mock-coder [mock:tier]: the first turn starts a scratch project (tier-call-1)" "$(tturn 0 | tool_of)" "tool_calls | tier-call-1 | start_scratch"
+  check "mock-coder [mock:tier]: then it writes note.txt (tier-call-2)" \
+    "$(tturn 1 | jq -r '[.finish_reason, .message.tool_calls[0].id, .message.tool_calls[0].function.name, (.message.tool_calls[0].function.arguments | fromjson | .path)] | join(" | ")')" \
+    "tool_calls | tier-call-2 | write_file | note.txt"
+  check "mock-coder [mock:tier]: then it answers in words, whatever the two results said" "$(tturn 2 | jq -r '[.finish_reason, (.message.content | length > 0 | tostring)] | join(" | ")')" "stop | true"
+  check "mock-coder [mock:tier]: a conversation without the keyword never gets this script" \
+    "$(jq -cn '{model: "mock-coder", messages: [{role: "user", content: "something nobody scripted"}, {role: "assistant", content: null, tool_calls: [{id: "tier-call-1", type: "function", function: {name: "x", arguments: "{}"}}]}, {role: "tool", tool_call_id: "tier-call-1", content: "ok"}]}' |
+       curl -s -o /dev/null -w '%{http_code}' -X POST "$CODER/v1/chat/completions" -H 'content-type: application/json' --data-binary @-)" "404"
+  _t=0
+  while [ "$_t" -le 2 ]; do
+    if [ "$_t" -eq 2 ]; then twin "mock-coder [mock:tier], the words" mock-coder "$(tier_history 2)" 2; else twin "mock-coder [mock:tier], turn $_t" mock-coder "$(tier_history "$_t")"; fi
+    _t=$((_t + 1))
+  done
+
   # The `[mock:commands]` script (dev/wiremock/coder-commands, ours): one plain answer to a first turn, for dev/commands-e2e.sh.
   commands_user=$(user '/explain acme/app [mock:commands] nonce')
   check "mock-coder [mock:commands]: a first turn is answered in words and stops, no tool is called" \

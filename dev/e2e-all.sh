@@ -79,6 +79,12 @@
 #                     names none activates nothing; a word that is not a tier is 400 and
 #                     a tier for mock-coder, whose card does not list it, is 422, with no
 #                     thread written
+#   tier-real         the access tier on the REAL coder (ADR 0061): coder-share (adam-coder, no     tier-real-e2e.sh
+#                     gate) lists plan, edits and auto in its capabilities (MAX_ACCESS_TIER is
+#                     unset: the cap is auto); the same two scripted calls (start_scratch,
+#                     write_file) are refused at plan, with the coder's own result in the model's
+#                     next request, and allowed at edits; the coder's echo of the tier is logged
+#                     on its status; bypass, above the cap, is a 422 and writes nothing
 #   pick              the model and the reasoning effort of a message (ADR 0086): mock-pick (a WireMock agent that lists model-pick/v1 and
 #                     reasoning/v1) is read from GET /api/agents; a message that names an alias and a level is logged with it and sent with
 #                     both extensions activated and each member in its metadata; each message names its own and one that names none carries
@@ -274,7 +280,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier pick pick-real commands locale locale-real child-sessions title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier tier-real pick pick-real commands locale locale-real child-sessions title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -387,6 +393,11 @@ for s in "$@"; do
           *) echo "scenario tier needs the agents mock-tiered and mock-coder; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
+    tier-real)
+      case " $agents " in
+        *" coder-share "*) ;;
+        *) echo "scenario tier-real needs the agent 'coder-share', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+      esac ;;
     pick)
       for a in mock-pick mock-coder; do
         case " $agents " in
@@ -504,6 +515,7 @@ for s in "$@"; do
     usage) run usage sh "$here/usage-e2e.sh" ;;
     usage-ledger) run usage-ledger sh "$here/usage-ledger-e2e.sh" ;;
     tier) run tier sh "$here/tier-e2e.sh" ;;
+    tier-real) run tier-real sh "$here/tier-real-e2e.sh" ;;
     pick) run pick sh "$here/pick-e2e.sh" ;;
     pick-real) run pick-real sh "$here/pick-real-e2e.sh" ;;
     commands) run commands sh "$here/commands-e2e.sh" ;;

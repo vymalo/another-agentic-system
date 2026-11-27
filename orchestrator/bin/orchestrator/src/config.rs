@@ -200,13 +200,13 @@ pub enum ConfigError {
     /// token that is quietly missing would leave a user locked out, or worse, an MCP surface
     /// that starts with fewer tokens than the operator meant.
     #[error(
-        "MCP_TOKENS_FILE: the token of {user:?} is in {var}, but that environment variable is \
+        "MCP_TOKENS_FILE: the token of entry {entry} is in {var}, but that environment variable is \
          unset or empty"
     )]
     McpTokenEnvMissing {
-        /// The user the token is for.
-        user: String,
-        /// The environment variable that should hold the token.
+        /// The entry the token is for, counted from 1 (never the user: it may be a pasted secret).
+        entry: usize,
+        /// The environment variable that should hold the token; it has the shape of a name.
         var: String,
     },
     /// `AGENTS_FILE` could not be read.
@@ -1659,7 +1659,7 @@ impl Config {
             Some(McpSettings {
                 tokens: parse_mcp_tokens(
                     clean(args.mcp_tokens_file),
-                    mcp_users_are_subs(&resolved.auth),
+                    mcp_user_rule(&resolved.auth),
                     &get_env,
                     &read,
                 )?,
@@ -1730,13 +1730,14 @@ impl Config {
         // A token's role is one the policy defines: a typo would otherwise hand its holder the
         // default role, which is not what the operator wrote (fail closed, ADR 0033).
         if let Some(mcp) = &mcp {
-            for (user, roles, _) in &mcp.tokens {
+            for (index, (_, roles, _)) in mcp.tokens.iter().enumerate() {
+                let entry = index + 1;
                 for role in roles {
                     if !auth.policy.role_names().any(|known| known == role) {
                         return Err(ConfigError::Invalid {
                             var: "MCP_TOKENS_FILE",
                             reason: format!(
-                                "the role {:?} of {user} is not one of auth.roles ({})",
+                                "the role {:?} of entry {entry} is not one of auth.roles ({})",
                                 role.as_str(),
                                 auth.policy
                                     .role_names()
@@ -2630,25 +2631,67 @@ fn parse_allowed_origins(raw: Option<String>) -> Result<Vec<String>, ConfigError
     Ok(origins)
 }
 
-/// Whether the people of this deployment are the identity provider's `sub` and not an e-mail
-/// address (ADR 0108): `auth.jwt.userClaim: sub` in a mode that reads no identity header (a mode
-/// that also reads it gives some people an e-mail for an id). The same test as the meter's, in
-/// `orch-config`'s rules.
-fn mcp_users_are_subs(auth: &AuthSettings) -> bool {
-    !auth.mode.reads_header() && auth.jwt.as_ref().is_some_and(|jwt| jwt.user_claim == "sub")
+/// The longest user of a tokens-file entry under a claim other than `email` and `sub`, in bytes
+/// of the id [`UserId::new`] makes (trimmed, lower-cased). The JWT path puts no bound on a claim, so
+/// this is ours: 256 holds an e-mail address (at most 254, RFC 5321), the longest value a common
+/// claim yields (`preferred_username`, `upn`; an `oid` is 36), and keeps a pasted blob out of the
+/// logs, headers and rows a user is written to. A person whose claim is longer cannot start a job
+/// over `/mcp`, and the refusal is at start, not at a call.
+const MAX_MCP_USER_BYTES: usize = 256;
+
+/// What kind of id the people of this deployment have, so what a tokens-file `user` must be to
+/// name the same person a token's claim names (ADR 0108, ANR-1163, ANR-1186).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpUserRule {
+    /// An e-mail address (it has an `@`): `userClaim: email`, a mode that also reads the identity
+    /// header (some people are then an e-mail for an id), or no JWT settings at all.
+    Email,
+    /// The identity provider's `sub`, an [`AccountId`]: `userClaim: sub` in a mode that reads no
+    /// header. The meter answers this person.
+    Sub,
+    /// Whatever any other claim yields (`preferred_username`, `oid`, ...), as the JWT path takes
+    /// it: not blank, no control character, at most [`MAX_MCP_USER_BYTES`]. No `@` rule and no
+    /// alphabet. Such a job is leased when the id is an [`AccountId`] and never metered, since the
+    /// meter requires `userClaim: sub` (ADR 0108).
+    Claim,
+}
+
+/// The [`McpUserRule`] of the deployment: from the mode (a header gives e-mail addresses) and
+/// `auth.jwt.userClaim`, by the same test as the meter's in `orch-config`'s rules.
+fn mcp_user_rule(auth: &AuthSettings) -> McpUserRule {
+    if auth.mode.reads_header() {
+        return McpUserRule::Email;
+    }
+    match auth.jwt.as_ref().map(|jwt| jwt.user_claim.as_str()) {
+        None | Some("email") => McpUserRule::Email,
+        Some("sub") => McpUserRule::Sub,
+        Some(_) => McpUserRule::Claim,
+    }
+}
+
+/// Whether `name` is the shape of an environment variable's name, `[A-Z_][A-Z0-9_]*`: the only
+/// kind of text of a tokens-file entry that an error may show.
+fn is_env_var_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_uppercase() || b == b'_')
+        && bytes.all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
 }
 
 /// `MCP_TOKENS_FILE`: the YAML list, with each token read from the variable its `tokenEnv` names.
 /// A user may appear more than once (a rotation); a token may belong to one user only.
 ///
 /// A job started over `/mcp` belongs to the token's user, so that user is the kind of person the
-/// deployment has: an e-mail address, or, when `subs` (`auth.jwt.userClaim: sub`), an account id of
-/// the platform's alphabet `[A-Za-z0-9._:/-]{1,128}` as [`UserId::new`] makes it (trimmed and
-/// lower-cased), which is what [`AccountId`] checks (ADR 0108). The other kind is refused, naming
-/// the entry's position (the first is entry 1) and never the user's value.
+/// deployment has, by `rule` ([`McpUserRule`]): an e-mail address; under `auth.jwt.userClaim: sub`
+/// an account id of the platform's alphabet `[A-Za-z0-9._:/-]{1,128}` as [`UserId::new`] makes it
+/// (trimmed and lower-cased), which is what [`AccountId`] checks (ADR 0108); under any other claim
+/// what the JWT path takes of it, so the user equals the [`UserId`] the person's token gives
+/// (ANR-1186). The other kind is refused, naming the entry's position (the first is entry 1) and
+/// never the user's value.
 fn parse_mcp_tokens(
     path: Option<String>,
-    subs: bool,
+    rule: McpUserRule,
     env: &impl Fn(&str) -> Option<String>,
     read: &impl Fn(&Path) -> io::Result<String>,
 ) -> Result<Vec<(UserId, BTreeSet<orch_ports::Role>, SecretString)>, ConfigError> {
@@ -2677,48 +2720,80 @@ fn parse_mcp_tokens(
         // The position a person reads: the first entry is entry 1.
         let entry = index + 1;
         let user = spec.user.trim();
-        if subs {
-            if AccountId::of_user(&UserId::new(user)).is_err() {
-                return Err(invalid(format!(
-                    "the user of entry {entry} must be the identity provider's sub (auth.jwt.userClaim \
-                     is sub): 1 to {MAX_ACCOUNT_ID_LEN} letters, digits, '.', '_', ':', '/' or '-', and no '@' \
-                     (ADR 0108)"
-                )));
-            }
-        } else if !user.contains('@') {
+        // Every rule: the user is somebody, as the JWT path takes a user claim (not blank, no
+        // control character in the whole value). A user that is not is refused before any other
+        // rule looks at it.
+        if user.is_empty() || spec.user.chars().any(char::is_control) {
             return Err(invalid(format!(
-                "the user of entry {entry} must be the e-mail address the jobs belong to"
+                "the user of entry {entry} must not be blank or hold a control character"
             )));
+        }
+        match rule {
+            McpUserRule::Sub => {
+                if AccountId::of_user(&UserId::new(user)).is_err() {
+                    return Err(invalid(format!(
+                        "the user of entry {entry} must be the identity provider's sub (auth.jwt.userClaim \
+                         is sub): 1 to {MAX_ACCOUNT_ID_LEN} letters, digits, '.', '_', ':', '/' or '-', and no '@' \
+                         (ADR 0108)"
+                    )));
+                }
+            }
+            McpUserRule::Claim => {
+                // The JWT path looks at the whole claim for a control character, then trims.
+                let id = UserId::new(&spec.user);
+                if id.as_str().len() > MAX_MCP_USER_BYTES {
+                    return Err(invalid(format!(
+                        "the user of entry {entry} must be what the token's auth.jwt.userClaim yields: \
+                         not blank, no control character, at most {MAX_MCP_USER_BYTES} bytes \
+                         (a numeric value is quoted in YAML)"
+                    )));
+                }
+            }
+            McpUserRule::Email => {
+                if !user.contains('@') {
+                    return Err(invalid(format!(
+                        "the user of entry {entry} must be the e-mail address the jobs belong to"
+                    )));
+                }
+            }
         }
         let var = spec.token_env.trim();
         if var.is_empty() {
-            return Err(invalid(format!("the tokenEnv of {user:?} is empty")));
+            return Err(invalid(format!("the tokenEnv of entry {entry} is empty")));
+        }
+        // Only a name is ever printed: a token pasted where the name goes is refused unshown.
+        if !is_env_var_name(var) {
+            return Err(invalid(format!(
+                "the tokenEnv of entry {entry} is not the name of an environment variable \
+                 (capital letters, digits and '_', not starting with a digit)"
+            )));
         }
         let token = env(var)
             .map(|t| t.trim().to_owned())
             .filter(|t| !t.is_empty())
             .ok_or_else(|| ConfigError::McpTokenEnvMissing {
-                user: user.to_owned(),
+                entry,
                 var: var.to_owned(),
             })?;
         if token.len() < MIN_MCP_TOKEN_BYTES {
             return Err(invalid(format!(
-                "the token of {user:?} (in {var}) is shorter than {MIN_MCP_TOKEN_BYTES} bytes; \
+                "the token of entry {entry} (in {var}) is shorter than {MIN_MCP_TOKEN_BYTES} bytes; \
                  generate one with `openssl rand -base64 32`"
             )));
         }
         let user = UserId::new(user);
-        if let Some((other, ..)) = tokens
+        if let Some(first) = tokens
             .iter()
-            .find(|(.., t)| t.expose_secret() == token.as_str())
+            .position(|(.., t)| t.expose_secret() == token.as_str())
         {
             return Err(invalid(format!(
-                "the same token is configured for {other} and for {user}"
+                "the same token is configured for entry {} and for entry {entry}",
+                first + 1
             )));
         }
         let roles = match spec.role.as_deref().map(str::trim) {
             None => BTreeSet::new(),
-            Some("") => return Err(invalid(format!("the role of {user} is empty"))),
+            Some("") => return Err(invalid(format!("the role of entry {entry} is empty"))),
             Some(role) => BTreeSet::from([orch_ports::Role::new(role)]),
         };
         tokens.push((user, roles, SecretString::from(token)));
@@ -5775,8 +5850,8 @@ mod tests {
         }
     }
 
-    /// The e-mail rule is unchanged where the people are e-mail addresses: another claim, and a
-    /// mode that also reads the identity header.
+    /// The e-mail rule is unchanged where the people are e-mail addresses: `userClaim: email`, and
+    /// a mode that also reads the identity header, whatever the claim.
     #[cfg(all(feature = "surface-mcp", feature = "auth-jwt"))]
     #[test]
     fn where_people_are_e_mail_addresses_an_mcp_user_still_must_be_one() {
@@ -5784,9 +5859,10 @@ mod tests {
         let email_user = "- { user: Alice@Example.com, tokenEnv: MCP_TOKEN_ALICE }\n";
         for (mode, claim) in [
             (AuthMode::Jwt, "email"),
-            (AuthMode::Jwt, "preferred_username"),
             #[cfg(feature = "auth-header")]
             (AuthMode::JwtOrProxyHeader, "sub"),
+            #[cfg(feature = "auth-header")]
+            (AuthMode::JwtOrProxyHeader, "oid"),
         ] {
             let error = load_mcp_as(mode, claim, sub_user).err().unwrap();
             let shown = error.to_string();
@@ -5799,6 +5875,170 @@ mod tests {
             let user = cfg.mcp.unwrap().tokens[0].0.clone();
             assert_eq!(user.as_str(), "alice@example.com");
         }
+    }
+
+    /// ANR-1186: under a claim that is neither `email` nor `sub`, the user is what that claim
+    /// yields: `UserId::new` of it, with or without an `@`.
+    #[cfg(all(feature = "surface-mcp", feature = "auth-jwt"))]
+    #[test]
+    fn under_another_claim_an_mcp_user_is_what_the_claim_yields() {
+        let raws = [
+            "Alice@Example.com",
+            " 3F2504E0-4F89-11D3-9A0C-0305E82C3301 ",
+            "Zo\u{eb}.M\u{fc}ller",
+            "auth0|abc 123",
+            "plain-name",
+        ];
+        for claim in [
+            "preferred_username",
+            "oid",
+            "upn",
+            "https://idp.example/uid",
+        ] {
+            for raw in raws {
+                let tokens = format!("- {{ user: \"{raw}\", tokenEnv: MCP_TOKEN_ALICE }}\n");
+                let cfg = load_mcp_as(AuthMode::Jwt, claim, &tokens).unwrap();
+                let user = cfg.mcp.unwrap().tokens[0].0.clone();
+                // The id the JWT path makes of a token whose claim is `raw`.
+                assert_eq!(user, UserId::new(raw), "{claim}");
+            }
+        }
+        // At the bound, in bytes of the normalised id, and not above it.
+        let at_bound = "A".repeat(MAX_MCP_USER_BYTES);
+        let tokens = format!("- {{ user: {at_bound}, tokenEnv: MCP_TOKEN_ALICE }}\n");
+        let cfg = load_mcp_as(AuthMode::Jwt, "oid", &tokens).unwrap();
+        assert_eq!(
+            cfg.mcp.unwrap().tokens[0].0.as_str().len(),
+            MAX_MCP_USER_BYTES
+        );
+    }
+
+    #[cfg(all(feature = "surface-mcp", feature = "auth-jwt"))]
+    #[test]
+    fn under_another_claim_a_blank_long_or_control_user_is_refused_by_position() {
+        let too_long = "a".repeat(MAX_MCP_USER_BYTES + 1);
+        // 257 bytes with an '@': the old e-mail rule accepted it.
+        let too_long_with_at = format!("a@{}", "a".repeat(MAX_MCP_USER_BYTES - 1));
+        // The YAML text of the user, for each of: blank, a control character inside, one at the
+        // end (the JWT path refuses the whole claim, it does not trim it first), and too long.
+        for user in [
+            "\"   \"".to_owned(),
+            "\"a\\u0007b\"".to_owned(),
+            "\"a\\nb\"".to_owned(),
+            "\"secret-name\\n\"".to_owned(),
+            "\"\\u007fsecret-name\"".to_owned(),
+            // With an '@', which the e-mail rule of 962584d8 accepted.
+            "\"a@b\\u0007c\"".to_owned(),
+            "\"secret-name@x\\n\"".to_owned(),
+            too_long_with_at,
+            too_long,
+        ] {
+            let tokens = format!(
+                "- {{ user: x@example.com, tokenEnv: MCP_TOKEN_BOB }}\n- {{ user: {user}, tokenEnv: MCP_TOKEN_ALICE }}\n"
+            );
+            let error = load_mcp_as(AuthMode::Jwt, "preferred_username", &tokens)
+                .err()
+                .unwrap();
+            let shown = error.to_string();
+            assert!(
+                matches!(
+                    &error,
+                    ConfigError::Invalid {
+                        var: "MCP_TOKENS_FILE",
+                        ..
+                    }
+                ),
+                "{shown}"
+            );
+            assert!(shown.contains("entry 2"), "{shown}");
+            assert!(!shown.contains("secret-name"), "{shown}");
+            assert!(!shown.contains("aaaa"), "{shown}");
+            assert!(!shown.contains("x@example.com"), "{shown}");
+        }
+    }
+
+    /// `AuthSettings` for the rule tests: `mode` and a JWT with `claim` for the user.
+    #[cfg(feature = "auth-jwt")]
+    fn auth_with_claim(mode: AuthMode, claim: &str) -> AuthSettings {
+        AuthSettings {
+            mode,
+            jwt: Some(JwtSettings {
+                issuer: "https://idp.example".to_owned(),
+                audiences: vec!["orchestrator".to_owned()],
+                jwks_url: None,
+                user_claim: claim.to_owned(),
+                roles_claim: None,
+            }),
+            ..AuthSettings::default()
+        }
+    }
+
+    /// The rule per claim is the claim's, not a default: `sub` keeps the account alphabet, `email`
+    /// keeps the `@`, anything else has neither.
+    #[cfg(feature = "auth-jwt")]
+    #[test]
+    fn the_rule_follows_the_claim() {
+        let rule = |claim: &str| mcp_user_rule(&auth_with_claim(AuthMode::Jwt, claim));
+        assert_eq!(rule("email"), McpUserRule::Email);
+        assert_eq!(rule("sub"), McpUserRule::Sub);
+        for claim in ["preferred_username", "oid", "upn"] {
+            assert_eq!(rule(claim), McpUserRule::Claim, "{claim}");
+        }
+    }
+
+    /// A mode that also reads the identity header gives some people an e-mail for an id, so the
+    /// e-mail rule holds whatever the claim.
+    #[cfg(all(feature = "auth-jwt", feature = "auth-header"))]
+    #[test]
+    fn a_mode_that_reads_the_header_keeps_the_e_mail_rule_for_every_claim() {
+        for claim in ["sub", "oid", "email"] {
+            let auth = auth_with_claim(AuthMode::JwtOrProxyHeader, claim);
+            assert_eq!(mcp_user_rule(&auth), McpUserRule::Email, "{claim}");
+        }
+    }
+
+    /// A token pasted into the file, or `user` and `tokenEnv` swapped, must not reach an error,
+    /// under a claim that takes any text for a user (ANR-1186).
+    #[cfg(all(feature = "surface-mcp", feature = "auth-jwt"))]
+    #[test]
+    fn a_token_in_the_wrong_field_is_never_printed() {
+        const SECRET: &str = "Zk9xLm3Pq7Rt2Vw5Yb8Nc1Df4Gh6Jk0s";
+        let swapped = format!("- {{ user: MCP_TOKEN_ALICE, tokenEnv: {SECRET} }}\n");
+        let pasted_in_user = format!("- {{ user: {SECRET}, tokenEnv: MCP_TOKEN_NOPE }}\n");
+        let pasted_with_role =
+            format!("- {{ user: {SECRET}, tokenEnv: MCP_TOKEN_ALICE, role: wizard }}\n");
+        for tokens in [swapped.clone(), pasted_in_user, pasted_with_role] {
+            let error = load_mcp_as(AuthMode::Jwt, "oid", &tokens).err().unwrap();
+            let shown = format!("{error} {error:?}");
+            assert!(!shown.contains(SECRET), "{shown}");
+            assert!(error.to_string().contains("entry 1"), "{error}");
+        }
+        // The swapped file is refused for its tokenEnv, by position.
+        let error = load_mcp_as(AuthMode::Jwt, "oid", &swapped).err().unwrap();
+        assert!(
+            matches!(
+                &error,
+                ConfigError::Invalid {
+                    var: "MCP_TOKENS_FILE",
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("not the name of an environment variable"),
+            "{error}"
+        );
+        // A variable that is unset shows its name and the entry.
+        let unset = format!("- {{ user: {SECRET}, tokenEnv: MCP_TOKEN_NOPE }}\n");
+        let error = load_mcp_as(AuthMode::Jwt, "oid", &unset).err().unwrap();
+        assert!(
+            matches!(&error, ConfigError::McpTokenEnvMissing { entry: 1, .. }),
+            "{error}"
+        );
+        assert!(error.to_string().contains("MCP_TOKEN_NOPE"), "{error}");
     }
 
     #[cfg(feature = "surface-mcp")]
@@ -5820,9 +6060,9 @@ mod tests {
         for (entry, expected) in [
             (
                 "role: wizard",
-                "the role \"wizard\" of alice@example.com is not one of auth.roles (admin, user)",
+                "the role \"wizard\" of entry 1 is not one of auth.roles (admin, user)",
             ),
-            ("role: ' '", "the role of alice@example.com is empty"),
+            ("role: ' '", "the role of entry 1 is empty"),
         ] {
             let tokens =
                 format!("- {{ user: alice@example.com, tokenEnv: MCP_TOKEN_ALICE, {entry} }}\n");
@@ -5886,11 +6126,12 @@ mod tests {
         // A token variable that is unset stops the service, and names the variable, not a value.
         let err = without("MCP_TOKEN_BOB");
         assert!(
-            matches!(&err, ConfigError::McpTokenEnvMissing { user, var }
-            if user == "bob@example.com" && var == "MCP_TOKEN_BOB"),
+            matches!(&err, ConfigError::McpTokenEnvMissing { entry, var }
+            if *entry == 2 && var == "MCP_TOKEN_BOB"),
             "{err}"
         );
         assert!(err.to_string().contains("MCP_TOKEN_BOB"));
+        assert!(!err.to_string().contains("bob@example.com"));
         // Empty counts as unset.
         let mut env = mcp_env();
         env.retain(|(k, _)| *k != "MCP_TOKEN_BOB");

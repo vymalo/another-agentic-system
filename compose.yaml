@@ -629,7 +629,8 @@ services:
   # An off-script request is a 404. The mappings come from two folders under one root, which WireMock reads recursively: the
   # vendored ones (dev/coder/wiremock, byte for byte from adam-rs) and ours (dev/wiremock/coder-share: the `[mock:share]` script,
   # where the coder makes three files and shares them, dev/artifact-e2e.sh; dev/wiremock/coder-commands: the `[mock:commands]` script,
-  # one plain answer, dev/commands-e2e.sh). They are mounted beside each other, not one inside the
+  # one plain answer, dev/commands-e2e.sh; dev/wiremock/coder-tier: the `[mock:tier]` script, where
+  # it starts a scratch project and writes a file, which the access tier of the message allows or refuses, dev/tier-real-e2e.sh). They are mounted beside each other, not one inside the
   # other, because a mount point cannot be made inside a read-only mount.
   # Journal: http://127.0.0.1:8091/__admin/requests (and /unmatched).
   mock-openai:
@@ -641,6 +642,7 @@ services:
       - ./dev/coder/wiremock/mock-openai/mappings:/home/wiremock/mappings/vendored:ro
       - ./dev/wiremock/coder-share/mappings:/home/wiremock/mappings/coder-share:ro
       - ./dev/wiremock/coder-commands/mappings:/home/wiremock/mappings/coder-commands:ro
+      - ./dev/wiremock/coder-tier/mappings:/home/wiremock/mappings/coder-tier:ro
 
   # The GitHub REST subset the coder uses: list and open pull requests, create a repository (`POST /orgs/{o}/repos`, `scratch`
   # is an organisation), and trade a GitHub App's JWT for an installation token (dev/compose.github-app.yaml).

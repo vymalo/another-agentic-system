@@ -242,7 +242,7 @@ dispatcher does not fail the job for a locale, and the adapter never refuses a m
 | [`agui.md`](agui.md) | the inbound key, and the statement that nothing of it is projected |
 | [`extensions.md`](extensions.md), [`README.md`](README.md) | the row |
 | Web | the tag from its own interface state, with each message (not built yet) |
-| adam-rs | reads the tag and answers in it (not built yet; the agent's half is its own pull request) |
+| adam-rs | reads the tag and answers in it (**built**, *verified 2026-11-27*: at `9f90f1e` `crates/adam-service/src/config.rs:366` reads `DEFAULT_LOCALE` and `serve` lists `locale/v1` with it; the stack's `chat` sets it) |
 
 ## Conformance
 
@@ -278,6 +278,6 @@ for language tags of at least 35 characters", which is the bound `MAX_LOCALE_LEN
 the four tags of the deployment are well formed — `en-GB` and `fr-FR` are `language` + `region`, `gsw-CH` and `fur-IT` a three-letter
 `language` + `region`.
 
-*Unverified:* that any agent reads the member yet — none lists the extension, and the adam-rs side is a separate change. Whether
+*Unverified:* that any agent reads the member yet (*amended 2026-11-27*: adam lists the extension whenever `DEFAULT_LOCALE` is set, which the stack's `chat` does, *verified* at `9f90f1e`, `config.rs:366`; that it then answers in the tag is proven by `dev/locale-real-e2e.sh`, not run here). Whether
 a plain A2A agent ignores or rejects a metadata key it did not ask for does not matter here: nothing is sent to an agent whose
 card does not list the URI.
