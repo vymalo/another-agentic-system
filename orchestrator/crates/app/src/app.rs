@@ -204,10 +204,11 @@ pub struct AppConfig {
     /// A person's own agents (ANR-806): when set, a message to an agent of a provisioned kind makes
     /// or resumes the person's agent and waits for it to be ready **before** the request that
     /// starts the agent's work is written (a message, a Stop & send, an action on a card, a first
-    /// message, a fork's message, a helper session's start). Sends the dispatcher makes on its own
-    /// (re-delegation, redelivery, an `@mention` or `ask_agent`) do not provision. The message
-    /// still goes to the deployment's configured agent, not to the person's own. `None` (the
-    /// default) provisions nothing.
+    /// message, a fork's message, a helper session's start). The agent's id is recorded with the
+    /// thread as its route (`Job.route`, ANR-1061), and the dispatcher sends every row of a routed
+    /// thread to it, waking it first (a stop and a follow never wake it); the thread's target stays
+    /// the deployment's configured agent. An `@mention` or `ask_agent` does not provision. `None`
+    /// (the default) provisions nothing.
     pub provisioning: Option<Provisioning>,
 }
 
@@ -705,10 +706,11 @@ impl<P: Ports> App<P> {
         Ok(())
     }
 
-    /// The id of `user`'s own agent for a thread bound to `agent`, when the deployment provisions
-    /// that kind (ANR-1061): where the dispatcher sends what the person says, instead of at the
-    /// deployment's configured agent. `None` when provisioning is off or the agent's names (its
-    /// id and aliases) say no provisioned kind.
+    /// The id of `user`'s own agent for a thread bound to `agent` would be listed under, when the
+    /// deployment provisions that kind (ANR-1061). Nothing is asked of the platform: a fork that
+    /// has no `ensure_own_agent` answer (it carries no message) records this as its route; one that
+    /// has records the answer's name instead. `None` when provisioning is off or the agent's names
+    /// (its id and aliases) say no provisioned kind.
     pub(crate) fn own_agent_id(&self, user: &UserId, agent: &AgentId) -> Option<AgentId> {
         let provisioning = self.cfg.provisioning.as_ref()?;
         provisioning.own_agent_id(user, &self.agent_names(agent))
@@ -1924,9 +1926,13 @@ impl<P: Ports> App<P> {
         }
         // the fork's own agent (the forker's, a parent's recorded route is its owner's): recorded
         // with the fork, which has a binding of its own and no context at either agent yet
-        let route = self.own_agent_id(user, &target.agent_id);
-        if has_message && route.is_some() {
-            self.ensure_own_agent(user, &target.agent_id).await?;
+        let mut route = self.own_agent_id(user, &target.agent_id);
+        if has_message
+            && route.is_some()
+            && let Some(own) = self.ensure_own_agent(user, &target.agent_id).await?
+        {
+            // the name the platform answered with is the route, as for a first message
+            route = Some(own);
         }
         // the wait may have taken seconds: the fork's message is stamped when it is written
         let now = if has_message {
