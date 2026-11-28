@@ -110,7 +110,7 @@ An ordinary A2A user message, with the task it is for:
 |---|---|
 | `messageId` | The id of the person's message in the orchestrator's log. A row retried after a lost lease sends **the same id**, so it is the key of the agent's duplicate check. |
 | `taskId`, `contextId` | The running task and its context. No `referenceTaskIds`: nothing is continued, the task is the same. |
-| `parts` | The person's text, one text part, as in any message. Whatever the other extensions put on a message rides along: the [thread-tools](thread-tools-v1.md) grant (every message has a token of its own, and the agent keeps using the newest it was given) and, when the card lists it, the [mentions](mentions-v1.md) of this message. |
+| `parts` | The person's text, one text part, as in any message. *(2026-11-28, ANR-1434: the transport can now append the URL parts of a message's [attachments](attachments.md) to a steer as it does to any text message. Nothing sends files yet — the dispatcher sets none — so a steer is still one text part in practice; whether it may carry them is settled before files are switched on, ANR-1435.)* Whatever the other extensions put on a message rides along: the [thread-tools](thread-tools-v1.md) grant (every message has a token of its own, and the agent keeps using the newest it was given) and, when the card lists it, the [mentions](mentions-v1.md) of this message. |
 
 It carries **no metadata of its own**: the request, not the message, says it is a steer.
 
