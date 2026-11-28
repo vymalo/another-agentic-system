@@ -87,12 +87,20 @@ pub enum Input {
         tier_cap: Option<AccessTier>,
         /// The interface locale the person's screen named for this message (ADR 0085,
         /// `locale/v1`), already checked by the caller ([`LocaleHint::parse`](crate::LocaleHint::parse)):
-        /// a hint, carried on the delegation (and on the steer, or the held text of a Stop & send)
-        /// and **never recorded in the log**: it is not conversation content, and the projection
-        /// shows nothing of it. `None` for a message that names none.
+        /// a hint, **recorded on the `user_message`** because the log is the state (so a redelivery,
+        /// a fork's first message and an edit carry it), carried on the delegation (and on the
+        /// steer, or the held text of a Stop & send), and shown by no projection: it is not
+        /// conversation content. `None` for a message that names none.
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The person's prompt signature for this message (ADR 0087, decision 2): the compact JWS
+        /// their app sent as the message's `metadata["vymalo.promptSignature"]`, already checked
+        /// for presence at intake and passed on byte for byte. It is **not conversation content**:
+        /// it is never written to the log (no event, no frame, no step, no export), and it rides
+        /// the delegation's outbox row and then the agent's request. `None` for a message that
+        /// carries none.
+        prompt_signature: Option<String>,
     },
     /// The user sent a message with "Stop & send" (ADR 0036): the same fields as
     /// [`Input::UserMessage`], and a different decision while a job runs. On a thread that is
@@ -128,6 +136,11 @@ pub enum Input {
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The person's prompt signature of the message (ADR 0087), as for [`Input::UserMessage`].
+        /// When the message **stops a running job** the envelope is not held with its text (a
+        /// signature is not ledger state, and the ledger is exported): the next job's delegation,
+        /// and a stop the agent refuses that becomes a steer, carry none.
+        prompt_signature: Option<String>,
     },
     /// The user acted on an A2UI surface (a button with an event action). Like a message, it
     /// answers a blocked thread and is delegated to the agent; unlike one it carries no text.
@@ -178,6 +191,9 @@ pub enum Input {
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The person's prompt signature the message was written with (ADR 0087), as the
+        /// delegation's outbox row holds it (never the log): the redelivery carries it to the agent.
+        prompt_signature: Option<String>,
     },
     /// The user asked to cancel.
     Cancel {
@@ -641,6 +657,12 @@ pub enum Command {
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The person's prompt signature for the message (ADR 0087, decision 2), as the person's
+        /// app sent it: the application puts it on the delegation's outbox row (never in the log),
+        /// and the dispatcher puts it on the agent's request byte for byte, so that the verifier
+        /// behind the model gateway can check it. `None` for a message that carries none and for a
+        /// rework, which is the core's own words.
+        prompt_signature: Option<String>,
     },
     /// Send this text to the agent's **running task** (ADR 0036): a message written while a job
     /// runs, with no stop on its way. The application writes a `steer` outbox row, and the
@@ -664,6 +686,9 @@ pub enum Command {
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The person's prompt signature, as for [`Command::Delegate`]: a steer carries it into the
+        /// running task, and the delegation it becomes keeps it.
+        prompt_signature: Option<String>,
     },
     /// Follow a round of the thread's child session without sending anything (ADR 0072): the
     /// application writes an `observe` row, and the dispatcher answers with
@@ -1029,6 +1054,8 @@ struct Said<'a> {
     tier_cap: Option<AccessTier>,
     locale: Option<LocaleHint>,
     pick: Option<ModelPick>,
+    /// The person's prompt signature (ADR 0087): carried to the delegation, never to the event.
+    prompt_signature: Option<&'a str>,
 }
 
 /// The `user_message` event for `said`, with how it reached the running job (ADR 0036).
@@ -1068,6 +1095,7 @@ fn user_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
         tier_cap: said.tier_cap,
         locale: said.locale.clone(),
         pick: said.pick.clone(),
+        prompt_signature: said.prompt_signature.map(str::to_owned),
     });
     cmds
 }
@@ -1091,6 +1119,7 @@ fn steered_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
         tier_cap: said.tier_cap,
         locale: said.locale.clone(),
         pick: said.pick.clone(),
+        prompt_signature: said.prompt_signature.map(str::to_owned),
     });
     cmds
 }
@@ -1173,6 +1202,9 @@ fn start_after_stop(job: &mut Job) -> Vec<Command> {
             tier_cap,
             locale,
             pick,
+            // The held text carries no envelope: a signature is not ledger state (ADR 0087), so a
+            // message that stopped a running job reaches the agent unsigned.
+            prompt_signature: None,
         },
     ]
 }
@@ -1189,6 +1221,7 @@ fn job_started(job: &Job) -> Command {
 
 /// The delegation of a message that is in the log already: the screen's catalog is the thread's
 /// current one, since the message carries none of its own.
+#[allow(clippy::too_many_arguments)]
 fn redelegate(
     job: &mut Job,
     text: &str,
@@ -1197,6 +1230,7 @@ fn redelegate(
     tier_cap: Option<AccessTier>,
     locale: Option<LocaleHint>,
     pick: Option<ModelPick>,
+    prompt_signature: Option<&str>,
 ) -> Command {
     job.answer.reset();
     job.tier = tier;
@@ -1210,6 +1244,7 @@ fn redelegate(
         tier_cap,
         locale,
         pick,
+        prompt_signature: prompt_signature.map(str::to_owned),
     }
 }
 
@@ -1225,6 +1260,7 @@ fn redelegation(
     tier_cap: Option<AccessTier>,
     locale: Option<LocaleHint>,
     pick: Option<ModelPick>,
+    prompt_signature: Option<&str>,
 ) -> Vec<Command> {
     if sent {
         job.answer.reset();
@@ -1237,7 +1273,14 @@ fn redelegation(
         Vec::new()
     } else {
         vec![redelegate(
-            job, text, mentions, tier, tier_cap, locale, pick,
+            job,
+            text,
+            mentions,
+            tier,
+            tier_cap,
+            locale,
+            pick,
+            prompt_signature,
         )]
     }
 }
@@ -1412,6 +1455,7 @@ pub fn start_thread(
             tier_cap,
             locale,
             pick,
+            prompt_signature,
         }
         | Input::StopAndSend {
             user,
@@ -1425,6 +1469,7 @@ pub fn start_thread(
             tier_cap,
             locale,
             pick,
+            prompt_signature,
         } => {
             let said = Said {
                 user,
@@ -1438,6 +1483,7 @@ pub fn start_thread(
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
                 pick: pick.clone(),
+                prompt_signature: prompt_signature.as_deref(),
             };
             let mut job = Job::with_gate(gate);
             note_task(&mut job, text);
@@ -1527,6 +1573,7 @@ fn decide(
             tier_cap,
             locale,
             pick,
+            prompt_signature,
         } => {
             let said = Said {
                 user,
@@ -1540,6 +1587,7 @@ fn decide(
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
                 pick: pick.clone(),
+                prompt_signature: prompt_signature.as_deref(),
             };
             message(state, job, &said, false)
         }
@@ -1555,6 +1603,7 @@ fn decide(
             tier_cap,
             locale,
             pick,
+            prompt_signature,
         } => {
             let said = Said {
                 user,
@@ -1568,6 +1617,7 @@ fn decide(
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
                 pick: pick.clone(),
+                prompt_signature: prompt_signature.as_deref(),
             };
             message(state, job, &said, true)
         }
@@ -1579,6 +1629,7 @@ fn decide(
             tier_cap,
             locale,
             pick,
+            prompt_signature,
         } => match state {
             // The thread moved on while the message waited (an earlier redelivery started the next
             // job): the message joins that job, as one written during it would, and is sent
@@ -1606,6 +1657,7 @@ fn decide(
                         *tier_cap,
                         locale.clone(),
                         pick.clone(),
+                        prompt_signature.as_deref(),
                     ),
                 ))
             }
@@ -1625,6 +1677,7 @@ fn decide(
                         *tier_cap,
                         locale.clone(),
                         pick.clone(),
+                        prompt_signature.as_deref(),
                     ),
                 ))
             }
@@ -1641,6 +1694,7 @@ fn decide(
                     *tier_cap,
                     locale.clone(),
                     pick.clone(),
+                    prompt_signature.as_deref(),
                 ));
                 Ok((ThreadState::Queued, cmds))
             }
@@ -1833,6 +1887,8 @@ fn decide(
                             tier_cap,
                             locale,
                             pick,
+                            // the held text carries no envelope: a signature is not ledger state
+                            prompt_signature: None,
                         },
                     ],
                 ))

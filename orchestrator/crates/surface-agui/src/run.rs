@@ -108,6 +108,7 @@ pub(crate) async fn run<P: Ports>(
                 tier: tiered,
                 locale: locale.as_ref(),
                 pick: picked.as_ref(),
+                signature,
                 fork,
             },
         )
@@ -428,6 +429,24 @@ fn picking(mut input: Input, picked: &mut Option<ModelPick>) -> Input {
     input
 }
 
+/// Gives the person's prompt signature of the run to the first input that is a message (a stop
+/// included), once: it is the message's own (ADR 0087), and it rides the delegation's outbox row
+/// and never the log. Every other input is left as it is.
+fn signing(mut input: Input, signature: &mut Option<String>) -> Input {
+    if let Input::UserMessage {
+        prompt_signature: own,
+        ..
+    }
+    | Input::StopAndSend {
+        prompt_signature: own,
+        ..
+    } = &mut input
+    {
+        *own = signature.take();
+    }
+    input
+}
+
 /// Gives the first input that is a message or an action the catalog the run carried, once. Every
 /// variant is listed, so that a new input must be decided here.
 fn carrying(mut input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
@@ -599,6 +618,10 @@ struct Requested<'a> {
     tier: Option<AccessTier>,
     locale: Option<&'a LocaleHint>,
     pick: Option<&'a ModelPick>,
+    /// `metadata["vymalo.promptSignature"]` of the new message (ADR 0087), checked before anything
+    /// was written and passed on byte for byte: it rides the outbox row of the delegation and never
+    /// the log.
+    signature: Option<&'a str>,
     fork: Option<ForkRun>,
 }
 
@@ -621,6 +644,7 @@ async fn attempt<P: Ports>(
         tier,
         locale,
         pick,
+        signature,
         fork,
     } = *requested;
     let user = &principal.user;
@@ -778,6 +802,7 @@ async fn attempt<P: Ports>(
                         tier,
                         locale: locale.cloned(),
                         pick: pick.cloned(),
+                        prompt_signature: signature.map(str::to_owned),
                     },
                     held,
                 )
@@ -800,6 +825,7 @@ async fn attempt<P: Ports>(
                 tier,
                 locale: locale.cloned(),
                 pick: pick.cloned(),
+                prompt_signature: signature.map(str::to_owned),
             };
             match app
                 .create_thread_as(principal, thread, new, inbound)
@@ -842,6 +868,8 @@ async fn attempt<P: Ports>(
             let mut located = locale.cloned();
             // and the model pick
             let mut picked = pick.cloned();
+            // and the person's prompt signature, which the new message carries to its delegation
+            let mut signature = signature.map(str::to_owned);
             for next in inputs {
                 let key = key_of(thread, &next);
                 let next = carrying(next, &mut carried);
@@ -849,6 +877,7 @@ async fn attempt<P: Ports>(
                 let next = tiering(next, &mut tiered);
                 let next = localizing(next, &mut located);
                 let next = picking(next, &mut picked);
+                let next = signing(next, &mut signature);
                 match app.submit(principal, thread, next, key).await? {
                     ApplyOutcome::Applied { events, .. } => {
                         start = start.or_else(|| events.first().map(|e| e.seq));
@@ -872,6 +901,9 @@ async fn attempt<P: Ports>(
             }
             if picked.is_some() {
                 tracing::warn!(%thread, "{THREAD_MODEL_KEY} or {THREAD_REASONING_KEY} on a run with no message to carry it was ignored");
+            }
+            if signature.is_some() {
+                tracing::warn!(%thread, "{PROMPT_SIGNATURE_KEY} on a run with no message to carry it was ignored");
             }
             // An input that writes no event (a cancel) is answered by whatever the log says next.
             let start = if opens_run {
@@ -962,6 +994,7 @@ mod tests {
             catalog: None,
             mentions: Vec::new(),
             tier: None,
+            prompt_signature: None,
         }
     }
 

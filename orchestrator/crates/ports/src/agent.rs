@@ -297,6 +297,13 @@ pub struct SendRequest {
     pub locale: Option<orch_core::LocaleHint>,
     /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
     pub pick: Option<orch_core::ModelPick>,
+    /// The person's prompt signature for the message (ADR 0087, decision 2): the compact JWS their
+    /// app sent, checked for presence at intake and passed on **byte for byte** — never decoded,
+    /// re-encoded or verified here. It is the adapter's to put on the message (the cloud path's
+    /// statement, ANR-903, is what a verifier checks it against), and nothing of it is stored in
+    /// the log. `None` for a message that carries none and for the orchestrator's own messages
+    /// (a rework, an ask, the verifier).
+    pub prompt_signature: Option<String>,
 }
 
 /// One mentioned agent as the addressed agent is told of it (`mentions/v1`,

@@ -482,6 +482,7 @@ async fn a_blocked_job_returns_blocked_and_waiting_again_after_the_answer_waits(
             tier_cap: None,
             locale: None,
             pick: None,
+            prompt_signature: None,
             user: alice(),
             text: "main".to_owned(),
             message_id: None,

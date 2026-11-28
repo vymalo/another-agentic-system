@@ -221,3 +221,13 @@ Different keys keep them apart, and the `typ` of each signature keeps them apart
 its rules, and the presence check of a signing client's envelope as a pure function
 (`orchestrator/crates/prompt-statement/src/presence.rs`). Nothing calls that check at intake yet, there is no PKI
 signer, and no statement goes with an agent's messages: no prompt is refused or attested today.
+
+*Added 2026-11-28 (ANR-1338, slices 1 and 2):* the check is called at intake. `Principal.client_id` carries the
+token's `azp`/`client_id` (with `Some("")` for a token that names neither), `requires_signature` decides from
+`auth.signingClients`, and the AG-UI run route refuses a signing client's unsigned or malformed prompt with the
+`403` of decision 7 before anything is written. The envelope is read from the **new message's
+`metadata["vymalo.promptSignature"]`** and not from `forwardedProps` (which the statement hashes whole as
+`props_sha256`); it rides the delegation's outbox row and the dispatcher's `SendRequest` byte for byte, and it is in
+no event, frame, step, export or log line. A Stop & send that holds its text for the next job holds no envelope.
+Still not built: the PKI signer, the statement on an agent's messages, and the `production` rule that refuses an
+empty `auth.signingClients`; a `resume` that becomes a user message is not checked yet either.
