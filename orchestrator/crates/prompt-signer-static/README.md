@@ -8,8 +8,11 @@ key sits in a file and its certificate is never renewed or revoked; a deployment
 ## Where it sits
 
 Implements the `PromptSigner` port of [`orch-ports`](../ports/README.md) with the JWS of
-[`orch-prompt-statement`](../prompt-statement/README.md); Ed25519 is `aws-lc-rs`, already in the tree. No composition root
-uses it yet.
+[`orch-prompt-statement`](../prompt-statement/README.md); Ed25519 is `aws-lc-rs`, already in the tree. The orchestrator
+builds it at startup when `promptStatement.signer: static` is configured, behind its **off-by-default** Cargo feature
+`prompt-signer-static` ([`config.md`](../../../docs/api/config.md#promptstatement)); a `production` file never reaches it
+(the file's rules refuse the static signer there), and a build without the feature refuses a file that selects it (exit
+78) instead of signing nothing. No agent's message carries a statement yet: ANR-1431 is its first caller.
 
 ## API at a glance
 

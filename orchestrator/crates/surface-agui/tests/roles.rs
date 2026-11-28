@@ -99,6 +99,7 @@ impl Rig {
         let app = Arc::new(
             App::new(
                 PortSet {
+                    prompt_signer: orch_ports::NoPromptSigner,
                     artifacts: NoArtifacts,
                     store: MemoryStore::new(),
                     wakeup: MemoryWakeup::new(),

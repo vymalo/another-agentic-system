@@ -6,16 +6,19 @@
 //! protected header carries the CWT claims `aud`, `exp`, `iat` and `cti`, and the payload binds the request: its method, its
 //! path, the SHA-256 of its exact body bytes, the thread and the thread's owner.
 //!
-//! This crate is **pure**: no I/O, no async, and no clock (every function that needs the time takes it). It does not use
-//! `cratestack-cose` yet: it writes the claim object itself, and holds its bytes to the real crate's by the known-answer test
-//! of this crate and by `interop/`, a crate with a toolchain of its own that runs the real `sign_claims` and `open_claims`
-//! against them. The workspace moved to Rust 1.98 on 2026-11-27 (ANR-1328), so using the real crate is now possible; the
-//! swap is a change of its own.
+//! The object is written by the real `cratestack_cose::sign_claims` and, on the receiving side, opened by the real
+//! `cratestack_cose::open_claims`; this crate owns the payload (the request binding), the limits of the contract, the key and
+//! the checks around those calls. The bytes are pinned by the known-answer test (`tests/vectors/v1.json`).
+//!
+//! This crate is **pure**: no I/O and no clock (every function that needs the time takes it). Signing and verifying are
+//! `async` because the library's functions are; with the key held here and the pinned keys in memory they wait for nothing
+//! and need no particular runtime.
 //!
 //! ```
 //! use orch_signed_request::{Method, Request, Signer, SigningKey, verify::{Incoming, Verifier}};
 //! use uuid::Uuid;
 //!
+//! # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
 //! // a throwaway key; never use a key that is written in a file
 //! let key = SigningKey::from_seed(b"throwaway-ed25519-seed-do-not-us").unwrap();
 //! let public = key.public_key();
@@ -28,6 +31,7 @@
 //!         &Request { method: Method::Post, path: "/mcp", body, thread, owner: "amina@example.com" },
 //!         1_790_000_000,
 //!     )
+//!     .await
 //!     .unwrap();
 //!
 //! // the other side: the pinned public key, its own name, and the request it received
@@ -38,12 +42,13 @@
 //!         &Incoming { method: "POST", path: "/mcp", query: None, body, content_encoding: None },
 //!         1_790_000_010,
 //!     )
+//!     .await
 //!     .unwrap();
 //! assert_eq!(seen.owner, "amina@example.com");
 //! assert_eq!(seen.thread, thread);
+//! # });
 //! ```
 
-mod cbor;
 mod key;
 mod sign;
 #[cfg(feature = "verify")]

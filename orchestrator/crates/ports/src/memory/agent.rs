@@ -10,9 +10,11 @@ use orch_core::{
 };
 use tokio::sync::Notify;
 
+use crate::testkit::agent_client::ReceivedFile;
 use crate::{
-    AgentCardInfo, AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, IdemKey,
-    MentionInfo, SendContent, SendRequest, TaskHandle, TaskSnapshot, UiSupport,
+    AgentCardInfo, AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream,
+    AttachmentLinks, IdemKey, MentionInfo, SendContent, SendRequest, TaskHandle, TaskSnapshot,
+    UiSupport,
 };
 
 /// The URL the scripted agent reports as a produced artifact.
@@ -98,6 +100,8 @@ pub struct SendCall {
     /// The time an A2UI action carries as its `timestamp` member (the log's own time, ADR
     /// 0013): `None` for anything that is not an action.
     pub action_at: Option<orch_core::Timestamp>,
+    /// The files the request carried (ADR 0032 references: no URL).
+    pub attachments: Vec<crate::SendAttachment>,
     /// Selected release.
     pub release: Option<String>,
     /// What the request told the agent of the person's UI catalog (ADR 0023).
@@ -171,6 +175,10 @@ struct State {
     tasks: HashMap<String, TaskRec>,
     next_task: u32,
     calls: Vec<Call>,
+    /// What makes the links of a message's files ([`ScriptedAgent::set_attachment_links`]).
+    attachment_links: Option<Arc<dyn AttachmentLinks>>,
+    /// The files each message reached the agent with, by message id.
+    files_received: HashMap<String, Vec<ReceivedFile>>,
     cards: HashMap<AgentId, AgentCardInfo>,
     cards_down: HashSet<AgentId>,
     unreachable: HashSet<AgentId>,
@@ -391,6 +399,22 @@ impl ScriptedAgent {
             versions: versions.to_vec(),
             accepts_inline_catalogs: false,
         });
+    }
+
+    /// Makes the agent take the files of a message, each by a link `links` makes when the message
+    /// is sent, as the A2A adapter does. Without it a message that has a file is not sent
+    /// ([`AgentError::NotSent`]).
+    pub fn set_attachment_links(&self, links: Arc<dyn AttachmentLinks>) {
+        self.state().attachment_links = Some(links);
+    }
+
+    /// The files the agent got with the message `message_id`, in order.
+    pub fn files_received(&self, message_id: &str) -> Vec<ReceivedFile> {
+        self.state()
+            .files_received
+            .get(message_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Makes `agent`'s card list these extensions of the orchestrator's own (an empty list
@@ -1775,6 +1799,28 @@ impl AgentClient for ScriptedAgent {
             ),
         };
         let script = text.split_whitespace().next().unwrap_or("").to_owned();
+        // every file gets its link before anything is recorded: all of them or nothing is sent
+        let mut files = Vec::with_capacity(req.attachments.len());
+        if !req.attachments.is_empty() {
+            if !matches!(req.content, SendContent::Text(_)) {
+                return Err(AgentError::Unsupported(
+                    "only a text message can carry attachments".to_owned(),
+                ));
+            }
+            let links = self.state().attachment_links.clone().ok_or_else(|| {
+                AgentError::not_sent("this deployment cannot make a link for an attachment")
+            })?;
+            for file in &req.attachments {
+                let signed = links.link(&file.key).await.map_err(|_| {
+                    AgentError::not_sent("the artifact store cannot make a link for an attachment")
+                })?;
+                files.push(ReceivedFile {
+                    url: signed.url,
+                    media_type: Some(file.media_type.clone()),
+                    filename: file.filename.clone(),
+                });
+            }
+        }
         let (task, resumed, from, stale, session_news) = {
             let mut st = self.state();
             st.calls.push(Call::Send(Box::new(SendCall {
@@ -1786,6 +1832,7 @@ impl AgentClient for ScriptedAgent {
                 text: text.clone(),
                 action,
                 action_at,
+                attachments: req.attachments.clone(),
                 release: req.release.clone(),
                 ui_catalog: req.ui_catalog.clone().map(Box::new),
                 thread_tools: req.thread_tools.clone().map(Box::new),
@@ -1805,6 +1852,9 @@ impl AgentClient for ScriptedAgent {
             }
             if let Some(err) = st.fail_sends.pop_front() {
                 return Err(err);
+            }
+            if !files.is_empty() {
+                st.files_received.insert(req.message_id.clone(), files);
             }
             // a tier is never dropped (ADR 0061): an adapter sends nothing to a card that does not
             // honour it

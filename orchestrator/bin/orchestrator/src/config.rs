@@ -24,7 +24,7 @@ use std::fmt;
 use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-#[cfg(feature = "surface-thread-tools")]
+#[cfg(any(feature = "surface-thread-tools", feature = "prompt-signer-static"))]
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,7 +39,10 @@ use orch_core::{
     AccountId, AgentId, AskLimits, CheckSource, DEFAULT_CI_TIMEOUT_SECS, DEFAULT_MAX_ATTEMPTS,
     DEFAULT_VERIFIER_TIMEOUT_SECS, GatePolicy, MAX_ACCOUNT_ID_LEN, TaskKind, UserId,
 };
-use orch_ports::{AgentEndpoint, ToolServerEndpoint};
+use orch_ports::{
+    AgentEndpoint, AttestedPayload, PromptSigner, SignedStatement, SignerError, SignerState,
+    ToolServerEndpoint,
+};
 #[cfg(feature = "surface-webhook")]
 use orch_surface_webhook::{GenericConfig, GithubConfig, Secrets};
 #[cfg(feature = "surface-thread-tools")]
@@ -277,6 +280,20 @@ pub enum ConfigError {
         /// The environment variable that should hold the token.
         var: String,
     },
+    /// `promptStatement.signer: static` is not in this build. Fail closed, like a surface that is
+    /// not compiled in: the setting is never quietly ignored and the process never starts with
+    /// signing off where the file asked for it.
+    #[cfg(not(feature = "prompt-signer-static"))]
+    #[error(
+        "promptStatement.signer is \"static\", and this build has no static prompt signer; it \
+         needs the Cargo feature \"prompt-signer-static\" (ADR 0087)"
+    )]
+    PromptSignerNotCompiled,
+    /// `promptStatement` names a signer that cannot be built: the key or the chain is unusable.
+    /// The text names the key and never holds the key.
+    #[cfg(feature = "prompt-signer-static")]
+    #[error("{0}")]
+    PromptSigner(String),
 }
 
 /// The MCP server's configuration (ADR 0019), read when the surface `mcp` is mounted.
@@ -1275,6 +1292,54 @@ fn policy_of(auth: &orch_config::Auth) -> Policy {
     policy
 }
 
+/// The prompt signer the file selected (ADR 0087). A closed value rather than a trait object: the
+/// `PromptSigner` port returns an `impl Future` and is not dyn-compatible, so the bundle dispatches
+/// it statically, like every other port. [`None`](ConfiguredSigner::None) is signing off: nothing is
+/// signed, and no statement goes with an agent's messages.
+#[derive(Clone, Default)]
+pub enum ConfiguredSigner {
+    /// `promptStatement` is absent: nothing is signed.
+    #[default]
+    None,
+    /// `promptStatement.signer: static`, built from its key and chain. It is a test signer, and a
+    /// `production` file never reaches here (the file's rules refuse it).
+    #[cfg(feature = "prompt-signer-static")]
+    Static(Arc<orch_prompt_signer_static::StaticPromptSigner>),
+}
+
+impl fmt::Debug for ConfiguredSigner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConfiguredSigner::None => f.write_str("None"),
+            #[cfg(feature = "prompt-signer-static")]
+            ConfiguredSigner::Static(signer) => f.debug_tuple("Static").field(signer).finish(),
+        }
+    }
+}
+
+impl PromptSigner for ConfiguredSigner {
+    async fn sign(&self, payload: &AttestedPayload) -> Result<SignedStatement, SignerError> {
+        match self {
+            ConfiguredSigner::None => {
+                let _ = payload;
+                Err(SignerError::Unavailable {
+                    detail: "no prompt signer is configured",
+                })
+            }
+            #[cfg(feature = "prompt-signer-static")]
+            ConfiguredSigner::Static(signer) => signer.sign(payload).await,
+        }
+    }
+
+    fn state(&self) -> SignerState {
+        match self {
+            ConfiguredSigner::None => SignerState::Unavailable,
+            #[cfg(feature = "prompt-signer-static")]
+            ConfiguredSigner::Static(signer) => signer.state(),
+        }
+    }
+}
+
 /// The complete, validated configuration.
 pub struct Config {
     /// `DATABASE_URL`. May contain a password: never logged.
@@ -1411,6 +1476,14 @@ pub struct Config {
     /// `server.publicOrigin` (ADR 0087): the `aud` kept beside a signed prompt. `None` when the
     /// file gives none or an empty one, which a file that lists a signing client may not.
     pub public_origin: Option<String>,
+    /// `promptStatement.aud` (ADR 0087): the `aud` of the statement the orchestrator signs, the
+    /// model gateway's origin. `None` without the section, and then nothing is signed.
+    pub prompt_statement_aud: Option<String>,
+    /// The prompt signer `promptStatement.signer` selected, built at startup (ADR 0087). Its
+    /// `None` is signing off: no statement is signed, and none goes with an agent's messages even
+    /// to an agent whose card lists `prompt-statement/v1` (its first user is ANR-1431). `Debug`
+    /// shows whether there is one, never a key.
+    pub prompt_signer: ConfiguredSigner,
     /// `server.history` (ADR 0059): what one page of a thread's history may hold. The defaults from
     /// the environment alone (the section has no variable).
     pub history: orch_app::HistorySettings,
@@ -1461,6 +1534,8 @@ impl fmt::Debug for Config {
             .field("cors_allowed_origins", &self.cors_allowed_origins)
             .field("min_client_version", &self.min_client_version)
             .field("public_origin", &self.public_origin)
+            .field("prompt_statement_aud", &self.prompt_statement_aud)
+            .field("prompt_signer", &self.prompt_signer)
             .field("history", &self.history)
             .field("internal", &self.internal)
             .field("dispatcher_order", &self.dispatcher_order)
@@ -1907,6 +1982,8 @@ impl Config {
             cors_allowed_origins: resolved.cors_allowed_origins,
             min_client_version: resolved.min_client_version,
             public_origin: resolved.public_origin,
+            prompt_statement_aud: resolved.prompt_statement_aud,
+            prompt_signer: resolved.prompt_signer,
             history: resolved.history,
             internal: resolved.internal,
             dispatcher_order: resolved.dispatcher_order,
@@ -2984,6 +3061,10 @@ struct Resolved {
     min_client_version: Option<String>,
     /// `server.publicOrigin`.
     public_origin: Option<String>,
+    /// `promptStatement.aud` (ADR 0087).
+    prompt_statement_aud: Option<String>,
+    /// `promptStatement.signer`, built (ADR 0087); `None` is signing off.
+    prompt_signer: ConfiguredSigner,
     /// `server.history`.
     history: orch_app::HistorySettings,
     /// `server.internal` (ADR 0084 decision 5): the listener, its tokens and the agents' read.
@@ -5655,6 +5736,7 @@ mod tests {
         let directory = AgentDirectory::new(cfg.agents.clone());
         let app = App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: orch_ports::NoArtifacts,
                 store: MemoryStore::new(),
                 wakeup: MemoryWakeup::new(),

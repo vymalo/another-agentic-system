@@ -52,6 +52,7 @@ fn app_with(w: &World, attempts: u32) -> Arc<TestApp> {
     Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: orch_ports::NoArtifacts,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),
@@ -625,6 +626,7 @@ async fn a_verifier_that_is_not_configured_any_more_holds_the_thread() {
     let lean = Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: orch_ports::NoArtifacts,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),
@@ -888,6 +890,7 @@ async fn a_request_that_reached_the_verifier_before_the_crash_is_found_not_resen
             task_id: None,
             reference_task_ids: Vec::new(),
             content: orch_ports::SendContent::Text("review".into()),
+            attachments: Vec::new(),
             release: None,
             ui_catalog: None,
             thread_tools: None,
@@ -1001,6 +1004,7 @@ async fn sent_and_forgotten(w: &World, _t: &ThreadRecord, row: &OutboxItem) {
             task_id: None,
             reference_task_ids: Vec::new(),
             content: orch_ports::SendContent::Text("review".into()),
+            attachments: Vec::new(),
             release: None,
             ui_catalog: None,
             thread_tools: None,

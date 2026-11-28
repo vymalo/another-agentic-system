@@ -91,6 +91,7 @@ fn app_with<X: ArtifactStore>(w: &World, files: X, policy: Policy) -> Arc<DApp<X
     Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: files,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),

@@ -27,6 +27,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Read as _};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "prompt-signer-static")]
+use std::sync::Arc;
 use std::time::Duration;
 
 use orch_app::{PublicConfig, TaskSettings, ToolServerInfo, UiHistory, UiSettings};
@@ -37,8 +39,8 @@ use secrecy::SecretString;
 use serde_json::{Map, Value};
 
 use super::{
-    Args, Config, ConfigError, EndpointSettings, InternalSettings, LogFormat, ModelsSettings,
-    Resolved, Surface, flag, number, parse_surfaces,
+    Args, Config, ConfigError, ConfiguredSigner, EndpointSettings, InternalSettings, LogFormat,
+    ModelsSettings, Resolved, Surface, flag, number, parse_surfaces,
 };
 use crate::artifacts::{ArtifactSettings, S3Settings, StoreSettings, UploadLimits};
 use crate::user_tools::UserToolsSettings;
@@ -1456,6 +1458,8 @@ fn project(
 ) -> Result<(Args, Resolved), ConfigError> {
     let c = &valid.config;
     let s = &valid.secrets;
+    // The prompt statement (ADR 0087): its aud and its signer, or signing off.
+    let (prompt_statement_aud, prompt_signer) = prompt_signer_of(valid)?;
     let set_in_tree = |key: &[&str]| get(tree, key).is_some();
     let some = |v: String| Some(v);
     let join = |v: &[String]| (!v.is_empty()).then(|| v.join(","));
@@ -1599,6 +1603,8 @@ fn project(
             .public_origin
             .clone()
             .filter(|origin| !origin.is_empty()),
+        prompt_statement_aud,
+        prompt_signer,
         // The run routes' own listener (ADR 0084 decision 5), only when the file has the section.
         internal: internal_settings(valid)?,
         #[cfg(feature = "surface-webhook")]
@@ -1607,6 +1613,49 @@ fn project(
         webhook_github: webhook_values(&s.webhook_github, "WEBHOOK_GITHUB_SECRETS"),
     };
     Ok((a, resolved))
+}
+
+/// The prompt statement (ADR 0087): its `aud`, and the signer when the file selects one. A build
+/// without the feature `prompt-signer-static` **refuses** a file that selects the static signer
+/// (exit 78), never quietly signing nothing; the key and the chain were read and checked by the
+/// rules pass, and the signer refuses a key that is not an Ed25519 one or a leaf that certifies
+/// another key. The error names the key and never holds the key.
+fn prompt_signer_of(valid: &Validated) -> Result<(Option<String>, ConfiguredSigner), ConfigError> {
+    let Some(statement) = &valid.config.prompt_statement else {
+        return Ok((None, ConfiguredSigner::None));
+    };
+    let aud = statement.aud.clone();
+    #[cfg(not(feature = "prompt-signer-static"))]
+    {
+        let _ = (&statement.signer, &aud);
+        Err(ConfigError::PromptSignerNotCompiled)
+    }
+    #[cfg(feature = "prompt-signer-static")]
+    {
+        match statement.signer {
+            orch_config::PromptSignerKind::Static => {
+                let missing = |key: &str| ConfigError::PromptSigner(format!("{key}: required"));
+                let key = valid
+                    .secrets
+                    .prompt_statement_key
+                    .as_ref()
+                    .ok_or_else(|| missing("promptStatement.static.key"))?;
+                let chain = valid
+                    .secrets
+                    .prompt_statement_chain
+                    .as_ref()
+                    .ok_or_else(|| missing("promptStatement.static.chain"))?;
+                let signer = orch_prompt_signer_static::StaticPromptSigner::from_pem(
+                    key.expose(),
+                    chain.expose(),
+                )
+                .map_err(|error| {
+                    ConfigError::PromptSigner(format!("promptStatement.static: {error}"))
+                })?;
+                Ok((Some(aud), ConfiguredSigner::Static(Arc::new(signer))))
+            }
+        }
+    }
 }
 
 /// The artifact store of the valid file, in the terms of this process: the directory resolved
@@ -2152,6 +2201,13 @@ threadTools:
                 "/etc/orch/prompts/description.md",
                 "Say what the person wants.\n".to_owned(),
             ),
+            (
+                "/etc/orch/prompt-chain.pem",
+                include_str!(
+                    "../../../../crates/prompt-signer-static/tests/vectors/chain.test-only.pem"
+                )
+                .to_owned(),
+            ),
         ]);
         Loaded::load(args_of(pairs), flags, env_of(pairs), move |path| {
             files
@@ -2170,6 +2226,64 @@ threadTools:
             ConfigError::Document(lines) => lines,
             other => vec![other.to_string()],
         }
+    }
+
+    /// The prompt statement (ADR 0087): its signer is built only with the feature, and a build
+    /// without it refuses a file that selects it (exit 78), never signing nothing.
+    const STATEMENT: &str = "\
+promptStatement:
+  aud: https://gateway.example.com
+  signer: static
+  static:
+    key: { env: PROMPT_SIGNER_KEY }
+    chain: /etc/orch/prompt-chain.pem
+";
+
+    #[cfg(not(feature = "prompt-signer-static"))]
+    #[test]
+    fn a_static_prompt_signer_without_its_feature_stops_startup() {
+        let mut pairs = base();
+        pairs.push(("PROMPT_SIGNER_KEY", KEY));
+        let Err(error) = load_file_only(&pairs, &format!("{FILE}{STATEMENT}")) else {
+            panic!("a build without the feature must refuse the static signer");
+        };
+        assert!(
+            matches!(error, ConfigError::PromptSignerNotCompiled),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("prompt-signer-static"),
+            "{error}"
+        );
+    }
+
+    #[cfg(feature = "prompt-signer-static")]
+    #[test]
+    fn the_static_prompt_signer_is_built_when_its_feature_is_in() {
+        use orch_ports::{PromptSigner as _, SignerState};
+        let mut pairs = base();
+        pairs.push((
+            "PROMPT_SIGNER_KEY",
+            include_str!(
+                "../../../../crates/prompt-signer-static/tests/vectors/orchestrator.test-only.key.pem"
+            ),
+        ));
+        let config = load_file_only(&pairs, &format!("{FILE}{STATEMENT}"))
+            .unwrap()
+            .config;
+        assert_eq!(
+            config.prompt_statement_aud.as_deref(),
+            Some("https://gateway.example.com")
+        );
+        assert!(matches!(&config.prompt_signer, ConfiguredSigner::Static(_)));
+        assert_eq!(config.prompt_signer.state(), SignerState::Ready);
+    }
+
+    #[test]
+    fn no_prompt_statement_leaves_signing_off() {
+        let config = load_file_only(&base(), FILE).unwrap().config;
+        assert!(config.prompt_statement_aud.is_none());
+        assert!(matches!(config.prompt_signer, ConfiguredSigner::None));
     }
 
     const JWT: &str = "\

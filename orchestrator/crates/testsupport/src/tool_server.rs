@@ -379,17 +379,20 @@ async fn require_signature(
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let verdict = signed.verifier.verify(
-        &values,
-        &Incoming {
-            method: parts.method.as_str(),
-            path: parts.uri.path(),
-            query: parts.uri.query(),
-            body: &body,
-            content_encoding,
-        },
-        now,
-    );
+    let verdict = signed
+        .verifier
+        .verify(
+            &values,
+            &Incoming {
+                method: parts.method.as_str(),
+                path: parts.uri.path(),
+                query: parts.uri.query(),
+                body: &body,
+                content_encoding,
+            },
+            now,
+        )
+        .await;
     // check 6, last, and only for an object that passed the rest
     let replayed = match &verdict {
         Ok(verified) => !signed

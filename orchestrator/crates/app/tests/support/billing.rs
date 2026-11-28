@@ -189,6 +189,7 @@ pub fn app_with(w: &World, model: Injector) -> Arc<TestApp> {
     Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: orch_ports::NoArtifacts,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),

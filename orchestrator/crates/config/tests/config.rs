@@ -1711,6 +1711,12 @@ fn no_error_carries_a_value() {
         "version: 1\ndatabase: { url: { env: DATABASE_URL } }\nagents: { file: a }\n\
          threadTools: { url: 'http://o:8080', secret: { env: SHORT }, previousSecret: { env: SHORT } }\n"
             .to_owned(),
+        // The prompt statement: a secret as its aud (never shown); its key's reference and its
+        // chain's path are named, as every reference is.
+        format!(
+            "version: 1\ndatabase: {{ url: {{ env: DATABASE_URL }} }}\nagents: {{ file: a }}\n\
+             promptStatement: {{ aud: '{SECRET}', signer: static, static: {{ key: {{ env: SHORT }}, chain: chain.pem }} }}\n"
+        ),
     ];
     let fake = minimal_env()
         .env("SHORT", SECRET)
@@ -3423,6 +3429,182 @@ fn a_production_process_takes_a_plain_http_public_origin_only_for_the_loopback()
         errors.iter().any(|l| l.starts_with(
             "server.publicOrigin: an https:// origin when server.environment is production"
         )),
+        "{errors:?}"
+    );
+}
+
+/// The static signer's files, as the rules pass reads them: the key need not be a real one here
+/// (the binary checks that), and the chain must hold a certificate.
+const CHAIN: &str = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+
+fn statement_env() -> Fake {
+    minimal_env()
+        .env("PROMPT_SIGNER_KEY", LONG)
+        .file("/etc/orchestrator/prompt-chain.pem", CHAIN)
+}
+
+const STATEMENT: &str = "\
+promptStatement:
+  aud: https://gateway.example.com
+  signer: static
+  static:
+    key: { env: PROMPT_SIGNER_KEY }
+    chain: prompt-chain.pem
+";
+
+#[test]
+fn the_prompt_statement_is_read_and_its_signer_resolved() {
+    use orch_config::PromptSignerKind;
+    let valid = load(&format!("{MINIMAL}{STATEMENT}"), &statement_env()).unwrap();
+    let statement = valid.config.prompt_statement.as_ref().unwrap();
+    assert_eq!(statement.aud, "https://gateway.example.com");
+    assert_eq!(statement.signer, PromptSignerKind::Static);
+    let signer = statement.static_signer.as_ref().unwrap();
+    assert_eq!(signer.key, SecretRef::Env("PROMPT_SIGNER_KEY".to_owned()));
+    assert_eq!(signer.chain, "prompt-chain.pem");
+    assert_eq!(
+        valid
+            .secrets
+            .prompt_statement_key
+            .as_ref()
+            .map(|key| key.expose()),
+        Some(LONG)
+    );
+    assert!(
+        valid
+            .secrets
+            .prompt_statement_chain
+            .as_ref()
+            .is_some_and(|chain| chain.expose().contains("BEGIN CERTIFICATE"))
+    );
+}
+
+#[test]
+fn with_no_prompt_statement_signing_is_off() {
+    let valid = load(MINIMAL, &minimal_env()).unwrap();
+    assert!(valid.config.prompt_statement.is_none());
+    assert!(valid.secrets.prompt_statement_key.is_none());
+    assert!(valid.secrets.prompt_statement_chain.is_none());
+}
+
+#[test]
+fn the_statement_aud_is_an_origin_in_its_normal_form() {
+    let with = |aud: &str| {
+        format!(
+            "{MINIMAL}promptStatement:\n  aud: '{aud}'\n  signer: static\n  \
+             static: {{ key: {{ env: PROMPT_SIGNER_KEY }}, chain: prompt-chain.pem }}\n"
+        )
+    };
+    for ok in [
+        "https://gateway.example.com",
+        "https://gateway.example.com:8443",
+        "http://127.0.0.1:8080",
+    ] {
+        assert!(load(&with(ok), &statement_env()).is_ok(), "{ok}");
+    }
+    for bad in [
+        "https://gateway.example.com/",
+        "https://gateway.example.com/v1",
+        "https://Gateway.example.com",
+        "https://gateway.example.com:443",
+        "gateway.example.com",
+        "",
+    ] {
+        let errors = lines(load(&with(bad), &statement_env()));
+        assert!(
+            errors.iter().any(
+                |l| l.starts_with("promptStatement.aud: expected an origin in its normal form")
+            ),
+            "{bad}: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn a_production_process_refuses_the_static_prompt_signer() {
+    let production = |environment: &str| {
+        format!("{MINIMAL}server: {{ environment: {environment} }}\n{STATEMENT}")
+    };
+    let errors = lines(load(&production("production"), &statement_env()));
+    assert!(
+        errors
+            .iter()
+            .any(|l| l.starts_with("promptStatement.signer: the static signer is for tests")),
+        "{errors:?}"
+    );
+    // The same file starts in development: the signer is a test one, and the binary decides
+    // whether its feature is in the build.
+    assert!(load(&production("development"), &statement_env()).is_ok());
+}
+
+#[test]
+fn a_production_process_takes_a_plain_http_statement_aud_only_for_the_loopback() {
+    let with = |aud: &str| {
+        format!(
+            "{MINIMAL}server: {{ environment: production }}\n\
+             promptStatement:\n  aud: '{aud}'\n  signer: static\n  \
+             static: {{ key: {{ env: PROMPT_SIGNER_KEY }}, chain: prompt-chain.pem }}\n"
+        )
+    };
+    // The signer itself is refused in production, so the aud's rule is read with it: a loopback
+    // http aud is accepted, a remote one is refused, and the signer's refusal is the other line.
+    for aud in ["https://gateway.example.com", "http://localhost:8080"] {
+        let errors = lines(load(&with(aud), &statement_env()));
+        assert!(
+            errors
+                .iter()
+                .all(|l| !l.starts_with("promptStatement.aud:")),
+            "{aud}: {errors:?}"
+        );
+    }
+    let errors = lines(load(&with("http://gateway.example.com"), &statement_env()));
+    assert!(
+        errors.iter().any(|l| l.starts_with(
+            "promptStatement.aud: an https:// origin when server.environment is production"
+        )),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn the_static_signer_needs_its_key_and_chain() {
+    let text = format!(
+        "{MINIMAL}promptStatement:\n  aud: https://gateway.example.com\n  signer: static\n"
+    );
+    let errors = lines(load(&text, &statement_env()));
+    assert!(
+        errors.iter().any(|l| l
+            .starts_with("promptStatement.static: required with promptStatement.signer: static")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn the_static_signer_key_is_a_secret_by_reference_and_its_chain_a_certificate() {
+    let plain = format!(
+        "{MINIMAL}promptStatement:\n  aud: https://gateway.example.com\n  signer: static\n  \
+         static: {{ key: not-a-reference, chain: prompt-chain.pem }}\n"
+    );
+    let errors = lines(load(&plain, &statement_env()));
+    assert!(
+        errors
+            .iter()
+            .any(|l| l.starts_with("promptStatement.static.key: a secret is a reference")),
+        "{errors:?}"
+    );
+    let no_certificate = format!(
+        "{MINIMAL}promptStatement:\n  aud: https://gateway.example.com\n  signer: static\n  \
+         static: {{ key: {{ env: PROMPT_SIGNER_KEY }}, chain: no-cert.pem }}\n"
+    );
+    let errors = lines(load(
+        &no_certificate,
+        &statement_env().file("/etc/orchestrator/no-cert.pem", "not a certificate"),
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|l| l
+                .starts_with("promptStatement.static.chain: the file holds no PEM certificate")),
         "{errors:?}"
     );
 }

@@ -82,6 +82,7 @@ fn request(fake: &FakeAgent, message_id: &str, thread_tools: Option<ToolsGrant>)
         task_id: None,
         reference_task_ids: Vec::new(),
         content: SendContent::Text("echo hi".to_owned()),
+        attachments: Vec::new(),
         release: None,
         ui_catalog: None,
         thread_tools,

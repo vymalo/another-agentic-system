@@ -83,6 +83,11 @@ auth-jwt = ["dep:orch-auth-jwt"]
 # default: without it the binary links no adam-rs runtime, and an AGENTS_FILE that asks for a local
 # agent is refused at startup (exit 78).
 agent-local = ["dep:orch-agent-adam"]
+# The static prompt signer (`promptStatement.signer: static`, ADR 0087): an Ed25519 key and a
+# certificate chain read from files, never renewed. Off by default and **refused when
+# `server.environment` is `production`**: it is the test signer, not a deployment's. Without the
+# feature a configuration that selects it is refused at startup (exit 78), never ignored.
+prompt-signer-static = ["dep:orch-prompt-signer-static"]
 
 [dependencies]
 adam-host.workspace = true
@@ -113,6 +118,8 @@ orch-credential-broker.workspace = true
 orch-auth-header = { workspace = true, optional = true }
 orch-auth-jwt = { workspace = true, optional = true }
 orch-agent-adam = { workspace = true, optional = true }
+# The static prompt signer (`promptStatement.signer: static`, ADR 0087): a test signer, off by default.
+orch-prompt-signer-static = { workspace = true, optional = true }
 orch-store-postgres.workspace = true
 # The floor's refusal (ADR 0107): `exit_code` finds `MigrateError::ServerTooOld` in a cause chain.
 orch-pg-migrate.workspace = true

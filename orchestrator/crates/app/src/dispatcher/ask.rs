@@ -681,6 +681,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             task_id: continue_task,
             reference_task_ids,
             content: SendContent::Text(text),
+            attachments: Vec::new(),
             release: None,
             ui_catalog,
             thread_tools: Some(grant),

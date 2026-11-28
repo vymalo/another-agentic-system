@@ -58,6 +58,7 @@ fn request(fake: &FakeAgent, pick: Option<ModelPick>) -> SendRequest {
         task_id: None,
         reference_task_ids: Vec::new(),
         content: SendContent::Text("go".to_owned()),
+        attachments: Vec::new(),
         release: None,
         ui_catalog: None,
         thread_tools: None,

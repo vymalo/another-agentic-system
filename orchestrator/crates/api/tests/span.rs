@@ -64,6 +64,7 @@ async fn the_token_is_not_in_the_request_span() {
     let app = Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: orch_ports::NoArtifacts,
                 store: MemoryStore::new(),
                 wakeup: MemoryWakeup::new(),

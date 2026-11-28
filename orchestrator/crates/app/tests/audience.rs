@@ -49,6 +49,7 @@ fn app_over(w: &World, registry: &MemoryRegistry, cfg: AppConfig) -> Arc<Registr
     Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: orch_ports::NoArtifacts,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),

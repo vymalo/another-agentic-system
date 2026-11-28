@@ -22,8 +22,9 @@ use crate::types::{
     ArtifactDownloads, ArtifactStoreKind, Artifacts, Auth, AuthMode, AuthPermission, AuthScope,
     AuthScopes, Config, Database, Environment, LogFormat, MAX_PRESIGN_TTL_SECS,
     MAX_UPLOAD_BYTES_LIMIT, MAX_UPLOAD_TTL_SECS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS,
-    OAUTH_CALLBACK_PATH, Prompt, Provisioner, ProvisionerCredentials, SecretRef, SecretStoreKind,
-    SharingMode, Surface, ToolServer, ToolServerSigning, UrlRef, UserSecrets, UserToolServers,
+    OAUTH_CALLBACK_PATH, Prompt, PromptSignerKind, Provisioner, ProvisionerCredentials, SecretRef,
+    SecretStoreKind, SharingMode, Surface, ToolServer, ToolServerSigning, UrlRef, UserSecrets,
+    UserToolServers,
 };
 
 /// The tokens of the run routes: the orchestrator's own, each agent's, the meter's.
@@ -118,6 +119,13 @@ pub struct Secrets {
     /// `provisioner.credentials.serverCaFile` (`openbao-pki`), read: the PEM text of the
     /// certificates the platform's listener is checked against.
     pub provisioner_server_ca: Option<Secret>,
+    /// `promptStatement.static.key` (ADR 0087): the Ed25519 private key of the static signer.
+    /// `None` without the section or with another signer.
+    pub prompt_statement_key: Option<Secret>,
+    /// `promptStatement.static.chain` (ADR 0087): the PEM chain of the static signer, read. A
+    /// certificate is public, but it is held as a `Secret` for the one reader that resolves a file
+    /// the same way.
+    pub prompt_statement_chain: Option<Secret>,
 }
 
 /// One key of `secrets.pg.keys`, resolved. `Debug` shows the reference, never the key.
@@ -629,6 +637,9 @@ impl Checker<'_> {
                 );
             }
         }
+
+        // promptStatement (ADR 0087)
+        self.prompt_statement(cfg);
 
         // artifacts
         if let Some(artifacts) = &cfg.artifacts {
@@ -1329,6 +1340,52 @@ impl Checker<'_> {
         }
     }
 
+    /// `promptStatement` (ADR 0087, the note of 2026-11-25): the statement's `aud` is an origin in
+    /// its normal form, the static signer has its files, and **a production process never signs with
+    /// the static signer** (it never renews or revokes its certificate; a deployment's signer is
+    /// certified by a PKI). An absent section is signing off, and it is the only way to have none.
+    fn prompt_statement(&mut self, cfg: &Config) {
+        let Some(statement) = &cfg.prompt_statement else {
+            return;
+        };
+        const AUD: &str = "promptStatement.aud";
+        if !is_normal_origin(&statement.aud) {
+            self.invalid(
+                AUD,
+                "expected an origin in its normal form, like https://gateway.example.com: http or \
+                 https, a lower-case host (an international name as punycode), no default port, \
+                 credentials, path, query, fragment or trailing slash",
+            );
+        } else if cfg.server.environment == Environment::Production
+            && is_plain_http_origin(&statement.aud)
+            && !is_loopback_origin(&statement.aud)
+        {
+            self.invalid(
+                AUD,
+                "an https:// origin when server.environment is production (http:// only for \
+                 localhost, 127.0.0.1 and [::1])",
+            );
+        }
+        match statement.signer {
+            PromptSignerKind::Static => {
+                if cfg.server.environment == Environment::Production {
+                    self.invalid(
+                        "promptStatement.signer",
+                        "the static signer is for tests: it never renews or revokes its \
+                         certificate, and is refused when server.environment is production (a \
+                         deployment's signer is certified by a PKI, ADR 0087)",
+                    );
+                }
+                if statement.static_signer.is_none() {
+                    self.invalid(
+                        "promptStatement.static",
+                        "required with promptStatement.signer: static: its key and chain",
+                    );
+                }
+            }
+        }
+    }
+
     /// `auth.roles` and `auth.defaultRole` (ADR 0033): every role can be told apart, nothing is set
     /// that its role ignores, and the default role is one of the roles.
     fn roles(&mut self, auth: &Auth) {
@@ -1845,6 +1902,18 @@ impl Checker<'_> {
             Some(section) => self.user_secrets_openbao(section),
             None => (None, None),
         };
+        let (prompt_statement_key, prompt_statement_chain) = match &cfg.prompt_statement {
+            Some(statement) if statement.signer == PromptSignerKind::Static => {
+                match &statement.static_signer {
+                    Some(signer) => (
+                        self.resolve(&signer.key, "promptStatement.static.key", true),
+                        self.pem_file(Some(signer.chain.as_str()), "promptStatement.static.chain"),
+                    ),
+                    None => (None, None),
+                }
+            }
+            _ => (None, None),
+        };
         let (provisioner_client_secret, provisioner_openbao_ca, provisioner_server_ca) =
             match &cfg.provisioner {
                 Some(Provisioner {
@@ -1898,6 +1967,8 @@ impl Checker<'_> {
             provisioner_client_secret,
             provisioner_openbao_ca,
             provisioner_server_ca,
+            prompt_statement_key,
+            prompt_statement_chain,
         })
     }
 

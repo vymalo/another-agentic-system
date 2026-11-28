@@ -705,6 +705,7 @@ fn gated_app(w: &World) -> Arc<TestApp> {
     Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: orch_ports::NoArtifacts,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),

@@ -73,6 +73,7 @@ fn app3(w: &World) -> Arc<TestApp> {
     Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: orch_ports::NoArtifacts,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),
@@ -1373,6 +1374,7 @@ fn app_over(w: &World, registry: &MemoryRegistry) -> Arc<App<RegistryPorts>> {
     Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: orch_ports::NoArtifacts,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),
@@ -1668,6 +1670,7 @@ async fn sent_and_forgotten(
             task_id: None,
             reference_task_ids: Vec::new(),
             content: SendContent::Text(text.to_owned()),
+            attachments: Vec::new(),
             release: None,
             ui_catalog: None,
             thread_tools: None,

@@ -112,6 +112,7 @@ async fn a_crash_between_send_and_recording_is_recovered_by_message_id() {
             task_id: None,
             reference_task_ids: Vec::new(),
             content: orch_ports::SendContent::Text("gate lost ack".into()),
+            attachments: Vec::new(),
             release: None,
             ui_catalog: None,
             thread_tools: None,

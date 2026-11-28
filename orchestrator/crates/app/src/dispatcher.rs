@@ -1346,6 +1346,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             task_id: continues.clone(),
             reference_task_ids,
             content,
+            attachments: Vec::new(),
             release,
             ui_catalog,
             // Who the agent is to be given the thread's tools as, and which servers are attached
@@ -1750,6 +1751,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             task_id: Some(task_id.clone()),
             reference_task_ids: Vec::new(),
             content: SendContent::Text(text),
+            attachments: Vec::new(),
             release: None,
             ui_catalog: None,
             thread_tools: Some(

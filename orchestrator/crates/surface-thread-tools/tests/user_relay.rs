@@ -637,6 +637,7 @@ impl Rig {
         let app = Arc::new(
             App::new(
                 PortSet {
+                    prompt_signer: orch_ports::NoPromptSigner,
                     store: store.clone(),
                     wakeup: MemoryWakeup::new(),
                     agents: ScriptedAgent::new(),

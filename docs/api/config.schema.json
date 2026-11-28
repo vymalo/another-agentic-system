@@ -920,6 +920,57 @@
         }
       ]
     },
+    "PromptSignerKind": {
+      "description": "Which prompt signer the deployment uses (ADR 0087). Closed, so a kind added later fails to compile wherever one is matched.",
+      "enum": [
+        "static"
+      ],
+      "type": "string"
+    },
+    "PromptStatement": {
+      "additionalProperties": false,
+      "description": "The prompt statement the orchestrator signs on the cloud path (ADR 0087, the note of 2026-11-25).",
+      "properties": {
+        "aud": {
+          "description": "The statement's `aud`: the model gateway's origin, the one the verifier behind its authorizer expects (ADR 0087, the note of 2026-11-25). It is a deployment's value, so it is configuration and not a constant. Written in its normal form like `server.publicOrigin`: `http` or `https`, a lower-case host (an international name as punycode), a port only when it is not the scheme's default, and nothing after it, not even a slash, for example `https://gateway.example.com`; a `production` process takes `http` only for the loopback.",
+          "type": "string"
+        },
+        "signer": {
+          "$ref": "#/$defs/PromptSignerKind",
+          "description": "The signer. `static` is the only one built: an Ed25519 key and a certificate chain from files, never renewed, **for tests**; it needs the Cargo feature `prompt-signer-static` of the binary and is refused when `server.environment` is `production` (a deployment's signer is certified by a PKI, its own change). The section is absent when nothing is signed."
+        },
+        "static": {
+          "$ref": "#/$defs/PromptStatementStatic",
+          "description": "`promptStatement.static`: the key and chain of the static signer. Required with `signer: static`, and refused with any other signer."
+        }
+      },
+      "required": [
+        "aud",
+        "signer"
+      ],
+      "type": "object"
+    },
+    "PromptStatementStatic": {
+      "additionalProperties": false,
+      "description": "The static prompt signer's two files (ADR 0087). **Not for a deployment.**",
+      "properties": {
+        "chain": {
+          "description": "A file of PEM certificates: the leaf first, the root left out. Relative to the configuration file's directory, read at startup. A certificate is public, but it is read through the same door as a secret.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        },
+        "key": {
+          "$ref": "#/$defs/SecretRef",
+          "description": "The Ed25519 private key the statement is signed with, a PKCS#8 PEM block (`openssl genpkey -algorithm ed25519`), **a secret** by reference. A value that is not one stops the process at startup (exit 78), naming this key and never its text."
+        }
+      },
+      "required": [
+        "key",
+        "chain"
+      ],
+      "type": "object"
+    },
     "ProvisionedKind": {
       "description": "The kinds of agent made for each person. The shared chat agent is never one of them.",
       "enum": [
@@ -2278,6 +2329,10 @@
         "endpoints": {}
       },
       "description": "The OpenAI-compatible endpoints the orchestrator asks itself (ADR 0005, ADR 0035)."
+    },
+    "promptStatement": {
+      "$ref": "#/$defs/PromptStatement",
+      "description": "The prompt statement the orchestrator signs on the cloud path (ADR 0087, the note of 2026-11-25): the `aud` it is for and the signer. Absent: signing is off, and **no statement metadata goes with an agent's messages**, even to an agent whose card lists the `prompt-statement/v1` extension."
     },
     "provisioner": {
       "$ref": "#/$defs/Provisioner",

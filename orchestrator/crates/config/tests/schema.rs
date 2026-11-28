@@ -101,11 +101,12 @@ fn the_only_url_that_may_be_a_reference_is_a_model_endpoints_base_url() {
 /// two credentials of the S3 store, with ADR 0024, the bearer and the headers of a tool server, and,
 /// with ADR 0046, the keys that seal a person's credentials, with issue 290, the direct connection
 /// string of the database, with ADR 0080, the key a tool server's requests are signed with, and,
-/// with ADR 0084, the run routes' own tokens (the orchestrator's and one per agent), and with ADR 0046
-/// the token of the OpenBao secret store, and with ADR 0108 the token of the operator's meter. A
-/// twenty-second, or a string where one of these is, would be a change of the contract, so it fails here first.
+/// with ADR 0084, the run routes' own tokens (the orchestrator's and one per agent), with ADR 0046
+/// the token of the OpenBao secret store, with ADR 0108 the token of the operator's meter, and with
+/// ADR 0087 the key of the static prompt signer. A twenty-third, or a string where one of these is,
+/// would be a change of the contract, so it fails here first.
 #[test]
-fn the_secrets_are_the_twenty_one_the_contract_names() {
+fn the_secrets_are_the_twenty_two_the_contract_names() {
     assert_eq!(
         secret_fields(&orch_config::schema()),
         [
@@ -114,6 +115,7 @@ fn the_secrets_are_the_twenty_one_the_contract_names() {
             "Database.directUrl",
             "Database.url",
             "Endpoint.apiKey",
+            "PromptStatementStatic.key",
             "Registry.agentToken",
             "Registry.token",
             "ServerInternal.agents",

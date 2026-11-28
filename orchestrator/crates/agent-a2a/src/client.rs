@@ -27,7 +27,7 @@ use orch_core::{
 };
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
-    SendContent, SendRequest, TaskHandle, TaskSnapshot, UiSupport,
+    AttachmentLinks, SendContent, SendRequest, TaskHandle, TaskSnapshot, UiSupport,
 };
 use orch_thread_token::{ThreadToolsGrant, ThreadToolsIssuer};
 use serde_json::{Value, json};
@@ -36,6 +36,7 @@ use crate::a2ui::{
     action_part, inline_catalog, renderer_capabilities, ui_catalog_metadata, ui_from_card,
 };
 use crate::access_tier::{access_tier_from_card, check_plain_under_cap, tier_metadata};
+use crate::attachments::attachment_parts;
 use crate::child_sessions::{child_sessions_from_card, session_metadata};
 use crate::commands::commands_from_card;
 use crate::errors::classify;
@@ -78,6 +79,10 @@ pub struct A2aConfig {
     /// The hosts a `url` part of an artifact may be fetched from, and the size it may have
     /// (ADR 0032, `artifacts.fetchHosts`). Without it (the default) every `url` part stays a link.
     pub fetch_files: Option<FileFetch>,
+    /// What makes the signed link of each file of a message (`SendRequest.attachments`,
+    /// `docs/api/attachments.md`), asked while the message is sent. Without it (the default) a
+    /// message that carries a file is not sent.
+    pub attachment_links: Option<Arc<dyn AttachmentLinks>>,
     /// How often a stream that activated `child-sessions/v1` reads its task for the sessions it
     /// lists (ADR 0072): the poll that learns a session from an agent that sends no events. Not in
     /// the configuration file.
@@ -95,6 +100,7 @@ impl Default for A2aConfig {
             thread_tools: None,
             asks: false,
             fetch_files: None,
+            attachment_links: None,
             child_sessions_poll: Duration::from_secs(5),
         }
     }
@@ -981,8 +987,13 @@ impl AgentClient for A2aAgentClient {
             .await?,
         );
         let reader = self.task_reader(&req.endpoint, &reporting, &client);
+        // The links of the message's files, signed as late as they can be, after every check that
+        // can refuse the message. All of them or nothing is sent.
+        let files = attachment_parts(&req, self.cfg.attachment_links.as_deref()).await?;
+        let mut message = user_message(&req, ui.as_ref(), catalog, riders, &reporting);
+        message.parts.extend(files);
         let request = SendMessageRequest {
-            message: user_message(&req, ui.as_ref(), catalog, riders, &reporting),
+            message,
             configuration: None,
             metadata: None,
             tenant: None,

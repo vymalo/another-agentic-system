@@ -180,6 +180,7 @@ async fn a_secret_typed_for_a_server_is_in_no_response_no_log_no_event_and_no_de
     let app = Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 store: MemoryStore::new(),
                 wakeup: MemoryWakeup::new(),
                 agents: ScriptedAgent::new(),

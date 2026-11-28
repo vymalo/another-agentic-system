@@ -805,6 +805,7 @@ async fn files_are_read_by_artifact_read_over_the_thread() {
         Arc::new(
             App::<FilePorts>::new(
                 PortSet {
+                    prompt_signer: orch_ports::NoPromptSigner,
                     artifacts: store.clone(),
                     store: w.store.clone(),
                     wakeup: w.wakeup.clone(),

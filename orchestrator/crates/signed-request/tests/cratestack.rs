@@ -1,5 +1,7 @@
-//! `orch-signed-request` against the real `cratestack-cose` 0.17.2: what the orchestrator writes, the real `open_claims` opens, and
-//! what the real `sign_claims` writes for the same inputs is, byte for byte, what the orchestrator writes.
+//! `orch-signed-request` against `cratestack-cose` used the way a tool server uses it, directly: what the orchestrator signs,
+//! `open_claims` opens with the library's own resolver; the library's own Ed25519 signer writes the committed vector; and what
+//! it signs on its own, the reference verifier judges. The vector against the orchestrator's writer, and the reference
+//! verifier's refusals (another key, a flipped bit), are in `vectors.rs`.
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use base64::Engine as _;
@@ -7,7 +9,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use cratestack_cose::{
     ClaimsError, CwtClaims, Ed25519Signer, StaticVerifierResolver, open_claims, sign_claims,
 };
-use orch_signed_request::verify::{Incoming, Verifier};
+use orch_signed_request::verify::{Incoming, Object, Verifier, VerifyError};
 use orch_signed_request::{Method, Request, Signer, SigningKey, TYP, kid_of};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -21,7 +23,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn vectors() -> Value {
-    serde_json::from_str(include_str!("../../tests/vectors/v1.json")).unwrap()
+    serde_json::from_str(include_str!("vectors/v1.json")).unwrap()
 }
 
 fn unhex(text: &str) -> Vec<u8> {
@@ -89,7 +91,7 @@ async fn the_real_open_claims_opens_what_the_orchestrator_signs() {
             thread,
             owner: &owner,
         };
-        let header = signer.sign(&request, 1_790_000_000).unwrap();
+        let header = signer.sign(&request, 1_790_000_000).await.unwrap();
         let bytes = URL_SAFE_NO_PAD.decode(&header).unwrap();
 
         let opened = open_claims(&resolver, &bytes, TYP, b"").await.unwrap();
@@ -129,7 +131,7 @@ async fn the_real_open_claims_opens_what_the_orchestrator_signs() {
 }
 
 #[tokio::test]
-async fn the_real_open_claims_refuses_what_is_not_the_orchestrators() {
+async fn the_orchestrator_signs_the_contract_s_typ_and_an_empty_external_aad() {
     let (_, resolver) = theirs();
     let signer = ours(30);
     let thread = Uuid::from_u128(1);
@@ -144,6 +146,7 @@ async fn the_real_open_claims_refuses_what_is_not_the_orchestrators() {
             },
             1_790_000_000,
         )
+        .await
         .unwrap();
     let bytes = URL_SAFE_NO_PAD.decode(&header).unwrap();
     // another typ, another external aad
@@ -155,26 +158,10 @@ async fn the_real_open_claims_refuses_what_is_not_the_orchestrators() {
         open_claims(&resolver, &bytes, TYP, b"x").await,
         Err(ClaimsError::Unverified)
     ));
-    // another key
-    let stranger =
-        StaticVerifierResolver::new().with_key(Ed25519Signer::from_seed(&[9; 32]).verify_key());
-    assert!(matches!(
-        open_claims(&stranger, &bytes, TYP, b"").await,
-        Err(ClaimsError::Unverified)
-    ));
-    // one flipped bit anywhere: the signature, the payload, the protected header (the real library is as strict as ours)
-    for at in [bytes.len() - 1, bytes.len() - 80, 30, 60, 100] {
-        let mut flipped = bytes.clone();
-        flipped[at] ^= 1;
-        assert!(
-            open_claims(&resolver, &flipped, TYP, b"").await.is_err(),
-            "byte {at}"
-        );
-    }
 }
 
 #[tokio::test]
-async fn the_real_sign_claims_writes_the_bytes_the_orchestrator_writes() {
+async fn the_librarys_own_signer_writes_the_committed_vector() {
     let v = vectors();
     let (signer, _) = theirs();
     let claims = CwtClaims {
@@ -187,27 +174,9 @@ async fn the_real_sign_claims_writes_the_bytes_the_orchestrator_writes() {
     let real = sign_claims(&signer, TYP, &claims, payload, b"")
         .await
         .unwrap();
-    // the committed vector is what the real library writes today
+    // the same bytes as the orchestrator's key (held by another Ed25519 implementation) writes in `vectors.rs`
     assert_eq!(hex(&real), v["cose_hex"].as_str().unwrap());
     assert_eq!(URL_SAFE_NO_PAD.encode(&real), v["header"].as_str().unwrap());
-
-    // and the orchestrator writes the same bytes for the same inputs
-    let thread: Uuid = v["thread"].as_str().unwrap().parse().unwrap();
-    let body = v["body"].as_str().unwrap().as_bytes();
-    let header = ours(v["ttl_secs"].as_u64().unwrap())
-        .sign_with_cti(
-            &Request {
-                method: Method::Post,
-                path: v["path"].as_str().unwrap(),
-                body,
-                thread,
-                owner: v["owner"].as_str().unwrap(),
-            },
-            v["iat"].as_u64().unwrap(),
-            unhex(v["cti"].as_str().unwrap()).try_into().unwrap(),
-        )
-        .unwrap();
-    assert_eq!(header, URL_SAFE_NO_PAD.encode(&real));
 }
 
 #[tokio::test]
@@ -247,9 +216,43 @@ async fn what_the_real_sign_claims_writes_the_orchestrators_reference_verifier_a
             },
             1_790_000_010,
         )
+        .await
         .unwrap();
     assert_eq!(
         (verified.thread, verified.owner.as_str()),
         (thread, "amina@example.com")
     );
+}
+
+#[tokio::test]
+async fn the_reference_verifier_names_another_typ_as_the_wrong_type() {
+    // signed by the pinned key and well formed: only the domain separator differs
+    let (signer, _) = theirs();
+    let public = SigningKey::from_seed(SEED).unwrap().public_key();
+    let claims = CwtClaims {
+        aud: Some(AUDIENCE.to_owned()),
+        exp: Some(1_790_000_030),
+        iat: Some(1_790_000_000),
+        cti: Some(vec![5; 16]),
+    };
+    let other = sign_claims(&signer, "application/other+cwt", &claims, b"{}", b"")
+        .await
+        .unwrap();
+    let refused = Verifier::new(AUDIENCE, 30)
+        .pin(public)
+        .unwrap()
+        .verify(
+            &[&URL_SAFE_NO_PAD.encode(other)],
+            &Incoming {
+                method: "POST",
+                path: "/mcp",
+                query: None,
+                body: b"{}",
+                content_encoding: None,
+            },
+            1_790_000_010,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused, VerifyError::Object(Object::WrongType));
 }

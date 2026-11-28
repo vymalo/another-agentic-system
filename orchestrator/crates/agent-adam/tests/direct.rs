@@ -76,6 +76,7 @@ fn echo_request() -> SendRequest {
         task_id: None,
         reference_task_ids: Vec::new(),
         content: SendContent::Text("hello through the pooler".to_owned()),
+        attachments: Vec::new(),
         release: None,
         ui_catalog: None,
         thread_tools: None,

@@ -204,6 +204,7 @@ impl Rig {
         let app = Arc::new(
             App::new(
                 PortSet {
+                    prompt_signer: orch_ports::NoPromptSigner,
                     store: MemoryStore::new(),
                     wakeup: MemoryWakeup::new(),
                     agents: ScriptedAgent::new(),
@@ -821,6 +822,7 @@ async fn a_fork_in_a_deployment_that_turned_the_feature_off_detaches_a_persons_s
     // the same thread store under an application whose bundle is off
     let off = App::new(
         PortSet {
+            prompt_signer: orch_ports::NoPromptSigner,
             store: on.app.ports().store.clone(),
             wakeup: MemoryWakeup::new(),
             agents: ScriptedAgent::new(),

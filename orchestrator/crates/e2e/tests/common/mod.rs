@@ -686,6 +686,7 @@ impl World {
         Arc::new(
             App::new(
                 PortSet {
+                    prompt_signer: orch_ports::NoPromptSigner,
                     artifacts: self.artifacts.clone(),
                     store,
                     wakeup,

@@ -4,7 +4,7 @@
 use orch_core::{AgentId, TierOffer};
 use orch_ports::AgentEndpoint;
 use orch_ports::memory::ScriptedAgent;
-use orch_ports::testkit::agent_client::{AgentFixture, Script};
+use orch_ports::testkit::agent_client::{AgentFixture, ReceivedFile, Script, TestLinks};
 
 struct Scripted(ScriptedAgent);
 
@@ -39,6 +39,14 @@ impl AgentFixture for Scripted {
         ))
     }
 
+    fn carries_attachments(&self) -> bool {
+        true
+    }
+
+    fn received_files(&self, message_id: &str) -> Vec<ReceivedFile> {
+        self.0.files_received(message_id)
+    }
+
     fn release_gate(&self) {
         self.0.release_gate();
     }
@@ -58,6 +66,7 @@ impl AgentFixture for Scripted {
 async fn make() -> Option<Scripted> {
     let agent = ScriptedAgent::new();
     agent.set_unreachable("gone");
+    agent.set_attachment_links(std::sync::Arc::new(TestLinks));
     agent.set_access_tier(
         "tiered",
         TierOffer::from_params(&serde_json::json!({

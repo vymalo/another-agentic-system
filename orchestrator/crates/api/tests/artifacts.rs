@@ -64,6 +64,7 @@ impl<X: ArtifactStore + Clone> Harness<X> {
         let app = Arc::new(
             App::new(
                 PortSet {
+                    prompt_signer: orch_ports::NoPromptSigner,
                     artifacts: store.clone(),
                     store: MemoryStore::new(),
                     wakeup: MemoryWakeup::new(),

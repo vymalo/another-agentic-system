@@ -725,8 +725,6 @@ fn unhex(text: &str) -> Option<[u8; 32]> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use futures::StreamExt as _;
-
     use super::*;
 
     fn thread() -> ThreadId {

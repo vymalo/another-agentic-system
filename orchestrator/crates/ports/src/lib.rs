@@ -98,8 +98,8 @@ pub mod testkit;
 pub use account_erase::{AccountErase, EraseError, EraseOutcome};
 pub use agent::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream,
-    AgentTransport, IdemKey, MentionInfo, SendContent, SendRequest, TaskHandle, TaskSnapshot,
-    UiSupport,
+    AgentTransport, AttachmentLinks, IdemKey, MentionInfo, PresignedLinks, SendAttachment,
+    SendContent, SendRequest, TaskHandle, TaskSnapshot, UiSupport,
 };
 pub use artifacts::{
     ArtifactError, ArtifactHead, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, CHUNK_BYTES,
@@ -138,7 +138,9 @@ pub use platform_credentials::{
     PlatformCertificateFuture, PlatformClientCertificate, PlatformClientCertificates,
     PlatformCredentials, PlatformCredentialsError, PlatformToken, PlatformTokenFuture,
 };
-pub use prompt_signer::{AttestedPayload, PromptSigner, SignedStatement, SignerError, SignerState};
+pub use prompt_signer::{
+    AttestedPayload, NoPromptSigner, PromptSigner, SignedStatement, SignerError, SignerState,
+};
 pub use prompts::{
     MAX_PROMPTS, PROMPT_PAGE, PromptPage, PromptRevision, PromptScope, PromptStore,
     PromptStoreError, PromptSummary, PromptViewer, StoredPrompt,

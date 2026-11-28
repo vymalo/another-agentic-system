@@ -4,8 +4,11 @@ sidebarTitle: "Attachments (v1)"
 
 # Attachments (v1): a person's file, from the browser
 
-- **Status:** **the server half is built** (2026-11-24): the route, its checks and its tests. The web has no control
-  for it yet, and an uploaded file is not yet named by a message (see [*What is not built*](#what-is-not-built)).
+- **Status:** **the server half of the upload is built** (2026-11-24): the route, its checks and its tests. **The
+  message side is not**: no message names an uploaded file. Its decisions and contract are written under
+  [*The message side*](#the-message-side-planned) (2026-11-28). Of them only the **transport** to an agent is built
+  ([*What of it is built*](#what-of-it-is-built)), and nothing switches it on. The web has no control
+  (see [*What is not built*](#what-is-not-built)).
 - **The decision is not taken.** Question 9 of
   [ADR 0067](../decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md) — "may a browser send
   files to the orchestrator?" — is **open**. This page is that question's **recommendation**: yes, same origin, at
@@ -15,7 +18,8 @@ sidebarTitle: "Attachments (v1)"
 - **A different contract for the same store:** a file an **agent** hands over is
   [`uploads-v1.md`](uploads-v1.md) (a presigned `PUT` minted for the agent) and the agent ingest. A person's browser
   never receives a presigned URL, and never holds a store credential.
-- **Decided in:** none yet. The store is
+- **Decided in:** no ADR. The decisions of the message side are recorded
+  [on this page](#five-decisions); they do not answer question 9. The store is
   [ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md); the plan and the recipe rule are
   [ADR 0067](../decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md).
 
@@ -169,14 +173,223 @@ async function uploadAttachment(threadId: string, file: File) {
 Check the size on the client only to spare the upload (`file.size > 10 * 1024 * 1024`); the server refuses it anyway,
 with the deployment's own cap.
 
+## The message side (planned)
+
+**Only [the transport](#what-of-it-is-built) is built; the rest of this section is not.** It is what the code that lets a message carry an uploaded file has to do. It
+builds on the artifact store of [ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md), the
+presigned `GET` of [ADR 0058](../decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)
+(the port's `presign_get`), forks as [ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md) and
+[ADR 0043](../decisions/0043-deleting-a-thread-erases-it.md) have them, and share links as
+[ADR 0040](../decisions/0040-thread-sharing-by-revocable-link.md) has them. What the code does today, as said here, was
+read in this repository on 2026-11-28.
+
+```mermaid
+sequenceDiagram
+  accTitle: Interaction: a named message hands the file to the agent
+  autonumber
+  participant C as Client
+  participant O as Orchestrator (API)
+  participant S as Artifact store
+  participant L as Event log and outbox
+  participant D as Dispatcher
+  participant X as Agent adapter
+  participant A as Agent
+
+  C->>O: a run: one new message, vymalo.attachments [{sha256}]
+  O->>O: writable_thread, then can the store sign a link?
+  O->>S: look up threads/{thread}/{sha256}, each hash
+  S-->>O: size, media type, name
+  O->>L: commit user_message.attachments (no URL)
+  D->>L: take the delivery
+  D->>X: send: each file's key, media type and name, no URL
+  X->>S: presign_get(threads/{thread}/{sha256}), the agents' lifetime
+  S-->>X: a signed link
+  X->>A: the message, one URL part per file
+  A->>S: GET the link, before it expires (open item 5)
+```
+
+```mermaid
+stateDiagram-v2
+  accTitle: Lifecycle: an attachment, from upload to a named message
+  [*] --> Uploaded: 201 from the upload route
+  Uploaded --> Named: a message that passes the check is committed
+  Uploaded --> Uploaded: a refused message writes nothing
+  Uploaded --> Erased: the thread is deleted
+  Named --> Linked: a link is signed while the message is sent
+  Linked --> Expired: the link's lifetime ends
+  Expired --> Linked: another send signs a new link
+  Named --> Erased: the thread is deleted
+  Linked --> Erased: the thread is deleted
+  Expired --> Erased: the thread is deleted
+  Erased --> [*]
+```
+
+### What of it is built
+
+The transport, with nothing switched on (ANR-1434): the dispatcher puts no file in a request, and the binary gives no
+adapter a way to sign.
+
+- **The port.** `SendRequest.attachments` is a list of `{key, mediaType, filename?}`, `key` being the store's
+  `threads/<thread>/<sha256>`. It holds **no URL**.
+- **Who signs.** Decision 1 says the link is minted by the dispatcher when it sends. In the code it is minted **during
+  the dispatcher's send, by the agent adapter**, which asks a port, `AttachmentLinks`, that it is configured with
+  (`PresignedLinks` is that port over the store's `presign_get`, with a lifetime of its own, decision 2; no
+  configuration key sets it yet). So a request never holds a URL, and a retry signs again.
+- **A2A.** The text part, then one URL part per file with `mediaType` and `filename`, never bytes; a steer likewise. No
+  card is read for it (open item 5).
+- **A file is never dropped.** If a link cannot be made, the message is not sent: retried when the store failed for
+  now, refused when it never will sign or the adapter has no way to. Files on anything but a text message are refused.
+- **An agent hosted in the orchestrator's process refuses** a message with files and asks for no link: as read under
+  open item 5, adam would put the link in the model's text, and its journal, in the orchestrator's Postgres, would keep
+  it, against decision 1.
+- **Logs.** The adapter logs no link and no file name. A request's `Debug` shows a file's key and media type, and of
+  its name only the length. What an agent says back is not scrubbed.
+
+### Five decisions
+
+Recorded 2026-11-28. The fifth is not a decision: it is an open item.
+
+#### 1. How an agent fetches a file
+
+- **Question:** how does the agent, which has no login of the person's, get the bytes?
+- **Decision:** by a **signed link the dispatcher mints when it sends** (`presign_get`, ADR 0058). **The log and the
+  outbox keep only the hash and the file's details, never the URL.** **If the store cannot sign a link, a message with
+  attachments is refused `422` before anything is written.**
+- **Reason:** the link is a credential for as long as it lives, so it is made as late as it can be and the
+  orchestrator keeps it nowhere; the log keeps a reference (ADR 0032, decision 1). The store already signs a `GET`
+  (ADR 0058). A message that could never be delivered is not written.
+- **Rules out:** a new signed-link route that would also work with the directory store. It adds a way in without a
+  login, and needs an ADR and a security review of its own.
+
+So a deployment can accept the upload and refuse the message: the route above keeps a file in any artifact store,
+and only a store that can presign (`can_presign`: today S3 with `artifacts.s3.publicEndpoint` set,
+[`config.md`](config.md)) can sign. Signing does not depend on `artifacts.s3.downloads: redirect`. The agent must
+reach the host the link names.
+
+#### 2. How long the link lasts
+
+- **Question:** does the agent's link last as long as a download's?
+- **Decision:** no. The agents' links have **their own setting**, apart from `artifacts.s3.presignTtlSecs` and its
+  default of 300 seconds. Its key, default and bounds are not decided here; the port refuses a lifetime over seven
+  days.
+- **Reason:** a browser follows a download's redirect at once. An agent may fetch later, or retry.
+- **Rules out:** reusing the download's 300 seconds, and a link that never expires.
+
+**A link already in an agent's history expires.** An agent that reads an old message again holds a link that may no
+longer work. Another send by the dispatcher signs a new link for what it sends; it does not change what the agent
+already keeps.
+
+#### 3. A new thread's first message
+
+- **Question:** can the message that creates a thread carry attachments?
+- **Decision:** **no. This is a documented limit**, and it is handled before the web's upload control ships.
+- **Reason:** an upload goes to a thread, and an upload to a thread that does not exist is `404`. No call creates a
+  thread ahead of its first message: `/api/threads` is `GET` only, and the run that carries the first message creates
+  the thread.
+- **Rules out:** attachments on that run, and an upload that belongs to no thread. It does not say how the limit will
+  be handled.
+
+The same holds for a run that creates a fork with its first message (`forwardedProps["vymalo.fork"]`): the fork has
+no files of its own to name before that run.
+
+#### 4. Share links and forks
+
+- **Question:** who else can open a person's attachment?
+- **Decision:** **a reader of a share link cannot**: attachments are the owner's alone for now. **A fork always copies
+  them.**
+- **Reason:** widening who can read a file is an explicit choice the owner makes, not a side effect of a message. A
+  fork is a new thread of the person who forks, which has the copied messages, and a file's key holds the thread that
+  is read (ADR 0043, decision 8).
+- **Rules out:** serving an attachment through either link route because a user message names it, and a fork whose
+  copied messages name files it cannot open.
+
+A link route decides by hash: it serves a file that an `artifact` event of the thread names. If an agent hands over
+**the same bytes** a person attached, the two have one hash and one key, and today's rule serves that file through
+the link as the agent's.
+
+#### 5. Whether an agent opts in (open)
+
+**Open, to be checked before the pull request that sends a file.** Two things: is a card's input modes read to decide
+whether an agent is sent a file, and does the pinned adam fetch a URL part? What was read on 2026-11-28:
+
+- *Verified (this repository's source):* the orchestrator reads no card's `defaultInputModes` and no skill's
+  `inputModes`.
+- *Verified (adam-rs source at the pinned `9f90f1e`, `orchestrator/Cargo.toml`: `adam-a2a-runtime/src/files_in.rs`,
+  `convert.rs`, `vymalo.rs`; `adam-a2a/src/card.rs`):* **it does not fetch a URL part.** Both of its inbound
+  functions turn one into the line `[linked: <url>]` in the message's text, with control characters removed and the
+  URL **cut at 512 characters**. Only a `raw` part of PNG, JPEG, GIF or WebP bytes is read as an image, so
+  `image/*` on a URL part does not give the model an image. Its card says `defaultInputModes: ["text/plain"]`.
+- *Unverified:* the running image (the source was read, nothing was run); whether one of the agent's tools would
+  fetch a link from the text; how long a signed link of a given deployment is, and so whether the cut breaks it; any
+  agent that is not adam.
+
+So, as the source reads, a signed link sent to the pinned adam would be part of the text its model reads. That is
+also a way for the URL to come back: the rule that the log keeps no URL covers what the orchestrator writes for the
+message, and nothing here stops an agent from quoting a link in its reply.
+
+### The request
+
+The run that carries the message names the files in `forwardedProps`, as the other members of a message do
+([`agui.md`](agui.md#inbound-ag-ui--core-input)):
+
+```json
+{"vymalo.attachments": [{"sha256": "<64 lower-case hex digits>"}]}
+```
+
+**At most 10 distinct entries.** Ten is a starting limit. A client names a file by its hash only: **the server takes
+the size, the type and the name from the store and ignores any type or name the client sends.**
+
+### The check
+
+After `writable_thread` (`thread.write`, and the thread is the caller's), each hash is looked up **under that
+thread's prefix**, `threads/<thread>/<sha256>`, **before anything is committed**. A hash that is not there **refuses
+the whole message**, and the refusal **does not reveal whether the file exists elsewhere**: the orchestrator does not
+look elsewhere. With it comes decision 1: a store that cannot sign refuses the message `422`. The other refusals'
+statuses and the codes are not decided here.
+
+**What "the sender's file" means.** A file is stored only as `threads/<thread>/<sha256>`. No upload is recorded
+against a person. So the check can say one thing: the file is **in this thread, which the sender can write to**. It
+cannot say the sender uploaded it, and a file an agent handed over to the same thread passes it too. The key holds
+the content once, so two uploads of the same bytes in a thread are one file; what the store says of its type and
+name is what the object holds.
+
+### The log
+
+```json
+{"text": "What is in this picture?",
+ "attachments": [{"sha256": "<64 lower-case hex digits>", "size": 1234, "mediaType": "image/png",
+                  "filename": "dot.png"}]}
+```
+
+`user_message.attachments` is `[{sha256, size, mediaType, filename?}]`, **filled by the server from the store**. It
+holds no URL and no bytes (ADR 0032, decision 1), and neither does the outbox.
+
+### What the agent gets
+
+**One A2A URL part per file**, with `mediaType` and `filename` (when the file has one); the URL is the link of
+decision 1. **An `image/*` media type is what marks an image**: there is no second field. What the pinned adam does
+with such a part is open item 5.
+
+### Two readers that must learn the new reference
+
+`core::file_refs` and the share links' `log_names_file` read **only `artifact` events** today. Once a user message
+names a file:
+
+- **a fork would miss it**: the message is copied and the file is not. `file_refs` is taught to read
+  `user_message.attachments` **in the same pull request that lets a message carry a file** (decision 4);
+- **a share link would miss it**: `log_names_file` does not look at user messages. For attachments that is what
+  decision 4 asks for now, so it stays; opening them to a link's reader is a later choice, made on purpose.
+
 ## What is not built
 
-- **The file is not attached to a message yet.** This route stores it and hands back the hash; no event, no message
-  and no log entry names it. A message that carries the file is the next part of slice 12, and it will decide what a
-  reference in a message looks like (the log keeps references, never bytes: ADR 0032, decision 1).
+- **The message side: no file is attached to a message yet.** The upload route stores a file and hands back its hash;
+  no request member, event or log entry names it. An adapter can send a file as an agent part
+  ([*What of it is built*](#what-of-it-is-built)), but nothing gives it one.
+  [*The message side*](#the-message-side-planned) is the plan, and open item 5 comes before the pull request that sends
+  a file.
 - **A file nothing references is left in the store.** The orphan sweep of open question 46 is not built, and nothing
   here changes that: an upload the person never sends is bytes with no reference, like an agent's unused upload.
-- **No web control, and no second client.** The composer's attachment control, its previews and its message reference
-  are not built.
+- **No web control, and no second client.** The composer's attachment control and its previews are not built, and
+  the limit on a new thread's first message (decision 3) is not handled.
 - **No `chat-api.yaml` entry.** The route is not in the OpenAPI document yet: adding an operation to it goes through
   the API epic's process (ADR 0067, rule 2), not through this page.

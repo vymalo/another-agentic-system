@@ -43,6 +43,7 @@ fn app_with<X: ArtifactStore>(w: &World, store: X, files: FileLimits) -> Arc<App
     Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: store,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),
