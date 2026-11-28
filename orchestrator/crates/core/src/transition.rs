@@ -40,6 +40,7 @@ use crate::prompt_signature::SignedPrompt;
 use crate::reasoning::{AgentReasoningData, bound_reasoning};
 use crate::share::{ShareLevel, ShareNonce, ThreadSharedData, ThreadUnsharedData};
 use crate::step::{StepReport, StepSource, record_step};
+use crate::suggestions::{ThreadSuggestedData, check_suggestions};
 use crate::thread::ThreadState;
 use crate::thread_tools::Caller;
 use crate::title::{ThreadTitledData, TitleSource, TitledBy, check_title, speaks};
@@ -365,6 +366,24 @@ pub enum Input {
         /// The job whose end asked.
         job: u32,
     },
+    /// The model wrote the suggestions offered under the final answer of `job`, asked for by
+    /// [`Command::RequestSuggestions`] at the end of `job` (ADR 0035, amended 2026-11-28). The
+    /// dispatcher built them from the model's answer ([`clean_suggestions`](crate::clean_suggestions));
+    /// the core checks them again ([`check_suggestions`](crate::check_suggestions)). They are
+    /// logged as one `thread_suggested`, scoped to the job, and fill the message box; they are
+    /// never sent. An answer to an ask that is not the one in flight is ignored.
+    Suggested {
+        /// The job whose end asked.
+        job: u32,
+        /// At most [`MAX_SUGGESTIONS`](crate::MAX_SUGGESTIONS) suggestions.
+        suggestions: Vec<String>,
+    },
+    /// The model had no suggestions to give for the ask of `job` (nothing to suggest, it could
+    /// not be reached, the answer was not usable): nothing changes and nothing is logged.
+    SuggestionsDeclined {
+        /// The job whose end asked.
+        job: u32,
+    },
     /// The user set the MCP servers attached to the thread (ADR 0024): `servers` is the whole set
     /// they want, by id. Valid in every state, finished or not: the set belongs to the
     /// conversation and applies to the next message sent. The caller has checked it
@@ -599,6 +618,8 @@ impl Input {
             Input::SetDescription { .. } => "set description",
             Input::Described { .. } => "description",
             Input::DescriptionDeclined { .. } => "description declined",
+            Input::Suggested { .. } => "suggestions",
+            Input::SuggestionsDeclined { .. } => "suggestions declined",
             Input::SetTools { .. } => "set tools",
             Input::AgentBuild { .. } => "agent build",
             Input::Ask { .. } => "ask",
@@ -815,6 +836,14 @@ pub enum Command {
     /// answers with exactly one [`Input::Described`] or [`Input::DescriptionDeclined`] for it.
     /// An application with no description task drops it.
     RequestDescription {
+        /// The job whose end asks.
+        job: u32,
+    },
+    /// Ask the model for the next things the person could say (outbox kind `suggestions`), because
+    /// `job` has just ended or paused for the person: at most once per job. The dispatcher answers
+    /// with exactly one [`Input::Suggested`] or [`Input::SuggestionsDeclined`] for it. An
+    /// application with no suggestions task drops it.
+    RequestSuggestions {
         /// The job whose end asks.
         job: u32,
     },
@@ -1376,6 +1405,7 @@ pub fn transition(
     let mut commands = commands;
     end_asks(snapshot.state, state, &mut job, input, &mut commands);
     ask_for_description(snapshot.state, state, &mut job, &mut commands);
+    ask_for_suggestions(snapshot.state, state, &mut job, &mut commands);
     Ok((Snapshot { state, job }, commands))
 }
 
@@ -1429,6 +1459,26 @@ fn ask_for_description(
     if stops && before != after && job.description.may_ask(job.number) {
         job.description.asked(job.number);
         cmds.push(Command::RequestDescription { job: job.number });
+    }
+}
+
+/// A job has just ended (`done`) or paused for the person (`blocked`): the model is asked for the
+/// next things the person could say, once for the job (ADR 0035, amended 2026-11-28). `failed` and
+/// `cancelled` never ask, and a state the thread was in already asks nothing: only the transition
+/// that gets there does. A **child thread** never asks: its jobs follow the rounds of a helper
+/// session, which are not a conversation with the person to suggest the next words of, and each
+/// round would bill a call for suggestions nobody reads. Unlike a description, nothing a person
+/// wrote makes it final: a later job asks again.
+fn ask_for_suggestions(
+    before: ThreadState,
+    after: ThreadState,
+    job: &mut Job,
+    cmds: &mut Vec<Command>,
+) {
+    let stops = matches!(after, ThreadState::Done | ThreadState::Blocked);
+    if stops && before != after && job.child.is_none() && job.suggestions.may_ask(job.number) {
+        job.suggestions.asked(job.number);
+        cmds.push(Command::RequestSuggestions { job: job.number });
     }
 }
 
@@ -2019,6 +2069,30 @@ fn decide(
         }
         Input::DescriptionDeclined { job: asked } => {
             job.description.answered(*asked);
+            Ok((state, vec![]))
+        }
+        Input::Suggested {
+            job: asked,
+            suggestions,
+        } => {
+            let current = job.suggestions.answered(*asked);
+            match check_suggestions(suggestions) {
+                Ok(text) if current => Ok((
+                    state,
+                    vec![append(
+                        Actor::system(),
+                        EventBody::ThreadSuggested(ThreadSuggestedData {
+                            job: *asked,
+                            suggestions: text,
+                        }),
+                    )],
+                )),
+                // an answer that is stale, repeated, or not a bounded list changes nothing
+                Ok(_) | Err(_) => Ok((state, vec![])),
+            }
+        }
+        Input::SuggestionsDeclined { job: asked } => {
+            job.suggestions.answered(*asked);
             Ok((state, vec![]))
         }
         Input::AgentBuild { build } => {

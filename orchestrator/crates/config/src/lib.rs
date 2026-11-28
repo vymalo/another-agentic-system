@@ -66,10 +66,10 @@ pub use types::{
     PromptSignerKind, PromptStatement, PromptStatementStatic, ProvisionedKind, Provisioner,
     ProvisionerCredentials, Recompute, Registry, Role, SecretRef, SecretStoreKind, Server,
     ServerInternal, Sharing, SharingMode, SharingPublic, SharingRateLimit, SplitScope, Steps,
-    Surface, Tasks, ThreadTools, TitleTask, ToolServer, ToolServerProtocol, ToolServerSigning, Ui,
-    UrlRef, Usage, UsageModelPrice, UsagePrices, UsageSandboxPrice, UserSecretKey, UserSecrets,
-    UserSecretsOpenbao, UserSecretsPg, UserToolServers, UserToolServersEgress,
-    UserToolServersOauth, WebhookGeneric, WebhookGithub, Webhooks,
+    SuggestionsTask, Surface, Tasks, ThreadTools, TitleTask, ToolServer, ToolServerProtocol,
+    ToolServerSigning, Ui, UrlRef, Usage, UsageModelPrice, UsagePrices, UsageSandboxPrice,
+    UserSecretKey, UserSecrets, UserSecretsOpenbao, UserSecretsPg, UserToolServers,
+    UserToolServersEgress, UserToolServersOauth, WebhookGeneric, WebhookGithub, Webhooks,
 };
 
 /// The version of the file's format this build reads.

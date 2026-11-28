@@ -113,6 +113,10 @@ tasks:
     system: { inline: "Say in one or two sentences what the person wants and where it stands." }
     maxTokens: 160
     recompute: { minNewMessages: 4 }
+  suggestions:
+    endpoint: small
+    model: small-model
+    maxTokens: 200
 ui:
   showDescriptions: true
   languages: [en-GB, fr-FR, gsw-CH, fur-IT]
@@ -350,6 +354,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `tasks.description.endpoint`, `.model`, `.system`, `.maxTokens`, `.language` | as the title's; `maxTokens` 1 to 1024, `160`; default guidance: "Describe in one or two sentences what the conversation is about now: what the person wants and where it stands." | — | now. **No `tasks.description`, no descriptions**: no row, no model call |
 | `tasks.description.maxChars` | 40 to 500, `300`; the cleaned answer is cut to it at a word | — | now |
 | `tasks.description.recompute.minNewMessages` | ≥ 1, `4`; the messages (the person's, and the agent's final words) since the last description before a new one is asked for; fewer is **no model call** | — | now |
+| `tasks.suggestions.endpoint`, `.model`, `.system`, `.maxTokens`, `.language` | as the title's; `maxTokens` 1 to 512, `200`; default guidance: "Offer up to three short next things the person could say or ask, one per line." | — | now. **No `tasks.suggestions`, no suggestions**: no row, no model call. Asked for after a job's final answer (`done` or `blocked`), at most once per job, from the **last exchange only**; the answer is at most 3 suggestions of at most 80 characters each (the core's fixed form, not a setting), logged as one `thread_suggested`, and they **fill the message box and never send** (ADR 0013, rule 7). A fork inherits none |
 | `tasks.turnSummary`, `tasks.stepLabel` | names kept for later tasks | — | reserved, no PR yet: refused |
 | `ui.showDescriptions` | boolean, `true`; whether the web shows a thread's description (the API returns it either way) | — | now, served by [`GET /api/config`](#get-apiconfig); the web reads it (PR S19) |
 | `ui.languages` | a list of 1 to 32 language tags, none twice (subtags are case-insensitive); each a **language, an optional script of 4 letters and an optional region of 2 letters or 3 digits**, at most 35 bytes — the shape the picker sends, narrower than the tag a message may carry; default `en-GB`, `fr-FR`, `gsw-CH`, `fur-IT` ([ADR 0085](../decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md)). **The interface languages this deployment offers**: the web draws a picker for exactly these, and the tag a person picks rides each message as `locale/v1`. A tag is data, not a protocol variant, so a deployment names its own list | — | now, served by [`GET /api/config`](#get-apiconfig); the web reads it (ANR-957). An image that does not know the key refuses it (the `ui` section is closed), and a tag outside the picker's shape is refused at startup rather than offered to nobody |

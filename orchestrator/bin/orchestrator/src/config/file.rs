@@ -1846,6 +1846,20 @@ fn models_of(valid: &Validated) -> ModelsSettings {
             },
         );
     }
+    if let Some(t) = &c.tasks.suggestions
+        && let Some(timeout) = timeout_of(&t.endpoint)
+    {
+        tasks.insert(
+            TaskKind::Suggestions,
+            TaskSettings {
+                guidance: valid.prompts.suggestions.clone(),
+                max_tokens: t.max_tokens,
+                language: language_rule(t.language),
+                ..TaskSettings::new(TaskKind::Suggestions, &t.endpoint, &t.model)
+                    .with_timeout(timeout)
+            },
+        );
+    }
     ModelsSettings { endpoints, tasks }
 }
 
@@ -3097,6 +3111,11 @@ tasks:
     system: { file: prompts/description.md }
     maxChars: 200
     recompute: { minNewMessages: 6 }
+  suggestions:
+    endpoint: small
+    model: small-model
+    system: { inline: 'Offer three next questions.' }
+    maxTokens: 128
 ui: { showDescriptions: false, history: { initialTurns: 5, pageTurns: 8, windowed: false }, languages: [fr-FR, de-DE] }
 server: { history: { maxTurns: 30, maxPageBytes: 1048576 } }
 ";
@@ -3128,6 +3147,21 @@ server: { history: { maxTurns: 30, maxPageBytes: 1048576 } }
         );
         assert_eq!(description.max_tokens, 160);
         assert_eq!(description.timeout, Duration::from_secs(9));
+        let suggestions = &app.tasks[&TaskKind::Suggestions];
+        assert_eq!(
+            (suggestions.endpoint.as_str(), suggestions.model.as_str()),
+            ("small", "small-model")
+        );
+        assert_eq!(
+            suggestions.guidance.as_deref(),
+            Some("Offer three next questions.")
+        );
+        assert_eq!(suggestions.max_tokens, 128);
+        assert_eq!(
+            suggestions.timeout,
+            Duration::from_secs(4),
+            "its endpoint's"
+        );
         assert!(!app.public.ui.show_descriptions);
         assert_eq!(app.public.ui.languages, ["fr-FR", "de-DE"]);
         // `ui.history` and `server.history` (ADR 0059) reach the application: the key of the
