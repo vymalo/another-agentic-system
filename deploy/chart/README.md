@@ -45,6 +45,7 @@ flowchart LR
 | `Deployment` edge + `ConfigMap` | Caddy 2.11.4, [`files/Caddyfile`](files/Caddyfile), `NET_BIND_SERVICE` added to the dropped capabilities; not rendered with `edge.enabled: false` |
 | `Ingress` | Traefik, host `host`, TLS from the `cert-manager` issuer `ingress.clusterIssuer`; not rendered with `edge.enabled: false` |
 | `Middleware` (Traefik) | **off by default** (`ingress.rateLimit.enabled`): [a limit per client address](#a-limit-per-client-at-the-edge) on that Ingress, a `RateLimit` the Ingress names in `traefik.ingress.kubernetes.io/router.middlewares` |
+| `PrometheusRule` (Prometheus Operator) | **off by default** (`alerts.enabled`): [example alert rules](#alert-rules) for running out of dispatcher slots, outbox age, pool connections and, by a second switch, the run-pod quota |
 | `Cluster` (CNPG) | **one**, `another-agentic-db`: the orchestrator's database (its connection string is the `uri` key of `another-agentic-db-app`) and, beside it, [a role and a database per agent](#one-database-cluster) |
 | `ObjectStore` + `ScheduledBackup` (CNPG), `ExternalSecret`, a plugin on the `Cluster` | **off by default** (`backup.enabled`): [continuous backups of that cluster to S3](#backups) by the barman-cloud plugin; a restore is a new cluster: [`examples/restore-cluster.yaml`](examples/restore-cluster.yaml) to try it, [`examples/restore-cutover.yaml`](examples/restore-cutover.yaml) to replace a lost one |
 | `Database` (CNPG) ×1 | `agent`, owned by the role `agent` (the chat agent's runs); one more per coder in `sharedDatabase.coders` (or `coder`, with the older `sharedDatabase.coder.enabled`) |
@@ -179,6 +180,10 @@ commented; the ones that matter:
 | `browser.allowFrom`, `.egressExcept`, `.egressExceptV6`, `.extraEgress` | `[]` (the coder only after [open question 69](../../docs/open-questions.md#open)), the search pod's ranges, `[]` | who may call it besides the orchestrator; what its egress to the internet excludes; more egress rules (a model gateway on a private address) |
 | `browser.chatSubagent` | `false` | the chat's remote sub-agent `browser` ([below](#the-browser-agent-adr-0057)): the chat's folder gets `subagents/browser.md` (its files passed on), the chat `A2A_ALLOW_INSECURE_REMOTES=true` and the browser's bearer, and the browser's NetworkPolicy admits the chat. Refused without `browser.enabled`, `chat.enabled` or the browser's bearer property |
 | `externalSecrets.agentTokens.BROWSER_A2A_TOKEN`, `externalSecrets.properties.obscuraMcpToken` | `browser_a2a_token`, `obscura_mcp_token` | [the two new properties](#the-aws-secret); read only with `browser.enabled` |
+| `alerts.enabled`, `.labels` | `false`, `{}` | [example alert rules](#alert-rules) as a Prometheus Operator `PrometheusRule`; off: nothing rendered. `labels` are added to the object for a Prometheus's `ruleSelector` (strings; the chart's own labels are refused) |
+| `alerts.dispatcherSlots.threshold`, `.for`; `alerts.dbPool.threshold`, `.for` | `0.9`, `10m` each | the share of the [slots](#dispatcher-slots-near-the-limit) busy, and of the [pool](#database-pool-near-its-size) in use: above 0, at most 1. `for`: a whole number above zero with `s`, `m` or `h` |
+| `alerts.outboxAge.seconds`, `.for` | `60`, `5m` | how long the [oldest due outbox row](#the-oldest-due-outbox-row-is-old) may wait: 1 to 86400 |
+| `alerts.runPodQuota.enabled`, `.namespace`, `.resource`, `.threshold`, `.for` | `false`, `""`, `pods`, `0.8`, `10m` | the [run-pod quota](#run-pod-quota-near-its-limit) rule, which needs an exporter that is not ours. Refused: on without `alerts.enabled` or without a namespace |
 | `networkPolicy.*` | on | `ingressControllerNamespace` limits the edge to Traefik's namespace (empty: the edge admits any source) and is **required with `rustfs.ingress.enabled`** (the files host's proxy trusts forwarding headers, [below](#the-files-host-adr-0058)); `orchestratorFrom` lists the agents of other charts |
 
 ## One database cluster
@@ -781,6 +786,122 @@ validated against the vendored CRD schema by `deploy.yml`. [`tests/ratelimit-e2e
 another is served, depth 1 on `X-Forwarded-For` (two forwarded addresses from one pod are two clients), and the two failures above; the control with the limit off is all 200.
 **That job is unverified until CI has run it**: its scenario was run against the pinned Traefik image under Docker with the same `Middleware` fields, not on a cluster.
 Not proven: the netcup Traefik, its address, its `safeNaming`, the starting numbers under real traffic.
+
+## Alert rules
+
+Four example alerts for "running out" (ANR-339). **They are examples, and every threshold is a starting point, not a measurement**: no load test and no
+production traffic chose one. Watch the expression on your own traffic before anybody is paged by it. All four are `severity: warning`.
+
+**The form is a `PrometheusRule` template, off by default** (`alerts.enabled`), rather than a file under `examples/`. Off, it renders nothing, so the chart
+still assumes no monitoring stack. As a template, its thresholds are values with refusals, and `tests/render-check.sh` can hold the rules to the
+orchestrator's metric names. On, it needs the Prometheus Operator's CRD (`monitoring.coreos.com/v1`): without it the sync fails on an unknown kind.
+Without the operator, `helm template -s templates/prometheus-rules.yaml` with `alerts.enabled=true` prints the object, and its `spec.groups` is a plain
+Prometheus rule file.
+
+**Turning the value on does not make Prometheus see anything.** Three things are the deployment's:
+
+1. **The scrape.** The chart renders no `ServiceMonitor` or `PodMonitor`. Every orchestrator process serves `GET /metrics` on port 8080 with no
+   identity ([observability](../../docs/orchestrator.md#observability-and-scaling)); scrape the pods, not the public host.
+2. **The NetworkPolicy.** With `networkPolicy.enabled`, the orchestrator admits only the pods it names. `networkPolicy.orchestratorFrom` is a pod
+   selector, so it reaches a Prometheus in the release's namespace only. One in another namespace needs a `NetworkPolicy` of the deployment's own
+   (policies add up). Either way the pods admitted reach the whole of port 8080, where the API still asks for sign-in.
+3. **The selection.** A Prometheus Operator loads the rules its `ruleSelector` and `ruleNamespaceSelector` match; put the label it wants in `alerts.labels`.
+
+The rules group by the label `namespace`, which the operator's scrape objects add. With a scrape that adds none, everything groups as one. The metric
+names of the first three rules carry no release name, so a Prometheus that scrapes two releases **in one namespace**, or another program that uses the
+names `db_pool_connections` or `dispatcher_slots_in_use` there, would be added in.
+
+**A rule on a missing series does not fire.** If the scrape breaks, or `/metrics` answers 503 because the store is unavailable (it does, for every
+sample), all of the first three go quiet. Alert on the target being down (`up == 0` for your scrape job) beside them; the chart cannot, as it does not
+know the job's name.
+
+| Rule | Metrics | Starting point | Values |
+|---|---|---|---|
+| `AgenticDispatcherSlotsNearLimit` | `dispatcher_slots_in_use`, `dispatcher_slots_configured` | 0.9 for 10m | `alerts.dispatcherSlots` |
+| `AgenticOutboxOldestDueTooOld` | `orch_outbox_oldest_due_age_seconds` | over 60 s for 5m | `alerts.outboxAge` |
+| `AgenticDbPoolNearSize` | `db_pool_connections`, `db_pool_max_connections` | 0.9 for 10m | `alerts.dbPool` |
+| `AgenticRunPodQuotaNearLimit` | `kube_resourcequota` (**not the orchestrator's**) | 0.8 for 10m | `alerts.runPodQuota` (its own switch) |
+
+### Dispatcher slots near the limit
+
+```promql
+sum by (namespace) (dispatcher_slots_in_use)
+  / (sum by (namespace) (dispatcher_slots_configured) > 0)
+  >= 0.9
+```
+
+The gauges are each process's own, so they are summed over the replicas. A process with no dispatcher reports 0 of 0.
+
+**Why this number.** A slot is busy with one outbox row, so with all of them busy the next row waits. At the default of 32 slots, 0.9 means 29 or more
+busy: late enough that a short burst does not reach it, early enough that a few are still free. `for: 10m` asks for it at every evaluation for ten
+minutes, so one dip starts the clock again. Neither number was measured.
+
+**When it fires.** Look at `orch_outbox_oldest_due_age_seconds`: if it is rising, work is waiting. Slots held by long agent runs call for more capacity
+(more processes, or a higher `dispatcher.concurrency`, which is the orchestrator's key and not a value of this chart; this chart runs one process).
+Slots held because an agent or a model answers slowly are not helped by more slots: look at that endpoint first. Check the database pool before adding
+slots, since more of them ask more of it.
+
+### The oldest due outbox row is old
+
+```promql
+max by (namespace) (orch_outbox_oldest_due_age_seconds) > 60
+```
+
+Every replica reads this from the store and reports the same queue, so it is `max`; a `sum` would multiply it by the replicas. It is `0` when nothing is
+due. A row waiting out a retry backoff is not due and does not count; a row whose worker's lease lapsed does.
+
+**Why this number.** A dispatcher with a free slot is meant to take a due row at once, so a minute is far from its normal behaviour, and `for: 5m` lets a
+restart or a rollout pass. What age is normal under your load was not measured: with long runs and every slot busy, rows wait without anything being broken.
+
+**When it fires.** Check that a process with a dispatcher is running and ready, then the slots (the rule above) and the pool (the rule below), then the
+orchestrator's log for rows that fail or lose their lease. `orch_outbox_rows` by `state` says how long the queue is.
+
+### Database pool near its size
+
+```promql
+sum by (namespace, pool) (db_pool_connections{state="in_use"})
+  / (sum by (namespace, pool) (db_pool_max_connections) > 0)
+  >= 0.9
+```
+
+The gauges are each process's own, so they are summed over the replicas; `pool` is a fixed name the binary chooses (`thread-store`). **A sum hides one full
+replica among idle ones**: with several processes, also look at `db_pool_waiting` and at the same ratio without the `sum`.
+
+**Why this number.** With the default `database.maxConnections` of 10 (the orchestrator's key), 0.9 means 9 or 10 in use. A pool that is briefly full is
+how a pool works; one that stays full for ten minutes is where callers start to queue, and a wait past 30 s fails the call. Not measured.
+
+**When it fires.** Look at `db_pool_waiting`: above `0` for long, the pool is the bottleneck. Find out why connections are held (a slow database, a long
+query) before making the pool larger. A larger pool, or more processes, takes more of PostgreSQL's `max_connections`: see
+[Scaling the database](#scaling-the-database-issue-290).
+
+### Run-pod quota near its limit
+
+```promql
+max by (namespace, resourcequota, resource) (kube_resourcequota{namespace="<ns>", resource="pods", type="used"})
+  / (max by (namespace, resourcequota, resource) (kube_resourcequota{namespace="<ns>", resource="pods", type="hard"}) > 0)
+  >= 0.8
+```
+
+**The orchestrator has no metric for this**, and does not talk to the cluster. The quota is a `ResourceQuota` of the coder's chart, and the series is the
+cluster's ([observability](../../docs/orchestrator.md#observability-and-scaling)). *Unverified:* that your cluster exports `kube_resourcequota`
+(kube-state-metrics is the exporter that name comes from; none was run here, and this chart installs none), its labels (`resourcequota`, `resource`,
+`type`), and the quota's `resource` names, which depend on what it sets: list them with `kube_resourcequota{type="hard"}`. For that reason the rule has a
+switch of its own, `alerts.runPodQuota.enabled`, off even with `alerts.enabled`, and without the series **it never fires and says nothing**. It asks for
+`namespace`, so that it does not watch every quota of the cluster. One resource per render: the default is `pods`.
+
+**Why this number.** 0.8 is lower than the other two because a full quota does not queue a pod, it refuses it, and the room left is what a person has to
+act in. How fast your quota fills was not measured; with a small quota one pod is a large step, so set the threshold to match its size.
+
+**When it fires.** See what holds the quota (`kubectl -n <ns> describe resourcequota`, `kubectl -n <ns> get pods`): run pods that should have ended, or
+real demand. Raise the quota (the coder chart's `runPods.quota`) only if the cluster has the room.
+
+### What is proven about the alert rules
+
+`tests/render-check.sh`: off, nothing is rendered; on, the three rules, the fourth only by its switch, the values in their places, the refusals, and
+**every metric a rule reads has a `# TYPE` line in `orchestrator/crates/api/src/metrics.rs`** above its tests (`kube_resourcequota` is the one named
+exception), so a metric renamed on either side fails it; `deploy.yml` runs it when that file changes too, and validates the object against the vendored
+CRD schema. **Not proven:** the PromQL itself (no `promtool` ran and no Prometheus evaluated a rule), that any alert fires or resolves, any threshold,
+the Prometheus Operator's selection of the object, and everything about `kube_resourcequota`.
 
 ## Tokens in the browser (ADR 0054)
 
@@ -2062,7 +2183,7 @@ A restore that is automated, and a cutover of the deployment to a restored clust
 **off by default**, and recommended before inviting more than a handful of people); a NetworkPolicy for
 the databases (CloudNativePG's operator and instances talk to each other, and the operator's namespace was not verified);
 a split into a control plane and workers (S3 for the artifacts is [an option now](#artifacts-in-s3-and-rustfs)); the MCP surface and the CI webhooks (they need keys, a
-route that skips sign-in and a decision on the edge); the researcher and its search; metrics (netcup has no Prometheus; the logs are JSON on stdout); a deletion of
+route that skips sign-in and a decision on the edge); the researcher and its search; a metrics stack and a scrape (netcup has no Prometheus; the logs are JSON on stdout; the [alert rules](#alert-rules) are off by default and add no scrape); a deletion of
 a person's threads (open question 28 and 46); Redis for oauth2-proxy's sessions is an option now
 ([`oauth2Proxy.sessionStore: redis`](#sessions-in-redis)), **off by default**: the cookie store is used (which splits large cookies; the size
 with three tokens is *unverified*) and loses a refresh behind the edge; a Redis that is highly available (Sentinel or a cluster) is not here.
@@ -2082,5 +2203,6 @@ across preview releases with data on the volume. With `rustfs.ingress.enabled`: 
 (it did under Docker), the browser's egress rules under Cilium (an `ipBlock` there matches traffic that leaves the cluster) and the sizes.
 With `orchestrator.artifacts.migrate.enabled`: the Job on netcup (Argo CD's reading of the hook, which *was verified 2026-10-14 against argo-cd.readthedocs.io*: `post-install`/`post-upgrade` are PostSync, `helm.sh/hook-weight` is a sync-wave, PostSync runs after all resources are Healthy, a failed hook fails the sync, and which is *unverified on netcup's own Argo CD*; that the required pod affinity puts the Job on the node where longhorn has attached the `ReadWriteOnce` claim the orchestrator holds, and that a read-only mount of it beside the orchestrator's read-write one works there; the NetworkPolicy under Cilium; and what the storage class does with the volume when the claim is deleted); the command itself ran against RustFS 1.0.1-preview.17 and the in-process S3 stub, not against AWS S3.
 With `orchestrator.userSecrets.enabled`: that the ExternalSecret syncs the extra properties on netcup (it does for the others), and that `kubectl exec ... /orchestrator secrets rewrap` runs as written in the pod (it runs as a process in CI). With `backup.enabled`: everything on netcup ([the list](#facts-and-where-they-come-from)): the plugin, a backup, the WAL, a restore; and, anywhere, the [kind end-to-end](#the-end-to-end-on-kind) until CI has run it once.
+With `alerts.enabled`: everything beyond the render ([what is proven](#what-is-proven-about-the-alert-rules)): no Prometheus, `promtool` or kube-state-metrics has seen the rules, and the thresholds are starting points.
 With `database.instances` above 1 and `database.pooler.enabled`: everything on netcup ([the list](#turn-it-on)), the resource sizes (starting points), PgBouncer 1.25.2 with the orchestrator (the orchestrator's CI ran 1.26.1 and 1.22.0), a failover under load, and the [kind end-to-end](#the-poolers-end-to-end-on-kind) until CI has run it once.
 With `oauth2Proxy.sessionStore: redis`: that the Redis pod runs as written on netcup, that Keycloak rotates refresh tokens in the realm, and what oauth2-proxy answers while Redis is down ([the list](#sessions-in-redis)).
