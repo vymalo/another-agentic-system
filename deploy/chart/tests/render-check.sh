@@ -2490,6 +2490,10 @@ al_threshold() {
     }
   ' "$out"
 }
+al_threshold_check() { # al_threshold_check <description> <selector> <threshold> <rule>: like check, but what was rendered is printed
+  desc=$1; shift
+  if why=$(al_threshold "$@" 2>&1); then echo "ok   $desc"; else echo "FAIL $desc"; printf '%s\n' "$why"; fail=1; fi
+}
 al_alerts() { doc PrometheusRule | sed -n 's/^ *- alert: //p' | tr '\n' ' '; }
 al_alerts_are() { [ "$(al_alerts)" = "$1 " ]; }
 al_base_alerts='AgenticDispatcherSlotsNearLimit AgenticOutboxOldestDueTooOld AgenticDbPoolNearSize'
@@ -2519,9 +2523,9 @@ render -f "$al_values"
 check "alerts on, values set: the four rules" al_alerts_are "$al_base_alerts AgenticRunPodQuotaNearLimit"
 check "alerts on, quota on: the one name that is not ours is kube_resourcequota" al_names_are "db_pool_connections db_pool_max_connections dispatcher_slots_configured dispatcher_slots_in_use kube_resourcequota orch_outbox_oldest_due_age_seconds"
 al_check_names "alerts on, quota on: every other metric a rule reads is emitted by metrics.rs"
-check "alerts on, values set: the slots' threshold" al_threshold 'sum by \(namespace\) \(dispatcher_slots_configured\) > 0' '>= 0\.75' AgenticDispatcherSlotsNearLimit
-check "alerts on, values set: the outbox's seconds" al_threshold 'max by \(namespace\) \(orch_outbox_oldest_due_age_seconds\)' '> 123' AgenticOutboxOldestDueTooOld
-check "alerts on, values set: the pool's threshold" al_threshold 'sum by \(namespace, pool\) \(db_pool_max_connections\) > 0' '>= 0\.85' AgenticDbPoolNearSize
+al_threshold_check "alerts on, values set: the slots' threshold" 'sum by \(namespace\) \(dispatcher_slots_configured\) > 0' '>= 0\.75' AgenticDispatcherSlotsNearLimit
+al_threshold_check "alerts on, values set: the outbox's seconds" 'max by \(namespace\) \(orch_outbox_oldest_due_age_seconds\)' '> 123' AgenticOutboxOldestDueTooOld
+al_threshold_check "alerts on, values set: the pool's threshold" 'sum by \(namespace, pool\) \(db_pool_max_connections\) > 0' '>= 0\.85' AgenticDbPoolNearSize
 check "alerts on, values set: the quota's threshold, namespace and resource" out_all '>= 0\.7$' 'namespace="run-pods", resource="requests\.cpu", type="used"' 'namespace="run-pods", resource="requests\.cpu", type="hard"'
 check "alerts on, values set: each for is its rule's" sh -c "
   [ \"\$(sed -n 's/^          for: //p' '$out' | tr '\n' ' ')\" = '\"7m\" \"3m\" \"11m\" \"13m\" ' ]"
