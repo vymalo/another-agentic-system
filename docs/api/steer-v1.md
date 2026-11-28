@@ -1,7 +1,7 @@
 # A2A extension: steer (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/steer/v1`
-- **Status:** **contract accepted (2026-10-02, on the owner's delegation); built on the orchestrator's side in PR-13
+- **Status:** ✅ built · **contract accepted (2026-10-02, on the owner's delegation); built on the orchestrator's side in PR-13
   (2026-10-02)**: the `steer` outbox row, the adapter that activates the extension and the fallback. The owner may revisit anything
   here. The adam-rs side (an agent that reads a message sent to its running task) is
   [another-adam-rs#75](https://github.com/vymalo/another-adam-rs/pull/75); the order is in

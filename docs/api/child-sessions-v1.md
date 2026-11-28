@@ -1,7 +1,7 @@
 # A2A extension: child sessions (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/child-sessions/v1`
-- **Status:** **proposed (2026-11-18).** The feature is the owner's decision of 2026-11-14 (adam-rs
+- **Status:** 🧪 experimental · **proposed (2026-11-18).** The feature is the owner's decision of 2026-11-14 (adam-rs
   [ADR 0045](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0045-a-subagent-can-run-in-the-background-as-a-session.md),
   decision 11, which puts this contract here); the shape of this page is proposed with
   [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md). **Built:** on the agent's side, adam-rs ADR 0045 slice 6 (adam-rs #173 and #174, merged); on the orchestrator's, the reading of the card (S1), its agent side, activation and the strict read of what an agent says (S2c), and the threads for sessions: a child thread for each session, the parent's three events and the rounds followed without sending anything (S2d), and the AG-UI projection of a session (S2e: [`agui.md`](agui.md#child-sessions-as-subagents)), and the scenario on mocks against a WireMock agent that serves the extension (S2f: `dev/child-sessions-e2e.sh`; a person's messages are S3 and the web S4). **Verified 2026-11-27 (S5):** the agent's half has now run against the orchestrator on the pinned adam (`sha-9f90f1e`) in `dev/agents-e2e.sh`: the chat's model starts a kept-open `planner`, the orchestrator opens the child thread and follows round 1, the person sends that thread a second round and closes it; the person's half is proven on the mock (`dev/child-sessions-e2e.sh`) and the web's cards remain unverified.

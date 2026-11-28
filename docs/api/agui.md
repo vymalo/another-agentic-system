@@ -1890,6 +1890,8 @@ document is [the golden](examples/README.md#connect-streams) `capabilities-<agen
 
 ## A2UI (generative UI)
 
+- **Status:** ✅ built · **v1.0 only** ([the index](extensions.md#the-table))
+
 An agent's result is sometimes an interface: a form that answers its question, a card, a button that
 opens the pull request. [ADR 0013](../decisions/0013-a2ui-generative-ui.md) chose
 [A2UI](https://a2ui.org/) for it, end to end over standards: **agent → A2A (A2UI extension) →

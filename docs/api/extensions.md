@@ -12,7 +12,8 @@ An extension is optional, capability-detected from the agent's live card, never 
 
 "Defined by" is who writes the contract and serves what it needs; "used by" is who lists it in a card. Statuses are the pages' own: read the page before relying on one.
 
-Each status starts with an icon and a word, as in [the legend](README.md#status-icons), and the text after it is unchanged. Here the three that carry a judgement mean:
+Each status starts with an icon and a word, as in [the legend](README.md#status-icons), and the text after it is unchanged. The contract page a row links starts its `Status` line with the same icon and word (A2UI: the line under
+its heading in [`agui.md`](agui.md#a2ui-generative-ui)), and so does the page's row in [`README.md`](README.md); `tools/docs-check` fails when a copy differs from this table, so change them together. Here the three that carry a judgement mean:
 
 - ✅ built: every side named is built, and a `dev/` scenario ran it against the pinned real agent image (a scripted model is fine);
 - 🧪 experimental: every side is built, but the halves have met only mocks;
@@ -86,7 +87,7 @@ An extension that carries a choice of the person (the tiers, the model) is **nev
 
 ## Writing one
 
-A page in this directory, named `<name>-v1.md`, with: the URI, the status (with the date and whose words), where it was decided, who defines and who uses it; the purpose; who does what; a `sequenceDiagram` for the
+A page in this directory, named `<name>-v1.md`, with: the URI, one `- **Status:**` line before the first section that starts with the index's icon and word (then ` · `, the date and whose words), where it was decided, who defines and who uses it; the purpose; who does what; a `sequenceDiagram` for the
 interaction and a `stateDiagram-v2` for the lifecycle; the card; the activation; the message; what the orchestrator checks and what it only passes; the security notes; what the build changes; what a build is
 tested for; and *verified* and *unverified* facts with their date and source. Add its row to the table above and to [`README.md`](README.md), decide it in an ADR (`write-adr`), and when an adam agent
 supports it, that is said in adam-rs's skill `adam-a2a-extensions` (vendored here, updated through the skills CLI, never by hand).

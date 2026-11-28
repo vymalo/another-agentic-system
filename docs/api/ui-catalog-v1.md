@@ -1,7 +1,9 @@
 # A2A extension: UI catalog (v1)
 
+**Note (2026-11-28):** `ui-catalog/v2` was built on 2026-11-20, in the A2UI v1.0 cutover of [ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md): what is built now is [`ui-catalog-v2.md`](ui-catalog-v2.md), and this page, including what it says below about v1 being what is built, is kept for the record.
+
 - **URI:** `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`
-- **Status:** **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side is built (MVP
+- **Status:** ➖ retired · **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side is built (MVP
   slice 3: the run member, the `ui_catalog` event and its ledger, `thread.uiCatalog`, the A2A adapter, and the refetch,
   the [thread tools](thread-tools-v1.md) with `get_ui_catalog`, section 6).** The web's catalog, Choices, Cards and
   Mermaid, Image, the questions of Choices with a title, typed answers and pictures (versions 1 to 5), the components of version 6, the five more kinds of question of [version 7](#version-7-more-kinds-of-question), and the questions that show what they ask about and the checklist that carries a plan of [version 8](#version-8-a-question-that-shows-what-it-asks-about-and-a-plan) are built (the web's side of MVP slices 3 and 4, and of slices 9 and 10 of [ADR 0067](../decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md)); the adam-rs side (an agent that turns the
