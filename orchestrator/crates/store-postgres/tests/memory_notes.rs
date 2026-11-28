@@ -51,11 +51,11 @@ orch_ports::memory_note_store_conformance!(make_store);
 
 // ------------------------------------------------------------------------------- the migration
 
-/// Migration 0038 on a database that has run 0001 to 0037: the tables are not there, `migrate()`
-/// applies exactly the one migration (the history ends at 37, then at 38), and the store works on
+/// Migration 0039 on a database that has run 0001 to 0038: the tables are not there, `migrate()`
+/// applies exactly the one migration (the history ends at 38, then at 39), and the store works on
 /// what it made, a note and a grant included.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn migration_0038_applies_to_a_database_at_the_previous_number() {
+async fn migration_0039_applies_to_a_database_at_the_previous_number() {
     let db = TestDb::new().await.expect("ORCH_TEST_DATABASE_URL");
     let pool = db.pool("orch-test-upgrade", 4).await;
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
@@ -65,7 +65,7 @@ async fn migration_0038_applies_to_a_database_at_the_previous_number() {
     for entry in std::fs::read_dir(&source).unwrap() {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        if name.as_str() < "0038" {
+        if name.as_str() < "0039" {
             std::fs::copy(&path, dir.join(&name)).unwrap();
         }
     }
@@ -80,7 +80,7 @@ async fn migration_0038_applies_to_a_database_at_the_previous_number() {
         rows.into_iter().map(|(v,)| v).collect::<Vec<_>>()
     };
     let before = versions(pool.clone()).await;
-    assert_eq!(before.last(), Some(&37), "the database is at 0037");
+    assert_eq!(before.last(), Some(&38), "the database is at 0038");
     assert!(
         query("SELECT 1 FROM user_memories")
             .execute(&pool)
@@ -99,7 +99,7 @@ async fn migration_0038_applies_to_a_database_at_the_previous_number() {
     let store = PgStore::from_pool(pool.clone());
     store.migrate().await.unwrap();
     let after = versions(pool).await;
-    assert_eq!(after.last(), Some(&38), "the database is at 0038");
+    assert_eq!(after.last(), Some(&39), "the database is at 0039");
     assert_eq!(after.len(), before.len() + 1, "exactly one migration ran");
 
     let a = owner();

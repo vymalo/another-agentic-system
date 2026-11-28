@@ -74,7 +74,8 @@ fn migrator() -> Result<Migrator, StoreError> {
         "0035_run_leases_tombstone.sql",
         "0036_outbox_open_owner_due.sql",
         "0037_orch_commit_open.sql",
-        "0038_user_memories.sql",
+        "0038_orch_admit.sql",
+        "0039_user_memories.sql",
     )
     .map_err(migrate_err)?;
     Migrator::new(MIGRATIONS_TABLE, migrations).map_err(migrate_err)
@@ -238,6 +239,19 @@ impl PgStore {
             return Err(StoreError::Refused("child_session"));
         }
         self.insert_thread(new, None, first, true).await
+    }
+
+    /// Begins the transaction of a commit, and of an admission with its commit: `READ COMMITTED`,
+    /// whatever the database or the role defaults to. Both wait for a lock (the person's in
+    /// `orch_admit`, the thread's row in `orch_commit_open`) and then read what its holder
+    /// committed. Under `REPEATABLE READ` the snapshot would be taken before the wait: the count
+    /// would miss that holder's job, and a lock on a row it changed would fail with `40001` where the
+    /// answer is a version conflict.
+    async fn begin_commit(&self) -> Result<Tx, StoreError> {
+        self.pool
+            .begin_with("BEGIN ISOLATION LEVEL READ COMMITTED")
+            .await
+            .map_err(store_err)
     }
 
     /// The one transaction behind [`create`](Self::create) and [`open_child`](Self::open_child).
@@ -429,7 +443,8 @@ impl PgStore {
                 ));
             }
         }
-        let events = insert_events(&mut tx, new.id, first.events).await?;
+        // from the cut: the row's `last_seq`, which the `UPDATE` below moves past these events
+        let events = insert_events(&mut tx, new.id, cut, first.events).await?;
         // the usage ledger, in the transaction of the events (ADR 0065); what a fork copied was
         // counted in its parent, so only the events of its own are folded in
         usage::fold_events(&mut tx, &new.owner, &events).await?;
@@ -1492,12 +1507,18 @@ async fn lock_watch(tx: &mut Tx, key: &str) -> Result<(), StoreError> {
         .map_err(store_err)
 }
 
-/// Appends `events` to the thread's log, returning them as stored. One statement: the thread's
-/// `last_seq` advances by the number of events and the events take the seqs after the old one, so
-/// the sequence is gap-free by construction under the lock `orch_commit_open` took (ADR 0107 row 2).
+/// Appends `events` to the thread's log after `base`, returning them as stored. One statement: the
+/// events take the seqs `base + 1..` in their order (ADR 0107 row 2).
+///
+/// `base` is the thread's `last_seq`, and the thread's row must be held by this transaction: a commit
+/// passes the value `orch_commit_open` read under the lock it took, and the opening of a thread passes
+/// the cut of the row it inserted. This does **not** move `last_seq`: the caller's final
+/// `UPDATE threads` writes it, as the last seq returned, in the same transaction. That writes the row
+/// once, and the sequence is gap-free because nobody else can append while the row is held.
 async fn insert_events(
     tx: &mut Tx,
     thread: ThreadId,
+    base: i64,
     events: Vec<NewEvent>,
 ) -> Result<Vec<Event>, StoreError> {
     if events.is_empty() {
@@ -1519,15 +1540,14 @@ async fn insert_events(
         keys.push(new.idempotency_key.clone());
     }
     let seqs: Vec<i64> = query_scalar(
-        "WITH t AS (UPDATE threads SET last_seq = last_seq + cardinality($2::timestamptz[]) \
-             WHERE id = $1 RETURNING last_seq - cardinality($2::timestamptz[]) AS base) \
-         INSERT INTO events (thread_id, seq, at, kind, actor, data, idempotency_key) \
-         SELECT $1, t.base + e.ord, e.at, e.kind, e.actor, e.data, e.key \
-         FROM t, unnest($2::timestamptz[], $3::text[], $4::jsonb[], $5::jsonb[], $6::text[]) \
+        "INSERT INTO events (thread_id, seq, at, kind, actor, data, idempotency_key) \
+         SELECT $1, $2 + e.ord, e.at, e.kind, e.actor, e.data, e.key \
+         FROM unnest($3::timestamptz[], $4::text[], $5::jsonb[], $6::jsonb[], $7::text[]) \
              WITH ORDINALITY AS e(at, kind, actor, data, key, ord) \
          RETURNING seq",
     )
     .bind(thread.0)
+    .bind(base)
     .bind(ats)
     .bind(kinds)
     .bind(actors)
@@ -1632,11 +1652,248 @@ async fn finish_inbox_row(
 }
 
 /// `admt`: the class of the per-person admission lock (ADR 0081), apart from the prompt library's.
+/// `orch_admit` (migration `0038`) takes it, so it is passed to nothing here: a migration's text cannot
+/// read a Rust constant. A unit test below keeps the two equal.
+#[cfg(test)]
 const ADMISSION_LOCK_CLASS: i32 = 0x6164_6d74;
 
 async fn rollback(tx: Tx) {
     // The transaction is abandoned either way; a failed ROLLBACK closes the connection.
     let _ = tx.rollback().await;
+}
+
+/// [`ThreadStore::commit`] in `tx`, which it ends: committed when something was applied, else rolled
+/// back (an early outcome and an unknown one say so; an error drops it, which rolls it back).
+/// `ThreadStore::commit` begins `tx` for this alone; `admit_commit` begins it with `orch_admit`, whose
+/// lock then lasts until it ends.
+async fn commit_in(
+    mut tx: Tx,
+    thread: ThreadId,
+    expected_version: i64,
+    commit: Commit,
+) -> Result<CommitOutcome, StoreError> {
+    // `orch_commit_open` takes the locks (the thread, then the claimed outbox row, then the
+    // claimed inbox row) and says whether the commit may go on, before anything is written. The
+    // thread's row lock serialises every writer of the thread, so the append below leaves seq
+    // without gaps and duplicates (READ COMMITTED, which `begin_commit` pins, is enough). A claimed
+    // inbox row is locked while a stale `park_inbox` holding a watch key may wait for it and this
+    // commit, holding the row, wants that key later: PostgreSQL detects the cycle (`40P01`), aborts
+    // one side, and the store maps that to a transient error.
+    let keys: Vec<&str> = commit
+        .events
+        .iter()
+        .filter_map(|e| e.idempotency_key.as_deref())
+        .collect();
+    let (outbox_id, outbox_owner, outbox_attempts) = match &commit.lease {
+        Some(lease) => (
+            Some(lease.id.0),
+            Some(lease.owner.clone()),
+            Some(attempt(lease)),
+        ),
+        None => (None, None, None),
+    };
+    let (inbox_id, inbox_owner, inbox_attempts) = match &commit.inbox {
+        Some(lease) => (
+            Some(lease.id.0),
+            Some(lease.owner.clone()),
+            Some(inbox_attempt(lease)),
+        ),
+        None => (None, None, None),
+    };
+    let locked = query("SELECT * FROM orch_commit_open($1, $2, $3, $4, $5, $6, $7, $8, $9)")
+        .bind(thread.0)
+        .bind(expected_version)
+        .bind(outbox_id)
+        .bind(outbox_owner)
+        .bind(outbox_attempts)
+        .bind(inbox_id)
+        .bind(inbox_owner)
+        .bind(inbox_attempts)
+        .bind(keys)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_err)?;
+    let outcome: String = locked.try_get("outcome").map_err(store_err)?;
+    match outcome.as_str() {
+        "applied" => {}
+        "not_found" => {
+            rollback(tx).await;
+            return Err(StoreError::NotFound);
+        }
+        "fenced" => {
+            rollback(tx).await;
+            return Ok(CommitOutcome::Fenced);
+        }
+        "conflict" => {
+            rollback(tx).await;
+            return Err(StoreError::VersionConflict);
+        }
+        "duplicate" => {
+            rollback(tx).await;
+            return Ok(CommitOutcome::Duplicate);
+        }
+        _ => {
+            rollback(tx).await;
+            return Err(StoreError::corrupt(
+                "orch_commit_open answered an unknown outcome",
+            ));
+        }
+    }
+    let last_seq: i64 = locked.try_get("cur_last_seq").map_err(store_err)?;
+    let state: String = locked.try_get("cur_state").map_err(store_err)?;
+    if commit.only_finishes_inbox() && enum_str(&commit.new_state)? == state {
+        // Nothing to write to the thread. The claim and the version were checked above (a
+        // "nothing to do" is only as good as the thread it was decided on); the row is
+        // finished and the thread is left alone: no version bump, no wakeup.
+        if let Some(lease) = &commit.inbox {
+            finish_inbox_row(&mut tx, lease, commit.now).await?;
+        }
+        let row = query(concat!(
+            "SELECT ",
+            thread_cols!(),
+            " FROM threads WHERE id = $1"
+        ))
+        .bind(thread.0)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        let record = thread_from_row(&row)?;
+        tx.commit().await.map_err(store_err)?;
+        return Ok(CommitOutcome::Applied {
+            thread: record,
+            events: Vec::new(),
+        });
+    }
+    let has_outbox = !commit.outbox.is_empty() || commit.finishes_outbox.is_some();
+    // The usage ledger is written in this transaction (ADR 0065). First what it has not been
+    // through: events a build without the ledger appended, or the log the thread had before
+    // migration 0023; none at all in steady state, when `usage_through` is `last_seq`.
+    let owner = UserId::new(
+        &locked
+            .try_get::<_, String>("cur_owner")
+            .map_err(store_err)?,
+    );
+    let behind: i64 = locked.try_get("cur_counted_through").map_err(store_err)?;
+    if behind < last_seq {
+        usage::catch_up(&mut tx, thread, &owner, behind, last_seq).await?;
+    }
+    // The search index (ADR 0068), the same way, but **bounded**: some of what it has not been through
+    // first (at most COMMIT_CATCH_UP_EVENTS events, the watermark advancing only as far as it got), with
+    // the title and description of the row, then this commit's events, always. A thread stored under
+    // another fold version starts again from nothing.
+    let mut search_through: i64 = locked.try_get("cur_search_through").map_err(store_err)?;
+    let search_fold: i32 = locked.try_get("cur_search_fold").map_err(store_err)?;
+    if search_fold != orch_core::search::FOLD_VERSION {
+        search::delete_index(&mut tx, thread).await?;
+        search_through = 0;
+    }
+    let search_behind = search_through < last_seq || search_fold != orch_core::search::FOLD_VERSION;
+    let (mut title_keys, mut description_keys) = (None, None);
+    let mut search_reached = last_seq;
+    if search_behind {
+        search_reached =
+            search::catch_up_before_commit(&mut tx, thread, &owner, search_through, last_seq)
+                .await?;
+        let title: String = locked.try_get("cur_title").map_err(store_err)?;
+        let description: Option<String> = locked.try_get("cur_description").map_err(store_err)?;
+        title_keys = Some(search::keys_of(Some(&title)));
+        description_keys = Some(search::keys_of(description.as_deref()));
+    }
+    let events = insert_events(&mut tx, thread, last_seq, commit.events).await?;
+    usage::fold_events(&mut tx, &owner, &events).await?;
+    search::index_events(&mut tx, thread, &owner, &events).await?;
+    // a title or description this commit writes is the one that is searched
+    if let Some(title) = &commit.title {
+        title_keys = Some(search::keys_of(Some(title)));
+    }
+    if let Some(description) = &commit.description {
+        description_keys = Some(search::keys_of(Some(description)));
+    }
+    // the log's end after the append: the last seq it assigned
+    let new_last_seq = events.last().map_or(last_seq, |e| e.seq);
+    // the index is through the whole log only if the old part was finished; else exactly where it stopped
+    let search_through_after = if search_reached >= last_seq {
+        new_last_seq
+    } else {
+        search_reached
+    };
+    // The job is written with the state, under the same lock and version check; a commit
+    // without one leaves the stored job alone.
+    let job = commit.job.as_ref().map(job_json).transpose()?;
+    let row = query(concat!(
+        "UPDATE threads SET state = $2, job = COALESCE($4, job), title = COALESCE($5, title), \
+         description = CASE WHEN $6::text IS NULL THEN description ELSE NULLIF($6, '') END, \
+         visibility = CASE $7::text WHEN 'set' THEN $8::text WHEN 'clear' THEN 'private' \
+             ELSE visibility END, \
+         share_nonce = CASE $7::text WHEN 'set' THEN $9::bytea WHEN 'clear' THEN NULL \
+             ELSE share_nonce END, \
+         shared_at = CASE $7::text WHEN 'set' THEN $3 WHEN 'clear' THEN NULL \
+             ELSE shared_at END, \
+         version = version + 1, last_seq = $14, usage_through = $14, search_through = $12, \
+         search_fold = $13, \
+         title_terms = CASE WHEN $10::text[] IS NULL THEN title_terms \
+             ELSE array_to_tsvector($10) END, \
+         description_terms = CASE WHEN $11::text[] IS NULL THEN description_terms \
+             ELSE array_to_tsvector($11) END, \
+         updated_at = $3 \
+         WHERE id = $1 RETURNING ",
+        thread_cols!()
+    ))
+    .bind(thread.0)
+    .bind(enum_str(&commit.new_state)?)
+    .bind(to_db(commit.now))
+    .bind(job)
+    .bind(commit.title.as_deref())
+    .bind(commit.description.as_deref())
+    .bind(sharing_op(commit.sharing))
+    .bind(sharing_level(commit.sharing))
+    .bind(sharing_nonce(commit.sharing))
+    .bind(title_keys)
+    .bind(description_keys)
+    .bind(search_through_after)
+    .bind(orch_core::search::FOLD_VERSION)
+    .bind(new_last_seq)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| {
+        // The unique index of the link's nonce: a capability is one thread's.
+        if is_unique_violation(&e, Some("threads_share_nonce")) {
+            StoreError::corrupt("share nonce already in use")
+        } else {
+            store_err(e)
+        }
+    })?;
+    let record = thread_from_row(&row)?;
+    // The abandoned job's unsent delegations are finished before this commit's own rows
+    // exist, in the same transaction (ADR 0036).
+    if commit.skip_unsent_delegates {
+        skip_unsent_rows(&mut *tx, thread, commit.now).await?;
+    }
+    insert_outbox(&mut tx, thread, commit.outbox, commit.now).await?;
+    if let Some(update) = &commit.binding {
+        update_binding(&mut tx, thread, update, commit.now).await?;
+    }
+    let rearmed =
+        insert_watches_and_timers(&mut tx, thread, &commit.watches, commit.timers, commit.now)
+            .await?;
+    if let Some(lease) = &commit.inbox {
+        finish_inbox_row(&mut tx, lease, commit.now).await?;
+    }
+    if let (Some(lease), Some(outcome)) = (&commit.lease, commit.finishes_outbox.clone()) {
+        finish_outbox_row(&mut tx, lease, outcome, commit.now).await?;
+    }
+    notify_thread(&mut tx, thread).await?;
+    if has_outbox {
+        notify_outbox(&mut *tx).await?;
+    }
+    if rearmed {
+        notify_inbox(&mut *tx).await?;
+    }
+    tx.commit().await.map_err(store_err)?;
+    Ok(CommitOutcome::Applied {
+        thread: record,
+        events,
+    })
 }
 
 impl ThreadStore for PgStore {
@@ -1894,43 +2151,37 @@ impl ThreadStore for PgStore {
         expected_version: i64,
         commit: Commit,
     ) -> Result<Admission, StoreError> {
-        // One transaction-scoped lock per person (the prompt library's shape, its own class), held
-        // from the count until the commit has ended, so admissions of one person take turns and
-        // the second counts the first's job. The commit runs on its own connection and
-        // transaction; this one only holds the lock and reads.
-        let mut guard = self.pool.begin().await.map_err(store_err)?;
-        let locked = query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
-            .bind(ADMISSION_LOCK_CLASS)
+        // One transaction, on one connection. `orch_admit` takes the person's transaction-scoped
+        // lock and then counts; the lock lasts until this transaction ends, so the count and the
+        // commit below are one step per person: the next admission of theirs counts this job.
+        // The lock is taken before the thread's row lock, always, and `commit` takes none.
+        let mut tx = self.begin_commit().await?;
+        let limit = i32::try_from(limit).unwrap_or(i32::MAX);
+        let admission = query("SELECT * FROM orch_admit($1, $2)")
             .bind(owner.as_str())
-            .execute(&mut *guard)
-            .await;
-        if let Err(err) = locked {
-            rollback(guard).await;
-            return Err(store_err(err));
-        }
-        let running: Result<i64, _> = query_scalar(
-            "SELECT count(*) FROM outbox WHERE owner = $1 AND kind = 'delegate' \
-             AND status IN ('pending', 'inflight')",
-        )
-        .bind(owner.as_str())
-        .fetch_one(&mut *guard)
-        .await;
-        let running = match running {
-            Ok(n) => u32::try_from(n).unwrap_or(u32::MAX),
-            Err(err) => {
-                rollback(guard).await;
-                return Err(store_err(err));
-            }
-        };
-        let answer = if running >= limit {
-            Ok(Admission::NoRoom { running })
-        } else {
-            self.commit(thread, expected_version, commit)
+            .bind(limit)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        let outcome: String = admission.try_get("outcome").map_err(store_err)?;
+        match outcome.as_str() {
+            "admitted" => commit_in(tx, thread, expected_version, commit)
                 .await
-                .map(Admission::Admitted)
-        };
-        rollback(guard).await;
-        answer
+                .map(Admission::Admitted),
+            "no_room" => {
+                let running: i32 = admission.try_get("running").map_err(store_err)?;
+                rollback(tx).await;
+                Ok(Admission::NoRoom {
+                    running: u32::try_from(running).unwrap_or(u32::MAX),
+                })
+            }
+            _ => {
+                rollback(tx).await;
+                Err(StoreError::corrupt(
+                    "orch_admit answered an unknown outcome",
+                ))
+            }
+        }
     }
 
     async fn commit(
@@ -1939,230 +2190,8 @@ impl ThreadStore for PgStore {
         expected_version: i64,
         commit: Commit,
     ) -> Result<CommitOutcome, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_err)?;
-        // `orch_commit_open` takes the locks (the thread, then the claimed outbox row, then the
-        // claimed inbox row) and says whether the commit may go on, before anything is written. The
-        // thread's row lock serialises every writer of the thread, so the append below leaves seq
-        // without gaps and duplicates (READ COMMITTED is enough). A claimed inbox row is locked
-        // while a stale `park_inbox` holding a watch key may wait for it and this commit, holding
-        // the row, wants that key later: PostgreSQL detects the cycle (`40P01`), aborts one side,
-        // and the store maps that to a transient error.
-        let keys: Vec<&str> = commit
-            .events
-            .iter()
-            .filter_map(|e| e.idempotency_key.as_deref())
-            .collect();
-        let (outbox_id, outbox_owner, outbox_attempts) = match &commit.lease {
-            Some(lease) => (
-                Some(lease.id.0),
-                Some(lease.owner.clone()),
-                Some(attempt(lease)),
-            ),
-            None => (None, None, None),
-        };
-        let (inbox_id, inbox_owner, inbox_attempts) = match &commit.inbox {
-            Some(lease) => (
-                Some(lease.id.0),
-                Some(lease.owner.clone()),
-                Some(inbox_attempt(lease)),
-            ),
-            None => (None, None, None),
-        };
-        let locked = query("SELECT * FROM orch_commit_open($1, $2, $3, $4, $5, $6, $7, $8, $9)")
-            .bind(thread.0)
-            .bind(expected_version)
-            .bind(outbox_id)
-            .bind(outbox_owner)
-            .bind(outbox_attempts)
-            .bind(inbox_id)
-            .bind(inbox_owner)
-            .bind(inbox_attempts)
-            .bind(keys)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(store_err)?;
-        let outcome: String = locked.try_get("outcome").map_err(store_err)?;
-        match outcome.as_str() {
-            "applied" => {}
-            "not_found" => {
-                rollback(tx).await;
-                return Err(StoreError::NotFound);
-            }
-            "fenced" => {
-                rollback(tx).await;
-                return Ok(CommitOutcome::Fenced);
-            }
-            "conflict" => {
-                rollback(tx).await;
-                return Err(StoreError::VersionConflict);
-            }
-            "duplicate" => {
-                rollback(tx).await;
-                return Ok(CommitOutcome::Duplicate);
-            }
-            _ => {
-                rollback(tx).await;
-                return Err(StoreError::corrupt(
-                    "orch_commit_open answered an unknown outcome",
-                ));
-            }
-        }
-        let last_seq: i64 = locked.try_get("cur_last_seq").map_err(store_err)?;
-        let state: String = locked.try_get("cur_state").map_err(store_err)?;
-        if commit.only_finishes_inbox() && enum_str(&commit.new_state)? == state {
-            // Nothing to write to the thread. The claim and the version were checked above (a
-            // "nothing to do" is only as good as the thread it was decided on); the row is
-            // finished and the thread is left alone: no version bump, no wakeup.
-            if let Some(lease) = &commit.inbox {
-                finish_inbox_row(&mut tx, lease, commit.now).await?;
-            }
-            let row = query(concat!(
-                "SELECT ",
-                thread_cols!(),
-                " FROM threads WHERE id = $1"
-            ))
-            .bind(thread.0)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(store_err)?;
-            let record = thread_from_row(&row)?;
-            tx.commit().await.map_err(store_err)?;
-            return Ok(CommitOutcome::Applied {
-                thread: record,
-                events: Vec::new(),
-            });
-        }
-        let has_outbox = !commit.outbox.is_empty() || commit.finishes_outbox.is_some();
-        // The usage ledger is written in this transaction (ADR 0065). First what it has not been
-        // through: events a build without the ledger appended, or the log the thread had before
-        // migration 0023; none at all in steady state, when `usage_through` is `last_seq`.
-        let owner = UserId::new(
-            &locked
-                .try_get::<_, String>("cur_owner")
-                .map_err(store_err)?,
-        );
-        let behind: i64 = locked.try_get("cur_counted_through").map_err(store_err)?;
-        if behind < last_seq {
-            usage::catch_up(&mut tx, thread, &owner, behind, last_seq).await?;
-        }
-        // The search index (ADR 0068), the same way, but **bounded**: some of what it has not been through
-        // first (at most COMMIT_CATCH_UP_EVENTS events, the watermark advancing only as far as it got), with
-        // the title and description of the row, then this commit's events, always. A thread stored under
-        // another fold version starts again from nothing.
-        let mut search_through: i64 = locked.try_get("cur_search_through").map_err(store_err)?;
-        let search_fold: i32 = locked.try_get("cur_search_fold").map_err(store_err)?;
-        if search_fold != orch_core::search::FOLD_VERSION {
-            search::delete_index(&mut tx, thread).await?;
-            search_through = 0;
-        }
-        let search_behind =
-            search_through < last_seq || search_fold != orch_core::search::FOLD_VERSION;
-        let (mut title_keys, mut description_keys) = (None, None);
-        let mut search_reached = last_seq;
-        if search_behind {
-            search_reached =
-                search::catch_up_before_commit(&mut tx, thread, &owner, search_through, last_seq)
-                    .await?;
-            let title: String = locked.try_get("cur_title").map_err(store_err)?;
-            let description: Option<String> =
-                locked.try_get("cur_description").map_err(store_err)?;
-            title_keys = Some(search::keys_of(Some(&title)));
-            description_keys = Some(search::keys_of(description.as_deref()));
-        }
-        let events = insert_events(&mut tx, thread, commit.events).await?;
-        usage::fold_events(&mut tx, &owner, &events).await?;
-        search::index_events(&mut tx, thread, &owner, &events).await?;
-        // a title or description this commit writes is the one that is searched
-        if let Some(title) = &commit.title {
-            title_keys = Some(search::keys_of(Some(title)));
-        }
-        if let Some(description) = &commit.description {
-            description_keys = Some(search::keys_of(Some(description)));
-        }
-        // the log's end after the append: the last seq it assigned
-        let new_last_seq = events.last().map_or(last_seq, |e| e.seq);
-        // the index is through the whole log only if the old part was finished; else exactly where it stopped
-        let search_through_after = if search_reached >= last_seq {
-            new_last_seq
-        } else {
-            search_reached
-        };
-        // The job is written with the state, under the same lock and version check; a commit
-        // without one leaves the stored job alone.
-        let job = commit.job.as_ref().map(job_json).transpose()?;
-        let row = query(concat!(
-            "UPDATE threads SET state = $2, job = COALESCE($4, job), title = COALESCE($5, title), \
-             description = CASE WHEN $6::text IS NULL THEN description ELSE NULLIF($6, '') END, \
-             visibility = CASE $7::text WHEN 'set' THEN $8::text WHEN 'clear' THEN 'private' \
-                 ELSE visibility END, \
-             share_nonce = CASE $7::text WHEN 'set' THEN $9::bytea WHEN 'clear' THEN NULL \
-                 ELSE share_nonce END, \
-             shared_at = CASE $7::text WHEN 'set' THEN $3 WHEN 'clear' THEN NULL \
-                 ELSE shared_at END, \
-             version = version + 1, usage_through = last_seq, search_through = $12, \
-             search_fold = $13, \
-             title_terms = CASE WHEN $10::text[] IS NULL THEN title_terms \
-                 ELSE array_to_tsvector($10) END, \
-             description_terms = CASE WHEN $11::text[] IS NULL THEN description_terms \
-                 ELSE array_to_tsvector($11) END, \
-             updated_at = $3 \
-             WHERE id = $1 RETURNING ",
-            thread_cols!()
-        ))
-        .bind(thread.0)
-        .bind(enum_str(&commit.new_state)?)
-        .bind(to_db(commit.now))
-        .bind(job)
-        .bind(commit.title.as_deref())
-        .bind(commit.description.as_deref())
-        .bind(sharing_op(commit.sharing))
-        .bind(sharing_level(commit.sharing))
-        .bind(sharing_nonce(commit.sharing))
-        .bind(title_keys)
-        .bind(description_keys)
-        .bind(search_through_after)
-        .bind(orch_core::search::FOLD_VERSION)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| {
-            // The unique index of the link's nonce: a capability is one thread's.
-            if is_unique_violation(&e, Some("threads_share_nonce")) {
-                StoreError::corrupt("share nonce already in use")
-            } else {
-                store_err(e)
-            }
-        })?;
-        let record = thread_from_row(&row)?;
-        // The abandoned job's unsent delegations are finished before this commit's own rows
-        // exist, in the same transaction (ADR 0036).
-        if commit.skip_unsent_delegates {
-            skip_unsent_rows(&mut *tx, thread, commit.now).await?;
-        }
-        insert_outbox(&mut tx, thread, commit.outbox, commit.now).await?;
-        if let Some(update) = &commit.binding {
-            update_binding(&mut tx, thread, update, commit.now).await?;
-        }
-        let rearmed =
-            insert_watches_and_timers(&mut tx, thread, &commit.watches, commit.timers, commit.now)
-                .await?;
-        if let Some(lease) = &commit.inbox {
-            finish_inbox_row(&mut tx, lease, commit.now).await?;
-        }
-        if let (Some(lease), Some(outcome)) = (&commit.lease, commit.finishes_outbox.clone()) {
-            finish_outbox_row(&mut tx, lease, outcome, commit.now).await?;
-        }
-        notify_thread(&mut tx, thread).await?;
-        if has_outbox {
-            notify_outbox(&mut *tx).await?;
-        }
-        if rearmed {
-            notify_inbox(&mut *tx).await?;
-        }
-        tx.commit().await.map_err(store_err)?;
-        Ok(CommitOutcome::Applied {
-            thread: record,
-            events,
-        })
+        let tx = self.begin_commit().await?;
+        commit_in(tx, thread, expected_version, commit).await
     }
 
     async fn list_events(
@@ -2892,6 +2921,16 @@ mod tests {
             .unwrap();
         let first = &migrator.migrations()[0];
         assert_eq!((first.version(), first.description()), (1, "init"));
-        assert_eq!(migrator.migrations().len(), 37);
+        assert_eq!(migrator.migrations().len(), 38);
+    }
+
+    /// `orch_admit` takes the admission lock with a number of its own text, which must be
+    /// [`ADMISSION_LOCK_CLASS`], the key a build before it takes in a statement of its own: with
+    /// another one, the replicas of a rollout would not exclude each other.
+    #[test]
+    fn orch_admit_takes_the_admission_lock_class() {
+        let sql = include_str!("../migrations/0038_orch_admit.sql");
+        let call = format!("pg_advisory_xact_lock({ADMISSION_LOCK_CLASS}, hashtext(p_owner))");
+        assert!(sql.contains(&call), "{call}");
     }
 }

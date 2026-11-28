@@ -9,6 +9,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use orch_core::AccountId;
 use orch_ports::testkit::provisioner as kit;
 use orch_ports::{
     AgentKind, AgentOwner, AgentProvisioner, AgentState, ProvisionError, ProvisionedAgent,
@@ -107,6 +108,7 @@ impl AgentProvisioner for Fake {
         &self,
         owner: &AgentOwner,
         kind: AgentKind,
+        _account: &AccountId,
     ) -> Result<ProvisionedAgent, ProvisionError> {
         self.settle();
         let found = self
@@ -179,7 +181,12 @@ impl AgentProvisioner for Fake {
             .map(|a| a.state))
     }
 
-    async fn suspend(&self, owner: &AgentOwner, kind: AgentKind) -> Result<(), ProvisionError> {
+    async fn suspend(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+        _account: &AccountId,
+    ) -> Result<(), ProvisionError> {
         for a in self.agents.lock().unwrap().iter_mut() {
             let mine = a.owner == *owner && a.kind == kind;
             if mine || (self.how == Break::SuspendsAnotherOwner && a.kind == kind) {

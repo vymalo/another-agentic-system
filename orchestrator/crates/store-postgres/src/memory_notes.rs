@@ -1,4 +1,4 @@
-//! `MemoryNoteStore` over Postgres: a person's memory notes and grants (ADR 0091, migration `0038`).
+//! `MemoryNoteStore` over Postgres: a person's memory notes and grants (ADR 0091, migration `0039`).
 //!
 //! The tables are `user_memories` and `user_memory_settings`, **beside the log**: no event records
 //! a note, deleting a thread erases nothing of it, and there is no foreign key to `threads`.

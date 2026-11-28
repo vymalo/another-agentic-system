@@ -8,7 +8,7 @@
 use std::fmt;
 use std::future::Future;
 
-use orch_core::{BoxError, Classify, ErrorClass};
+use orch_core::{AccountId, BoxError, Classify, ErrorClass};
 
 /// The longest an owner key is, in characters: the agent's name is `<kind>-<owner>` and a name is
 /// at most 40.
@@ -16,7 +16,8 @@ pub const MAX_OWNER_CHARS: usize = 32;
 
 /// Who an agent belongs to, as a key the platform accepts: 1 to [`MAX_OWNER_CHARS`] characters of
 /// lower-case letters, digits and `-`, not ending in `-`. The caller derives it from the person,
-/// the same way every time; the port never sees the person's identity.
+/// the same way every time. The key names nobody; the person's identity reaches the port only as
+/// the [`AccountId`] their agent's spending is charged to, on the methods that write the agent.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AgentOwner(String);
 
@@ -165,6 +166,19 @@ pub enum ProvisionError {
         /// Which reason, from a closed set: nothing the platform sends reaches the error.
         reason: BlockedReason,
     },
+    /// The person is not an [`AccountId`], so there is no account their agent can be charged to
+    /// and none is made without one. The account is the identity provider's `sub` (ADR 0108), and
+    /// the orchestrator's configuration refuses to start a provisioner unless the person is that
+    /// claim (`auth.jwt.userClaim: sub`); what is left to refuse here is a `sub` outside the
+    /// alphabet of an [`AccountId`], or a composition that did not hold that rule. The check is
+    /// the alphabet's alone: it cannot tell a `sub` from another claim that fits it. It is the
+    /// caller's refusal, made before the port is asked, and it holds no part of the person.
+    /// Retrying cannot help.
+    #[error(
+        "the person is not an account id: the deployment must read the identity provider's sub as \
+         the person (auth.jwt.userClaim: sub) (account_not_opaque)"
+    )]
+    AccountNotOpaque,
 }
 
 impl ProvisionError {
@@ -195,6 +209,7 @@ impl ProvisionError {
             ProvisionError::NotReady { last } => ProvisionError::NotReady { last: *last },
             ProvisionError::Deleting => ProvisionError::Deleting,
             ProvisionError::Blocked { reason } => ProvisionError::Blocked { reason: *reason },
+            ProvisionError::AccountNotOpaque => ProvisionError::AccountNotOpaque,
         }
     }
 }
@@ -238,7 +253,9 @@ impl Classify for ProvisionError {
             | ProvisionError::Deleting => ErrorClass::Transient,
             ProvisionError::Refused => ErrorClass::Unauthenticated,
             ProvisionError::Invalid => ErrorClass::Invalid,
-            ProvisionError::Blocked { .. } => ErrorClass::Internal,
+            ProvisionError::Blocked { .. } | ProvisionError::AccountNotOpaque => {
+                ErrorClass::Internal
+            }
         }
     }
 }
@@ -247,6 +264,12 @@ impl Classify for ProvisionError {
 ///
 /// Every method acts on **the agent of this owner and kind** and nothing else: an owner never
 /// reaches another owner's agent, whatever the platform holds.
+///
+/// The methods that write the agent ([`ensure_ready`](Self::ensure_ready) and
+/// [`suspend`](Self::suspend)) also take the person's `account`: the [`AccountId`] the agent's
+/// spending is charged to (ADR 0108). An implementation that writes the agent records it; it is
+/// not the owner key and is not derived from it. It names a person, so it goes in no log line and
+/// no error. [`state`](Self::state) and [`delete`](Self::delete) write nothing and take none.
 pub trait AgentProvisioner: Send + Sync + 'static {
     /// The owner's agent of `kind`, ready for a message. Makes it when there is none, resumes it
     /// when it is suspended, and **waits until it is [`AgentState::Ready`]** (or gives up with
@@ -262,6 +285,7 @@ pub trait AgentProvisioner: Send + Sync + 'static {
         &self,
         owner: &AgentOwner,
         kind: AgentKind,
+        account: &AccountId,
     ) -> impl Future<Output = Result<ProvisionedAgent, ProvisionError>> + Send;
 
     /// Where the owner's agent of `kind` is; `None` when there is none. Never makes one.
@@ -277,6 +301,7 @@ pub trait AgentProvisioner: Send + Sync + 'static {
         &self,
         owner: &AgentOwner,
         kind: AgentKind,
+        account: &AccountId,
     ) -> impl Future<Output = Result<(), ProvisionError>> + Send;
 
     /// Deletes the owner's agent. Deleting one that is absent changes nothing.
@@ -337,6 +362,10 @@ mod tests {
         assert!(matches!(
             ProvisionError::Deleting.duplicate(),
             ProvisionError::Deleting
+        ));
+        assert!(matches!(
+            ProvisionError::AccountNotOpaque.duplicate(),
+            ProvisionError::AccountNotOpaque
         ));
         assert!(matches!(
             ProvisionError::Blocked {
