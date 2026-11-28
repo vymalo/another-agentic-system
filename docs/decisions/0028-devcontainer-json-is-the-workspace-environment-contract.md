@@ -145,6 +145,8 @@ without, no runtime, a broken file, teardown, and least privilege.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: devcontainer.json is the workspace environment contract
+  accDescr: A sequence diagram, between Person, Web, Orchestrator, Coder, Podman service.
   actor P as Person
   participant W as Web
   participant O as Orchestrator
@@ -179,6 +181,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the environment's lifecycle
+  accDescr: A state diagram with 8 states: Probing, Local, Building, Checking, Broken, SettingUp, Ready, Released.
   [*] --> Probing: the first command of the run needs an environment
   Probing --> Local: runtime off or unreachable, a step says commands run in the coder
   Probing --> Building: runtime ok, read the configuration and run up

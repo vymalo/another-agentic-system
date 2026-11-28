@@ -39,6 +39,8 @@ An agent whose card does not list the extension is unchanged, and so is a client
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram, between Orchestrator (activates child-sessions/v1), Agent, parent task T1 (parent context C), Agent, round task R1 (child context K).
   autonumber
   participant O as Orchestrator (activates child-sessions/v1)
   participant P as Agent, parent task T1 (parent context C)
@@ -60,6 +62,7 @@ A session, as a client sees it:
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: A2A extension
   [*] --> Working: opened (the agent, or a person's start)
   Working --> Working: a steer into the open round (steer/v1)
   Working --> Idle: the round ended or was canceled, and keep open

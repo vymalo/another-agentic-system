@@ -74,6 +74,7 @@ both. adam-rs is adding the name `opencode` to its `steps/v1` vocabulary for tha
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the coder is shown as Adam
   participant C as Client (web, MCP, a link)
   participant O as Orchestrator (App)
   participant D as AgentDirectory
@@ -91,6 +92,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the coder is shown as Adam
   [*] --> OldThread: created before the rename (agentId coder)
   [*] --> NewThread: created after it (agentId adam)
   OldThread --> OldThread: a message (the id is read through the alias)

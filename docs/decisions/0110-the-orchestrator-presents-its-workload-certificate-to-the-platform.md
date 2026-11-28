@@ -75,6 +75,7 @@ header, so it does not fit the token port: the HTTP client must be **built with 
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the orchestrator presents its workload certificate to the platform
   participant P as PlatformProvisioner
   participant C as OpenBaoClientCertificates
   participant B as OpenBao
@@ -91,6 +92,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the orchestrator presents its workload certificate to the platform
   [*] --> NoIdentity
   NoIdentity --> Valid: issued and checked
   Valid --> Valid: renewed inside the margin (new key, new serial)

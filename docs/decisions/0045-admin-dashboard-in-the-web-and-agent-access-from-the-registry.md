@@ -269,6 +269,8 @@ text above is as it was accepted. What was built, and where it needed a choice:
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the admin dashboard is an area of the web
+  accDescr: A sequence diagram, between Person, App, Registry.
   participant P as Person
   participant A as App
   participant R as Registry
@@ -293,6 +295,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the admin dashboard is an area of the web
   [*] --> Writable: created while a role and the audience cover the agent
   Writable --> ReadOnly: the audience, or the roles, stop covering the agent
   ReadOnly --> Writable: they cover it again

@@ -36,6 +36,8 @@ A signed server is sent **no bearer**. A server that is not configured for signi
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: signed requests to a tool server (v1)
+  accDescr: A sequence diagram, between Agent, Relay (orchestrator), Signing key (configuration, by reference), Tool server (pins the public key).
   autonumber
   participant A as Agent
   participant R as Relay (orchestrator)
@@ -60,6 +62,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: signed requests to a tool server (v1)
   [*] --> Minted: the relay signs, just before the bytes are sent
   Minted --> Sent: the request leaves with the header
   Minted --> [*]: signing fails (nothing is sent)
@@ -225,6 +228,7 @@ keeps the value out of the logs and out of rmcp.
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: keys and rotation
   [*] --> OneKey: the server pins K1, the orchestrator signs with K1
   OneKey --> BothPinned: the server also pins K2 (K1 still signs)
   BothPinned --> Switched: the orchestrator's configuration names K2 and the pods roll
