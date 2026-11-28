@@ -266,7 +266,7 @@ one sentence of section 4.
    intermediates, roots omitted. The route is section 3's; the shapes of section 3 (`{csr}`, `{chain, kid, notAfter}`) and the
    sequence diagram that draws them are **superseded**: a version in the body lets a later shape be added without a second route, and `kid` and `notAfter` are
    read from the leaf, which the caller already has. Wire fixtures for the request, the answer and each refusal are in
-   [`docs/api/fixtures/run-certificate-v1/`](../api/fixtures/run-certificate-v1/README.md), for adam's tests and the
+   [`docs/api/fixtures/run-certificate-v1/`](https://github.com/vymalo/another-agentic-system/tree/main/docs/api/fixtures/run-certificate-v1), for adam's tests and the
    broker's to share.
 3. **The names:** `RUN_CERT_ISSUER` (`broker` or `openbao`), `RUN_CERT_ISSUER_URL`, `RUN_CERT_TOKEN_FILE`,
    `RUN_CERT_CA_FILE`, `RUN_CERT_RENEW_FRACTION`. Two of them, `RUN_CERT_ISSUER_URL` and `RUN_CERT_TOKEN_FILE`, are the
