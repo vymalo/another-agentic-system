@@ -668,6 +668,80 @@ async fn a_stop_and_sends_envelope_waits_in_the_ledger_and_no_export_has_it() {
     assert!(!log.contains(HELD), "the envelope is in a log line");
 }
 
+/// A Stop & send of a client that is **not listed**, with a value that is no envelope to carry
+/// (`junk`: empty, or over the bound). The client is served, and the intake drops the value: the
+/// job ledger never holds it, so the next message is joined to the held one and not refused.
+async fn an_unlisted_clients_value_is_not_held(junk: &str) {
+    let h = Harness::start_signing(&["desktop"]).await;
+    let thread = new_thread_id();
+    let mut open = h
+        .run_as_client(
+            "plain",
+            ALICE,
+            "web-client",
+            &input(&thread, "r1", &[("m1", "gate wait")]),
+        )
+        .await;
+    assert_eq!(open.next(T).await.unwrap().kind(), "RUN_STARTED");
+    h.wait_state(ALICE, &thread, "working").await;
+    // the stop stays pending: the agent cannot be asked to stop for now
+    h.agent
+        .fail_next_cancels(100, || AgentError::unreachable("the agent is busy"));
+    let _held = h
+        .run_as_client(
+            "plain",
+            ALICE,
+            "web-client",
+            &stopping_run(
+                &thread,
+                "r2",
+                &[("m2", "echo do X instead", junk)],
+                "interrupt",
+            ),
+        )
+        .await;
+
+    let id = orch_core::ThreadId(thread.parse().unwrap());
+    let stored = h.store.get_thread(None, id).await.unwrap().unwrap();
+    // the positive control: a message is held, so the empty member below says something
+    assert_eq!(stored.job.after_stop.as_deref(), Some("echo do X instead"));
+    // not `assert_eq!`: a failure must not print 16 KiB
+    assert!(
+        stored.job.after_stop_prompt_signature.is_none(),
+        "the ledger holds an unlisted client's value"
+    );
+
+    // a second message, with such a value too: served (`run_as_client` wants a 200) and joined
+    let _joined = h
+        .run_as_client(
+            "plain",
+            ALICE,
+            "web-client",
+            &stopping_run(&thread, "r3", &[("m3", "echo and Y", junk)], "interrupt"),
+        )
+        .await;
+    let joined = h.store.get_thread(None, id).await.unwrap().unwrap();
+    assert_eq!(
+        joined.job.after_stop.as_deref(),
+        Some("echo do X instead\n\necho and Y")
+    );
+    assert!(
+        joined.job.after_stop_prompt_signature.is_none(),
+        "the ledger holds an unlisted client's value"
+    );
+}
+
+#[tokio::test]
+async fn an_unlisted_clients_empty_value_is_not_held_by_a_stop_and_send() {
+    an_unlisted_clients_value_is_not_held("").await;
+}
+
+#[tokio::test]
+async fn an_unlisted_clients_oversized_value_is_not_held_by_a_stop_and_send() {
+    // one byte over the 16 KiB bound
+    an_unlisted_clients_value_is_not_held(&"c".repeat(16 * 1024 + 1)).await;
+}
+
 // --- `startChildSession` (ANR-1383): the helper's first round is the person's words ------------
 
 /// A thread of `client`'s on an agent that offers the helper `planner`, answered, so that it has a

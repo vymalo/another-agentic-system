@@ -13,11 +13,12 @@ use crate::Problem;
 /// finer reason (`missing`, `malformed`) is logged and never sent. A client that is not listed, and
 /// a deployment that lists none, is never checked.
 ///
-/// Returns the envelope **to carry**: use it in place of the one received. An empty string is no
-/// envelope for everyone (so it never makes a message count as signed). A value over
-/// [`MAX_ENVELOPE_LEN`] is a signing client's `403`; from a client that is not asked for one it is
-/// dropped, since a Stop & send keeps what is carried in the job ledger. Nothing else about such a
-/// client's value is looked at.
+/// Returns the envelope **to carry**. **A caller must carry the value this returns, not the one it
+/// received**, because the bound and the drop happen inside it, and a caller that passes the raw
+/// value on silently skips both. An empty string is no envelope for everyone (so it never makes a
+/// message count as signed). A value over [`MAX_ENVELOPE_LEN`] is a signing client's `403`; from a
+/// client that is not asked for one it is dropped, since a Stop & send keeps what is carried in the
+/// job ledger. Nothing else about such a client's value is looked at.
 ///
 /// Call it only for a request that writes the person's words, before anything is written and before
 /// the rate limit and the allowance: a message that is both unsigned and over the limit is the 403,
