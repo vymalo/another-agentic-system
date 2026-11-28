@@ -788,6 +788,7 @@ async fn a_helper_session_waits_for_the_persons_agent_and_a_repeat_does_not_ask(
         text: "look".into(),
         keep_open: false,
         tier: None,
+        prompt_signature: None,
     };
     let asked = || async {
         w.store
@@ -2809,6 +2810,7 @@ async fn session_row_beside_a_working_job(
                     text: "echo x".to_owned(),
                     keep_open: false,
                     tier: None,
+                    prompt_signature: None,
                 },
             )
             .await

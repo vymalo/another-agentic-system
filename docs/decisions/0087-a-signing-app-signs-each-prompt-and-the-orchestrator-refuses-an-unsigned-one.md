@@ -256,3 +256,16 @@ empty `auth.signingClients`.
 *Verified 2026-11-28 by reading the code of this change (`23c667ee` plus the review's fixes); nothing was built or
 run on the reviewing host (owner ANR-Q79), so CI and the compose build are the compiler. Unverified: the five new
 route tests and the `azp` test have not been executed locally.*
+
+*Added 2026-11-28 (ANR-1383): the helper-session start is checked.* The second gap above is closed.
+`POST /api/threads/{id}/sessions` takes the envelope in its body's `metadata["vymalo.promptSignature"]` and runs the
+run route's check, now one function for both (`orch_api::check_prompt_signature`), with the same list
+(`auth.signingClients`) and the same `403`. It runs after the body is read and before the application reads the
+thread or the card, makes an agent ready or writes anything. The envelope goes from the body to the start's outbox
+row (`OutboxPayload::SessionStart`) and round 1's `SendRequest`; it is not in the job ledger, and the child's logged
+`user_message` has no place for it. As on the run route, nothing reads it off `SendRequest` yet (ANR-903). A later
+message **in** a helper's thread is a run, so the run route's check already covers it.
+
+**Two gaps remain:** the REST fork and edit (**ANR-1375**) and a Stop & send's held text (**ANR-1376**).
+
+*Verified 2026-11-28 by reading the code; the new tests have not been built or run.*
