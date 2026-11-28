@@ -28,7 +28,7 @@ use orch_ports::{Clock, Ports, Principal};
 
 use crate::refuse::{check_accept, check_json, input_error};
 use crate::stream::{Feed, Start, frames};
-use crate::{MAX_BODY_BYTES, State as SurfaceState};
+use crate::{Intake, MAX_BODY_BYTES, State as SurfaceState};
 
 /// `forwardedProps["vymalo.fork"]` (ADR 0042): the run creates its thread as a fork.
 const THREAD_FORK_KEY: &str = "vymalo.fork";
@@ -77,7 +77,7 @@ pub(crate) async fn run<P: Ports>(
     let arrived = Arrived {
         body: &bytes,
         agent: &agent_id,
-        public_origin: state.intake.public_origin.as_deref(),
+        intake: &state.intake,
     };
     // Read from the registry now (ADR 0022): an agent the platform removed is "no such agent",
     // and a registry that cannot say is a 503, never a 404. So is an agent whose audience leaves
@@ -97,7 +97,6 @@ pub(crate) async fn run<P: Ports>(
             &agent,
             thread,
             &input,
-            &state.intake.signing_clients,
             &arrived,
             &Requested {
                 gate: gate.as_ref(),
@@ -553,14 +552,15 @@ struct Requested<'a> {
     fork: Option<ForkRun>,
 }
 
-/// The request as it arrived, for what a prompt signature covers (ADR 0087).
+/// What the check of a prompt signature needs (ADR 0087): the request as it arrived, which is what
+/// a signature covers, and the deployment's [`Intake`].
 struct Arrived<'a> {
     /// The body's bytes.
     body: &'a Bytes,
     /// The `agentId` path segment, percent-decoded once (by the router), alias and all.
     agent: &'a str,
-    /// `server.publicOrigin`: the `aud` of the claims. Never read from the request.
-    public_origin: Option<&'a str>,
+    /// Who must sign, and the `aud` of the claims. Never read from the request.
+    intake: &'a Intake,
 }
 
 /// The claims of the person's signed message (ADR 0087, decision 2), made from the part of the
@@ -612,7 +612,6 @@ async fn attempt<P: Ports>(
     agent: &AgentId,
     thread: ThreadId,
     input: &RunAgentInput,
-    signing_clients: &[String],
     arrived: &Arrived<'_>,
     requested: &Requested<'_>,
 ) -> Result<Option<Feed>, ApiError> {
@@ -717,25 +716,22 @@ async fn attempt<P: Ports>(
     // raw source (the new message's `metadata`, or an answer's `resume` entry), passed on as it
     // arrived or not at all: every client's is bounded here, before a Stop & send can hold it.
     let prompt = inputs.iter_mut().find_map(|input| match input {
-        Input::UserMessage {
-            prompt_signature, ..
+        Input::UserMessage { signed_prompt, .. } | Input::StopAndSend { signed_prompt, .. } => {
+            Some(signed_prompt)
         }
-        | Input::StopAndSend {
-            prompt_signature, ..
-        } => Some(prompt_signature),
         _ => None,
     });
-    if let Some(prompt_signature) = prompt {
-        let received = prompt_signature.as_ref().map(|p| p.envelope.as_str());
+    if let Some(signed_prompt) = prompt {
+        let received = signed_prompt.as_ref().map(|p| p.envelope.as_str());
         // an empty or over-long value of a client that is not asked for one is not carried
-        if check_prompt_signature(principal, signing_clients, received)?.is_none() {
-            *prompt_signature = None;
+        if check_prompt_signature(principal, &arrived.intake.signing_clients, received)?.is_none() {
+            *signed_prompt = None;
         }
         // What a verifier needs beside the envelope is computed here, where the request is still
         // in hand. Without a public origin there is no `aud`, and none is taken from the request:
         // the envelope then goes alone (a deployment that lists a signing client has one).
-        if let Some(signed) = prompt_signature
-            && let Some(aud) = arrived.public_origin
+        if let Some(signed) = signed_prompt
+            && let Some(aud) = arrived.intake.public_origin.as_deref()
             && let Some(source) = &signed_source
         {
             signed.claims = Some(claims_of(
@@ -790,7 +786,7 @@ async fn attempt<P: Ports>(
                     text,
                     message_id,
                     run_id,
-                    prompt_signature,
+                    signed_prompt,
                     ..
                 },
             ] = inputs.as_slice()
@@ -821,7 +817,7 @@ async fn attempt<P: Ports>(
                         tier,
                         locale: locale.cloned(),
                         pick: pick.cloned(),
-                        prompt_signature: prompt_signature.clone(),
+                        signed_prompt: signed_prompt.clone(),
                     },
                     held,
                 )
@@ -844,7 +840,7 @@ async fn attempt<P: Ports>(
                 tier,
                 locale: locale.cloned(),
                 pick: pick.cloned(),
-                prompt_signature: prompt_signature.clone(),
+                signed_prompt: signed_prompt.clone(),
             };
             match app
                 .create_thread_as(principal, thread, new, inbound)
@@ -1007,7 +1003,7 @@ mod tests {
             catalog: None,
             mentions: Vec::new(),
             tier: None,
-            prompt_signature: None,
+            signed_prompt: None,
         }
     }
 

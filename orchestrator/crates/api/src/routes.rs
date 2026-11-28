@@ -775,7 +775,7 @@ pub(crate) async fn start_child_session<P: Ports>(
     };
     // The person's prompt signature, read as the AG-UI run reads a message's: a member that is not
     // text names none. The string is passed on as it arrived.
-    let prompt_signature = body
+    let signed_prompt = body
         .metadata
         .as_ref()
         .and_then(|metadata| metadata.get(orch_core::PROMPT_SIGNATURE_KEY))
@@ -784,15 +784,12 @@ pub(crate) async fn start_child_session<P: Ports>(
     // ADR 0087, decision 3: `text` is the person's words, so a signing client's start is signed or
     // refused, here, before the application reads, makes or writes anything.
     // what is carried on is what the check answers: bounded, and never empty
-    let prompt_signature = check_prompt_signature(
-        &principal,
-        &state.signing_clients,
-        prompt_signature.as_deref(),
-    )?
-    // No claims: the contract does not say what a helper start signs (no message id, no
-    // `content`, no `forwardedProps`), so none is made up (ADR 0087). It is signed and not
-    // verifiable until it does.
-    .map(|envelope| orch_core::SignedPrompt::envelope_only(envelope.to_owned()));
+    let signed_prompt =
+        check_prompt_signature(&principal, &state.signing_clients, signed_prompt.as_deref())?
+            // No claims: the contract does not say what a helper start signs (no message id, no
+            // `content`, no `forwardedProps`), so none is made up (ADR 0087). It is signed and not
+            // verifiable until it does.
+            .map(|envelope| orch_core::SignedPrompt::envelope_only(envelope.to_owned()));
     state
         .app
         .start_child_session(
@@ -805,7 +802,7 @@ pub(crate) async fn start_child_session<P: Ports>(
                 text: body.text,
                 keep_open: body.keep_open,
                 tier,
-                prompt_signature,
+                signed_prompt,
             },
         )
         .await?;
@@ -991,7 +988,7 @@ impl ForkBody {
                         tier,
                         locale,
                         pick,
-                        prompt_signature: None,
+                        signed_prompt: None,
                     }),
                 }
             }

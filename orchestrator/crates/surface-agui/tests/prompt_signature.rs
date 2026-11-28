@@ -31,7 +31,7 @@ fn signed(thread: &str, run: &str, id: &str, text: &str, envelope: &str) -> Valu
 
 /// The envelope a send carried.
 fn envelope_of(call: &orch_ports::memory::SendCall) -> Option<String> {
-    call.prompt_signature
+    call.signed_prompt
         .as_ref()
         .map(|signed| signed.envelope.as_str().to_owned())
 }
@@ -42,7 +42,7 @@ fn signed_sends(h: &Harness) -> Vec<Option<orch_core::SignedPrompt>> {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            orch_ports::memory::Call::Send(call) => Some(call.prompt_signature.clone()),
+            orch_ports::memory::Call::Send(call) => Some(call.signed_prompt.clone()),
             _ => None,
         })
         .collect()
@@ -300,7 +300,7 @@ async fn no_word_of_the_envelope_is_in_the_log_or_in_a_tracing_line() {
     let export = String::from_utf8_lossy(&export.body).to_string();
     assert!(!export.contains(ENVELOPE), "the envelope is in the export");
     assert!(
-        !export.contains("promptSignature") && !export.contains("prompt_signature"),
+        !export.to_lowercase().contains("signedprompt") && !export.contains("signed_prompt"),
         "the export names the envelope"
     );
     // the frames of the run
@@ -603,7 +603,7 @@ async fn a_stop_and_sends_envelope_waits_in_the_ledger_and_no_export_has_it() {
     assert_eq!(
         stored
             .job
-            .after_stop_prompt_signature
+            .after_stop_signed_prompt
             .as_ref()
             .map(|signed| signed.envelope.as_str()),
         Some(HELD),
@@ -619,14 +619,14 @@ async fn a_stop_and_sends_envelope_waits_in_the_ledger_and_no_export_has_it() {
         "the export is of a thread that is stopping: {document}"
     );
     assert!(
-        document["job"].get("afterStopPromptSignature").is_none(),
+        document["job"].get("afterStopSignedPrompt").is_none(),
         "the export has the member"
     );
     let export = String::from_utf8_lossy(&export.body).to_string();
     assert!(!export.contains(HELD), "the envelope is in the export");
-    // whatever the member were called: `afterStopPromptSignature` has a capital P
+    // whatever the member were called: `afterStopSignedPrompt` has capitals
     assert!(
-        !export.to_lowercase().contains("promptsignature") && !export.contains("prompt_signature"),
+        !export.to_lowercase().contains("signedprompt") && !export.contains("signed_prompt"),
         "the export names the envelope"
     );
     let thread_resource = h.thread(ALICE, &thread).await.to_string();
@@ -657,8 +657,8 @@ async fn a_stop_and_sends_envelope_waits_in_the_ledger_and_no_export_has_it() {
     let unchanged = h.store.get_thread(None, id).await.unwrap().unwrap();
     assert_eq!(unchanged.job.after_stop, stored.job.after_stop);
     assert_eq!(
-        unchanged.job.after_stop_prompt_signature,
-        stored.job.after_stop_prompt_signature
+        unchanged.job.after_stop_signed_prompt,
+        stored.job.after_stop_signed_prompt
     );
 
     // The task ends: the held message starts the next job, with its own bytes.
@@ -736,7 +736,7 @@ async fn an_unlisted_clients_value_is_not_held(junk: &str) {
     assert_eq!(stored.job.after_stop.as_deref(), Some("echo do X instead"));
     // not `assert_eq!`: a failure must not print 16 KiB
     assert!(
-        stored.job.after_stop_prompt_signature.is_none(),
+        stored.job.after_stop_signed_prompt.is_none(),
         "the ledger holds an unlisted client's value"
     );
 
@@ -755,7 +755,7 @@ async fn an_unlisted_clients_value_is_not_held(junk: &str) {
         Some("echo do X instead\n\necho and Y")
     );
     assert!(
-        joined.job.after_stop_prompt_signature.is_none(),
+        joined.job.after_stop_signed_prompt.is_none(),
         "the ledger holds an unlisted client's value"
     );
 }
@@ -974,7 +974,7 @@ async fn a_signed_helper_start_opens_the_session_with_the_same_bytes_and_logs_no
         let export = String::from_utf8_lossy(&export.body).to_string();
         assert!(!export.contains(ENVELOPE), "the envelope is in an export");
         assert!(
-            !export.contains("promptSignature") && !export.contains("prompt_signature"),
+            !export.to_lowercase().contains("signedprompt") && !export.contains("signed_prompt"),
             "an export names the envelope"
         );
         let events = h.events(ALICE, thread).await;

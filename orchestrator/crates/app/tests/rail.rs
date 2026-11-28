@@ -265,7 +265,7 @@ async fn a_fork_is_nested_under_the_row_the_person_sees() {
                 tier: None,
                 locale: None,
                 pick: None,
-                prompt_signature: None,
+                signed_prompt: None,
             },
         )
         .await

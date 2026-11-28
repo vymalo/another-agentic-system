@@ -303,7 +303,7 @@ pub struct SendRequest {
     /// them ([`SignedPrompt::claims`](orch_core::SignedPrompt::claims)). The cloud path's statement
     /// (ANR-903) is made from it, and nothing of it is stored in the log. `None` for a message that
     /// carries none and for the orchestrator's own messages (a rework, an ask, the verifier).
-    pub prompt_signature: Option<orch_core::SignedPrompt>,
+    pub signed_prompt: Option<orch_core::SignedPrompt>,
 }
 
 impl fmt::Debug for SendRequest {
@@ -328,7 +328,7 @@ impl fmt::Debug for SendRequest {
             .field("tier_cap", &self.tier_cap)
             .field("locale", &self.locale)
             .field("pick", &self.pick)
-            .field("prompt_signature", &self.prompt_signature)
+            .field("signed_prompt", &self.signed_prompt)
             .finish()
     }
 }
@@ -672,7 +672,7 @@ mod tests {
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: Some(orch_core::SignedPrompt {
+            signed_prompt: Some(orch_core::SignedPrompt {
                 envelope: envelope.to_owned().into(),
                 claims: Some(orch_core::PromptClaims {
                     aud: "https://aud.test.invalid".into(),
@@ -702,10 +702,10 @@ mod tests {
             "{text}"
         );
         let none = SendRequest {
-            prompt_signature: None,
+            signed_prompt: None,
             ..request
         };
-        assert!(format!("{none:?}").contains("prompt_signature: None"));
+        assert!(format!("{none:?}").contains("signed_prompt: None"));
     }
 
     #[test]

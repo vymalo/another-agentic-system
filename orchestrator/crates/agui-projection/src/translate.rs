@@ -528,7 +528,7 @@ pub fn translate_with_warnings(
     // raw source that produces the input is known: the new message's `metadata`, or an answer's
     // `resume` entry (decision 3). It is passed on as it arrived; whether it must be there, and
     // whether it is shaped like a compact JWS, is the surface's check.
-    let mut prompt_signature = new_users
+    let mut signed_prompt = new_users
         .first()
         .and_then(|u| envelope(u.metadata.as_ref()));
     let mut signed_source =
@@ -590,7 +590,7 @@ pub fn translate_with_warnings(
                 // The first answer is the one that becomes the message: its entry carries the
                 // envelope (ADR 0087, decision 3).
                 if answer.is_none() {
-                    prompt_signature = envelope(entry.metadata.as_ref());
+                    signed_prompt = envelope(entry.metadata.as_ref());
                     signed_source = Some(SignedSource::Resume {
                         index,
                         interrupt_id: id.to_owned(),
@@ -602,7 +602,7 @@ pub fn translate_with_warnings(
     }
 
     // No claims yet: they are made of the request as it arrived, which this crate does not see.
-    let prompt_signature = prompt_signature.map(SignedPrompt::envelope_only);
+    let signed_prompt = signed_prompt.map(SignedPrompt::envelope_only);
     let user = thread.user().clone();
     let run_id = Some(input.run_id.to_string());
     if let Some(mut action) = action {
@@ -648,7 +648,7 @@ pub fn translate_with_warnings(
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature,
+            signed_prompt,
             user,
             text,
             message_id: None,
@@ -665,7 +665,7 @@ pub fn translate_with_warnings(
                 tier_cap: None,
                 locale: None,
                 pick: None,
-                prompt_signature,
+                signed_prompt,
                 user,
                 text,
                 message_id: Some(id),
@@ -680,7 +680,7 @@ pub fn translate_with_warnings(
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature,
+            signed_prompt,
             user,
             text,
             message_id: Some(id),

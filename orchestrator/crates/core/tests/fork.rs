@@ -296,7 +296,7 @@ fn the_next_message_of_a_fork_starts_the_next_job() {
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
             user: user(),
             text: "go on".into(),
             message_id: None,
@@ -459,7 +459,7 @@ fn a_fork_has_no_catalog_for_its_agent_has_been_sent_none() {
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
             user: user(),
             text: "next".into(),
             message_id: None,
@@ -616,7 +616,7 @@ fn first_message() -> Replacement {
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
         text: "@researcher and the docs?".into(),
         message_id: Some("m-first".into()),
         catalog: Some(catalog_data()),
@@ -691,7 +691,7 @@ fn a_fork_made_with_its_first_message_commits_it_as_the_next_job() {
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
     } = commands.last().unwrap()
     else {
         panic!("{commands:?}")

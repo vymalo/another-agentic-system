@@ -45,8 +45,8 @@ fn new_thread(text: &str) -> NewThread {
     }
 }
 
-/// A thread created with a first message that carries `prompt_signature`.
-async fn start(w: &World, text: &str, prompt_signature: Option<&str>) -> ThreadId {
+/// A thread created with a first message that carries `signed_prompt`.
+async fn start(w: &World, text: &str, signed_prompt: Option<&str>) -> ThreadId {
     let app = w.app();
     let thread = ThreadId(uuid::Uuid::now_v7());
     match app
@@ -56,7 +56,7 @@ async fn start(w: &World, text: &str, prompt_signature: Option<&str>) -> ThreadI
             new_thread(text),
             Inbound {
                 origin: Origin::Agui,
-                prompt_signature: prompt_signature.map(signed),
+                signed_prompt: signed_prompt.map(signed),
                 ..Inbound::default()
             },
         )
@@ -91,13 +91,10 @@ async fn the_envelope_rides_the_row_and_the_send_and_is_in_no_event() {
     let [row] = rows.as_slice() else {
         panic!("{rows:?}")
     };
-    let OutboxPayload::Delegate {
-        prompt_signature, ..
-    } = &row.payload
-    else {
+    let OutboxPayload::Delegate { signed_prompt, .. } = &row.payload else {
         panic!("{:?}", row.payload)
     };
-    assert_eq!(*prompt_signature, Some(signed(ENVELOPE)));
+    assert_eq!(*signed_prompt, Some(signed(ENVELOPE)));
     let shown = format!("{:?}", row.payload);
     assert!(!shown.contains(ENVELOPE), "{shown}");
 
@@ -108,7 +105,7 @@ async fn the_envelope_rides_the_row_and_the_send_and_is_in_no_event() {
         "the envelope is in the log: {export}"
     );
     assert!(
-        !export.contains("promptSignature") && !export.contains("prompt_signature"),
+        !export.to_lowercase().contains("signedprompt") && !export.contains("signed_prompt"),
         "the log names the envelope: {export}"
     );
 
@@ -121,7 +118,7 @@ async fn the_envelope_rides_the_row_and_the_send_and_is_in_no_event() {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            Call::Send(call) => Some(call.prompt_signature.clone()),
+            Call::Send(call) => Some(call.signed_prompt.clone()),
             _ => None,
         })
         .collect();
@@ -139,7 +136,7 @@ async fn a_message_that_carries_no_envelope_has_no_member_on_the_row() {
     let rows = w.store.list_open_outbox(thread).await.unwrap();
     let row = serde_json::to_value(&rows[0].payload).unwrap();
     assert!(
-        row["delegate"].get("prompt_signature").is_none(),
+        row["delegate"].get("signed_prompt").is_none(),
         "no member on the row: {row}"
     );
     let run = spawn_dispatcher(&w.app(), fast(), "d1");
@@ -150,7 +147,7 @@ async fn a_message_that_carries_no_envelope_has_no_member_on_the_row() {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            Call::Send(call) => Some(call.prompt_signature.clone()),
+            Call::Send(call) => Some(call.signed_prompt.clone()),
             _ => None,
         })
         .collect();
@@ -171,7 +168,7 @@ fn signed_stop(text: &str, envelope: &str) -> Input {
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: Some(signed(envelope)),
+        signed_prompt: Some(signed(envelope)),
     }
 }
 
@@ -199,7 +196,7 @@ async fn a_signed_stop_and_send_reaches_the_next_job_byte_for_byte() {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            Call::Send(call) => Some((call.text.clone(), call.prompt_signature.clone())),
+            Call::Send(call) => Some((call.text.clone(), call.signed_prompt.clone())),
             _ => None,
         })
         .collect();
@@ -211,7 +208,7 @@ async fn a_signed_stop_and_send_reaches_the_next_job_byte_for_byte() {
         ]
     );
     let thread = app.get_thread(&alice(), t.id).await.unwrap();
-    assert_eq!(thread.job.after_stop_prompt_signature, None);
+    assert_eq!(thread.job.after_stop_signed_prompt, None);
     assert!(!exported(&w, t.id).await.contains(ENVELOPE));
 }
 
@@ -238,7 +235,7 @@ async fn a_refused_cancel_steers_the_held_message_with_its_envelope() {
             .into_iter()
             .filter_map(|call| match call {
                 Call::Send(call) if call.steer => {
-                    Some((call.text.clone(), call.prompt_signature.clone()))
+                    Some((call.text.clone(), call.signed_prompt.clone()))
                 }
                 _ => None,
             })
@@ -251,7 +248,7 @@ async fn a_refused_cancel_steers_the_held_message_with_its_envelope() {
         [("do X instead".to_owned(), Some(signed(ENVELOPE)))]
     );
     let thread = app.get_thread(&alice(), t.id).await.unwrap();
-    assert_eq!(thread.job.after_stop_prompt_signature, None);
+    assert_eq!(thread.job.after_stop_signed_prompt, None);
 
     w.agent.release_gate();
     wait_state(&app, &alice(), t.id, ThreadState::Done).await;
@@ -271,10 +268,7 @@ async fn the_ledger_holds_a_stops_envelope_and_an_export_does_not() {
 
     // the positive control: the ledger as the store keeps it has it
     let stored = w.store.get_thread(None, thread).await.unwrap().unwrap();
-    assert_eq!(
-        stored.job.after_stop_prompt_signature,
-        Some(signed(ENVELOPE))
-    );
+    assert_eq!(stored.job.after_stop_signed_prompt, Some(signed(ENVELOPE)));
     let shown = format!("{stored:?}");
     assert!(!shown.contains(ENVELOPE), "{shown}");
 
@@ -290,10 +284,7 @@ async fn the_ledger_holds_a_stops_envelope_and_an_export_does_not() {
         assert!(!export.contains(value), "{value}: {export}");
     }
     assert!(!export.contains(ENVELOPE), "{export}");
-    assert!(
-        !export.to_lowercase().contains("promptsignature"),
-        "{export}"
-    );
+    assert!(!export.to_lowercase().contains("signedprompt"), "{export}");
 }
 
 #[tokio::test]

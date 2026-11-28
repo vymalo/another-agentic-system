@@ -981,7 +981,7 @@ pub(crate) struct Start<'a> {
     pub keep_open: bool,
     pub tier: Option<AccessTier>,
     pub tier_cap: Option<AccessTier>,
-    pub prompt_signature: Option<&'a SignedPrompt>,
+    pub signed_prompt: Option<&'a SignedPrompt>,
 }
 
 /// A person asks the parent thread to start a session (`Input::StartSession`): valid on a parent
@@ -1034,7 +1034,7 @@ pub(crate) fn start_session(
             keep_open: start.keep_open,
             tier: start.tier,
             tier_cap: start.tier_cap,
-            prompt_signature: start.prompt_signature.cloned(),
+            signed_prompt: start.signed_prompt.cloned(),
         },
     ])
 }

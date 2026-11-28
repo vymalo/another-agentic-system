@@ -104,7 +104,7 @@ async fn verifying_with(
                 tier_cap: None,
                 locale: None,
                 pick: None,
-                prompt_signature: None,
+                signed_prompt: None,
                 user: alice(),
                 text: "and mind the style".into(),
                 message_id: None,
@@ -897,7 +897,7 @@ async fn a_request_that_reached_the_verifier_before_the_crash_is_found_not_resen
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
         },
     )
     .await
@@ -1010,7 +1010,7 @@ async fn sent_and_forgotten(w: &World, _t: &ThreadRecord, row: &OutboxItem) {
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
         },
     )
     .await
