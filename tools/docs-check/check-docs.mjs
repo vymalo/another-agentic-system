@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { JSDOM } from 'jsdom';
-import { readContractTable, readExtensionIndex, STATUS_PATTERN } from '../../docs/.vitepress/extension-index.mjs';
+import { readContractTable, readExtensionIndex, STATUS_PATTERN, visibleLines } from '../../docs/.vitepress/extension-index.mjs';
 
 const root = process.cwd();
 // dist: the site's build output, which holds a generated .md per page (vitepress-plugin-llms), not sources.
@@ -182,6 +182,10 @@ for (const file of markdownFiles(root)) {
 // The extension contract pages say the status the index says (ANR-925). Each row of docs/api/extensions.md links its
 // contract page (A2UI: a section of agui.md); that page has exactly one `- **Status:**` line before its first section (or
 // in the linked section) that starts with the row's icon and word. A page that declares an extension URI must have a row.
+// Only what a reader sees counts (visibleLines: no fenced block, no HTML comment). The one line is a `- **Status:**`
+// bullet at column 0; a status bullet written any other way (indented, `*`, `+`, numbered, quoted, `__`) is counted too,
+// so a second one cannot hide.
+const statusBullet = /^[\s>]*(?:[-*+]|\d+[.)])\s+(\*\*|__)\s*status\s*(?::\s*\1|\1\s*:)/i;
 // These rows have no contract page in docs/api: a new row without a page is a failure until it is named here.
 const rowsWithoutPage = new Set(['Identity', 'Prompt statement', 'Build', 'Credential request']);
 let statuses = 0;
@@ -193,6 +197,10 @@ if (fs.existsSync(path.join(root, indexRel))) {
   const listed = new Set();
   for (const row of rows) {
     const at = `${indexRel}:${row.line}`;
+    if (row.malformed) {
+      failures.push(`${at} ${row.malformed}`);
+      continue;
+    }
     if (!row.status) failures.push(`${at} ${row.name}: status does not start with an icon and word of the legend`);
     if (!row.page) {
       if (!rowsWithoutPage.has(row.name)) failures.push(`${at} ${row.name}: the Contract column links no page of docs/api`);
@@ -206,7 +214,7 @@ if (fs.existsSync(path.join(root, indexRel))) {
       failures.push(`${at} ${row.name}: its contract page ${rel} does not exist`);
       continue;
     }
-    const lines = fs.readFileSync(path.join(root, rel), 'utf8').split('\n');
+    const lines = visibleLines(fs.readFileSync(path.join(root, rel), 'utf8'));
     // The part that holds the status line: before the first section, or the section the row links.
     let from = 0;
     if (anchor) {
@@ -219,9 +227,13 @@ if (fs.existsSync(path.join(root, indexRel))) {
     let to = lines.findIndex((l, i) => i > from && (anchor ? /^##+ / : /^## /).test(l));
     if (to < 0) to = lines.length;
     const found = [];
-    for (let i = from; i < to; i++) if (lines[i].startsWith('- **Status:**')) found.push(i);
+    for (let i = from; i < to; i++) if (statusBullet.test(lines[i])) found.push(i);
     if (found.length !== 1) {
-      failures.push(`${rel}:${(found[1] ?? from) + 1} ${found.length ? 'more than one status line' : 'no status line (- **Status:** …)'}; ${at} says ${row.status}`);
+      failures.push(`${rel}:${(found[1] ?? from) + 1} ${found.length ? `more than one status line (also line ${found[0] + 1})` : 'no status line (- **Status:** …)'}; ${at} says ${row.status}`);
+      continue;
+    }
+    if (!lines[found[0]].startsWith('- **Status:** ')) {
+      failures.push(`${rel}:${found[0] + 1} the status line is not a \`- **Status:** \` bullet at column 0; ${at} says ${row.status}`);
       continue;
     }
     statuses++;
@@ -234,6 +246,7 @@ if (fs.existsSync(path.join(root, indexRel))) {
   const readmeRel = path.join('docs', 'api', 'README.md');
   const readme = fs.existsSync(path.join(root, readmeRel)) ? readContractTable(fs.readFileSync(path.join(root, readmeRel), 'utf8')) : [];
   if (!readme.length) failures.push(`${readmeRel}:1 no contract table (| Page | What it is | Status |) found`);
+  for (const bad of readme.filter((c) => c.malformed)) failures.push(`${readmeRel}:${bad.line} ${bad.malformed}`);
   for (const row of readme.length ? rows.filter((r) => r.page && !r.page.anchor) : []) {
     const copies = readme.filter((c) => c.file === row.page.file);
     const at = `${indexRel}:${row.line}`;
@@ -244,7 +257,7 @@ if (fs.existsSync(path.join(root, indexRel))) {
     }
   }
   for (const name of fs.readdirSync(apiDir).filter((f) => f.endsWith('.md') && f !== 'README.md' && f !== 'extensions.md')) {
-    const head = fs.readFileSync(path.join(apiDir, name), 'utf8').split(/^## /m)[0];
+    const head = visibleLines(fs.readFileSync(path.join(apiDir, name), 'utf8')).join('\n').split(/^## /m)[0];
     const declares = /^# A2A extension:|^- \*\*(?:URI|A2A extension):\*\* `https:\/\/[^`]*\/a2a\/extensions\//m.test(head);
     if (declares && !listed.has(name)) failures.push(`docs/api/${name}:1 an extension contract page that ${indexRel} does not list`);
   }

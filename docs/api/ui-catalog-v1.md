@@ -1,5 +1,7 @@
 # A2A extension: UI catalog (v1)
 
+**Note (2026-11-28):** `ui-catalog/v2` was built on 2026-11-20, in the A2UI v1.0 cutover of [ADR 0075](../decisions/0075-a2ui-v1-0-cutover.md): what is built now is [`ui-catalog-v2.md`](ui-catalog-v2.md), and this page, including what it says below about v1 being what is built, is kept for the record.
+
 - **URI:** `https://agents.vymalo.com/a2a/extensions/ui-catalog/v1`
 - **Status:** ➖ retired · **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side is built (MVP
   slice 3: the run member, the `ui_catalog` event and its ledger, `thread.uiCatalog`, the A2A adapter, and the refetch,
