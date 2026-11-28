@@ -68,6 +68,7 @@ A release `vX.Y.Z` publishes three things at `X.Y.Z`, and never `latest` ([Relea
 | the web image | the same |
 | this chart, as an OCI package | `X.Y.Z`, with both images pinned to `X.Y.Z` **and their digests** |
 
+::: in-depth How a release is cut, and why it is not rebuilt
 Nothing is rebuilt at the tag. For each image, the release takes the `sha-<7>` of the newest commit at or
 before the tag that changed that image workflow's paths, refuses an image whose
 `org.opencontainers.image.revision` label is another commit, and copies it **by digest**
@@ -75,6 +76,7 @@ before the tag that changed that image workflow's paths, refuses an image whose
 decision 2). Each digest and the chart are signed, and each image carries an SBOM and a provenance
 attestation. A published version is never pushed over: an existing image tag must be the same digest,
 and an existing chart version must have the same `values.yaml` (decision 6).
+:::
 
 **What that means for you.** A deployment on a release sets the **chart's version** and leaves the image
 values alone, because the packaged chart already pins them
@@ -114,10 +116,12 @@ version this tree's chart says (*verified 2026-11-28*,
 helm show chart oci://ghcr.io/vymalo/another-agentic-system/charts/another-agentic-system --version X.Y.Z
 ```
 
+::: in-depth Why the pods roll even when nothing moved
 A version change moves the labels `helm.sh/chart` and `app.kubernetes.io/version`, and the checksums of
 the orchestrator's configuration and Secrets include them, so **a release rolls those pods once even when
 nothing else moved** ([Releases](../../../deploy/chart/README.md#releases)). That is normal; do not read
 it as a failed upgrade.
+:::
 
 ## 3. Bump an image tag, on the development path
 
@@ -169,6 +173,7 @@ the label selector is this page's, so check it against your own render.
 
 ## 5. Expect the migrations at boot
 
+::: in-depth How the migrations run at boot
 **The orchestrator migrates when it starts**, not in a Job you run: `PgStore::migrate()` applies the
 migrations embedded in the binary, on a connection of its own, under a session advisory lock, so two
 replicas that start together take turns instead of racing
@@ -176,6 +181,7 @@ replicas that start together take turns instead of racing
 deployment whose request pool goes through a transaction-mode pooler migrates over
 `database.directUrl`, the cluster's own Service, because a pooler cannot hold the session lock
 ([the pooler](../../../deploy/chart/README.md#scaling-the-database-issue-290)).
+:::
 
 Three rules follow, and they are the whole of what an operator has to remember:
 
@@ -207,6 +213,7 @@ pod of the older build that restarts refuses to start
 running* keeps running and ignores what it does not read, but it cannot be rescheduled, and a
 `helm rollback` or a reverted tag turns into a CrashLoopBackOff on the first new pod.
 
+::: in-depth The two ways back, and why neither is a rollback
 So the way back is one of two, and neither is a rollback:
 
 - **Forward.** Fix the value, the configuration or the image and upgrade again. The release you moved to
@@ -219,6 +226,7 @@ So the way back is one of two, and neither is a rollback:
   this is the moment you find out
   ([Backups](../../../deploy/chart/README.md#backups)). The order of that work is
   [Back up and restore the database](backup-and-restore.md).
+:::
 
 Before you upgrade, ask the two questions this section answers: do I have a backup, and can I go
 forward from here? A release that changes the schema is a one-way door.

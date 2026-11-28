@@ -58,6 +58,7 @@ The orchestrator logs with `tracing` **to stdout**, one line at a time, and keep
 container's filesystem is read-only, so stdout is the only place a line exists, and whatever collects it
 is the cluster's business ([`logging.rs`](../../../orchestrator/bin/orchestrator/src/logging.rs)).
 
+::: in-depth The two shapes of a line
 A line has one of two shapes, chosen by `log.format`:
 
 | `log.format` | What a line is | Where it is set |
@@ -69,6 +70,7 @@ The chart does not expose the format as a value: its configuration template writ
 {format: json}`, so a deployment's lines are JSON
 ([`orchestrator-configmap.yaml`](../../../deploy/chart/templates/orchestrator-configmap.yaml)). The
 config key and its default are in [`config.md`](../../api/config.md#server-log-database-dispatcher-inbox).
+:::
 
 **Two fields are on every line**, and they are what tell two replicas apart once a collector merges
 them: `role` (`all`, `control-plane` or `worker`) and `instance` (the lease owner of that process's
@@ -102,6 +104,7 @@ The rule the binary applies to that value is the useful part:
 So the chart's `info` runs as `info,rmcp=off`
 ([`orch-log-filter`](../../../orchestrator/crates/log-filter/src/lib.rs)).
 
+::: in-depth Why the MCP library is off by default
 **Why `rmcp` is off by default.** `rmcp` is the MCP library, and it logs what the servers it talks to
 say: at `info` a server's own `instructions`, at `warn` and `error` the **URL** of a request that failed
 (a person's URL can carry a secret in its path) and the pre-handshake messages, and at `debug` and
@@ -110,6 +113,7 @@ orchestrator's own lines say what happened without the URL and without a word th
 library's are off unless you name it. **Naming `rmcp` in a deployment that lets people add servers puts
 what a stranger's server says, and the URL of a failed request, in the logs** — that is the trade, and
 it is yours to make.
+:::
 
 To read one process more closely without drowning in the rest, raise its own filter, for one pod:
 
@@ -136,6 +140,7 @@ database having been migrated and reached. `not ready: cannot authenticate` is t
 while the issuer's keys have never been fetched, every request would be refused, so the pod stays out of
 the Service ([`routes.rs`](../../../orchestrator/crates/api/src/routes.rs), ADR 0033).
 
+::: in-depth The probe timings the chart sets
 The chart's probe timings decide how long a bad start looks like a bad start and not like a crash
 ([`orchestrator-deployment.yaml`](../../../deploy/chart/templates/orchestrator-deployment.yaml)):
 
@@ -147,12 +152,14 @@ The chart's probe timings decide how long a bad start looks like a bad start and
 
 The readiness probe sets no failure threshold, so the default applies; the other two set theirs, which
 is what makes a slow start a two-minute grace rather than a restart.
+:::
 
 **A 503 is not a crash.** Both probes turn 503 while the process is stopping, on purpose: open event
 streams end once caught up and clients reconnect elsewhere, and a liveness probe must not kill a pod
 that is draining ([`boot.rs`](../../../orchestrator/bin/orchestrator/src/boot.rs)). A pod that is
 `Running` and not `Ready` is therefore a normal state for a start, and for a stop.
 
+::: in-depth The exit codes the binary uses
 An **exit code** is the other half of the story, and the binary uses `sysexits.h` values
 ([`main.rs`](../../../orchestrator/bin/orchestrator/src/main.rs)):
 
@@ -163,15 +170,18 @@ An **exit code** is the other half of the story, and the binary uses `sysexits.h
 | `71` | the listen address cannot be bound |
 | `70` | a component stopped or panicked |
 | `1` | anything else, including a migration history that does not match |
+:::
 
 ## 4. There is no trace export yet
 
+::: in-depth Why a trace cannot cross the outbox
 **The orchestrator exports no traces.** No OpenTelemetry crate is in any manifest, the outbox has no
 `traceparent` column, and a W3C trace context cannot cross it: the request span, the request id and the
 thread id are what tie a task's lines together, not a trace
 ([`orchestrator.md`](../../orchestrator.md), open question 27 in
 [open questions](../../open-questions.md)). The work is tracked in the project's board and is not done
 (*unverified* here: the card is not in this repository).
+:::
 
 What that costs you, plainly: **a slow task cannot be followed as one trace across a control plane and
 a worker.** You follow it by `thread` in the lines of every process that touched it, and you accept that
@@ -195,6 +205,7 @@ What you can rely on instead:
 
 Besides stdout, four things are worth knowing about, and the chart turns on only some of them.
 
+::: in-depth Four other places a deployment can read
 - **Kubernetes events and probe state.** `kubectl describe pod` and `kubectl get events` are where a
   failed mount, an unsynced `ExternalSecret` and a probe's refusals show up — not in the orchestrator's
   log, which never runs if the pod does not start. The list of what to look at, symptom by symptom, is
@@ -216,6 +227,7 @@ Besides stdout, four things are worth knowing about, and the chart turns on only
   ([Unverified](../../../deploy/chart/README.md#unverified)). It matters before you turn public sharing
   on: a share token is in the path, so an access log with paths is a list of working links
   ([Sharing a thread](../../../deploy/chart/README.md#sharing-a-thread)).
+:::
 
 ## 6. Follow one task by hand
 

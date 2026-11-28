@@ -56,12 +56,15 @@ stateDiagram-v2
 
 ## 1. What you need
 
-Backups are **off by default** (`backup.enabled: false`), and with them off the render is exactly what it was without them. Turning
-them on renders three objects and changes the Cluster: an `ObjectStore`, a `ScheduledBackup`, an `ExternalSecret` in a file of its
-own (so that turning backups on restarts no pod), and a `spec.plugins` entry on the Cluster. The mechanism is the **barman-cloud plugin** of
-CloudNativePG, not the in-tree `barmanObjectStore`, which is deprecated from CloudNativePG 1.26: the Cluster archives its WAL as it
-is written and takes a base backup every day ([ADR 0041](../../decisions/0041-deployed-with-helm-on-kubernetes-secrets-by-externalsecret.md),
-amended 2026-10-17).
+Backups are **off by default** (`backup.enabled: false`), and with them off the render is exactly what it was without them.
+
+::: in-depth What turning them on renders, and why the plugin
+Turning them on renders three objects and changes the Cluster: an `ObjectStore`, a `ScheduledBackup`, an `ExternalSecret` in a
+file of its own (so that turning backups on restarts no pod), and a `spec.plugins` entry on the Cluster. The mechanism is the
+**barman-cloud plugin** of CloudNativePG, not the in-tree `barmanObjectStore`, which is deprecated from CloudNativePG 1.26: the
+Cluster archives its WAL as it is written and takes a base backup every day
+([ADR 0041](../../decisions/0041-deployed-with-helm-on-kubernetes-secrets-by-externalsecret.md), amended 2026-10-17).
+:::
 
 | Need | Why | Your value |
 |---|---|---|
@@ -85,9 +88,11 @@ Make a bucket of its own and an IAM user for it. The user may list, read, write 
 It **must not be the artifacts' user**: the orchestrator's pod reads those keys, and these keys can delete the backups, which is why
 the chart refuses the same property names for both. The exact action list is *unverified* here; barman-cloud's documentation has it.
 
+::: in-depth If the bucket is versioned
 If the bucket is versioned, a version barman deletes survives as a non-current version until a rule expires it. **Set that rule so
 that no version outlives the retention you tell people** (§4): a lifecycle rule that expires current versions a few days after the
 recovery window and non-current ones later. This part is *unverified*: no bucket was available.
+:::
 
 ## 3. Turn it on
 
@@ -140,9 +145,12 @@ Last, restore once before you rely on any of it (§5). **A backup nobody has res
 ## 4. How long a deleted thread stays in the backups
 
 Deleting a thread erases it from the database, its files and its link, and **the backups keep it until they expire**
-([ADR 0043](../../decisions/0043-deleting-a-thread-erases-it.md), decision 7). The retention is a **recovery window**, not a
-"keep the last N backups": the plugin keeps every backup and every WAL segment needed to restore to any moment in the window,
-including the newest base backup older than it, and it deletes an obsolete backup only after the next backup completes.
+([ADR 0043](../../decisions/0043-deleting-a-thread-erases-it.md), decision 7).
+
+::: in-depth The recovery window, and why 28 days is the cap
+The retention is a **recovery window**, not a "keep the last N backups": the plugin keeps every backup and every WAL segment
+needed to restore to any moment in the window, including the newest base backup older than it, and it deletes an obsolete backup
+only after the next backup completes.
 
 So a window of W days keeps data for about **W+1 days**, and up to W+2 if a deletion waits for the next backup (*unverified* in a
 cluster; the sweep runs every 30 minutes). With the default `28d`, a thread deleted today leaves the bucket after about **29 days**,
@@ -151,6 +159,7 @@ ceiling of 30 would keep data 31 or 32 days and break the sentence people are gi
 threads, not a value.** [`docs/tester-note.md`](https://github.com/vymalo/another-agentic-system/blob/main/docs/tester-note.md) is the draft that says "within about 30 days" to testers.
 
 Switching backups off does **not** erase the bucket: the sweep stops with the sidecar, and the data stays until someone deletes it.
+:::
 
 ## 5. Try a restore, beside the running cluster
 
@@ -169,6 +178,7 @@ kubectl -n another-agentic-system exec another-agentic-db-restore-1 -c postgres 
 kubectl -n another-agentic-system delete cluster another-agentic-db-restore   # the test is over; its volume goes with it
 ```
 
+::: in-depth Three things about the restore file
 Three things about that file. It reads the `ObjectStore` `another-agentic-db` under the server name `another-agentic-db` (the
 cluster's own name, or its `backup.serverName`; **a different name finds nothing**). Its `storage.size`, `storage.storageClass` and
 image must equal the deployment's `database.storage.size`, `database.storage.storageClass` and `database.imageName`: a smaller volume
@@ -176,6 +186,7 @@ cannot hold the data and another PostgreSQL major cannot read it. And it names n
 `another-agentic-db-restore-app` with a **new random password** for the owner `orchestrator`; nothing reads it, and the running
 cluster's Secret is untouched. A point in time is `bootstrap.recovery.recoveryTarget.targetTime`, between the oldest base backup and
 the last archived WAL segment.
+:::
 
 ## 6. Replace a lost cluster
 
@@ -186,6 +197,7 @@ Service `another-agentic-db-rw` and the Secret `another-agentic-db-app` are the 
 **new server name**, because CloudNativePG refuses to archive into a path that already holds another server's files
 (`WAL archive check failed for server …: Expected empty archive`, and the pod stays in `Setting up primary`).
 
+::: in-depth The cutover, as a sequence and a lifecycle
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: replacing a lost cluster
@@ -221,6 +233,7 @@ stateDiagram-v2
   Managed --> Protected: a base backup completes
   Protected --> [*]
 ```
+:::
 
 The steps, in this order. **None of it has run on a cluster**: rehearse it in a scratch namespace if you can, and keep the old
 server's files until it has worked.
@@ -267,6 +280,7 @@ server's files until it has worked.
 
 ## 7. What the backups keep, and what they do not
 
+::: in-depth What is kept, and what is not
 | Kept | Not kept |
 |---|---|
 | Every database of the one cluster: the orchestrator's (its thread log and the state beside it) and the agents' | The **Kubernetes Secrets**. The operator does not back them up: a restored cluster gets an app Secret with a **new random password** for `orchestrator`, and the other roles' Secrets are the chart's |
@@ -274,6 +288,7 @@ server's files until it has worked.
 | Everything up to the **last archived WAL segment** | The minutes between that segment and the loss |
 | A deleted thread, for the retention (§4) | Nothing beyond it: a restore cannot reach past the recovery window |
 | | The **artifacts**, the files agents hand over: they live in the artifact store ([ADR 0032](../../decisions/0032-files-from-agents-live-in-an-artifact-store.md)), not in the database, and a RustFS of the release has no backup ([its section](../../../deploy/chart/README.md#artifacts-in-s3-and-rustfs)) |
+:::
 
 ## 8. What CI proves, and what it does not
 

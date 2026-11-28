@@ -79,6 +79,7 @@ The limit is only as good as the address it counts, and **with the wrong address
 worse than no limit, because the site goes down for every person at the rate one client could use. There are two ways to get
 it wrong, and the end-to-end reproduces both:
 
+::: in-depth The two ways the address can be wrong
 - **Depth 0 behind a proxy.** The peer that connects to Traefik is then the load balancer's or the node's address — a
   Service with `externalTrafficPolicy: Cluster` hides the client's address behind the node's — and it is the same for every
   client: one bucket for all of them.
@@ -86,6 +87,7 @@ it wrong, and the end-to-end reproduces both:
   `forwardedHeaders.trustedIPs` has its `X-Forwarded-*` headers deleted before any middleware runs, so no request has a
   source, and every request without one shares a single bucket. The same happens when the header has fewer entries than
   `sourceDepth`.
+:::
 
 Nothing in this repository can say which case your provider's ingress is — that is
 [open question 51](../../open-questions.md), still open — so the chart leaves the limit off and the decision is yours.
@@ -178,13 +180,16 @@ read Traefik's log.
 
 To take the limit off again, set `enabled: false`: the `Middleware` goes, and the annotation with it.
 
+::: in-depth Measure before you tighten it
 **Measure before you tighten it.** A page load of the web asks for the shell, a few dozen static files, the thread list and
 a stream; the default burst is meant to hold one, and the default rate is meant to be far above what a person does and far
 below what a script does. The orchestrator's own limit — per process, per share link — is the other layer, and it stays: it
 does not depend on the address.
+:::
 
 ## 8. What CI proves, and what it does not
 
+::: in-depth What the checks prove, and what they do not
 `tests/render-check.sh` holds the render: off, nothing (no `Middleware`, no annotation, the Ingress as it was); on, the
 `Middleware` with the numbers and the annotation naming it in the release's namespace, ours before the deployer's, the
 deployer's other annotations kept, and every refusal above — each check was broken on purpose once. `deploy.yml` validates
@@ -201,6 +206,7 @@ forged header at depth 0 is not the source, and a Traefik that does not trust th
 what `X-Forwarded-For` holds behind its load balancer (open question 51). Nor the starting numbers under real traffic, two
 Traefik replicas (each keeps its own buckets), an SSE stream (counted once by Traefik's design, read in its source and not
 run here), or the Ingress's TLS through cert-manager (the certificate in the scenario is self-signed).
+:::
 
 ## Next
 
