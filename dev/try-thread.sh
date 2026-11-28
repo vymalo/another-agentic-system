@@ -24,7 +24,7 @@
 #   TIMEOUT     seconds to wait for the thread to stop moving (default 60)
 #
 # Exit status: 0 when the thread ends `done` or `blocked`, 1 on `failed`/`cancelled` or a timeout.
-# Needs: curl, jq (and python3, or /proc, uuidgen for a v7 UUID).
+# Needs: curl, jq (and python3 for a v7 UUID; /proc or uuidgen, which make a v4, are the fallback).
 set -eu
 
 BASE_URL=${BASE_URL:-http://127.0.0.1:8080}
@@ -36,7 +36,7 @@ TIMEOUT=${TIMEOUT:-60}
 [ $# -ge 1 ] || { echo "usage: $0 TEXT..." >&2; exit 2; }
 TEXT=$*
 
-uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || { echo 'uuid: python3 is missing, so this is a v4 id and `recent` will not be creation order' >&2; cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }; }
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

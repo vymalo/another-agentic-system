@@ -38,7 +38,7 @@
 #                    path is the repository's); its commands/ names are the expected list
 #   TIMEOUT          120    seconds to wait for a run
 #
-# Needs curl and jq (and python3, or /proc, uuidgen for a v7 UUID). Verified by CI only, in
+# Needs curl and jq (and python3 for a v7 UUID; /proc or uuidgen, which make a v4, are the fallback). Verified by CI only, in
 # .github/workflows/coder-e2e.yml.
 set -eu
 
@@ -70,7 +70,7 @@ trap 'rm -rf "$tmp"' EXIT
 api() { curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "$id_header"; }
 # shellcheck disable=SC1091 # the path is the script's own directory: shellcheck does not follow it
 . "$(dirname "$0")/sse.sh"
-uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || { echo 'uuid: python3 is missing, so this is a v4 id and `recent` will not be creation order' >&2; cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }; }
 
 # --- the commands of the folder -------------------------------------------------------------------------
 if [ ! -d "$agent_dir/commands" ]; then

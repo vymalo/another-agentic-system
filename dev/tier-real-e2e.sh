@@ -40,7 +40,7 @@
 #   TIMEOUT          120    seconds to wait for a thread to stop
 #
 # It EMPTIES the request journal of `mock-openai` first, so run it on a stack you are not in the middle of another scenario on. Needs
-# curl and jq (and python3, or /proc, uuidgen for a v7 UUID). Verified by CI only, in .github/workflows/coder-e2e.yml, through dev/e2e-all.sh.
+# curl and jq (and python3 for a v7 UUID; /proc or uuidgen, which make a v4, are the fallback). Verified by CI only, in .github/workflows/coder-e2e.yml, through dev/e2e-all.sh.
 set -eu
 
 base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
@@ -74,7 +74,7 @@ api() { # api METHOD PATH: the body on stdout, non-zero when the status is not 2
   curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "$id_header"
 }
 
-uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || { echo 'uuid: python3 is missing, so this is a v4 id and `recent` will not be creation order' >&2; cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }; }
 
 # run_agui AGENT THREAD TEXT TIER: one run (one message) on THREAD, naming TIER. Prints the HTTP status; the body is $tmp/run.out.
 run_agui() {
