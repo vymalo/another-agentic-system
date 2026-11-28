@@ -147,7 +147,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || { echo 'uuid: python3 is missing, so this is a v4 id and `recent` will not be creation order' >&2; cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || { echo 'uuid: python3 is missing, so this is a v4 id and recent will not be creation order' >&2; cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }; }
 
 expect() { # expect DESCRIPTION ACTUAL EXPECTED
   if [ "$2" = "$3" ]; then ok "$1"; else bad "$1: expected '$3', got '$2'"; fi

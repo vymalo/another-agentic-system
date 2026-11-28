@@ -16,7 +16,7 @@ bound to `127.0.0.1`.
 | Docker Compose | v2 (`docker compose version`); **v2.24.4 or newer** for `compose.live.yaml`, which uses the `!override` tag that older versions do not parse (the version is from Docker's documentation, *not run* on that release; this stack was checked with v5.1.1). |
 | Disk and memory | About 10 GB of free disk and 8 GB of memory for Docker: the coder image is 2.9 GB, and the Rust and web builds add several more. *An estimate, not measured.* |
 | CPU | `linux/amd64`. The coder image has no arm64 build, so `compose.yaml` names the platform and an ARM machine (Apple Silicon) runs it under emulation (slower; your Docker setup must have emulation enabled). |
-| Host tools | `curl`, `jq`, `git` and `openssl`, for the scenario scripts (not for the stack), and `node` 22 or newer for `dev/locale-real-e2e.sh`, which builds its run body with the web's own builder (TypeScript, loaded by Node's type stripping). |
+| Host tools | `curl`, `jq`, `git` and `openssl`, for the scenario scripts, and `ss`, `netstat` or `lsof` for `dev/check-ports.sh` (not for the stack), and `node` 22 or newer for `dev/locale-real-e2e.sh`, which builds its run body with the web's own builder (TypeScript, loaded by Node's type stripping). |
 | Free ports (all on 127.0.0.1) | **8080** the edge (chat, API, MCP, webhooks), 5432 Postgres, 8081 to 8083 the mock agents, 8085 the mock GitHub MCP server, 8090 the coder, 8091 to 8093 its model, GitHub and git mocks, 8094 the chat's and researcher's model, 8096 the mock web search, 8097 the chat, 8098 the researcher, 8099 the mock issuer, 8100 the browser, 9000 RustFS. Each has a variable (`EDGE_PORT`, `MOCK_OIDC_PORT`, `POSTGRES_PORT`, `CODER_PORT`, `CHAT_PORT`, `RESEARCHER_PORT`, `BROWSER_PORT`, `RUSTFS_PORT`, `MOCK_*_PORT`, `GIT_SERVER_PORT`; see [`.env.example`](../.env.example)) if it clashes. |
 
 ### Start it
@@ -26,6 +26,15 @@ Compose derives it from the directory the file is in: the main checkout's stack 
 `another-agentic-system`, and a worktree at `../wt-fix` gets `wt-fix`. A `docker compose up` in one
 worktree therefore cannot recreate another's containers with its own settings (sys#393), and the
 `COMPOSE_PROJECT_NAME` variable still overrides both when you want a name of your own.
+
+Host ports are not per project: a second stack, a local Postgres or anything else holding 5432, 8080 or one of the
+mocks' ports makes Compose fail with `port is already allocated` and no word about which variable moves it. Ask first —
+it names the variable and a free port beside it:
+
+```sh
+dev/check-ports.sh                      # every published port of compose.yaml
+POSTGRES_PORT=15432 dev/check-ports.sh  # what it would say with that variable set
+```
 
 ```sh
 docker compose --profile app up --build
@@ -472,7 +481,7 @@ EXPECT_INSTALLATION_LOOKUP=1 GITHUB_AUTH=app dev/coder-e2e.sh && GITHUB_AUTH=app
 
 (`dev/e2e-all.sh` passes `GITHUB_AUTH` on, but its `folder` scenario restarts the coder without the override: run the App pass on its own, as CI does,
 after the first one.) The split roles (`dev/split-e2e.sh`) need another shape of the stack and are not in the list
-([The split profile](#the-split-profile-a-control-plane-and-two-workers)), and neither is `dev/browser-auth-e2e.sh` (the stack **with** `-f dev/compose.browser-auth.yaml`: [Tokens in the browser](#tokens-in-the-browser-the-web-signs-in-itself-adr-0054)); `dev/check-mocks.sh` checks the WireMock agents and the registry mock alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the scripted models (the agents' and the title's) and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`. `dev/kagent-e2e.sh` is not in the list either: it needs a kind cluster with kagent on it (0.10 with `dev/kagent/up-0.10.sh`, 1.x with Agent Substrate and `dev/kagent/up.sh`), and the stack with `-f dev/compose.kagent.yaml` ([kagent](#kagent-an-agent-on-kubernetes-over-plain-a2a)).
+([The split profile](#the-split-profile-a-control-plane-and-two-workers)), and neither is `dev/browser-auth-e2e.sh` (the stack **with** `-f dev/compose.browser-auth.yaml`: [Tokens in the browser](#tokens-in-the-browser-the-web-signs-in-itself-adr-0054)); `dev/check-mocks.sh` checks the WireMock agents and the registry mock alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the scripted models (the agents' and the title's) and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`; `dev/stack-isolation-e2e.sh` starts stacks of its own (`postgres` only) and needs no running one. `dev/kagent-e2e.sh` is not in the list either: it needs a kind cluster with kagent on it (0.10 with `dev/kagent/up-0.10.sh`, 1.x with Agent Substrate and `dev/kagent/up.sh`), and the stack with `-f dev/compose.kagent.yaml` ([kagent](#kagent-an-agent-on-kubernetes-over-plain-a2a)).
 
 ### Connect Claude Code over MCP
 
@@ -541,7 +550,7 @@ Notes on going live:
 
 | You see | It is | Do |
 |---|---|---|
-| `port is already allocated` or `address already in use` | one of the ports above is taken (a local Postgres on 5432 is the usual one) | stop it, or set the variable of that port (`POSTGRES_PORT=5433 docker compose ...`, or in `.env`); the scripts read `EDGE_PORT` too, or take `BASE_URL` |
+| `port is already allocated` or `address already in use` | one of the ports above is taken (a local Postgres on 5432 is the usual one) | `dev/check-ports.sh` names the variable and a free port beside it before you start; or stop what holds it, or set the variable of that port (`POSTGRES_PORT=5433 docker compose ...`, or in `.env`); the scripts read `EDGE_PORT` too, or take `BASE_URL` |
 | `docker compose` rejects `compose.live.yaml` at an `!override` tag | Compose older than v2.24.4 | update Docker Compose |
 | the API answers `401` (a script) or the page loops through the issuer (a browser) | no token, an expired one (an hour), or one for another audience; or `mock-oidc` was recreated and signs with a new key your session predates | `dev/auth-header.sh` for a fresh token; in the browser reload, or `/oauth2/sign_out` and in again; `docker compose --profile app logs oauth2-proxy mock-oidc orchestrator` |
 | the API answers `503` with `Retry-After`, and `/readyz` is 503 | the orchestrator cannot read the issuer's keys (`mock-oidc` is not up or not healthy) | `docker compose --profile app up -d --wait mock-oidc`; the keys are fetched again within seconds |
@@ -578,6 +587,25 @@ Containers, networks and volumes are prefixed with it, so `docker compose up` in
 recreates another's stack, and `docker compose down -v` removes only that project's volumes.
 Host ports are not per project: two stacks side by side need different `*_PORT` values (`POSTGRES_PORT=15432`, ...).
 `sh tools/check-compose-project.sh` checks that two checkouts give two names (also in CI).
+
+**Two stacks side by side, in two checkouts** — the recipe, with a worktree `../wt-fix`. The first stack holds the
+defaults of every port it publishes, so the second moves all of them, not three: `--suggest` prints exactly the
+assignments to paste.
+
+```sh
+# in the main checkout, on the default ports
+docker compose --profile app up -d --wait
+
+# in ../wt-fix, on ports of its own; its project name is `wt-fix`, from the directory
+eval "$(dev/check-ports.sh --suggest)"
+docker compose --profile app up -d --wait
+```
+
+`docker compose down -v` in either one stops and forgets **that** project only: the other keeps its volume and its data
+(*verified 2026-11-28* by `dev/stack-isolation-e2e.sh`, which is also a step of the `Compose` workflow). The same script
+shows the failure the rule prevents: two checkouts under **one shared project name** are one project, and the second
+one's `down -v` takes the first's data with it. It needs Docker, starts only `postgres`, picks free ports and removes
+every project and directory it makes.
 
 ## Services
 
