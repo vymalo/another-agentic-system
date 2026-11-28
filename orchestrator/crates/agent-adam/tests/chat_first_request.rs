@@ -11,30 +11,32 @@
 //! measurement.
 //!
 //! **What this measures.** The `chat` folder as `dev/agents/chat/agent/` is served: the root's
-//! instructions with its vars rendered, the subagent catalog, the skills catalog (the chat has
-//! none), the words of the default mode (`modes/direct.md`, in force because the message names no
-//! mode), the sentence the loop appends about `after_previous`, and the tools the root is offered.
-//! The root has no `tools:` of its own, so `bind` gives it every registered tool: the six of the
-//! person's screen (`ask_user`, `show`, `ui_catalog`, `plan_work`, `plan_check`, `plan_add`), one
-//! per helper (`planner`, `writer`, `researcher`) and the five session tools of a root that has a
-//! helper.
+//! instructions with its vars rendered, the words of the default mode (`modes/direct.md`, in force
+//! because the message names no mode), the sentence the loop appends about `after_previous`, and
+//! the tools the root is offered. The root declares **`tools: [ui_catalog]`** (ANR-394): the chat
+//! has no tools of its own — its card says so — so `ask_user`, `show`, `plan_work`, `plan_check` and
+//! `plan_add` are not offered (14,426 B of the six screen tools' 14,900 B, and the reason the
+//! request was ~6.6k tokens), while `ui_catalog` stays (the chat's scripted scenario drives it) and
+//! the three helper tools (`planner`, `writer`, `researcher`) and the session tools adam adds to a
+//! root with helpers are not `tools:`-selectable and stay.
 //!
 //! **What it does not measure**, and why the number is a floor:
 //!
 //! * the deployed `adam-agent` also registers the thread-tools **source**
-//!   (`Ui::new(policy).source()`), which can describe `show` with the components of the
-//!   conversation's screen and offer a person's attached MCP tools at run time (ADR 0046). Neither
-//!   is the folder's own text, and both are per conversation; here the six screen tools are the
-//!   ones `Ui::embedded()` makes, with the same specs;
+//!   (`Ui::new(policy).source()`), which offers a person's attached MCP tools at run time (ADR 0046).
+//!   It is not the folder's own text and it is per conversation; the root's `tools: []` selects none
+//!   of it, so it cannot move this number;
 //! * the researcher's `mcp.json` is stood in for by [`Search`], one tool of a trivial schema. It
 //!   is the researcher's tool, not the root's, so it does not move this number; the stand-in is
 //!   only there because `bind` refuses an agent whose `mcp.json` lists servers that were given no
 //!   tools (`McpNotConnected`, fail closed) and this test reaches no network and no database.
 //!
-//! **Tool groups (ANR-394, item 2).** Nothing to declare. `tools_loading` defaults to `lazy` and
-//! the chat sets nothing, and a group is made from an `mcp.json` server with a `when`: the chat's
-//! root has no `mcp.json`, so it has no group. The tools of the first request are not group
-//! members, so `tools_loading: lazy` does not shrink them — adding the key would be a no-op.
+//! **Tool groups and the trim (ANR-394, item 2).** A group is made from an `mcp.json` server with a
+//! `when`; the chat's root has no `mcp.json`, so there is no group to declare, and `tools_loading`
+//! already defaults to `lazy` (adding it would be a no-op). The lever is the root's `tools:` list:
+//! `tools: [ui_catalog]` drops five of the six screen tools — 14,426 B of the 19,967 B the request
+//! carried, and the reason it was ~6.6k tokens — while `ui_catalog`, the helper tools and the
+//! session tools stay. That is the trim this PR makes, in both copies of the folder.
 //!
 //! [`BASELINE_BYTES`] is not recorded yet: this host cannot compile, so the growth pin says nothing
 //! until a run prints the total and the constant is set in the same commit. The budget assert is
@@ -222,6 +224,12 @@ async fn the_chats_first_request_stays_under_the_lean_budget() {
     let (system, tools) = first_request_bytes(&requests[0]);
     let total = system + tools;
     let tokens = total / 4;
+    // Not vacuous: a bind that offered the root nothing would print `0 B + 0 B` and pass the budget.
+    assert!(system > 0, "the first request carries no system prompt");
+    assert!(
+        !requests[0].tools.is_empty(),
+        "the first request offers the root no tool at all (its three helpers are the floor)"
+    );
     println!(
         "chat folder first request: system {system} B + tools {tools} B = {total} B \
          (~{tokens} tokens at chars/4); lean budget {LEAN_BUDGET_TOKENS} tokens (~{} B), \
