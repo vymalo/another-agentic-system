@@ -461,7 +461,10 @@ async fn config_says_the_route_exists_only_when_the_application_is_told_to() {
             "search": {"maxQueryLength": 200, "maxTerms": 8},
             "prompts": {"limit": 100, "maxVariables": 8, "maxBodyBytes": 16384, "maxRenderedBytes": 32768},
             "teams": {"limit": 50, "minMembers": 2, "maxMembers": 8, "maxCharterBytes": 4096, "minMaxHandoffs": 6, "maxMaxHandoffs": 20, "defaultMaxHandoffs": 6, "minPushTokens": 4000, "maxPushTokens": 100000, "defaultPushTokens": 24000},
-            "ui": {"showDescriptions": true}
+            "ui": {
+                "showDescriptions": true,
+                "languages": ["en-GB", "fr-FR", "gsw-CH", "fur-IT"]
+            }
         })
     );
 }

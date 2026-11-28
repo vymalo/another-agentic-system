@@ -236,6 +236,12 @@ orchestrator:
       matchLabels: {}
   # `ui.showDescriptions`.
   showDescriptions: true
+  # `ui.languages`: the interface languages the web offers (ADR 0085, card ANR-957), each a language tag an interface
+  # offers — a language, an optional script of 4 letters and an optional region of 2 letters or 3 digits, the shape the
+  # picker sends. Empty is the orchestrator's own default (`en-GB`, `fr-FR`, `gsw-CH`, `fur-IT`) and nothing is written
+  # then, so the default render reads with an image that does not know the key; set it only once `orchestrator.image.tag`
+  # is at or after the picker's merge.
+  languages: []
   # Opening a thread from its history (ADR 0059, docs/api/history.md): the web asks for the newest turns and the older ones as the
   # person scrolls up. The orchestrator's own defaults are on and are NOT written, so the default render reads with an image that
   # does not know these keys; set one only once `orchestrator.image.tag` is at or after the history read's merge commit (README.md).

@@ -15,7 +15,9 @@ import { createHash, randomUUID } from "node:crypto";
 import http from "node:http";
 import { pathToFileURL } from "node:url";
 import { catalogDigest } from "../src/features/chat/lib/a2ui/catalog/digest";
+import { isInterfaceTag } from "../src/features/locale/lib/locale";
 import type { components } from "../src/lib/api/schema";
+import { DEFAULT_LANGUAGES } from "../src/lib/language";
 import { uuidv7 } from "../src/lib/uuid";
 import { COMMANDS_URI, readCommands } from "./commands";
 import { FILES, fileHeaders } from "./files";
@@ -425,6 +427,11 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     down: boolean;
     showDescriptions: boolean;
     /**
+     * `ui.languages` (ADR 0085): the interface languages the deployment offers, in its order. The four unless a test
+     * says otherwise (`POST /__mock/config?languages=en-GB,fr-FR`).
+     */
+    languages: string[];
+    /**
      * `ui.history` (ADR 0059): the capability to read a thread in pages, and what the web asks for. Null: the
      * orchestrator does not serve the route, as an older one does not, and `GET /api/config` leaves the key out.
      * `maxPageBytes` is `server.history.maxPageBytes`, which is not in the configuration the web reads.
@@ -492,6 +499,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         agents: [],
         down: false,
         showDescriptions: true,
+        languages: [...DEFAULT_LANGUAGES],
         history: {
           initialTurns: 12,
           pageTurns: 20,
@@ -1511,7 +1519,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       return void res.writeHead(204).end();
     }
     // What a test sets for its own session, each only when it is given: `?showDescriptions=false`
-    // (`ui.showDescriptions`), and `?me=admin` (who the session is, `PROFILES`: `user`, `admin`,
+    // (`ui.showDescriptions`), `?languages=en-GB,fr-FR` (`ui.languages`, ADR 0085: a comma-separated list of
+    // the tags this client sends; anything else is a 400), and `?me=admin` (who the session is, `PROFILES`: `user`, `admin`,
     // `read-only`, `no-access`; 400 for another name), `?sharing=public` (the deployment's cap on
     // sharing, ADR 0040: `disabled`, `internal` (the default), `public`; `GET /api/me` says it as
     // `sharing` for a role that holds `thread.share`), `?signedIn=false` (no identity: every route
@@ -1524,6 +1533,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     if (path === "/__mock/config" && method === "POST") {
       const state = registryOf(session);
       const shown = url.searchParams.get("showDescriptions");
+      const languages = url.searchParams.get("languages");
       const history = url.searchParams.get("history");
       const who = url.searchParams.get("me");
       const cap = url.searchParams.get("sharing");
@@ -1576,6 +1586,18 @@ export function createMockServer(options: MockOptions = {}): http.Server {
           "minClient is a dotted version such as 2.0.0, or none",
         );
       }
+      if (
+        languages !== null &&
+        (!languages.split(",").every((tag) => isInterfaceTag(tag)) ||
+          languages.split(",").length > 32)
+      ) {
+        return problem(
+          res,
+          400,
+          "Bad Request",
+          "languages is a comma-separated list of 1 to 32 language tags an interface offers",
+        );
+      }
       if (minClient !== null) state.minClient = minClient === "none" ? null : minClient;
       if (cap !== null) state.sharing = cap as Sharing;
       if (offer !== null) {
@@ -1592,6 +1614,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       if (signedIn !== null) state.signedIn = signedIn !== "false";
       if (stale !== null) state.stale = stale === "true";
       if (shown !== null) state.showDescriptions = shown !== "false";
+      if (languages !== null) state.languages = languages.split(",");
       if (history !== null) {
         if (!["off", "on", "windowed"].includes(history)) {
           return problem(res, 400, "Bad Request", "history is one of off, on, windowed");
@@ -2017,7 +2040,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     }
     // `GET /api/config` (`getConfig`, ADR 0034): the public subset, every `ui` key with its value
     if (path === "/api/config" && method === "GET") {
-      const { showDescriptions, history } = registryOf(sessionOf(req));
+      const { showDescriptions, history, languages } = registryOf(sessionOf(req));
       return sendJson(res, 200, {
         // the capability: this server serves `searchThreads` (ADR 0068)
         search: { maxQueryLength: MAX_QUERY_LENGTH, maxTerms: MAX_TERMS },
@@ -2030,6 +2053,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
         },
         ui: {
           showDescriptions,
+          languages,
           ...(history
             ? {
                 history: {

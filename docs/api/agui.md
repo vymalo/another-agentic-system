@@ -1483,7 +1483,7 @@ contract [`locale-v1.md`](locale-v1.md)); adam lists the extension whenever `DEF
   no `vymalo.locale` on any frame and no activity is emitted for it. A reload, another tab, an export, a fork and a share link show
   nothing of the interface's language.
 - **Out:** nothing.
-- **Capabilities:** no key. Nothing in the interface draws a locale control: the tag is the client's own state.
+- **Capabilities:** no key. The interface draws one control for it — the language picker of the account menu, from the deployment's `ui.languages` of [`GET /api/config`](config.md#get-apiconfig) (ANR-957) — and nothing else: the tag is the client's own state.
 - **To the agent:** only when the live card read at the send lists `locale/v1` well formed; any other agent is sent the message it
   always was. The orchestrator's own messages (a rework, an ask, a verifier's task) carry none.
 

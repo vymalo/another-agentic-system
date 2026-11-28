@@ -2713,8 +2713,75 @@ fn the_ui_section_has_its_defaults_and_is_the_only_public_part() {
         json["ui"],
         serde_json::json!({
             "showDescriptions": true,
-            "history": { "initialTurns": 12, "pageTurns": 20, "windowed": true }
+            "history": { "initialTurns": 12, "pageTurns": 20, "windowed": true },
+            "languages": ["en-GB", "fr-FR", "gsw-CH", "fur-IT"]
         })
+    );
+}
+
+/// ADR 0085: the interface languages a deployment offers, what its file may say, and what the
+/// rules refuse. The tags themselves are the core's grammar (`orch_core::locale`), mirrored in
+/// `rules.rs`; here the list is the deployment's.
+#[test]
+fn the_interface_languages_have_their_defaults_and_their_rules() {
+    let valid = load(MINIMAL, &minimal_env()).unwrap();
+    assert_eq!(valid.config.ui.languages, orch_config::DEFAULT_LANGUAGES);
+    // an operator's own list, in its order
+    let own = format!("{MINIMAL}ui: {{ languages: [fr-FR, de-DE] }}\n");
+    let set = load(&own, &minimal_env()).unwrap().config;
+    assert_eq!(set.ui.languages, ["fr-FR", "de-DE"]);
+    // the boundary the schema names: 32 is a list, 33 is not
+    let tags = |n: usize| {
+        (1..=n)
+            .map(|i| format!("en-{i:03}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let most = format!("{MINIMAL}ui: {{ languages: [{}] }}\n", tags(32));
+    assert_eq!(
+        load(&most, &minimal_env())
+            .unwrap()
+            .config
+            .ui
+            .languages
+            .len(),
+        32
+    );
+    let over = format!("{MINIMAL}ui: {{ languages: [{}] }}\n", tags(33));
+    assert_eq!(
+        lines(load(&over, &minimal_env())),
+        ["ui.languages: takes at most 32 item(s)"]
+    );
+    // an empty list is refused, and so is an entry that is not a tag
+    let empty = format!("{MINIMAL}ui: {{ languages: [] }}\n");
+    assert_eq!(
+        lines(load(&empty, &minimal_env())),
+        ["ui.languages: needs at least 1 item(s)"]
+    );
+    let bad = format!("{MINIMAL}ui: {{ languages: [en-GB, en_CM] }}\n");
+    assert_eq!(
+        lines(load(&bad, &minimal_env())),
+        [
+            "ui.languages[1]: not a language tag an interface offers (a language, an optional script and an optional region), like en-GB"
+        ]
+    );
+    // the list is the picker's, so a shape a message may carry but the picker would never send is
+    // refused at startup: a variant, a private-use part, an extension, a grandfathered tag
+    for tag in ["de-CH-1901", "x-twain", "en-a-bbb", "i-klingon"] {
+        let variant = format!("{MINIMAL}ui: {{ languages: [{tag}] }}\n");
+        assert_eq!(
+            lines(load(&variant, &minimal_env())),
+            [
+                "ui.languages[0]: not a language tag an interface offers (a language, an optional script and an optional region), like en-GB"
+            ],
+            "{tag}"
+        );
+    }
+    // subtags are case-insensitive, so `EN-gb` is `en-GB` and a list may not hold both
+    let twice = format!("{MINIMAL}ui: {{ languages: [en-GB, EN-gb] }}\n");
+    assert_eq!(
+        lines(load(&twice, &minimal_env())),
+        ["ui.languages[1]: a language is listed more than once"]
     );
 }
 

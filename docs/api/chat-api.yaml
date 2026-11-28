@@ -1821,6 +1821,7 @@ components:
         ui:
           showDescriptions: true
           history: { initialTurns: 20, pageTurns: 20, maxTurns: 200, projection: 1, windowed: true }
+          languages: [en-GB, fr-FR, gsw-CH, fur-IT]
         search: { maxQueryLength: 200, maxTerms: 8 }
         prompts: { limit: 100, maxVariables: 16, maxBodyBytes: 16384, maxRenderedBytes: 65536 }
     MyUsageExample:
@@ -2224,12 +2225,18 @@ components:
             defaultPushTokens: { type: integer }
         ui:
           type: object
-          description: "Every key of the `ui` section with its effective value. A client ignores a key it does not know."
+          description: "Every key of the `ui` section with its effective value. A client ignores a key it does not know; a key absent from an older orchestrator falls back to the client's own default, which is why none of them is required."
           properties:
             showDescriptions:
               type: boolean
               default: true
               description: "Whether the web shows a thread's description ([ADR 0035](../decisions/0035-utility-model-tasks.md)). The API returns it either way."
+            languages:
+              type: array
+              minItems: 1
+              maxItems: 32
+              items: { type: string }
+              description: "The interface languages this deployment offers ([ADR 0085](../decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md)), in the operator's order. The web draws a picker from them and sends the person's choice with each message (`vymalo.locale`). Present on every build that has the picker: the four of the design (`en-GB`, `fr-FR`, `gsw-CH`, `fur-IT`) when the file names none, and an older orchestrator leaves the key out (the web then offers the same four). Each is a language tag an interface offers — a language, an optional script of 4 letters and an optional region of 2 letters or 3 digits — and no two are the same tag case-insensitively."
             history:
               type: object
               description: "How the web opens a long thread ([ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md)). **Its presence is the capability**: it is there only when this process serves `getThreadHistory`, so an older orchestrator, or one without the AG-UI surface, leaves it out and the web replays the log as it always did."

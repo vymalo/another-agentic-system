@@ -114,6 +114,7 @@ tasks:
     recompute: { minNewMessages: 4 }
 ui:
   showDescriptions: true
+  languages: [en-GB, fr-FR, gsw-CH, fur-IT]
   history: { initialTurns: 12, pageTurns: 20, windowed: true }
 artifacts:
   store: fs
@@ -349,6 +350,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `tasks.description.recompute.minNewMessages` | ≥ 1, `4`; the messages (the person's, and the agent's final words) since the last description before a new one is asked for; fewer is **no model call** | — | now |
 | `tasks.turnSummary`, `tasks.stepLabel` | names kept for later tasks | — | reserved, no PR yet: refused |
 | `ui.showDescriptions` | boolean, `true`; whether the web shows a thread's description (the API returns it either way) | — | now, served by [`GET /api/config`](#get-apiconfig); the web reads it (PR S19) |
+| `ui.languages` | a list of 1 to 32 language tags, none twice (subtags are case-insensitive); each a **language, an optional script of 4 letters and an optional region of 2 letters or 3 digits**, at most 35 bytes — the shape the picker sends, narrower than the tag a message may carry; default `en-GB`, `fr-FR`, `gsw-CH`, `fur-IT` ([ADR 0085](../decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md)). **The interface languages this deployment offers**: the web draws a picker for exactly these, and the tag a person picks rides each message as `locale/v1`. A tag is data, not a protocol variant, so a deployment names its own list | — | now, served by [`GET /api/config`](#get-apiconfig); the web reads it (ANR-957). An image that does not know the key refuses it (the `ui` section is closed), and a tag outside the picker's shape is refused at startup rather than offered to nobody |
 | `ui.history.initialTurns`, `.pageTurns`, `.windowed` | `initialTurns` 1 to 100, `12`: the turns the web asks for when it opens a thread; `pageTurns` 1 to 100, `20`: the turns of the first older page (each later one asks for more, up to `server.history.maxTurns`); `windowed` boolean, `true`: whether the web opens a thread from its history (the newest turns first, older ones as the person scrolls up); `false` replays the whole log as the web always did. Both counts may not exceed `server.history.maxTurns` (refused at startup) | — | now, served by [`GET /api/config`](#get-apiconfig) **with the build's `projection` version, and only by a process that serves the history route** (it mounts `agui` and serves routes): the presence of `ui.history` is the capability ([`history.md`](history.md)) |
 
 ### `threadTools`, `mcp`, `webhooks`, `auth`, `artifacts`
@@ -832,6 +834,7 @@ GET /api/config
 { "search": { "maxQueryLength": 200, "maxTerms": 8 },
   "prompts": { "limit": 100, "maxVariables": 8, "maxBodyBytes": 16384, "maxRenderedBytes": 32768 },
   "ui": { "showDescriptions": true,
+          "languages": ["en-GB", "fr-FR", "gsw-CH", "fur-IT"],
           "history": { "initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 2, "windowed": true } } }
 ```
 
@@ -849,6 +852,10 @@ GET /api/config
   ([`history.md`](history.md), [ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md)), so its
   presence is the capability and an orchestrator without it (older, or with no AG-UI surface, or a worker) leaves it out. Its
   `projection` is the version of the frames this build writes and `maxTurns` is `server.history.maxTurns`, the largest page the server accepts: neither is a key of `ui.history`.
+- `ui.languages` is the list the web offers as the interface's languages ([ADR 0085](../decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md), [`locale-v1.md`](locale-v1.md)):
+  the deployment's own, validated as BCP 47 tags at startup (a malformed, empty, duplicated or over-long list is refused, exit 78),
+  defaulting to `en-GB`, `fr-FR`, `gsw-CH` and `fur-IT`. The web draws a picker for exactly these and sends the tag a person
+  picks; a client that does not know the key offers no picker and sends the tag of the page it draws, as it always did.
 - It changes only when the process restarts. The web treats a missing key as its default and ignores a key it does not
   know, so the section grows additively; a key is never renamed or retyped in `version: 1`.
 - It is `getConfig` in [`chat-api.yaml`](chat-api.yaml), served by the resource API of every role that serves routes, and

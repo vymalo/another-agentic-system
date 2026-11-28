@@ -1558,6 +1558,7 @@ fn project(
         public: Some(PublicConfig {
             ui: UiSettings {
                 show_descriptions: c.ui.show_descriptions,
+                languages: c.ui.languages.clone(),
                 // `projection` is the build's, set where the surfaces are known
                 // (`Config::public_config`)
                 history: Some(UiHistory {
@@ -2976,7 +2977,7 @@ tasks:
     system: { file: prompts/description.md }
     maxChars: 200
     recompute: { minNewMessages: 6 }
-ui: { showDescriptions: false, history: { initialTurns: 5, pageTurns: 8, windowed: false } }
+ui: { showDescriptions: false, history: { initialTurns: 5, pageTurns: 8, windowed: false }, languages: [fr-FR, de-DE] }
 server: { history: { maxTurns: 30, maxPageBytes: 1048576 } }
 ";
         let mut pairs = base();
@@ -3008,6 +3009,7 @@ server: { history: { maxTurns: 30, maxPageBytes: 1048576 } }
         assert_eq!(description.max_tokens, 160);
         assert_eq!(description.timeout, Duration::from_secs(9));
         assert!(!app.public.ui.show_descriptions);
+        assert_eq!(app.public.ui.languages, ["fr-FR", "de-DE"]);
         // `ui.history` and `server.history` (ADR 0059) reach the application: the key of the
         // endpoint is the file's, with the build's projection; the bounds are the server's
         // the capability is the route's: a build without the AG-UI surface does not claim it
