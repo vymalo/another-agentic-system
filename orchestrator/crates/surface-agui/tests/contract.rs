@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use jsonschema::Validator;
 use orch_agui_proto::SCHEMA_1_0;
 use orch_app::Policy;
+use orch_core::AccountId;
 use orch_ports::{
     AgentKind, AgentOwner, AgentProvisioner, AgentState, BlockedReason, ProvisionError,
     ProvisionedAgent, Role, StoreError,
@@ -317,6 +318,7 @@ impl AgentProvisioner for BlockedProvisioner {
         &self,
         _owner: &AgentOwner,
         _kind: AgentKind,
+        _account: &AccountId,
     ) -> Result<ProvisionedAgent, ProvisionError> {
         Err(ProvisionError::Blocked {
             reason: BlockedReason::NameConflict,
@@ -329,7 +331,12 @@ impl AgentProvisioner for BlockedProvisioner {
     ) -> Result<Option<AgentState>, ProvisionError> {
         Ok(None)
     }
-    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+    async fn suspend(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+        _account: &AccountId,
+    ) -> Result<(), ProvisionError> {
         Ok(())
     }
     async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
@@ -585,7 +592,8 @@ async fn the_agui_operations_answer_what_the_contract_documents() {
         std::time::Duration::from_secs(1),
     ))
     .await;
-    let r = blocked.refused("coder", Some(ALICE), &fresh("r")).await;
+    // with no identity header: the development user, who has an account (`SUB_USER`)
+    let r = blocked.refused("coder", None, &fresh("r")).await;
     assert_eq!(r.problem(500)["code"], "agent_blocked");
     seen.problem("runAgent", 500, &r);
 

@@ -13,7 +13,9 @@
 #                     another-agentic-platform's `docs/api/platform-api-v1.openapi.json`). It starts with no stub: dev/provisioner-e2e.sh adds
 #                     the ones of each person through WireMock's admin API (a state machine per person: absent, saving, ready, suspended, stuck).
 #   * orchestrator    dev/orchestrator.provisioner.yaml in place of dev/orchestrator.yaml (dev/check-provisioner-config.sh asserts that it is the
-#                     same file plus the marked `provisioner` block), PROVISIONER_CLIENT_SECRET (the secret `provisioner.credentials.clientSecret`
+#                     same file plus the marked `provisioner` blocks: the section itself and `auth.jwt.userClaim: sub`, so that a person is the
+#                     issuer's `sub`, the account their agent is charged to), dev/mcp-tokens.provisioner.yaml in place of
+#                     dev/mcp-tokens.yaml (the same token, its user named by `sub`), PROVISIONER_CLIENT_SECRET (the secret `provisioner.credentials.clientSecret`
 #                     names: the client secret of the mock issuer, which this stack's oauth2-proxy uses too, local development only), and a
 #                     dependency on mock-platform.
 #
@@ -52,9 +54,10 @@ services:
       start_period: 5s
 
   orchestrator:
-    # The same mount point as the base file's: Compose replaces the entry with this one.
+    # The same mount points as the base file's: Compose replaces each entry with this one.
     volumes:
       - ./dev/orchestrator.provisioner.yaml:/etc/orchestrator/config.yaml:ro
+      - ./dev/mcp-tokens.provisioner.yaml:/etc/orchestrator/mcp-tokens.yaml:ro
     environment:
       PROVISIONER_CLIENT_SECRET: dev-client-secret # the mock issuer's secret for `dev-chat`; local development only
     depends_on:

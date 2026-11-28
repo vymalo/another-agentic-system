@@ -39,9 +39,15 @@
 #   DEFAULT_TAG     en-GB                 the tag compose.yaml gives the chat as DEFAULT_LOCALE
 #   TIMEOUT         120    seconds to wait for a thread to stop
 #
+# The run body is **the web's own**: `forwardedProps` is built by `web/scripts/run-forwarded-props.mjs`, which
+# imports `web/src/features/locale/lib/locale.ts` as it stands (Node 24 type stripping), so the tag this scenario
+# proves on the real chat is the one the browser sends and not a hand-written copy of it. The script also checks
+# that builder directly: the four interface tags come out under `vymalo.locale`, and a tag it refuses comes out as
+# no member at all.
+#
 # It EMPTIES the request journal of `mock-model` first, so run it on a stack you are not in the middle of another
-# scenario on. Needs curl and jq (and /proc or uuidgen for a UUID). CI runs it in .github/workflows/coder-e2e.yml,
-# through dev/e2e-all.sh.
+# scenario on. Needs node, curl and jq (and /proc or uuidgen for a UUID). CI runs it in .github/workflows/coder-e2e.yml,
+# through dev/e2e-all.sh, with Node 24 from `actions/setup-node`.
 set -eu
 
 base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
@@ -59,6 +65,9 @@ modeled=${modeled%/}
 default_tag=${DEFAULT_TAG:-en-GB}
 timeout=${TIMEOUT:-120}
 
+# The web's own builder of a run's `forwardedProps` (see the header): the browser's shape, imported as it stands.
+web_props=$(dirname "$0")/../web/scripts/run-forwarded-props.mjs
+
 locale_uri=https://agents.vymalo.com/a2a/extensions/locale/v1
 
 fail=0
@@ -74,9 +83,16 @@ expect() { # expect DESCRIPTION ACTUAL EXPECTED
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-for tool in curl jq; do
+for tool in node curl jq; do
   command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required and was not found" >&2; exit 2; }
 done
+# The web's builder is TypeScript, which Node loads by stripping the types (22 or newer). An older node
+# fails on its `export` with a SyntaxError, which would read as a broken scenario rather than a missing tool.
+node_major=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+[ "$node_major" -ge 22 ] || {
+  echo "node 22 or newer is required (the web's builder is loaded by type stripping); found $(node --version 2>/dev/null || echo none)" >&2
+  exit 2
+}
 
 api() { # api METHOD PATH: the body on stdout, non-zero when the status is not 2xx (the resource API)
   curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "$id_header"
@@ -89,10 +105,10 @@ card() { # card URL TOKEN: the agent's card
 }
 
 # run_agui AGENT THREAD TEXT [LOCALE]: one run (one message) on THREAD, to its end, naming LOCALE when it is given.
-# Prints the HTTP status; the body is $tmp/run.out.
+# Prints the HTTP status; the body is $tmp/run.out. The props are the web's (`run-forwarded-props.mjs`).
 run_agui() {
   _props='{}'
-  if [ "${4:-}" != "" ]; then _props=$(jq -n --arg l "$4" '{"vymalo.locale": $l}'); fi
+  if [ "${4:-}" != "" ]; then _props=$(node "$web_props" locale "$4"); fi
   _input=$(jq -n --arg thread "$2" --arg run "$(uuid)" --arg msg "$(uuid)" --arg text "$3" --argjson props "$_props" '{
     threadId: $thread, runId: $run, state: {}, tools: [], context: [],
     messages: [{id: $msg, role: "user", content: $text}], forwardedProps: $props}')
@@ -129,6 +145,16 @@ has_line() {
 tag_in_system() {
   printf '%s' "$1" | jq -r --arg t "$2" '(((.system // "") | tostring) | contains($t))' 2>/dev/null || echo unknown
 }
+
+# --- the web's own body -----------------------------------------------------------------------------------------
+echo "== the web's builder of a run's forwardedProps (web/src/features/locale)"
+for tag in en-GB fr-FR gsw-CH fur-IT de-DE; do
+  expect "the web puts $tag under vymalo.locale" \
+    "$(node "$web_props" locale "$tag" | jq -r '."vymalo.locale" // "-"')" "$tag"
+done
+expect "the web sends no member for a tag it refuses (never a 400 that holds the words back)" \
+  "$(node "$web_props" locale en_CM)" "{}"
+expect "the web sends no member for a page that names no tag" "$(node "$web_props" locale "")" "{}"
 
 # --- the cards ---------------------------------------------------------------------------------------------------------
 echo "== the chat's card lists the extension with the deployment's tag"

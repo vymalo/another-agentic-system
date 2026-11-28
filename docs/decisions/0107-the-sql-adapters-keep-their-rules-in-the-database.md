@@ -21,6 +21,25 @@ sidebarTitle: "0107 · Rules in SQL, PostgreSQL 18 floor"
   `tests/functions.rs` holds for every PL/pgSQL `orch_` function. For P2: a commit updates the `threads` row twice (the
   append's CTE advances `last_seq`, then the final `UPDATE`), which leaves an extra row version; computing the append's
   `base` from `cur_last_seq` and letting the final `UPDATE` write `last_seq` would avoid it. P2 is next.
+  *Status note (2026-11-27): slice P2 is built* (admission: `orch_admit`, in migration `0038_orch_admit.sql`).
+  `admit_commit` is now one transaction on one connection: `orch_admit` takes the person's lock, with the same key as
+  before, so a replica of the previous release and one of this build exclude each other, then counts; `no_room` rolls
+  back, and `admitted` runs the whole commit in that transaction. The function relies on that transaction being
+  `READ COMMITTED`, so that its count sees what the lock's previous holder committed: `admit_commit` and `commit` both
+  begin it with `BEGIN ISOLATION LEVEL READ COMMITTED`, whatever the database or the role defaults to, where they began
+  with a plain `BEGIN`. It refuses a missing or empty owner and a missing or
+  negative limit with `OR002`. The extra `threads` row version is gone: the append takes the seq it starts from (the
+  commit's `cur_last_seq`, a new thread's cut) and does not move `last_seq`, which the caller's final `UPDATE` writes
+  once. That replaces row 2's form of an `UPDATE` inside the append's `WITH`; the sequence is still gap-free because the
+  thread's row is held. `tests/admission.rs` shows what the shared suites cannot: a pool of one connection admits and
+  commits, and the session that holds the admission lock is the one whose commit waits for the thread's row. **The cost
+  was not measured**, although *Consequences* says P1 and P2 measure a commit and an admission before they merge: the
+  slice was written on a machine where it was not allowed to build or run the workspace, so it claims no timing of
+  either, and the P1 note records none. By reading the code only, an admission sends three fewer statements (the second transaction's `BEGIN` and
+  `ROLLBACK`, and the lock and the count as one call) and takes one connection instead of two. **The slice rule of
+  *Slices*, that each moved rule is broken once on purpose and the pull request records the mutation and the failing
+  case, was not met: no mutation was run and none of the new cases has been executed**, because the slice was written on
+  a machine where the workspace may not be built; CI is the first compile and the first run.
   The owner decided on 2026-11-27 (the owner, 2026-11-27):
 
   > *"If something can be done in SQL, we better use SQL rather than rust."*

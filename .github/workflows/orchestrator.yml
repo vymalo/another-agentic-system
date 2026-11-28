@@ -8,9 +8,9 @@ name: Orchestrator
 #        for queries and the direct URL for what must be direct (the migrations, the LISTEN connection). A pinned
 #        edoburu/pgbouncer image (tag and digest) with the configuration of crates/store-postgres/tests/pgbouncer;
 #        its version and its pool mode are asserted before the tests run.
-# signed-request-interop: the signed requests to a tool server (ADR 0080) against the real cratestack-cose 0.17.2, which needs
-#        Rust 1.98 where the workspace is on 1.94.1: a crate of its own, outside the workspace, with its own toolchain
-#        (orchestrator/crates/signed-request/interop). The real `open_claims` opens what the orchestrator signs and the real
+# signed-request-interop: the signed requests to a tool server (ADR 0080) against the real cratestack-cose 0.17.2: a crate
+#        of its own, outside the workspace, with its own toolchain file (orchestrator/crates/signed-request/interop, 1.98.1;
+#        the workspace moved to 1.98 in ANR-1328). The real `open_claims` opens what the orchestrator signs and the real
 #        `sign_claims` writes the same bytes.
 # image: builds the container image (pull requests: build only, to validate the Dockerfile;
 #        main: build and push to ghcr.io) and, before anything is pushed, runs it against a
@@ -176,7 +176,7 @@ jobs:
           curl -fsS -o /dev/null --aws-sigv4 'aws:amz:us-east-1:s3' --user "$ORCH_TEST_S3_ACCESS_KEY:$ORCH_TEST_S3_SECRET_KEY" \
             -X PUT "$ORCH_TEST_S3_URL/$ORCH_TEST_S3_BUCKET"
       - name: Install the pinned toolchain
-        run: rustup toolchain install 1.94.1 --profile minimal -c rustfmt,clippy
+        run: rustup toolchain install 1.98.1 --profile minimal -c rustfmt,clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "orchestrator -> target"
@@ -233,7 +233,7 @@ jobs:
           echo "server_version_num=$v"
           test "$v" -ge 180000 && test "$v" -lt 190000
       - name: Install the pinned toolchain
-        run: rustup toolchain install 1.94.1 --profile minimal
+        run: rustup toolchain install 1.98.1 --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "orchestrator -> target"
@@ -252,7 +252,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install the pinned toolchain
-        run: rustup toolchain install 1.94.1 --profile minimal -c rustfmt,clippy
+        run: rustup toolchain install 1.98.1 --profile minimal -c rustfmt,clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "orchestrator -> target"
@@ -286,7 +286,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install the toolchain the crate pins
-        # not the workspace's 1.94.1: cratestack-cose 0.17.2 has rust-version 1.98.0
+        # the crate's own toolchain file, independent of the workspace's 1.98
         run: rustup toolchain install 1.98.1 --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
@@ -366,7 +366,7 @@ jobs:
           # 1.21 is the first release with protocol-level prepared statements in transaction mode
           echo "$version" | awk '{split($2, v, "."); exit !(v[1] > 1 || (v[1] == 1 && v[2] >= 21))}'
       - name: Install the pinned toolchain
-        run: rustup toolchain install 1.94.1 --profile minimal -c rustfmt,clippy
+        run: rustup toolchain install 1.98.1 --profile minimal -c rustfmt,clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "orchestrator -> target"

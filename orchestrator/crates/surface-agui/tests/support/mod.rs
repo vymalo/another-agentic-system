@@ -79,6 +79,8 @@ impl Authenticator for TestAuth {
 
 pub const ALICE: &str = "alice@example.com";
 pub const BOB: &str = "bob@example.com";
+/// A person as an identity provider's `sub` names them.
+pub const SUB_USER: &str = "3b1d7e52-6a40-4c18-9f0e-a1c2d3e4f501";
 pub const T: Duration = Duration::from_secs(10);
 
 /// A thread id a consumer would mint.
@@ -389,7 +391,8 @@ impl Harness {
     }
 
     /// With a deployment that makes the person's own `coder` agent: `provisioning` is its
-    /// provisioner (ADR 0103).
+    /// provisioner (ADR 0103). A request with no identity header is [`SUB_USER`]: only a person
+    /// who is an account id has an agent made (ADR 0108), and the identity header is an e-mail.
     pub async fn start_provisioned(provisioning: orch_app::Provisioning) -> Self {
         let api = ApiConfig {
             sse_keepalive: Duration::from_millis(150),
@@ -397,7 +400,7 @@ impl Harness {
         };
         Self::start_full(
             api,
-            TestAuth::new(),
+            TestAuth::with_dev_user(UserId::new(SUB_USER)),
             orch_app::Policy::default(),
             orch_app::SharingSettings::default(),
             Some(provisioning),

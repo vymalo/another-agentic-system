@@ -77,7 +77,7 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > message, and the capabilities document's `custom[<access-tier/v1 URI>] = {tiers, default, maxTier?}`; see [Access tier](#access-tier).
 
 > **Locale** (2026-11-22, [ADR 0085](../decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md), contract
-> [`locale-v1.md`](locale-v1.md), the orchestrator's side built; adam lists it whenever `DEFAULT_LOCALE` is set, which the stack's `chat` does, *verified 2026-11-27*): `forwardedProps["vymalo.locale"]` on the run
+> [`locale-v1.md`](locale-v1.md), built on both sides: the orchestrator's, and the web's, which sends the page's own tag; adam lists it whenever `DEFAULT_LOCALE` is set, which the stack's `chat` does, *verified 2026-11-27*): `forwardedProps["vymalo.locale"]` on the run
 > that carries a message, a BCP 47 tag checked before anything is written (**400**), sent to an agent whose live card lists
 > `locale/v1`. It is a hint: it is **not** on `TEXT_MESSAGE_START` and no activity is emitted for it, but the log records it on the
 > `user_message` (the log is the state), so an export shows it.
@@ -1474,14 +1474,15 @@ TEXT_MESSAGE_START {messageId, role: "user", metadata: {"vymalo.actor": {...}, "
 
 ## Locale
 
-**Built 2026-11-22, on the orchestrator's side only** ([ADR 0085](../decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md),
-contract [`locale-v1.md`](locale-v1.md)); adam lists the extension whenever `DEFAULT_LOCALE` is set, which the stack's `chat` does (*verified 2026-11-27*: `compose.yaml`, `dev/locale-real-e2e.sh`), and the web does not send the member yet.
+**Built 2026-11-22, on both sides** ([ADR 0085](../decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md),
+contract [`locale-v1.md`](locale-v1.md)); adam lists the extension whenever `DEFAULT_LOCALE` is set, which the stack's `chat` does (*verified 2026-11-27*: `compose.yaml`, `dev/locale-real-e2e.sh`), and the web sends the member — the tag the page is drawn in, `document.documentElement.lang` (`web/src/features/locale`, `web/e2e/locale.spec.ts`).
 
 - **In:** `forwardedProps["vymalo.locale"]` on the run that carries the message, a BCP 47 tag (`"en-GB"`, `"fr-FR"`, `"gsw-CH"`,
   `"fur-IT"` today; `null` or no member: none). Read on every run, so one that is not a tag is **400** before the stream. It is a
   hint, so nothing else is checked and no message is ever refused over it.
-- **Log:** nothing. The `user_message` has no `locale`, there is no `vymalo.locale` on any frame, and no activity is emitted for
-  it. A reload, another tab, an export, a fork and a share link show nothing of the interface's language.
+- **Log:** the `user_message` records it once (the log is the state, so the hint is replayable), and **no frame carries it**: there is
+  no `vymalo.locale` on any frame and no activity is emitted for it. A reload, another tab, an export, a fork and a share link show
+  nothing of the interface's language.
 - **Out:** nothing.
 - **Capabilities:** no key. Nothing in the interface draws a locale control: the tag is the client's own state.
 - **To the agent:** only when the live card read at the send lists `locale/v1` well formed; any other agent is sent the message it

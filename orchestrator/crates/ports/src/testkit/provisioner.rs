@@ -6,6 +6,8 @@
 
 use std::time::{Duration, Instant};
 
+use orch_core::AccountId;
+
 use crate::{AgentKind, AgentOwner, AgentProvisioner, AgentState, ProvisionError};
 
 /// A provisioner under test, with a view of what is behind it.
@@ -27,12 +29,21 @@ fn owner(key: &str) -> AgentOwner {
     AgentOwner::new(key).unwrap()
 }
 
+/// The account of the person an owner key stands for. One for every case: no rule of the port
+/// turns on which account it is.
+fn account() -> AccountId {
+    AccountId::parse("3b1d7e52-6a40-4c18-9f0e-a1c2d3e4f501").unwrap()
+}
+
 /// The first call for an owner makes the agent, named after the kind and the owner, ready.
 pub async fn the_first_call_makes_the_agent_and_returns_it_ready<F: ProvisionerFixture>(f: F) {
     let p = f.provisioner();
     let o = owner("alice");
     assert_eq!(p.state(&o, AgentKind::Coder).await.unwrap(), None);
-    let agent = p.ensure_ready(&o, AgentKind::Coder).await.unwrap();
+    let agent = p
+        .ensure_ready(&o, AgentKind::Coder, &account())
+        .await
+        .unwrap();
     assert_eq!(agent.name, "coder-alice");
     assert_eq!(agent.state, AgentState::Ready);
     assert_eq!(
@@ -48,8 +59,8 @@ pub async fn two_first_calls_at_once_make_one_agent<F: ProvisionerFixture>(f: F)
     let p = f.provisioner();
     let o = owner("bob");
     let (a, b) = tokio::join!(
-        p.ensure_ready(&o, AgentKind::Coder),
-        p.ensure_ready(&o, AgentKind::Coder)
+        p.ensure_ready(&o, AgentKind::Coder, &account()),
+        p.ensure_ready(&o, AgentKind::Coder, &account())
     );
     let (a, b) = (a.unwrap(), b.unwrap());
     assert_eq!(a, b);
@@ -61,8 +72,14 @@ pub async fn two_first_calls_at_once_make_one_agent<F: ProvisionerFixture>(f: F)
 pub async fn a_second_call_makes_nothing_more<F: ProvisionerFixture>(f: F) {
     let p = f.provisioner();
     let o = owner("carol");
-    let first = p.ensure_ready(&o, AgentKind::Coder).await.unwrap();
-    let second = p.ensure_ready(&o, AgentKind::Coder).await.unwrap();
+    let first = p
+        .ensure_ready(&o, AgentKind::Coder, &account())
+        .await
+        .unwrap();
+    let second = p
+        .ensure_ready(&o, AgentKind::Coder, &account())
+        .await
+        .unwrap();
     assert_eq!(first, second);
     assert_eq!(f.agent_count(), 1);
 }
@@ -73,8 +90,10 @@ pub async fn a_suspended_agent_is_resumed_and_the_call_waits_for_ready<F: Provis
 ) {
     let p = f.provisioner();
     let o = owner("dave");
-    p.ensure_ready(&o, AgentKind::Coder).await.unwrap();
-    p.suspend(&o, AgentKind::Coder).await.unwrap();
+    p.ensure_ready(&o, AgentKind::Coder, &account())
+        .await
+        .unwrap();
+    p.suspend(&o, AgentKind::Coder, &account()).await.unwrap();
     assert_eq!(
         p.state(&o, AgentKind::Coder).await.unwrap(),
         Some(AgentState::Suspended)
@@ -83,7 +102,10 @@ pub async fn a_suspended_agent_is_resumed_and_the_call_waits_for_ready<F: Provis
     let delay = Duration::from_millis(300);
     f.set_ready_delay(delay);
     let started = Instant::now();
-    let agent = p.ensure_ready(&o, AgentKind::Coder).await.unwrap();
+    let agent = p
+        .ensure_ready(&o, AgentKind::Coder, &account())
+        .await
+        .unwrap();
     assert!(
         started.elapsed() >= delay / 2,
         "the call returned before the agent was ready"
@@ -100,8 +122,14 @@ pub async fn a_suspended_agent_is_resumed_and_the_call_waits_for_ready<F: Provis
 pub async fn a_kind_has_its_own_agent<F: ProvisionerFixture>(f: F) {
     let p = f.provisioner();
     let o = owner("erin");
-    let coder = p.ensure_ready(&o, AgentKind::Coder).await.unwrap();
-    let ws = p.ensure_ready(&o, AgentKind::Workspace).await.unwrap();
+    let coder = p
+        .ensure_ready(&o, AgentKind::Coder, &account())
+        .await
+        .unwrap();
+    let ws = p
+        .ensure_ready(&o, AgentKind::Workspace, &account())
+        .await
+        .unwrap();
     assert_ne!(coder.name, ws.name);
     assert_eq!(f.agent_count(), 2);
 }
@@ -110,9 +138,13 @@ pub async fn a_kind_has_its_own_agent<F: ProvisionerFixture>(f: F) {
 pub async fn another_owners_agent_is_never_touched<F: ProvisionerFixture>(f: F) {
     let p = f.provisioner();
     let (a, b) = (owner("frank"), owner("grace"));
-    p.ensure_ready(&a, AgentKind::Coder).await.unwrap();
-    p.ensure_ready(&b, AgentKind::Coder).await.unwrap();
-    p.suspend(&a, AgentKind::Coder).await.unwrap();
+    p.ensure_ready(&a, AgentKind::Coder, &account())
+        .await
+        .unwrap();
+    p.ensure_ready(&b, AgentKind::Coder, &account())
+        .await
+        .unwrap();
+    p.suspend(&a, AgentKind::Coder, &account()).await.unwrap();
     assert_eq!(
         p.state(&b, AgentKind::Coder).await.unwrap(),
         Some(AgentState::Ready)
@@ -125,7 +157,10 @@ pub async fn another_owners_agent_is_never_touched<F: ProvisionerFixture>(f: F) 
     );
     assert_eq!(f.agent_count(), 1);
     // The owner whose agent is gone gets a fresh one and the other's is still the one agent.
-    let again = p.ensure_ready(&a, AgentKind::Coder).await.unwrap();
+    let again = p
+        .ensure_ready(&a, AgentKind::Coder, &account())
+        .await
+        .unwrap();
     assert_eq!(again.name, "coder-frank");
     assert_eq!(f.agent_count(), 2);
 }
@@ -144,7 +179,7 @@ pub async fn state_never_makes_an_agent<F: ProvisionerFixture>(f: F) {
 pub async fn suspend_and_delete_of_an_absent_agent_change_nothing<F: ProvisionerFixture>(f: F) {
     let p = f.provisioner();
     let o = owner("ivan");
-    p.suspend(&o, AgentKind::Coder).await.unwrap();
+    p.suspend(&o, AgentKind::Coder, &account()).await.unwrap();
     p.delete(&o, AgentKind::Coder).await.unwrap();
     assert_eq!(f.agent_count(), 0);
 }
@@ -153,9 +188,11 @@ pub async fn suspend_and_delete_of_an_absent_agent_change_nothing<F: Provisioner
 pub async fn a_deleted_agent_is_made_again<F: ProvisionerFixture>(f: F) {
     let p = f.provisioner();
     let o = owner("judy");
-    p.ensure_ready(&o, AgentKind::Coder).await.unwrap();
+    p.ensure_ready(&o, AgentKind::Coder, &account())
+        .await
+        .unwrap();
     p.delete(&o, AgentKind::Coder).await.unwrap();
-    match p.ensure_ready(&o, AgentKind::Coder).await {
+    match p.ensure_ready(&o, AgentKind::Coder, &account()).await {
         Ok(agent) => assert_eq!(agent.state, AgentState::Ready),
         // A platform that is still releasing the old one says so; the call is retryable.
         Err(ProvisionError::Deleting) => {}
@@ -176,7 +213,7 @@ pub async fn a_dropped_call_leaves_the_agent_coming_up_and_the_next_call_finds_i
     f.set_ready_delay(Duration::from_millis(600));
     let cut = tokio::time::timeout(
         Duration::from_millis(150),
-        p.ensure_ready(&o, AgentKind::Coder),
+        p.ensure_ready(&o, AgentKind::Coder, &account()),
     )
     .await;
     assert!(cut.is_err(), "the call returned before the agent was ready");
@@ -187,7 +224,10 @@ pub async fn a_dropped_call_leaves_the_agent_coming_up_and_the_next_call_finds_i
     );
     assert_eq!(f.agent_count(), 1);
 
-    let agent = p.ensure_ready(&o, AgentKind::Coder).await.unwrap();
+    let agent = p
+        .ensure_ready(&o, AgentKind::Coder, &account())
+        .await
+        .unwrap();
     assert_eq!(agent.state, AgentState::Ready);
     assert_eq!(
         p.state(&o, AgentKind::Coder).await.unwrap(),

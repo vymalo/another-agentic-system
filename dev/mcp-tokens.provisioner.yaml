@@ -1,0 +1,7 @@
+# MCP_TOKENS_FILE of the provisioner stack (dev/compose.provisioner.yaml mounts it over dev/mcp-tokens.yaml): the same token for the
+# same person, named as that stack names people. Its orchestrator reads `auth.jwt.userClaim: sub` (dev/orchestrator.provisioner.yaml),
+# so `user` is the person's `sub` and an e-mail address is exit 78 (ANR-1163). This is mock-oidc's `sub` of `dev@example.com`:
+# `mock-` and the first 16 hex digits of the SHA-256 of the e-mail (`subjectOf` in dev/mock-oidc/server.mjs).
+- user: mock-eb2b6c0d061bbd5c
+  tokenEnv: MCP_TOKEN_DEV
+  role: user

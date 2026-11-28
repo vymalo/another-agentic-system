@@ -385,7 +385,8 @@ impl Classify for AppError {
             AppError::Provisioning { source, .. } => match source {
                 ProvisionError::Refused
                 | ProvisionError::Invalid
-                | ProvisionError::Blocked { .. } => ErrorClass::Internal,
+                | ProvisionError::Blocked { .. }
+                | ProvisionError::AccountNotOpaque => ErrorClass::Internal,
                 _ => ErrorClass::Transient,
             },
             AppError::MessageLimit { .. } => ErrorClass::RateLimited,
@@ -556,6 +557,10 @@ mod tests {
             },
             AppError::Provisioning {
                 kind: "coder",
+                source: ProvisionError::AccountNotOpaque,
+            },
+            AppError::Provisioning {
+                kind: "coder",
                 source: ProvisionError::Blocked {
                     reason: orch_ports::BlockedReason::NameConflict,
                 },
@@ -625,7 +630,8 @@ mod tests {
                 AppError::Provisioning { source, .. } => match source {
                     ProvisionError::Refused
                     | ProvisionError::Invalid
-                    | ProvisionError::Blocked { .. } => ErrorClass::Internal,
+                    | ProvisionError::Blocked { .. }
+                    | ProvisionError::AccountNotOpaque => ErrorClass::Internal,
                     _ => ErrorClass::Transient,
                 },
                 AppError::Contended => ErrorClass::Conflict,
