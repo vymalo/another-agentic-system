@@ -171,7 +171,11 @@ async fn a_signed_prompt_is_accepted_and_reaches_the_agent_byte_for_byte() {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            orch_ports::memory::Call::Send(call) => Some(call.prompt_signature.clone()),
+            orch_ports::memory::Call::Send(call) => Some(
+                call.prompt_signature
+                    .clone()
+                    .map(orch_core::PromptSignature::into_string),
+            ),
             _ => None,
         })
         .collect();
@@ -200,7 +204,11 @@ async fn a_client_that_is_not_listed_is_never_checked() {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            orch_ports::memory::Call::Send(call) => Some(call.prompt_signature.clone()),
+            orch_ports::memory::Call::Send(call) => Some(
+                call.prompt_signature
+                    .clone()
+                    .map(orch_core::PromptSignature::into_string),
+            ),
             _ => None,
         })
         .collect();
@@ -383,7 +391,11 @@ async fn a_signing_clients_resolved_resume_is_checked_at_its_entry() {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            orch_ports::memory::Call::Send(call) => Some(call.prompt_signature.clone()),
+            orch_ports::memory::Call::Send(call) => Some(
+                call.prompt_signature
+                    .clone()
+                    .map(orch_core::PromptSignature::into_string),
+            ),
             _ => None,
         })
         .collect();
@@ -625,9 +637,12 @@ async fn a_stop_and_sends_envelope_waits_in_the_ledger_and_no_export_has_it() {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            orch_ports::memory::Call::Send(call) => {
-                Some((call.text.clone(), call.prompt_signature.clone()))
-            }
+            orch_ports::memory::Call::Send(call) => Some((
+                call.text.clone(),
+                call.prompt_signature
+                    .clone()
+                    .map(orch_core::PromptSignature::into_string),
+            )),
             _ => None,
         })
         .collect();
@@ -706,9 +721,11 @@ fn helper_sends(h: &Harness) -> Vec<Option<String>> {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            orch_ports::memory::Call::Send(call) if call.text == HELPER_PROMPT => {
-                Some(call.prompt_signature.clone())
-            }
+            orch_ports::memory::Call::Send(call) if call.text == HELPER_PROMPT => Some(
+                call.prompt_signature
+                    .clone()
+                    .map(orch_core::PromptSignature::into_string),
+            ),
             _ => None,
         })
         .collect()

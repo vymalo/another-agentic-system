@@ -281,13 +281,17 @@ place it has.
   (the task ends, the job is cancelled before it starts, or the delegation is given up), or to the steer of a stop the
   agent refuses for good. It is cleared with the text, and by Stop.
 - **The export takes it out.** `App::export_thread` removes it, so the export document and any later user of a
-  `ThreadExport` never has it. It is in no event, frame or step, as before. Every core and port type that carries it
-  holds it as `PromptSignature`, whose `Debug` shows its length.
+  `ThreadExport` never has it. It is in no event, frame or step, as before. `Input`, `Command`, `Job`, the outbox
+  payload, the fork's first message (`Replacement`) and the testkit's recorded send (`SendCall`) hold it as
+  `PromptSignature`, whose `Debug` shows its length, and the port's `SendRequest`, which holds a string, has a
+  `Debug` of its own that does the same. **Not every type does:** the application's `Inbound`, `FirstMessage` and
+  `StartChildSession` hold a plain string that their derived `Debug` prints, and so do the AG-UI wire types, in the
+  message `metadata` it arrives in. None of them may be put in a log line.
 - **Nothing signed is joined.** A signature covers one message, and the statement has one `user`. Keeping several
   would need a form the statement does not have, and one signature on a joined text would present text that was not
   signed as covered. So while a message is held, a second one (a Send or a Stop & send) is refused when **either** of
   the two carries a signature: signed then signed, signed then unsigned, unsigned then signed. It is a `409`,
-  `code: stop_pending`, and nothing is written. The person sends it again once the next job has started. Two unsigned
+  `code: stop_pending`, and nothing is written. The person sends it again once the held message is no longer waiting. Two unsigned
   messages are joined as before, so a client that is not listed sees no change.
 - **A repeat is still a repeat.** Two copies of one request that race are answered as one: before the `409`, the commit
   loop looks up the request's idempotency key.
@@ -295,6 +299,11 @@ place it has.
   in the log. The limit and the allowance are checked before the transition, so a person at either one gets that answer
   instead. What the application does before the transition has run too, as for any message the core refuses: the card
   is read, and a person's own agent is made ready.
+
+**Every client's envelope is bounded at intake.** A client that is not asked to sign is still never refused, but
+what it sends is carried only when it is not empty and at most 16 KiB, the presence check's bound; otherwise it is
+dropped, as if absent. Without this a Stop & send would keep a value of almost the whole request body in the job
+ledger. An empty string is no envelope for anyone, so it cannot make a message count as signed.
 
 **One gap remains:** the REST fork and edit (**ANR-1375**).
 

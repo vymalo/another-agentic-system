@@ -904,10 +904,10 @@ pub enum TransitionError {
     },
     /// A message while a Stop & send already holds one, when the held message or the new one
     /// carries a prompt signature (ADR 0087, ADR 0036): the two would be joined into one text that
-    /// neither signature covers. Nothing was written; the person sends it again once the stop has
-    /// ended.
+    /// neither signature covers. Nothing was written; the person sends it again once the held
+    /// message is no longer waiting.
     #[error(
-        "a message is already waiting for the job to stop, and a signed message is never joined to another; send this one again once the job has stopped"
+        "a message is already waiting for the job to stop, and a signed message is never joined to another; send this one again once the held message is no longer waiting"
     )]
     StopPending,
     /// An ask (`ask_agent`, ADR 0026) was refused: the reason is worded for the agent that asked,

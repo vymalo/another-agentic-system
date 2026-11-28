@@ -642,7 +642,7 @@ async fn attempt<P: Ports>(
         .into());
     }
     let Translation {
-        inputs,
+        mut inputs,
         warnings,
         attach,
     } = translate_with_warnings(input, &view).map_err(|e| input_error(&e))?;
@@ -655,18 +655,22 @@ async fn attempt<P: Ports>(
     // the person's words is a prompt**: an attach, a cancel and a surface action are not, and are
     // never refused for a missing signature. The envelope is the one the projection read from the
     // raw source (the new message's `metadata`, or an answer's `resume` entry), passed on as it
-    // arrived.
-    let prompt = inputs.iter().find_map(|input| match input {
+    // arrived or not at all: every client's is bounded here, before a Stop & send can hold it.
+    let prompt = inputs.iter_mut().find_map(|input| match input {
         Input::UserMessage {
             prompt_signature, ..
         }
         | Input::StopAndSend {
             prompt_signature, ..
-        } => Some(prompt_signature.as_ref().map(PromptSignature::as_str)),
+        } => Some(prompt_signature),
         _ => None,
     });
-    if let Some(envelope) = prompt {
-        check_prompt_signature(principal, signing_clients, envelope)?;
+    if let Some(prompt_signature) = prompt {
+        let received = prompt_signature.as_ref().map(PromptSignature::as_str);
+        // an empty or over-long value of a client that is not asked for one is not carried
+        if check_prompt_signature(principal, signing_clients, received)?.is_none() {
+            *prompt_signature = None;
+        }
     }
     let held = held_message_ids(input);
 

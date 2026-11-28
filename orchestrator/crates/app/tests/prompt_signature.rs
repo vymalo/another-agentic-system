@@ -12,9 +12,9 @@
 mod support;
 
 use orch_app::{AppError, ApplyOutcome, Creation, Inbound, NewThread};
-use orch_core::{Input, Origin, PromptSignature, ThreadId, ThreadState};
+use orch_core::{Input, KnownExtension, Origin, PromptSignature, ThreadId, ThreadState};
 use orch_ports::memory::Call;
-use orch_ports::{OutboxPayload, ThreadStore};
+use orch_ports::{AgentError, OutboxPayload, ThreadStore};
 use support::*;
 
 /// A compact JWS of three base64url parts with a detached payload: what a signing app sends.
@@ -108,7 +108,11 @@ async fn the_envelope_rides_the_row_and_the_send_and_is_in_no_event() {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            Call::Send(call) => Some(call.prompt_signature.clone()),
+            Call::Send(call) => Some(
+                call.prompt_signature
+                    .clone()
+                    .map(PromptSignature::into_string),
+            ),
             _ => None,
         })
         .collect();
@@ -137,7 +141,11 @@ async fn a_message_that_carries_no_envelope_has_no_member_on_the_row() {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            Call::Send(call) => Some(call.prompt_signature.clone()),
+            Call::Send(call) => Some(
+                call.prompt_signature
+                    .clone()
+                    .map(PromptSignature::into_string),
+            ),
             _ => None,
         })
         .collect();
@@ -186,7 +194,12 @@ async fn a_signed_stop_and_send_reaches_the_next_job_byte_for_byte() {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            Call::Send(call) => Some((call.text.clone(), call.prompt_signature.clone())),
+            Call::Send(call) => Some((
+                call.text.clone(),
+                call.prompt_signature
+                    .clone()
+                    .map(PromptSignature::into_string),
+            )),
             _ => None,
         })
         .collect();
@@ -199,6 +212,53 @@ async fn a_signed_stop_and_send_reaches_the_next_job_byte_for_byte() {
     );
     let thread = app.get_thread(&alice(), t.id).await.unwrap();
     assert_eq!(thread.job.after_stop_prompt_signature, None);
+    assert!(!exported(&w, t.id).await.contains(ENVELOPE));
+}
+
+#[tokio::test]
+async fn a_refused_cancel_steers_the_held_message_with_its_envelope() {
+    let w = World::new();
+    w.agent.set_extensions("plain", &[KnownExtension::Steer]);
+    // the agent cannot be stopped, for good: the held message goes into the running task
+    w.agent.fail_next_cancels(1, || {
+        AgentError::NotCancelable("it cannot be stopped".to_owned())
+    });
+    let app = w.app();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let t = create(&app, &alice(), "plain", "gate refactor the parser").await;
+    wait_state(&app, &alice(), t.id, ThreadState::Working).await;
+
+    app.submit(&alice(), t.id, signed_stop("do X instead", ENVELOPE), None)
+        .await
+        .unwrap();
+    let steered = eventually("the held message was steered", || async {
+        let steered: Vec<(String, Option<String>)> = w
+            .agent
+            .sends()
+            .into_iter()
+            .filter_map(|call| match call {
+                Call::Send(call) if call.steer => Some((
+                    call.text.clone(),
+                    call.prompt_signature
+                        .clone()
+                        .map(PromptSignature::into_string),
+                )),
+                _ => None,
+            })
+            .collect();
+        (!steered.is_empty()).then_some(steered)
+    })
+    .await;
+    assert_eq!(
+        steered,
+        [("do X instead".to_owned(), Some(ENVELOPE.to_owned()))]
+    );
+    let thread = app.get_thread(&alice(), t.id).await.unwrap();
+    assert_eq!(thread.job.after_stop_prompt_signature, None);
+
+    w.agent.release_gate();
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    run.shutdown().await;
     assert!(!exported(&w, t.id).await.contains(ENVELOPE));
 }
 

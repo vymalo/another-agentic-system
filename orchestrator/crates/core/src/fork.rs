@@ -384,7 +384,7 @@ pub struct Replacement {
     /// The person's prompt signature for the message (ADR 0087), as for
     /// [`Input::UserMessage`](crate::Input::UserMessage): carried to the fork's delegation, never to
     /// the log. `None` for an edit, which the orchestrator's own words do not carry.
-    pub prompt_signature: Option<String>,
+    pub prompt_signature: Option<PromptSignature>,
     /// The run (AG-UI `runId`) the message opens, which names the response that streams it.
     pub run_id: Option<String>,
     /// Where the message came from.
@@ -447,7 +447,7 @@ pub fn fork_commit(
             tier_cap: replacement.tier_cap,
             locale: replacement.locale,
             pick: replacement.pick,
-            prompt_signature: replacement.prompt_signature.map(PromptSignature::from),
+            prompt_signature: replacement.prompt_signature,
         },
     )?;
     commands.extend(more);

@@ -1833,7 +1833,9 @@ impl<P: Ports> App<P> {
                         tier_cap: None,
                         locale: first.locale,
                         pick: first.pick,
-                        prompt_signature: first.prompt_signature,
+                        prompt_signature: first
+                            .prompt_signature
+                            .map(orch_core::PromptSignature::from),
                         run_id: first.run_id,
                         origin: first.origin,
                     }),

@@ -301,7 +301,7 @@ impl From<TransitionError> for AppError {
             // well formed, but what it names cannot be done: 422 (ADR 0036)
             e @ TransitionError::TextTooLong { .. } => AppError::Unprocessable(e.to_string()),
             // a Stop & send holds a message, and a signature forbids joining another to it
-            // (ADR 0087): 409, the client sends it again once the job has stopped
+            // (ADR 0087): 409, the client sends it again once the held message is no longer waiting
             e @ TransitionError::StopPending => AppError::blocked("stop_pending", e.to_string()),
             // a helper session (ADR 0072, S3): each has the code a client acts on
             TransitionError::SessionClosed => AppError::blocked(
