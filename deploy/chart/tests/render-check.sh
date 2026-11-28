@@ -2473,6 +2473,8 @@ al_check_names() { # al_check_names <description>: like check, but what is missi
   if why=$(al_all_emitted 2>&1); then echo "ok   $1"; else echo "FAIL $1"; printf '%s\n' "$why"; fail=1; fi
 }
 # al_threshold <selector> <threshold> <rule>: the `expr` block of the rule that holds <selector> holds <threshold> too, and such a rule exists.
+# The patterns are given as POSIX character classes (`[(]`, `[.]`), never as backslash escapes: `awk -v` processes escapes, so `\(` arrives as `(`,
+# which is a group in the regex and no longer matches the literal text (the deploy job's three checks failed exactly there).
 # The block, not the line after a selector: `expr: |-` is the renderer's layout of the chart's multi-line expression, and a check on adjacency is a
 # check on whitespace the chart does not decide. On a miss it prints the block it looked at, so a failure says what was rendered.
 al_threshold() {
@@ -2523,9 +2525,9 @@ render -f "$al_values"
 check "alerts on, values set: the four rules" al_alerts_are "$al_base_alerts AgenticRunPodQuotaNearLimit"
 check "alerts on, quota on: the one name that is not ours is kube_resourcequota" al_names_are "db_pool_connections db_pool_max_connections dispatcher_slots_configured dispatcher_slots_in_use kube_resourcequota orch_outbox_oldest_due_age_seconds"
 al_check_names "alerts on, quota on: every other metric a rule reads is emitted by metrics.rs"
-al_threshold_check "alerts on, values set: the slots' threshold" 'sum by \(namespace\) \(dispatcher_slots_configured\) > 0' '>= 0\.75' AgenticDispatcherSlotsNearLimit
-al_threshold_check "alerts on, values set: the outbox's seconds" 'max by \(namespace\) \(orch_outbox_oldest_due_age_seconds\)' '> 123' AgenticOutboxOldestDueTooOld
-al_threshold_check "alerts on, values set: the pool's threshold" 'sum by \(namespace, pool\) \(db_pool_max_connections\) > 0' '>= 0\.85' AgenticDbPoolNearSize
+al_threshold_check "alerts on, values set: the slots' threshold" 'sum by [(]namespace[)] [(]dispatcher_slots_configured[)] > 0' '>= 0[.]75' AgenticDispatcherSlotsNearLimit
+al_threshold_check "alerts on, values set: the outbox's seconds" 'max by [(]namespace[)] [(]orch_outbox_oldest_due_age_seconds[)]' '> 123' AgenticOutboxOldestDueTooOld
+al_threshold_check "alerts on, values set: the pool's threshold" 'sum by [(]namespace, pool[)] [(]db_pool_max_connections[)] > 0' '>= 0[.]85' AgenticDbPoolNearSize
 check "alerts on, values set: the quota's threshold, namespace and resource" out_all '>= 0\.7$' 'namespace="run-pods", resource="requests\.cpu", type="used"' 'namespace="run-pods", resource="requests\.cpu", type="hard"'
 check "alerts on, values set: each for is its rule's" sh -c "
   [ \"\$(sed -n 's/^          for: //p' '$out' | tr '\n' ' ')\" = '\"7m\" \"3m\" \"11m\" \"13m\" ' ]"
