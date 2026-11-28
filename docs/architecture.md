@@ -335,7 +335,8 @@ Prose for what the diagram compresses:
 :::
 
 The run as a state machine, as the projection shows it (a run is open exactly while the thread is
-`queued` or `working`; the thread's own states are in the next section):
+`queued`, `working` or `verifying` — a run stays open while the thread is verified, ADR 0018; the
+thread's own states are in the next section):
 
 ```mermaid
 stateDiagram-v2
