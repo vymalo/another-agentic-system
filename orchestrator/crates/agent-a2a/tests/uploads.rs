@@ -93,6 +93,7 @@ fn request(fake: &FakeAgent, message_id: &str, thread_tools: Option<ToolsGrant>)
         locale: None,
         pick: None,
         prompt_signature: None,
+        prompt: None,
     }
 }
 

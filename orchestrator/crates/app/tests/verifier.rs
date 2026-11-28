@@ -105,6 +105,7 @@ async fn verifying_with(
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+                client: None,
                 user: alice(),
                 text: "and mind the style".into(),
                 message_id: None,
@@ -899,6 +900,7 @@ async fn a_request_that_reached_the_verifier_before_the_crash_is_found_not_resen
             locale: None,
             pick: None,
             prompt_signature: None,
+            prompt: None,
         },
     )
     .await
@@ -1012,6 +1014,7 @@ async fn sent_and_forgotten(w: &World, _t: &ThreadRecord, row: &OutboxItem) {
             locale: None,
             pick: None,
             prompt_signature: None,
+            prompt: None,
         },
     )
     .await

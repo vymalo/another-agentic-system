@@ -81,6 +81,7 @@ fn message(text: &str, pick: Option<ModelPick>) -> Input {
         locale: None,
         pick,
         prompt_signature: None,
+        client: None,
     }
 }
 

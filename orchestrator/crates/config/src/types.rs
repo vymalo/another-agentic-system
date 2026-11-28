@@ -152,6 +152,11 @@ pub struct Config {
     /// changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provisioner: Option<Provisioner>,
+    /// The prompt statement the orchestrator signs for the model gateway (ADR 0087, the cloud
+    /// path): the gateway's canonical origin and the key it signs with. Absent: nothing is signed,
+    /// and no agent is told `prompt-statement/v1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_signing: Option<PromptSigning>,
     /// What the web is told (`GET /api/config`).
     #[serde(default)]
     pub ui: Ui,
@@ -177,6 +182,23 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 64))]
     pub tool_servers: Vec<ToolServer>,
+}
+
+/// `promptSigning`: the prompt statement the orchestrator signs for the model gateway (ADR 0087,
+/// the cloud path; adam-rs ADR 0077). Off by default: without the section nothing is signed and no
+/// agent is told `prompt-statement/v1`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PromptSigning {
+    /// The model gateway's canonical origin, the statement's `aud`: `http` or `https`, a host, no
+    /// path or trailing slash (`https://models.example`). Never taken from a request's `Host`.
+    pub aud: String,
+    /// The PKCS#8 Ed25519 private key the statement is signed with, as a PEM file
+    /// (`-----BEGIN PRIVATE KEY-----`). `prompt-signer-static` reads it at startup; a deployment
+    /// uses a certified key (ADR 0087, the PKI slice).
+    pub key_file: String,
+    /// The certificate chain of that key, as a PEM file: the leaf first, the root left out.
+    pub chain_file: String,
 }
 
 /// The kinds of agent made for each person. The shared chat agent is never one of them.

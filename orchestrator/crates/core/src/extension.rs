@@ -44,6 +44,13 @@ pub const USAGE_EXTENSION: &str = "https://agents.vymalo.com/a2a/extensions/usag
 /// the thread tools give (ADR 0058; the contract is `docs/api/uploads-v1.md`).
 pub const UPLOADS_EXTENSION: &str = "https://agents.vymalo.com/a2a/extensions/uploads/v1";
 
+/// The URI of `prompt-statement/v1`: the orchestrator's statement and the person's envelope on a
+/// message (ADR 0087, the cloud path; adam-rs ADR 0077). **Not a [`KnownExtension`]**: the shared
+/// prompt-signature contract proposes it, so the A2A client gates on this exact URI read from the
+/// live card itself, and the index row and the card's reading stay ANR-903's.
+pub const PROMPT_STATEMENT_EXTENSION: &str =
+    "https://agents.vymalo.com/a2a/extensions/prompt-statement/v1";
+
 /// An extension of the orchestrator's own that a live agent card can list.
 ///
 /// A variant names what a card may offer. Whether the orchestrator already acts on it is up to

@@ -920,6 +920,25 @@
         }
       ]
     },
+    "PromptSigning": {
+      "additionalProperties": false,
+      "description": "`promptSigning`: the prompt statement the orchestrator signs for the model gateway (ADR 0087, the cloud path; adam-rs ADR 0077). Off by default: without the section nothing is signed and no agent is told `prompt-statement/v1`.",
+      "properties": {
+        "aud": {
+          "description": "The model gateway's canonical origin, the statement's `aud`: `http` or `https`, a host, no path or trailing slash (`https://models.example`). Never taken from a request's `Host`.",
+          "type": "string"
+        },
+        "chainFile": {
+          "description": "The certificate chain of that key, as a PEM file: the leaf first, the root left out.",
+          "type": "string"
+        },
+        "keyFile": {
+          "description": "The PKCS#8 Ed25519 private key the statement is signed with, as a PEM file (`-----BEGIN PRIVATE KEY-----`). `prompt-signer-static` reads it at startup; a deployment uses a certified key (ADR 0087, the PKI slice).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "ProvisionedKind": {
       "description": "The kinds of agent made for each person. The shared chat agent is never one of them.",
       "enum": [
@@ -2232,6 +2251,10 @@
         "endpoints": {}
       },
       "description": "The OpenAI-compatible endpoints the orchestrator asks itself (ADR 0005, ADR 0035)."
+    },
+    "promptSigning": {
+      "$ref": "#/$defs/PromptSigning",
+      "description": "The prompt statement the orchestrator signs for the model gateway (ADR 0087, the cloud path): the gateway's canonical origin and the key it signs with. Absent: nothing is signed, and no agent is told `prompt-statement/v1`."
     },
     "provisioner": {
       "$ref": "#/$defs/Provisioner",

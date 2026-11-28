@@ -372,6 +372,11 @@ pub struct Inbound {
     /// The person's prompt signature for the first message (ADR 0087, decision 2), already checked
     /// for presence at intake: it rides the delegation's outbox row and never the log.
     pub prompt_signature: Option<String>,
+    /// The client the person's token was issued to (`azp`, ADR 0087), as the intake received it
+    /// (`Some("")` is the token-with-no-client sentinel): it rides the delegation's outbox row,
+    /// never the log, so that the dispatcher can name it in the statement it signs. `None` for a
+    /// credential that names no client.
+    pub client: Option<String>,
 }
 
 /// Result of [`App::create_thread_as`].
@@ -1323,6 +1328,7 @@ impl<P: Ports> App<P> {
                 prompt_signature: inbound
                     .prompt_signature
                     .map(orch_core::PromptSignature::from),
+                client: inbound.client,
             },
         )?;
         // the route is recorded with the thread: where every message of it is sent from now on
@@ -2477,10 +2483,11 @@ impl<P: Ports> App<P> {
             .map_or(thread.last_seq > 0, |e| e.seq < thread.last_seq);
         let binding = store.get_binding(id).await?;
         // The ledger holds the prompt signature of a message a Stop & send is waiting to deliver
-        // (ADR 0087). It is not part of what a person is handed, so it leaves here, where every
-        // user of an export reads it from.
+        // (ADR 0087), and the client its token named. Neither is part of what a person is handed,
+        // so they leave here, where every user of an export reads it from.
         let mut thread = thread;
         thread.job.after_stop_prompt_signature = None;
+        thread.job.after_stop_client = None;
         Ok(ThreadExport {
             thread,
             binding,
@@ -2566,6 +2573,7 @@ impl<P: Ports> App<P> {
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+                client: None,
             }
         } else {
             Input::UserMessage {
@@ -2581,6 +2589,7 @@ impl<P: Ports> App<P> {
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+                client: None,
             }
         };
         // like any message of a person: the checks, the mentions and the access tier (ADR 0061)
@@ -3211,6 +3220,7 @@ impl<P: Ports> App<P> {
                     locale,
                     pick,
                     prompt_signature,
+                    client,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Delegate {
@@ -3226,6 +3236,10 @@ impl<P: Ports> App<P> {
                         // The person's envelope rides the row, never the log (ADR 0087): the
                         // dispatcher puts it on the agent's request, byte for byte.
                         prompt_signature,
+                        // And the client the token named: the dispatcher names it in the
+                        // statement it signs, and the row keeps it so a redelivery signs the
+                        // same `azp`.
+                        client,
                     },
                 }),
                 // A message to a running job (ADR 0036): the dispatcher sends it into the agent's
@@ -3243,6 +3257,7 @@ impl<P: Ports> App<P> {
                     locale,
                     pick,
                     prompt_signature,
+                    client,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Steer {
@@ -3255,6 +3270,7 @@ impl<P: Ports> App<P> {
                         locale,
                         pick,
                         prompt_signature,
+                        client,
                     },
                 }),
                 Command::DelegateAction {

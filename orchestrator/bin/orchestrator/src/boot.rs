@@ -512,6 +512,25 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
     }
 
     let a2a = A2aAgentClient::new(a2a_config(cfg)).context("cannot build the A2A client")?;
+    // The prompt statement of the cloud path (ADR 0087): signed only when the file configures a
+    // key. `prompt-signer-static` is a test adapter (its key sits in a file and its certificate is
+    // never renewed); a deployment needs the certified signer, which is not built yet.
+    let a2a = match &cfg.prompt_signing {
+        Some(signing) => {
+            let signer = orch_prompt_signer_static::StaticPromptSigner::from_files(
+                &signing.key_file,
+                &signing.chain_file,
+            )
+            .context("cannot read the prompt signing key (promptSigning)")?;
+            tracing::warn!(
+                aud = %signing.aud,
+                "prompt statements are signed with prompt-signer-static, a test signer: a deployment needs the certified key of ADR 0087"
+            );
+            a2a.with_prompt_signer(Some(Arc::new(signer)))
+                .with_statement_aud(signing.aud.clone())
+        }
+        None => a2a,
+    };
     // After the orchestrator's own migrations, before the app: every role creates the local
     // agents' journal too (idempotent, and serialised by its own advisory lock).
     let local = Local::start(cfg).await?;

@@ -129,6 +129,7 @@ fn the_set_is_carried_to_the_next_job() {
             mentions: Vec::new(),
             tier: None,
             prompt_signature: None,
+            client: None,
         },
     )
     .unwrap();

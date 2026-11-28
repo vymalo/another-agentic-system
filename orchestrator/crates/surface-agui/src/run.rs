@@ -672,6 +672,18 @@ async fn attempt<P: Ports>(
             *prompt_signature = None;
         }
     }
+    // The client the token was issued to (`azp`, ADR 0087) rides every input that writes the
+    // person's words, as the envelope does: to the delegation's outbox row, never the log, so that
+    // the dispatcher names it in the statement it signs. `Some("")` is the token-with-no-client
+    // sentinel and is passed on as it is; `None` is a credential that names no client at all.
+    for input in inputs.iter_mut() {
+        match input {
+            Input::UserMessage { client, .. } | Input::StopAndSend { client, .. } => {
+                *client = principal.client_id.clone();
+            }
+            _ => {}
+        }
+    }
     let held = held_message_ids(input);
 
     let last_seq = known
@@ -772,6 +784,8 @@ async fn attempt<P: Ports>(
                 locale: locale.cloned(),
                 pick: pick.cloned(),
                 prompt_signature: prompt_signature.clone().map(PromptSignature::into_string),
+                // The client the token was issued to, for the statement (ADR 0087).
+                client: principal.client_id.clone(),
             };
             match app
                 .create_thread_as(principal, thread, new, inbound)
@@ -935,6 +949,7 @@ mod tests {
             mentions: Vec::new(),
             tier: None,
             prompt_signature: None,
+            client: None,
         }
     }
 

@@ -360,6 +360,8 @@ pub(crate) fn conclude(
                 pick: None,
                 // the core's own words, not the person's: no envelope goes with them
                 prompt_signature: None,
+                // and no client: a rework names none
+                client: None,
             });
             job.attempt = next;
             // the agent goes again: a new turn

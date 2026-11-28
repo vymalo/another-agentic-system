@@ -63,6 +63,7 @@ fn message(text: &str) -> Input {
         locale: None,
         pick: None,
         prompt_signature: None,
+        client: None,
         user: user(),
         text: text.into(),
         message_id: None,
@@ -3309,6 +3310,7 @@ fn a_redelivery_to_a_thread_that_moved_on_joins_the_job_it_reached() {
             locale: None,
             pick: None,
             prompt_signature: None,
+            client: None,
         }],
     );
     assert_eq!((open.state, open.job.number), (Working, 2));

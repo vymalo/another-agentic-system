@@ -97,8 +97,9 @@ pub use event::{
     MessagePurpose, Origin, Preview, ThreadStateData, UserMessageData,
 };
 pub use extension::{
-    KnownExtension, MENTIONS_EXTENSION, STEER_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION,
-    THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION, UPLOADS_EXTENSION, USAGE_EXTENSION,
+    KnownExtension, MENTIONS_EXTENSION, PROMPT_STATEMENT_EXTENSION, STEER_EXTENSION,
+    STEPS_EXTENSION, TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION,
+    UPLOADS_EXTENSION, USAGE_EXTENSION,
 };
 pub use fork::{
     BranchPoint, EditLink, ForkError, ForkHistory, ForkKind, ForkNode, ForkPoint, ForkSource,

@@ -42,6 +42,7 @@ fn said(text: &str, pick: Option<ModelPick>) -> Input {
         locale: None,
         pick,
         prompt_signature: None,
+        client: None,
     }
 }
 
@@ -59,6 +60,7 @@ fn stop(text: &str, pick: Option<ModelPick>) -> Input {
         locale: None,
         pick,
         prompt_signature: None,
+        client: None,
     }
 }
 
@@ -158,6 +160,7 @@ fn a_redelivery_carries_the_pick_its_message_recorded() {
         locale: None,
         pick,
         prompt_signature: None,
+        client: None,
     };
     let (_, cmds) = step(&Snapshot::new(Done), &redeliver(Some(deep())));
     assert_eq!(sent(&cmds), Some(deep()));

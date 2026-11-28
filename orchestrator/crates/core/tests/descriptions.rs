@@ -30,6 +30,7 @@ fn message(text: &str) -> Input {
         locale: None,
         pick: None,
         prompt_signature: None,
+        client: None,
         user: user(),
         text: text.into(),
         message_id: None,

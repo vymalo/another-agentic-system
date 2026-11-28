@@ -102,6 +102,12 @@ pub enum Input {
         /// the delegation's outbox row and then the agent's request. `None` for a message that
         /// carries none.
         prompt_signature: Option<PromptSignature>,
+        /// The client the person's token was issued to (`azp`, ADR 0087), as the intake received it
+        /// (`Some("")` is the token-with-no-client sentinel). **Not conversation content**: it is
+        /// written in no event, and it rides the delegation's outbox row to the dispatcher, which
+        /// names it in the prompt statement it signs. `None` for a credential that names no client
+        /// (the proxy header, an MCP static token).
+        client: Option<String>,
     },
     /// The user sent a message with "Stop & send" (ADR 0036): the same fields as
     /// [`Input::UserMessage`], and a different decision while a job runs. On a thread that is
@@ -143,6 +149,11 @@ pub enum Input {
         /// steer of a stop the agent refuses. A held message and a second one are never joined if
         /// either is signed ([`TransitionError::StopPending`]).
         prompt_signature: Option<PromptSignature>,
+        /// The client the person's token was issued to (`azp`, ADR 0087), as for
+        /// [`Input::UserMessage`]. When the message **stops a running job** it is held with its
+        /// text ([`Job::after_stop_client`]) and goes to the next job's delegation, or to the
+        /// steer of a stop the agent refuses.
+        client: Option<String>,
     },
     /// The user acted on an A2UI surface (a button with an event action). Like a message, it
     /// answers a blocked thread and is delegated to the agent; unlike one it carries no text.
@@ -196,6 +207,10 @@ pub enum Input {
         /// The person's prompt signature the message was written with (ADR 0087), as the
         /// delegation's outbox row holds it (never the log): the redelivery carries it to the agent.
         prompt_signature: Option<PromptSignature>,
+        /// The client the person's token was issued to (`azp`, ADR 0087), as the delegation's
+        /// outbox row holds it (never the log): the redelivery carries it, so that the statement
+        /// names the same client.
+        client: Option<String>,
     },
     /// The user asked to cancel.
     Cancel {
@@ -668,6 +683,11 @@ pub enum Command {
         /// behind the model gateway can check it. `None` for a message that carries none and for a
         /// rework, which is the core's own words.
         prompt_signature: Option<PromptSignature>,
+        /// The client the person's token was issued to (`azp`, ADR 0087), as for the person's
+        /// prompt signature: the application writes it on the delegation's outbox row (never in the
+        /// log), and the dispatcher names it in the statement it signs. `None` for a message that
+        /// names none and for a rework.
+        client: Option<String>,
     },
     /// Send this text to the agent's **running task** (ADR 0036): a message written while a job
     /// runs, with no stop on its way. The application writes a `steer` outbox row, and the
@@ -694,6 +714,10 @@ pub enum Command {
         /// The person's prompt signature, as for [`Command::Delegate`]: a steer carries it into the
         /// running task, and the delegation it becomes keeps it.
         prompt_signature: Option<PromptSignature>,
+        /// The client the person's token was issued to (`azp`), as for [`Command::Delegate`]: a
+        /// steer carries it into the running task's statement, and the delegation it becomes keeps
+        /// it.
+        client: Option<String>,
     },
     /// Follow a round of the thread's child session without sending anything (ADR 0072): the
     /// application writes an `observe` row, and the dispatcher answers with
@@ -1072,6 +1096,9 @@ struct Said<'a> {
     pick: Option<ModelPick>,
     /// The person's prompt signature (ADR 0087): carried to the delegation, never to the event.
     prompt_signature: Option<&'a PromptSignature>,
+    /// The client the person's token was issued to (ADR 0087): carried to the delegation, never to
+    /// the event.
+    client: Option<&'a String>,
 }
 
 /// The `user_message` event for `said`, with how it reached the running job (ADR 0036).
@@ -1112,6 +1139,7 @@ fn user_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
         locale: said.locale.clone(),
         pick: said.pick.clone(),
         prompt_signature: said.prompt_signature.cloned(),
+        client: said.client.cloned(),
     });
     cmds
 }
@@ -1136,6 +1164,7 @@ fn steered_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
         locale: said.locale.clone(),
         pick: said.pick.clone(),
         prompt_signature: said.prompt_signature.cloned(),
+        client: said.client.cloned(),
     });
     cmds
 }
@@ -1170,6 +1199,8 @@ fn stopping_message(job: &mut Job, said: &Said<'_>) -> Result<Vec<Command>, Tran
     job.after_stop = Some(held);
     // the first message's, or none: the check above lets nothing signed be joined
     job.after_stop_prompt_signature = said.prompt_signature.cloned();
+    // held with the text and the envelope: the next job's statement names the same client
+    job.after_stop_client = said.client.cloned();
     let room = MAX_MENTIONS.saturating_sub(job.after_stop_mentions.len());
     job.after_stop_mentions
         .extend(said.mentions.iter().take(room).map(|m| m.shifted(in_front)));
@@ -1205,6 +1236,7 @@ fn stopping_message(job: &mut Job, said: &Said<'_>) -> Result<Vec<Command>, Tran
 fn start_after_stop(job: &mut Job) -> Vec<Command> {
     let text = job.after_stop.take().unwrap_or_default();
     let prompt_signature = job.after_stop_prompt_signature.take();
+    let client = job.after_stop_client.take();
     let mentions = std::mem::take(&mut job.after_stop_mentions);
     let tier = job.after_stop_tier.take();
     let tier_cap = job.after_stop_tier_cap.take();
@@ -1230,6 +1262,8 @@ fn start_after_stop(job: &mut Job) -> Vec<Command> {
             pick,
             // the held message's own (ADR 0087): `text` is that message and nothing else
             prompt_signature,
+            // and the client its token named, held with it
+            client,
         },
     ]
 }
@@ -1256,6 +1290,7 @@ fn redelegate(
     locale: Option<LocaleHint>,
     pick: Option<ModelPick>,
     prompt_signature: Option<&PromptSignature>,
+    client: Option<&String>,
 ) -> Command {
     job.answer.reset();
     job.tier = tier;
@@ -1270,6 +1305,7 @@ fn redelegate(
         locale,
         pick,
         prompt_signature: prompt_signature.cloned(),
+        client: client.cloned(),
     }
 }
 
@@ -1286,6 +1322,7 @@ fn redelegation(
     locale: Option<LocaleHint>,
     pick: Option<ModelPick>,
     prompt_signature: Option<&PromptSignature>,
+    client: Option<&String>,
 ) -> Vec<Command> {
     if sent {
         job.answer.reset();
@@ -1306,6 +1343,7 @@ fn redelegation(
             locale,
             pick,
             prompt_signature,
+            client,
         )]
     }
 }
@@ -1481,6 +1519,7 @@ pub fn start_thread(
             locale,
             pick,
             prompt_signature,
+            client,
         }
         | Input::StopAndSend {
             user,
@@ -1495,6 +1534,7 @@ pub fn start_thread(
             locale,
             pick,
             prompt_signature,
+            client,
         } => {
             let said = Said {
                 user,
@@ -1509,6 +1549,7 @@ pub fn start_thread(
                 locale: locale.clone(),
                 pick: pick.clone(),
                 prompt_signature: prompt_signature.as_ref(),
+                client: client.as_ref(),
             };
             let mut job = Job::with_gate(gate);
             note_task(&mut job, text);
@@ -1599,6 +1640,7 @@ fn decide(
             locale,
             pick,
             prompt_signature,
+            client,
         } => {
             let said = Said {
                 user,
@@ -1613,6 +1655,7 @@ fn decide(
                 locale: locale.clone(),
                 pick: pick.clone(),
                 prompt_signature: prompt_signature.as_ref(),
+                client: client.as_ref(),
             };
             message(state, job, &said, false)
         }
@@ -1629,6 +1672,7 @@ fn decide(
             locale,
             pick,
             prompt_signature,
+            client,
         } => {
             let said = Said {
                 user,
@@ -1643,6 +1687,7 @@ fn decide(
                 locale: locale.clone(),
                 pick: pick.clone(),
                 prompt_signature: prompt_signature.as_ref(),
+                client: client.as_ref(),
             };
             message(state, job, &said, true)
         }
@@ -1655,6 +1700,7 @@ fn decide(
             locale,
             pick,
             prompt_signature,
+            client,
         } => match state {
             // The thread moved on while the message waited (an earlier redelivery started the next
             // job): the message joins that job, as one written during it would, and is sent
@@ -1683,6 +1729,7 @@ fn decide(
                         locale.clone(),
                         pick.clone(),
                         prompt_signature.as_ref(),
+                        client.as_ref(),
                     ),
                 ))
             }
@@ -1703,6 +1750,7 @@ fn decide(
                         locale.clone(),
                         pick.clone(),
                         prompt_signature.as_ref(),
+                        client.as_ref(),
                     ),
                 ))
             }
@@ -1720,6 +1768,7 @@ fn decide(
                     locale.clone(),
                     pick.clone(),
                     prompt_signature.as_ref(),
+                    client.as_ref(),
                 ));
                 Ok((ThreadState::Queued, cmds))
             }
@@ -1886,6 +1935,7 @@ fn decide(
             {
                 let text = job.after_stop.take().unwrap_or_default();
                 let prompt_signature = job.after_stop_prompt_signature.take();
+                let client = job.after_stop_client.take();
                 let mentions = std::mem::take(&mut job.after_stop_mentions);
                 let tier = job.after_stop_tier.take();
                 let tier_cap = job.after_stop_tier_cap.take();
@@ -1915,6 +1965,7 @@ fn decide(
                             locale,
                             pick,
                             prompt_signature,
+                            client,
                         },
                     ],
                 ))

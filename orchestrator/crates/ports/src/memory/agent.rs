@@ -123,6 +123,9 @@ pub struct SendCall {
     /// The person's prompt signature the request carried (ADR 0087): what an adapter would pass on
     /// to the agent's message, byte for byte.
     pub prompt_signature: Option<orch_core::PromptSignature>,
+    /// What the adapter was told to build and sign the message's prompt statement for (ADR 0087,
+    /// the cloud path): the thread, the person, the token's client and what started the run.
+    pub prompt: Option<crate::PromptRequest>,
 }
 
 /// How a [`ScriptedAgent`] that plays the verifier answers whatever it is asked
@@ -1796,6 +1799,7 @@ impl AgentClient for ScriptedAgent {
                 locale: req.locale.clone(),
                 pick: req.pick.clone(),
                 prompt_signature: req.prompt_signature.clone().map(Into::into),
+                prompt: req.prompt.clone(),
             })));
             if let Some(hook) = st.on_send.take() {
                 hook();

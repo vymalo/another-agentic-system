@@ -34,6 +34,7 @@ fn said(text: &str, prompt_signature: Option<&str>) -> Input {
         locale: None,
         pick: None,
         prompt_signature: prompt_signature.map(signature),
+        client: None,
     }
 }
 
@@ -55,6 +56,7 @@ fn stop(text: &str, prompt_signature: Option<&str>) -> Input {
         locale: None,
         pick: None,
         prompt_signature: prompt_signature.map(signature),
+        client: None,
     }
 }
 
@@ -347,6 +349,7 @@ fn a_redelivery_carries_what_its_row_holds() {
             locale: None,
             pick: None,
             prompt_signature: Some(signature(ENVELOPE)),
+            client: None,
         },
     );
     assert_eq!(sent(&cmds), Some(ENVELOPE.to_owned()));

@@ -971,6 +971,7 @@ async fn every_entry_that_starts_a_job_detaches_what_the_owner_may_no_longer_use
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+                client: None,
             },
             None,
         )

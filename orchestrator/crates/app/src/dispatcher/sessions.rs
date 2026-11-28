@@ -196,6 +196,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             // the bytes the person's app sent with the start (ADR 0087); `PersonPrompt`, which
             // becomes the child's logged message, has no place for them
             prompt_signature: prompt_signature.map(orch_core::PromptSignature::into_string),
+            prompt: None,
         };
         let answer = match tokio::time::timeout(ANSWER_TIMEOUT, self.read_answer(req)).await {
             Ok(Ok(answer)) => answer,
@@ -308,6 +309,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             locale: None,
             pick: None,
             prompt_signature: None,
+            prompt: None,
         };
         let answer = match tokio::time::timeout(ANSWER_TIMEOUT, self.read_answer(req)).await {
             Ok(Ok(answer)) => answer,

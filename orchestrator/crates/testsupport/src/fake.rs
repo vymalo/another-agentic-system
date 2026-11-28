@@ -504,6 +504,9 @@ pub struct Call {
     /// this fake has no field for (`model-pick/v1`, `reasoning/v1`, ADR 0086). `None` when the
     /// message carried none.
     pub message_metadata: Option<Value>,
+    /// The message's `parts`, as received and serialised: the value a `prompt-statement/v1`
+    /// statement's `content_sha256` is taken over (ADR 0087), so a test can recompute it.
+    pub message_parts: Option<Value>,
     /// `metadata[<uploads/v1 URI>]` of the message: `{maxBytes, ttlSecs}`, what the deployment
     /// offers for large files, when the message activated the extension (ADR 0058). Recorded as
     /// received, so a test can assert what an agent is told, and that an agent whose card does not
@@ -1334,6 +1337,7 @@ impl Front {
             mentions: mentions_of(Some(message)),
             access_tier: access_tier_of(Some(message)),
             message_metadata: metadata_of(Some(message)),
+            message_parts: parts_of(Some(message)),
             uploads: uploads_of(Some(message)),
             child_sessions: child_sessions_of(Some(message)),
             requested_task: message.task_id.clone().filter(|t| !t.is_empty()),
@@ -2097,6 +2101,11 @@ fn metadata_of(message: Option<&Message>) -> Option<Value> {
         .map(|m| Value::Object(m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()))
 }
 
+/// The message's `parts`, serialised as they were received.
+fn parts_of(message: Option<&Message>) -> Option<Value> {
+    serde_json::to_value(&message?.parts).ok()
+}
+
 /// `metadata[access-tier/v1]` of the message (ADR 0061): the tier the person picked.
 fn access_tier_of(message: Option<&Message>) -> Option<Value> {
     message?
@@ -2240,6 +2249,7 @@ impl Shared {
             mentions: mentions_of(ctx.message.as_ref()),
             access_tier: access_tier_of(ctx.message.as_ref()),
             message_metadata: metadata_of(ctx.message.as_ref()),
+            message_parts: parts_of(ctx.message.as_ref()),
             uploads: uploads_of(ctx.message.as_ref()),
             child_sessions: child_sessions_of(ctx.message.as_ref()),
             requested_task: ctx

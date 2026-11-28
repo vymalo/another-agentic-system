@@ -203,6 +203,8 @@ struct Loaded {
     /// The ids of the MCP servers attached to the thread when it was read (ADR 0024).
     tools: Vec<String>,
     binding: orch_ports::AgentBinding,
+    /// The person the thread belongs to (`threads.owner`): the statement's `sub` (ADR 0087).
+    owner: orch_core::UserId,
     /// The thread is a helper session's (ADR 0072): what is sent to it goes to the session's
     /// context, naming no earlier round.
     is_child: bool,
@@ -237,6 +239,9 @@ struct Adopt {
     /// The person's prompt signature, as the row holds it (ADR 0087): the adopted message keeps it,
     /// as it keeps its locale.
     prompt_signature: Option<orch_core::PromptSignature>,
+    /// The client the person's token was issued to, as the row holds it (ADR 0087): the adopted
+    /// message keeps it, so that a later send signs the same `azp`.
+    client: Option<String>,
     /// The task the binding had when the message was sent, if any.
     previous: Option<String>,
 }
@@ -1062,6 +1067,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             job: thread.job.number,
             tools: thread.job.tools,
             binding,
+            owner: thread.owner.clone(),
             is_child: thread.child_of.is_some(),
             forked_at: thread.forked_from.map(|origin| origin.seq),
             own_unlisted,
@@ -1106,6 +1112,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             locale,
             pick,
             prompt_signature,
+            client,
         ) = match row.payload.clone() {
             OutboxPayload::Delegate {
                 text,
@@ -1118,6 +1125,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 locale,
                 pick,
                 prompt_signature,
+                client,
             } => (
                 SendContent::Text(text),
                 release,
@@ -1129,6 +1137,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 locale,
                 pick,
                 prompt_signature,
+                client,
             ),
             OutboxPayload::Action {
                 action,
@@ -1150,6 +1159,8 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 // signature (ADR 0087: an action is not a prompt yet, open question 3)
                 None,
                 None,
+                None,
+                // and no client: nothing is signed for an action
                 None,
             ),
             // taken before this function (`process`): it is followed, never sent
@@ -1187,6 +1198,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             job,
             tools,
             binding,
+            owner,
             is_child,
             forked_at,
             own_unlisted: _,
@@ -1211,6 +1223,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 locale,
                 pick,
                 prompt_signature,
+                client,
                 ..
             } = &row.payload
                 && state != ThreadState::Cancelled
@@ -1233,6 +1246,8 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                             // the row holds the person's envelope (ADR 0087): the redelivery sends
                             // the same bytes, and the log still holds none of it
                             prompt_signature: prompt_signature.clone(),
+                            // and the client its token named, so the statement is the same
+                            client: client.clone(),
                         },
                         format!("redeliver:{}", row.id),
                         &lease,
@@ -1335,6 +1350,16 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             Ok(sent_tier) => sent_tier,
             Err(e) => return self.send_failed(&row, e).await,
         };
+        // What the adapter needs to build and sign this message's prompt statement (ADR 0087):
+        // only when the person's token named a client, which is the only case in which there is a
+        // statement to make. The adapter decides whether the agent's live card lists the
+        // extension; a deployment with no signer signs nothing.
+        let prompt = client.clone().map(|azp| orch_ports::PromptRequest {
+            thread: row.thread_id.to_string(),
+            sub: owner.to_string(),
+            azp,
+            src: orch_ports::PromptSource::Chat,
+        });
         let req = SendRequest {
             endpoint: ctx.endpoint.clone(),
             message_id: row.id.to_string(),
@@ -1371,6 +1396,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             prompt_signature: prompt_signature
                 .clone()
                 .map(orch_core::PromptSignature::into_string),
+            prompt,
         };
         // A message that starts a task of its own while the thread has meanwhile ended is adopted
         // (open question 33): `consume` tells the core, from the first event.
@@ -1394,6 +1420,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 locale: locale.clone(),
                 pick: pick.clone(),
                 prompt_signature: prompt_signature.clone(),
+                client: client.clone(),
                 previous: binding.task_id.clone(),
             }),
             _ => None,
@@ -1644,6 +1671,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             locale: adopt.locale.clone(),
             pick: adopt.pick.clone(),
             prompt_signature: adopt.prompt_signature.clone(),
+            client: adopt.client.clone(),
         };
         match self
             .app
@@ -1682,6 +1710,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             locale,
             pick,
             prompt_signature,
+            client,
             ..
         } = row.payload.clone()
         else {
@@ -1700,6 +1729,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             job,
             tools,
             binding,
+            owner,
             is_child: _,
             forked_at: _,
             own_unlisted: _,
@@ -1739,6 +1769,12 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                     .await;
             }
         };
+        let prompt = client.clone().map(|azp| orch_ports::PromptRequest {
+            thread: row.thread_id.to_string(),
+            sub: owner.to_string(),
+            azp,
+            src: orch_ports::PromptSource::Chat,
+        });
         let req = SendRequest {
             endpoint: ctx.endpoint.clone(),
             // the row's id is the message's: a row retried after a lost lease is the same message,
@@ -1767,6 +1803,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             pick,
             // the person's envelope, as the row holds it (ADR 0087): byte for byte
             prompt_signature: prompt_signature.map(orch_core::PromptSignature::into_string),
+            prompt,
         };
         let answer = tokio::time::timeout(STEER_ANSWER_TIMEOUT, async {
             let mut stream = self.app.ports().agents().send_stream(req).await?;
@@ -2302,6 +2339,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             job,
             tools: _,
             binding,
+            owner: _,
             is_child: _,
             forked_at: _,
             own_unlisted,

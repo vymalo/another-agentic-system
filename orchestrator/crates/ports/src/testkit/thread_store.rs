@@ -99,6 +99,7 @@ fn delegate(n: u128) -> NewOutbox {
             locale: None,
             pick: None,
             prompt_signature: None,
+            client: None,
         },
     }
 }
@@ -116,6 +117,7 @@ fn steer_row(n: u128) -> NewOutbox {
             locale: None,
             pick: None,
             prompt_signature: None,
+            client: None,
         },
     }
 }
@@ -2876,6 +2878,7 @@ pub async fn steer_rows_claim_beside_an_inflight_delegate<S: ThreadStore>(store:
             locale: None,
             pick: None,
             prompt_signature: None,
+            client: None,
         }
     );
     assert_eq!(stored.sent_at, None);
@@ -3101,6 +3104,7 @@ pub async fn a_requeued_steer_waits_behind_the_delegation_in_flight<S: ThreadSto
             locale: None,
             pick: None,
             prompt_signature: None,
+            client: None,
         }
     );
     assert_eq!(row.status, OutboxStatus::Pending);
@@ -4296,6 +4300,7 @@ pub async fn delegate_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             locale: None,
             pick: None,
             prompt_signature: None,
+            client: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             new_job: false,
@@ -4362,6 +4367,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             locale: None,
             pick: None,
             prompt_signature: None,
+            client: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             ui_catalog: None,
@@ -4417,6 +4423,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             locale: None,
             pick: None,
             prompt_signature: None,
+            client: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             new_job: false,
@@ -4457,6 +4464,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             locale: None,
             pick: None,
             prompt_signature: None,
+            client: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             new_job: false,
@@ -4486,6 +4494,7 @@ pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
             locale: None,
             pick: None,
             prompt_signature: None,
+            client: None,
             text: format!("do {n}"),
             release: None,
             new_job: false,
@@ -4526,6 +4535,7 @@ pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
             locale: None,
             pick: None,
             prompt_signature: None,
+            client: None,
             text: "do 1".into(),
             release: None,
             new_job: false,

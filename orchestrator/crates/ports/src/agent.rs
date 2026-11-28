@@ -11,6 +11,8 @@ use orch_core::{
     UiVersion,
 };
 
+use crate::PromptSource;
+
 /// How to reach an agent, one variant per way (ADR 0004: a closed enum, so the compiler lists
 /// every `match` a new transport must handle). It lives in the ports, not in the core, because it
 /// carries a secret that `transition` never sees. `Debug` never prints the bearer token.
@@ -304,6 +306,32 @@ pub struct SendRequest {
     /// the log. `None` for a message that carries none and for the orchestrator's own messages
     /// (a rework, an ask, the verifier).
     pub prompt_signature: Option<String>,
+    /// What the adapter needs to **build and sign** the cloud path's prompt statement for this
+    /// message (ADR 0087, the amendment of 2026-11-25): the thread, the person, the token's client
+    /// and what started the run. The adapter builds the statement from the parts it sends and signs
+    /// it with its configured `PromptSigner`, and puts it (with the person's envelope) in the
+    /// message's metadata under `prompt-statement/v1` **only when the live card lists the exact
+    /// URI**. `None` for a message with no client to name (the proxy header, an MCP static token, a
+    /// schedule), for the orchestrator's own messages, and in every deployment that configures no
+    /// signer: then nothing is signed and the message is today's.
+    pub prompt: Option<PromptRequest>,
+}
+
+/// The members of a prompt statement that only the send path knows (ADR 0087, the cloud path). The
+/// adapter fills `aud` from its configuration, `agent` and `a2a` from the message it sends, and
+/// `content_sha256` from the parts as sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptRequest {
+    /// The thread the message belongs to: the statement's `thread`.
+    pub thread: String,
+    /// The person, the thread's owner: the statement's `sub`.
+    pub sub: String,
+    /// The client the person's token was issued to (`azp`), as the intake received it: an empty
+    /// string is the token-with-no-client sentinel and is named as it is. Never read from the
+    /// request.
+    pub azp: String,
+    /// What started the run: the statement's `src`.
+    pub src: PromptSource,
 }
 
 impl fmt::Debug for SendRequest {
@@ -329,6 +357,7 @@ impl fmt::Debug for SendRequest {
             .field("locale", &self.locale)
             .field("pick", &self.pick)
             .field("prompt_signature", &Envelope(&self.prompt_signature))
+            .field("prompt", &self.prompt)
             .finish()
     }
 }

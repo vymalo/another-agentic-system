@@ -54,6 +54,7 @@ fn user_says(text: &str) -> Input {
         locale: None,
         pick: None,
         prompt_signature: None,
+        client: None,
         user: UserId::new("me@example.com"),
         text: text.into(),
         message_id: None,

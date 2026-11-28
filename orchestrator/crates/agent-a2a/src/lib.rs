@@ -85,6 +85,11 @@
 //! ([`trusted_components_from_card`]); the agent then asks the client to draw one in its
 //! `Message` metadata, and a request for a component the card did not offer is dropped
 //! (`orch_a2a_mapping` reads the request).
+//!
+//! The prompt statement (`prompt-statement/v1`, ADR 0087, the cloud path) is built and signed at
+//! send time, from the parts this adapter sends, and only when the live card lists the exact URI:
+//! the message's metadata carries `{statement}` (and the person's envelope as `user` when there is
+//! one) and the URI is activated. A deployment with no `PromptSigner` signs nothing.
 
 mod a2ui;
 mod access_tier;
@@ -97,6 +102,7 @@ mod files;
 mod locale;
 mod mentions;
 mod pick;
+mod prompt_statement;
 mod releases;
 mod thread_tools;
 mod trusted;

@@ -500,6 +500,7 @@ impl Checker<'_> {
             self.invalid("server.listen", "not a socket address like 0.0.0.0:8080");
         }
         self.internal(cfg);
+        self.prompt_signing(cfg);
         if let Some(listed) = &cfg.server.surfaces {
             for (i, surface) in listed.iter().enumerate() {
                 if listed[..i].contains(surface) {
@@ -1174,6 +1175,42 @@ impl Checker<'_> {
             } else if cors.allowed_origins[..i].contains(origin) {
                 self.invalid(at, "an origin is listed more than once");
             }
+        }
+    }
+
+    /// `promptSigning` (ADR 0087, the cloud path): the statement's `aud` is a canonical origin, an
+    /// `https` one in production, and the two files are named.
+    fn prompt_signing(&mut self, cfg: &Config) {
+        let Some(signing) = &cfg.prompt_signing else {
+            return;
+        };
+        if !is_allowed_origin(&signing.aud) {
+            self.invalid(
+                "promptSigning.aud",
+                "expected an http:// or https:// origin with a host, without credentials, path, \
+                 query or fragment, like https://models.example",
+            );
+        } else if cfg.server.environment == Environment::Production
+            && is_plain_http_origin(&signing.aud)
+            && !is_loopback_origin(&signing.aud)
+        {
+            self.invalid(
+                "promptSigning.aud",
+                "an https:// origin when server.environment is production (http:// only for \
+                 localhost): the statement names the model gateway's public origin",
+            );
+        }
+        if signing.key_file.trim().is_empty() {
+            self.invalid(
+                "promptSigning.keyFile",
+                "the path of the PKCS#8 Ed25519 private key (a PEM file)",
+            );
+        }
+        if signing.chain_file.trim().is_empty() {
+            self.invalid(
+                "promptSigning.chainFile",
+                "the path of the certificate chain (a PEM file, the leaf first)",
+            );
         }
     }
 

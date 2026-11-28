@@ -73,6 +73,7 @@ fn user_message(text: &str) -> Input {
         locale: None,
         pick: None,
         prompt_signature: None,
+        client: None,
     }
 }
 
@@ -90,6 +91,7 @@ fn stop_and_send(text: &str) -> Input {
         locale: None,
         pick: None,
         prompt_signature: None,
+        client: None,
     }
 }
 
@@ -239,6 +241,7 @@ fn a_message_to_a_child_that_mentions_an_agent_is_refused_and_writes_nothing() {
                     locale: None,
                     pick: None,
                     prompt_signature: None,
+                    client: None,
                 }
             } else {
                 Input::UserMessage {
@@ -254,6 +257,7 @@ fn a_message_to_a_child_that_mentions_an_agent_is_refused_and_writes_nothing() {
                     locale: None,
                     pick: None,
                     prompt_signature: None,
+                    client: None,
                 }
             };
             assert_eq!(
@@ -278,6 +282,7 @@ fn a_message_to_a_child_that_mentions_an_agent_is_refused_and_writes_nothing() {
         locale: None,
         pick: None,
         prompt_signature: None,
+        client: None,
     };
     assert!(transition(&Snapshot::new(Done), &plain).is_ok());
 }

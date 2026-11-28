@@ -37,6 +37,7 @@ fn said_with(text: &str, mentions: Vec<Mention>) -> Input {
         locale: None,
         pick: None,
         prompt_signature: None,
+        client: None,
         user: user(),
         text: text.into(),
         message_id: Some("m-1".into()),
@@ -53,6 +54,7 @@ fn stop_with(text: &str, mentions: Vec<Mention>) -> Input {
         locale: None,
         pick: None,
         prompt_signature: None,
+        client: None,
         user: user(),
         text: text.into(),
         message_id: None,
@@ -377,6 +379,7 @@ fn a_redelivery_carries_the_mentions_into_the_job_it_lands_in() {
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+                client: None,
             },
         );
         assert_eq!(next.job.number, number, "{state:?}");
@@ -437,6 +440,7 @@ fn a_redelivery_that_was_sent_delegates_nothing_and_still_opens_the_set() {
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+                client: None,
             },
         );
         assert_eq!(next.job.number, number, "{state:?}");

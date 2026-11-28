@@ -505,6 +505,7 @@ async fn mention_coder(app: &TestApp, id: ThreadId) {
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+                client: None,
                 user: alice(),
                 text: "echo @coder later".to_owned(),
                 message_id: Some("m-2".to_owned()),

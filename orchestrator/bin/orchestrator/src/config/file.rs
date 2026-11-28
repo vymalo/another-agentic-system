@@ -38,7 +38,7 @@ use serde_json::{Map, Value};
 
 use super::{
     Args, Config, ConfigError, EndpointSettings, InternalSettings, LogFormat, ModelsSettings,
-    Resolved, Surface, flag, number, parse_surfaces,
+    PromptSigningSettings, Resolved, Surface, flag, number, parse_surfaces,
 };
 use crate::artifacts::{ArtifactSettings, S3Settings, StoreSettings, UploadLimits};
 use crate::user_tools::UserToolsSettings;
@@ -1548,6 +1548,11 @@ fn project(
     }
     let resolved = Resolved {
         artifacts: artifact_settings(valid)?,
+        prompt_signing: c.prompt_signing.as_ref().map(|p| PromptSigningSettings {
+            aud: p.aud.clone(),
+            key_file: valid.base_dir.join(&p.key_file),
+            chain_file: valid.base_dir.join(&p.chain_file),
+        }),
         // People's own MCP servers (ADR 0046): the egress policy and the keys, only when enabled.
         user_tools: UserToolsSettings::from_file(valid).map_err(document)?,
         provisioner: crate::provisioner::ProvisionerSettings::from_file(valid),

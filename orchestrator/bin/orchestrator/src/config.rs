@@ -1387,6 +1387,10 @@ pub struct Config {
     /// `provisioner` of the configuration file: a person's own agents on the platform. `None`
     /// without the section (it has no variable), and then nothing changes. Redacted in `Debug`.
     pub provisioner: Option<ProvisionerSettings>,
+    /// `promptSigning` of the configuration file (ADR 0087, the cloud path): the model gateway's
+    /// canonical origin and the key the orchestrator's statement is signed with. `None` without
+    /// the section, and then nothing is signed.
+    pub prompt_signing: Option<PromptSigningSettings>,
     /// `sharing` of the configuration file (ADR 0040): the cap on what can be shared, the secret
     /// the links are made with and what a public reader may see. Disabled without the section (and
     /// always from the environment alone: the section has no variable). Its `Debug` never shows a
@@ -1894,6 +1898,7 @@ impl Config {
             shutdown_grace: Duration::from_secs(shutdown_grace_secs),
             log_format,
             artifacts: resolved.artifacts,
+            prompt_signing: resolved.prompt_signing,
             user_tools: resolved.user_tools,
             provisioner: resolved.provisioner,
             usage: resolved.usage,
@@ -2949,12 +2954,26 @@ impl WebhookSecrets {
     }
 }
 
+/// `promptSigning` (ADR 0087, the cloud path): the statement's `aud` and the key it is signed with.
+/// Paths are resolved against the configuration file's directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptSigningSettings {
+    /// The model gateway's canonical origin: the statement's `aud`.
+    pub aud: String,
+    /// The PKCS#8 Ed25519 private key, PEM.
+    pub key_file: PathBuf,
+    /// The certificate chain, PEM: the leaf first, the root left out.
+    pub chain_file: PathBuf,
+}
+
 /// What the typed file path hands to [`Config::load_with`] beside [`Args`]: the values that
 /// cannot go through a string without being read again (a secret that has a comma in it).
 #[derive(Default)]
 struct Resolved {
     /// `artifacts`, read as the file said it (it has no variable).
     artifacts: Option<ArtifactSettings>,
+    /// `promptSigning`, read as the file said it (it has no variable).
+    prompt_signing: Option<PromptSigningSettings>,
     /// `userToolServers` and the keys of `secrets`, when the feature is enabled (no variable).
     user_tools: Option<UserToolsSettings>,
     /// `provisioner`, read as the file said it (it has no variable).

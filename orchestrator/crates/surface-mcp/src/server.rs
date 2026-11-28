@@ -570,6 +570,8 @@ impl<P: Ports> McpServer<P> {
             tier: None,
             // an MCP static token names no OAuth client, so its prompt is never signed (ADR 0087)
             prompt_signature: None,
+            // and there is no client to name in a statement
+            client: None,
         };
         // No idempotency key: an `answer` is not made safe to retry (ADR 0019).
         match self.app.submit(who, id, input, None).await {

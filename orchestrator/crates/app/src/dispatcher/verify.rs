@@ -269,6 +269,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             locale: None,
             pick: None,
             prompt_signature: None,
+            prompt: None,
         };
         self.app.record_agent_build(v.thread, &v.endpoint).await;
         match self.app.ports().agents().send_stream(request).await {

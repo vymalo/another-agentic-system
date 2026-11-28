@@ -167,6 +167,7 @@ fn signed_stop(text: &str, envelope: &str) -> Input {
         locale: None,
         pick: None,
         prompt_signature: Some(PromptSignature::from(envelope.to_owned())),
+        client: None,
     }
 }
 
@@ -353,4 +354,97 @@ async fn a_repeat_of_a_signed_stop_is_a_duplicate_and_another_message_is_a_confl
     );
     let after = w.store.get_thread(None, thread).await.unwrap().unwrap();
     assert_eq!(after, before, "nothing was written");
+}
+
+/// A thread created with a first message that carries `client`.
+async fn start_with_client(w: &World, text: &str, client: Option<&str>) -> ThreadId {
+    let app = w.app();
+    let thread = ThreadId(uuid::Uuid::now_v7());
+    match app
+        .create_thread_as(
+            &alice(),
+            thread,
+            new_thread(text),
+            Inbound {
+                origin: Origin::Agui,
+                client: client.map(str::to_owned),
+                ..Inbound::default()
+            },
+        )
+        .await
+        .unwrap()
+    {
+        Creation::Created { .. } => thread,
+        Creation::Exists => panic!("a fresh id"),
+    }
+}
+
+/// ANR-1425: the client the token was issued to (`azp`) rides the delegation's outbox row and the
+/// dispatcher's request, so that a statement can name it, and it is in no event, frame or export.
+#[tokio::test]
+async fn the_client_rides_the_row_and_the_send_and_is_in_no_event() {
+    let w = World::new();
+    let thread = start_with_client(&w, "echo hi", Some("another-direct")).await;
+
+    // The row carries it, so a redelivery signs the same `azp`.
+    let rows = w.store.list_open_outbox(thread).await.unwrap();
+    let [row] = rows.as_slice() else {
+        panic!("{rows:?}")
+    };
+    let OutboxPayload::Delegate { client, .. } = &row.payload else {
+        panic!("{:?}", row.payload)
+    };
+    assert_eq!(client.as_deref(), Some("another-direct"));
+
+    // The log holds none of it.
+    let export = exported(&w, thread).await;
+    assert!(!export.contains("another-direct"), "{export}");
+
+    // And the dispatcher hands it to the adapter, with the thread and the person.
+    let run = spawn_dispatcher(&w.app(), fast(), "d1");
+    wait_state(&w.app(), &alice(), thread, ThreadState::Done).await;
+    run.shutdown().await;
+    let sent: Vec<Option<orch_ports::PromptRequest>> = w
+        .agent
+        .sends()
+        .into_iter()
+        .filter_map(|call| match call {
+            Call::Send(call) => Some(call.prompt.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        [Some(orch_ports::PromptRequest {
+            thread: thread.to_string(),
+            sub: "alice@example.com".to_owned(),
+            azp: "another-direct".to_owned(),
+            src: orch_ports::PromptSource::Chat,
+        })],
+        "the send carries the client"
+    );
+
+    // Even after the row was worked: the log still holds nothing of it.
+    let export = exported(&w, thread).await;
+    assert!(!export.contains("another-direct"), "{export}");
+}
+
+/// A message with no client to name hands the adapter none: there is no statement to make.
+#[tokio::test]
+async fn a_message_with_no_client_hands_the_adapter_none() {
+    let w = World::new();
+    let thread = start_with_client(&w, "echo hi", None).await;
+    let run = spawn_dispatcher(&w.app(), fast(), "d1");
+    wait_state(&w.app(), &alice(), thread, ThreadState::Done).await;
+    run.shutdown().await;
+    let sent: Vec<Option<orch_ports::PromptRequest>> = w
+        .agent
+        .sends()
+        .into_iter()
+        .filter_map(|call| match call {
+            Call::Send(call) => Some(call.prompt.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sent, [None]);
 }

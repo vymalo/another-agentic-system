@@ -107,6 +107,7 @@ async fn the_token_is_in_the_message_and_nowhere_else() {
         locale: None,
         pick: None,
         prompt_signature: None,
+        prompt: None,
     };
     let req = request();
     let shown_request = format!("{req:?}");

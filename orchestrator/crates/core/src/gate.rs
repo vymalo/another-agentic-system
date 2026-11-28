@@ -395,6 +395,13 @@ pub struct Job {
     /// field existed has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_stop_prompt_signature: Option<PromptSignature>,
+    /// The client the token of the message [`Job::after_stop`] holds was issued to (`azp`, ADR
+    /// 0087), held with it exactly as the envelope is and for the same reason: the next job's
+    /// statement must name the same client. **Not conversation content**: the thread export takes
+    /// it out, and `Debug` is the derived one (a client id is not a secret). A ledger stored before
+    /// the field existed has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_stop_client: Option<String>,
     /// The agents the person's messages of **this job** mentioned (ADR 0026, `mentions/v1`): the
     /// agents the addressed agent may ask in this job. The union of the mentions of every message
     /// that reached the job (the first, those sent while it ran, an answer to a blocked job);
@@ -525,6 +532,7 @@ impl Default for Job {
             builds: Vec::new(),
             after_stop: None,
             after_stop_prompt_signature: None,
+            after_stop_client: None,
             mentioned: BTreeSet::new(),
             mentioned_caps: BTreeMap::new(),
             after_stop_mentions: Vec::new(),

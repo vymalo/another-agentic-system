@@ -40,6 +40,7 @@ fn request(ep: &AgentEndpoint, message: &str, context: Option<&str>) -> SendRequ
         locale: None,
         pick: None,
         prompt_signature: None,
+        prompt: None,
     }
 }
 

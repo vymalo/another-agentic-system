@@ -53,6 +53,7 @@ fn request(ep: &AgentEndpoint, context: &str, content: SendContent) -> SendReque
         locale: None,
         pick: None,
         prompt_signature: None,
+        prompt: None,
     }
 }
 

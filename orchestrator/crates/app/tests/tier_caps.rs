@@ -99,6 +99,7 @@ fn message(text: &str) -> Input {
         locale: None,
         pick: None,
         prompt_signature: None,
+        client: None,
         user: alice(),
         text: text.to_owned(),
         message_id: None,

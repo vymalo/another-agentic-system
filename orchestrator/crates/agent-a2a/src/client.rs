@@ -20,14 +20,14 @@ use futures::stream::BoxStream;
 use orch_a2a_mapping::{StreamMapper, sessions_news, snapshot, usage_totals, wants_task_read};
 use orch_core::{
     ACCESS_TIER_EXTENSION, BoxError, CHILD_SESSIONS_EXTENSION, KnownExtension, LOCALE_EXTENSION,
-    MENTIONS_EXTENSION, MODEL_PICK_EXTENSION, REASONING_EXTENSION, STEER_EXTENSION,
-    STEPS_EXTENSION, TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION, TRUSTED_COMPONENTS_EXTENSION,
-    TrustedComponentsOffer, UI_CATALOG_EXTENSION, UPLOADS_EXTENSION, USAGE_EXTENSION, UiDelivery,
-    UiVersion, history_preamble,
+    MENTIONS_EXTENSION, MODEL_PICK_EXTENSION, PROMPT_STATEMENT_EXTENSION, REASONING_EXTENSION,
+    STEER_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION,
+    TRUSTED_COMPONENTS_EXTENSION, TrustedComponentsOffer, UI_CATALOG_EXTENSION, UPLOADS_EXTENSION,
+    USAGE_EXTENSION, UiDelivery, UiVersion, history_preamble,
 };
 use orch_ports::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentError, AgentStream, AgentTransport,
-    SendContent, SendRequest, TaskHandle, TaskSnapshot, UiSupport,
+    PromptSigner, SendContent, SendRequest, TaskHandle, TaskSnapshot, UiSupport,
 };
 use orch_thread_token::{ThreadToolsGrant, ThreadToolsIssuer};
 use serde_json::{Value, json};
@@ -44,6 +44,7 @@ use crate::files::{Fetcher, FileFetch};
 use crate::locale::{locale_from_card, locale_metadata};
 use crate::mentions::mentions_metadata;
 use crate::pick::{pick_from_card, pick_metadata};
+use crate::prompt_statement;
 use crate::releases::{RELEASE_CHANNELS_URI, releases_from_card};
 use crate::thread_tools::{mint, thread_tools_metadata};
 use crate::trusted::trusted_components_from_card;
@@ -189,6 +190,10 @@ pub struct A2aAgentClient {
     rpc_http: reqwest::Client,
     fetcher: Option<Fetcher>,
     cfg: A2aConfig,
+    /// Who signs the cloud path's prompt statement (ADR 0087); `None` (the default) signs nothing.
+    prompt_signer: Option<Arc<dyn prompt_statement::Sign>>,
+    /// The model gateway's canonical origin the statement is signed for; `None` with no signer.
+    statement_aud: Option<String>,
 }
 
 impl std::fmt::Debug for A2aAgentClient {
@@ -231,7 +236,26 @@ impl A2aAgentClient {
             rpc_http,
             fetcher,
             cfg,
+            prompt_signer: None,
+            statement_aud: None,
         })
+    }
+
+    /// Signs the prompt statement of each message with `signer` (ADR 0087, the cloud path). With
+    /// no signer, or no [`with_statement_aud`](Self::with_statement_aud), nothing is signed and
+    /// every message is today's. The composition root calls this from the `promptSigning` section.
+    #[must_use]
+    pub fn with_prompt_signer<S: PromptSigner>(mut self, signer: Option<Arc<S>>) -> Self {
+        self.prompt_signer = signer.map(|signer| signer as Arc<dyn prompt_statement::Sign>);
+        self
+    }
+
+    /// The model gateway's canonical origin the statement is signed for: the statement's `aud`.
+    /// Required beside a signer; a signer without an `aud` signs nothing.
+    #[must_use]
+    pub fn with_statement_aud(mut self, aud: String) -> Self {
+        self.statement_aud = Some(aud);
+        self
     }
 
     /// The card document URL: a URL ending in `.json` is used as is, anything else is treated
@@ -972,17 +996,39 @@ impl AgentClient for A2aAgentClient {
             effort: pick.effort.as_ref(),
             uploads: uploads.as_ref(),
         };
-        let client = Arc::new(
-            self.client_for(
-                &req.endpoint,
-                &card,
-                extensions_of(&req, ui.as_ref(), catalog, riders, &reporting),
+        let mut message = user_message(&req, ui.as_ref(), catalog, riders, &reporting);
+        let mut activate = extensions_of(&req, ui.as_ref(), catalog, riders, &reporting);
+        // The prompt statement (ADR 0087, the cloud path): built and signed here, from the parts
+        // that go on the wire, for this message only, and only when the live card lists the exact
+        // URI. A deployment with no signer, or no `aud`, signs nothing and the message is today's.
+        if let (Some(signer), Some(aud), Some(prompt)) = (
+            self.prompt_signer.as_deref(),
+            self.statement_aud.as_deref(),
+            req.prompt.as_ref(),
+        ) && prompt_statement::offered(&card)
+        {
+            let entry = prompt_statement::entry(
+                signer,
+                aud,
+                prompt,
+                &req.endpoint.id.to_string(),
+                &message,
+                req.prompt_signature.as_deref(),
             )
-            .await?,
-        );
+            .await?;
+            message
+                .metadata
+                .get_or_insert_with(HashMap::new)
+                .insert(PROMPT_STATEMENT_EXTENSION.to_owned(), entry);
+            let mut extensions = message.extensions.take().unwrap_or_default();
+            extensions.push(PROMPT_STATEMENT_EXTENSION.to_owned());
+            message.extensions = Some(extensions);
+            activate.push(PROMPT_STATEMENT_EXTENSION.to_owned());
+        }
+        let client = Arc::new(self.client_for(&req.endpoint, &card, activate).await?);
         let reader = self.task_reader(&req.endpoint, &reporting, &client);
         let request = SendMessageRequest {
-            message: user_message(&req, ui.as_ref(), catalog, riders, &reporting),
+            message,
             configuration: None,
             metadata: None,
             tenant: None,

@@ -455,6 +455,9 @@ pub fn fork_commit(
             locale: replacement.locale,
             pick: replacement.pick,
             prompt_signature: replacement.prompt_signature,
+            // A fork's first message is not signed yet: the client its token named does not ride
+            // the fork request (a follow-up), so no statement is made for it.
+            client: None,
         },
     )?;
     commands.extend(more);

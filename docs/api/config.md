@@ -496,6 +496,25 @@ as an unauthenticated call), and it never falls back to a token. No key, request
 [README](../../orchestrator/crates/platform-credentials-openbao/README.md). **Status: unverified against a live OpenBao or platform**
 (tested against a stand-in of OpenBao and a real TLS listener).
 
+### `promptSigning`
+
+The prompt statement the orchestrator signs for the model gateway (ADR 0087, the cloud path; adam-rs ADR 0077).
+**Absent is off**: nothing is signed and no agent is told `prompt-statement/v1`. With the section, the A2A client
+builds a statement at send time, from the parts it sends, and signs it with the configured key; the person's envelope
+goes beside it, byte for byte. A message from a client the token names (`azp`) gets a statement; one with no client
+(the proxy header, an MCP static token) gets none. Nothing of the statement or the envelope is written to the log.
+
+| Key | Meaning |
+|---|---|
+| `aud` | The model gateway's canonical origin, the statement's `aud`: `http` or `https`, a host, no credentials, path, query or fragment. An `https` one when `server.environment` is `production` (an `http` one only for localhost). |
+| `keyFile` | The PKCS#8 Ed25519 private key, a PEM file (`-----BEGIN PRIVATE KEY-----`), relative to the configuration file's directory. |
+| `chainFile` | The certificate chain of that key, a PEM file, the leaf first and the root left out. |
+
+The binary builds `prompt-signer-static`, a **test signer**: its key sits in a file and its certificate is never
+renewed, so a deployment needs the certified signer of ADR 0087, which is not built yet. The statement's `user` member
+is `null` today: the person's signed claims are not carried to the send path, so the statement does not claim them, and
+the envelope is still forwarded for a verifier to check on its own.
+
 ### `userToolServers`
 
 *Built 2026-10-14 ([ADR 0046](../decisions/0046-people-add-their-own-mcp-servers-secrets-in-a-credential-broker.md), slice 4a: the section, the composition root and the store), 2026-10-15 (slice 4b: the routes, [`/api/user-tool-servers`](chat-api.yaml) and their servers in `GET /api/tool-servers`) and 2026-10-15 (slice 4c: authorizing an OAuth server, its callback and the Client ID Metadata Document). Attaching a person's server to a thread is the next slice.* People can add **MCP servers of their own** (a URL, and how to authenticate to it), and the orchestrator calls them for the person with a credential it keeps for them. The deployment's own [`toolServers`](#toolservers) stay as they are and a person's are only ever added on top. **Off unless `enabled: true`**: with it off or absent **nothing is built and nothing is opened**, the keys of `secrets` are only checked, and nothing changes. Adding a server also needs the permission [`tools.user.add`](#roles-and-permissions), which no role holds by default.

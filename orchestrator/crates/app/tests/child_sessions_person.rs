@@ -630,6 +630,7 @@ async fn a_helper_thread_takes_no_mentions() {
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+                client: None,
             },
             None,
         )

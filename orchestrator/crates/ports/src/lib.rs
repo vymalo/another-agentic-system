@@ -98,8 +98,8 @@ pub mod testkit;
 pub use account_erase::{AccountErase, EraseError, EraseOutcome};
 pub use agent::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream,
-    AgentTransport, IdemKey, MentionInfo, SendContent, SendRequest, TaskHandle, TaskSnapshot,
-    UiSupport,
+    AgentTransport, IdemKey, MentionInfo, PromptRequest, SendContent, SendRequest, TaskHandle,
+    TaskSnapshot, UiSupport,
 };
 pub use artifacts::{
     ArtifactError, ArtifactHead, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, CHUNK_BYTES,
@@ -130,6 +130,8 @@ pub use inbox::{
 };
 pub use lookup::{HostLookup, LOOKUP_TIMEOUT, LookupFailure, LookupFuture, judge_lookup};
 pub use model::{ChatModel, ChatRequest, ModelError, NoModel};
+/// What started a run, for a prompt statement (the closed set of `orch-prompt-statement`).
+pub use orch_prompt_statement::Source as PromptSource;
 pub use pending::{
     NoPendingAuthorizations, PendingAuthorization, PendingAuthorizationError,
     PendingAuthorizations, StateDigest,

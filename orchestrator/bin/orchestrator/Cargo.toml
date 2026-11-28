@@ -101,6 +101,7 @@ orch-tools-mcp = { workspace = true, optional = true }
 orch-signed-request = { workspace = true, optional = true }
 orch-surface-webhook = { workspace = true, optional = true }
 orch-agent-a2a.workspace = true
+orch-prompt-signer-static.workspace = true
 orch-model-openai.workspace = true
 orch-registry-platform = { workspace = true, optional = true }
 orch-provisioner-platform = { workspace = true, optional = true }

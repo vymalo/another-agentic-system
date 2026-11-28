@@ -305,6 +305,13 @@ pub enum OutboxPayload {
         /// it out of the ledger, and `Debug` shows its length.)*
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prompt_signature: Option<orch_core::PromptSignature>,
+        /// The client the person's token was issued to (`azp`, ADR 0087), as the intake received it:
+        /// the dispatcher names it in the prompt statement it signs for this message. **Not
+        /// conversation content and not a secret**: it is in no event, frame, step or export, and
+        /// the row keeps it so that a redelivery signs the same `azp`. Absent in a row written
+        /// before the field existed, and for a message with no client to name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client: Option<String>,
     },
     /// Delegate the user's action on an A2UI surface (ADR 0013), with the time it happened. It is
     /// a `delegate` row like a message: the same claim, resume and retry rules apply.
@@ -410,6 +417,11 @@ pub enum OutboxPayload {
         /// it becomes keeps it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prompt_signature: Option<orch_core::PromptSignature>,
+        /// The client the person's token was issued to (`azp`), as for
+        /// [`OutboxPayload::Delegate`]: a steer carries it into the running task's statement, and
+        /// the delegation it becomes keeps it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client: Option<String>,
     },
     /// Ask `agent` to do `text` for the job's agent (`orch_core::Command::Ask`, ADR 0026). `job` and
     /// `ask` say which ask of which job this is: a row whose ask has ended (its deadline, a stop,
@@ -539,6 +551,7 @@ impl OutboxPayload {
                 locale,
                 pick,
                 prompt_signature,
+                client,
             } => Some(OutboxPayload::Delegate {
                 text: text.clone(),
                 release: release.clone(),
@@ -550,6 +563,7 @@ impl OutboxPayload {
                 locale: locale.clone(),
                 pick: pick.clone(),
                 prompt_signature: prompt_signature.clone(),
+                client: client.clone(),
             }),
             OutboxPayload::Delegate { .. }
             | OutboxPayload::Action { .. }
@@ -1694,6 +1708,7 @@ mod payload_tests {
             locale: None,
             pick: None,
             prompt_signature: None,
+            client: None,
             text: "echo @coder".to_owned(),
             release: None,
             ui_catalog: None,

@@ -162,6 +162,7 @@ mod tests {
             locale: None,
             pick,
             prompt_signature: None,
+            prompt: None,
         }
     }
 
