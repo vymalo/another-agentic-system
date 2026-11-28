@@ -98,7 +98,7 @@ fn delegate(n: u128) -> NewOutbox {
             tier_cap: Some(orch_core::AccessTier::Edits),
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
         },
     }
 }
@@ -115,7 +115,7 @@ fn steer_row(n: u128) -> NewOutbox {
             tier_cap: Some(orch_core::AccessTier::Auto),
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
         },
     }
 }
@@ -2875,7 +2875,7 @@ pub async fn steer_rows_claim_beside_an_inflight_delegate<S: ThreadStore>(store:
             tier_cap: Some(orch_core::AccessTier::Auto),
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
         }
     );
     assert_eq!(stored.sent_at, None);
@@ -2939,6 +2939,22 @@ pub async fn steer_rows_claim_beside_an_inflight_delegate<S: ThreadStore>(store:
     );
 }
 
+/// A signed prompt with every claim, so that a store that dropped one would be seen. (A helper
+/// start has no claims; a store does not know that, and keeps what it is given.)
+fn signed_prompt(envelope: &str) -> orch_core::SignedPrompt {
+    orch_core::SignedPrompt {
+        envelope: envelope.to_owned().into(),
+        claims: Some(orch_core::PromptClaims {
+            aud: "https://api.test.invalid".to_owned(),
+            thread: "thread-as-sent".to_owned(),
+            agent: "agent-as-sent".to_owned(),
+            msg: "message-id-as-sent".to_owned(),
+            content_sha256: "K8rpkPgbh7xKFEA3Gls76MNqPvNQeKp1OnLWUgCDNj4".to_owned(),
+            props_sha256: "RBNvo1WzZ4oRRq0W9-hknpT7T8If536DEMBg9hyq_4o".to_owned(),
+        }),
+    }
+}
+
 fn session_start_row(n: u128) -> NewOutbox {
     NewOutbox {
         id: outbox_id(n),
@@ -2951,7 +2967,7 @@ fn session_start_row(n: u128) -> NewOutbox {
             tier: Some(orch_core::AccessTier::Edits),
             tier_cap: None,
             // a store keeps the envelope byte for byte (ADR 0087)
-            prompt_signature: Some("eyJhbGciOiJFZERTQSJ9..c2ln-_x".to_owned().into()),
+            signed_prompt: Some(signed_prompt("eyJhbGciOiJFZERTQSJ9..c2ln-_x")),
         },
     }
 }
@@ -3100,7 +3116,7 @@ pub async fn a_requeued_steer_waits_behind_the_delegation_in_flight<S: ThreadSto
             tier_cap: Some(orch_core::AccessTier::Auto),
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
         }
     );
     assert_eq!(row.status, OutboxStatus::Pending);
@@ -3481,7 +3497,7 @@ fn busy_job() -> Job {
         // ADR 0036: the text a job being stopped holds for the next one
         after_stop: Some("do X instead".to_owned()),
         // ADR 0087: and its prompt signature, which survives a restart with the text
-        after_stop_prompt_signature: Some("eyJhbGciOiJFZERTQSJ9..aGVsZA-_x".to_owned().into()),
+        after_stop_signed_prompt: Some(signed_prompt("eyJhbGciOiJFZERTQSJ9..aGVsZA-_x")),
         // ADR 0026: the agents the job's messages mentioned, and the mentions of the held text
         mentioned: [AgentId::new("researcher"), AgentId::new("coder")].into(),
         // ADR 0061: the cap of the person's role on a mentioned agent, pinned by the mention
@@ -3773,14 +3789,14 @@ pub async fn job_roundtrip<S: ThreadStore>(store: S) {
     next.results.clear();
     next.hold = None;
     // ADR 0087: a cleared signature stays cleared, and is not left behind by the earlier write
-    next.after_stop_prompt_signature = None;
+    next.after_stop_signed_prompt = None;
     let mut c = commit(ThreadState::Verifying, vec![user_event("x", None)], vec![]);
     c.job = Some(next.clone());
     let (record, _) = applied(store.commit(thread_id(2), 1, c).await.unwrap());
     assert_eq!((record.state, &record.job), (ThreadState::Verifying, &next));
     let got = store.get_thread(None, thread_id(2)).await.unwrap().unwrap();
     assert_eq!(got, record);
-    assert_eq!(got.job.after_stop_prompt_signature, None);
+    assert_eq!(got.job.after_stop_signed_prompt, None);
 
     // A commit with no job changes the state and leaves the job.
     let (record, _) = applied(
@@ -4295,7 +4311,7 @@ pub async fn delegate_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             new_job: false,
@@ -4361,7 +4377,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             ui_catalog: None,
@@ -4416,7 +4432,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             new_job: false,
@@ -4456,7 +4472,7 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
             text: "\u{1F604} @researcher then @coder".to_owned(),
             release: None,
             new_job: false,
@@ -4485,7 +4501,7 @@ pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
             text: format!("do {n}"),
             release: None,
             new_job: false,
@@ -4525,7 +4541,7 @@ pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
             text: "do 1".into(),
             release: None,
             new_job: false,

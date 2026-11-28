@@ -35,6 +35,9 @@ server:
   # The chat, for the `web_url` of the MCP tool `start_job`. The edge listens on 8080 unless EDGE_PORT says
   # otherwise, and then compose.yaml sets ORCH_PUBLIC_URL (over this).
   publicUrl: http://127.0.0.1:8080
+  # The deployment's API origin, the `aud` kept beside a person's signed prompt (ADR 0087): never read from a request.
+  # Required because `auth.signingClients` below lists a client; without it the orchestrator does not start.
+  publicOrigin: http://127.0.0.1:8080
 
 log:
   format: text

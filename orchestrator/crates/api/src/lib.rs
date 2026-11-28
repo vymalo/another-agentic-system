@@ -81,8 +81,9 @@ pub use oauth::{
     CALLBACK_PATH as OAUTH_CALLBACK_PATH, ClientMetadata, ClientMetadataError,
     RESERVED_PATHS as CLIENT_METADATA_RESERVED_PATHS,
 };
+pub use orch_prompt_statement::Received;
 pub use problem::{ApiError, Problem};
-pub use prompt_signature::check_prompt_signature;
+pub use prompt_signature::{check_prompt_signature, prompt_claims};
 pub use public_auth::BrowserAuth;
 pub use routes::parse_thread_id;
 pub use shared::too_many_streams;
@@ -129,8 +130,8 @@ pub struct ApiConfig {
     /// one or none gets the problem of [`client_version`]. `None` (the default): no client is refused.
     pub min_client_version: Option<client_version::ClientVersion>,
     /// `auth.signingClients` (ADR 0087, decision 1): the clients whose prompts must carry
-    /// `vymalo.promptSignature` on the resource API's route that writes a person's words,
-    /// `startChildSession`. Empty (the default) asks nobody. A composer that mounts the AG-UI
+    /// `vymalo.promptSignature` on the resource API's routes that write a person's words,
+    /// `startChildSession` and `forkThread`. Empty (the default) asks nobody. A composer that mounts the AG-UI
     /// surface gives it the same list.
     pub signing_clients: Vec<String>,
 }

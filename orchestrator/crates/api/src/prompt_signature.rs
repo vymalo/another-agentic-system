@@ -1,8 +1,10 @@
 //! The presence check of a signing client's prompt (ADR 0087, decisions 1 and 7), one for every
-//! route that writes a person's words: the AG-UI run (`orch-surface-agui`) and `startChildSession`.
+//! route that writes a person's words: the AG-UI run (`orch-surface-agui`), `startChildSession` and
+//! `forkThread`.
 
+use orch_core::PromptClaims;
 use orch_ports::Principal;
-use orch_prompt_statement::MAX_ENVELOPE_LEN;
+use orch_prompt_statement::{MAX_ENVELOPE_LEN, Received, UserClaims};
 
 use crate::Problem;
 
@@ -47,5 +49,29 @@ pub fn check_prompt_signature<'a>(
             .with_code(refusal.code())
             .with_reason(refusal.client_reason()))
         }
+    }
+}
+
+/// The claims kept beside a person's envelope (ADR 0087, decision 2), from the request **as it
+/// arrived** ([`Received`]) and the deployment's configured public origin `aud`. The members and
+/// their hashes are `orch-prompt-statement`'s [`UserClaims::from_request`], so that intake and the
+/// statement cannot hash differently. `env_sha256` is not kept: it is a function of the envelope.
+pub fn prompt_claims(aud: &str, received: &Received<'_>, envelope: &str) -> PromptClaims {
+    let UserClaims {
+        env_sha256: _,
+        aud,
+        thread,
+        agent,
+        msg,
+        content_sha256,
+        props_sha256,
+    } = UserClaims::from_request(aud, received, envelope);
+    PromptClaims {
+        aud,
+        thread,
+        agent,
+        msg,
+        content_sha256,
+        props_sha256,
     }
 }

@@ -427,6 +427,16 @@ pub struct Server {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1))]
     pub surfaces: Option<Vec<Surface>>,
+    /// The deployment's canonical API origin, the `aud` a person's signed prompt is for (ADR 0087,
+    /// decision 2). It is taken from here and **never** from a request (`Host` and `X-Forwarded-*`
+    /// included); a signing app takes it from its own configuration. Written in its normal form: `http`
+    /// or `https`, a lower-case host (an international name as punycode), a port only when it is not the
+    /// scheme's default, and nothing after it, not even a slash, for example
+    /// `https://chat.example.com`; a `production` process takes `http` only for the loopback.
+    /// **Required when `auth.signingClients` lists a client** (absent or empty, the process does not
+    /// start); with none listed it may be absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_origin: Option<String>,
     /// The public origin of the chat, for example `https://chat.example.com`: the MCP surface
     /// gives `start_job` a `web_url` from it. Replaces `ORCH_PUBLIC_URL`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -575,6 +585,7 @@ impl Default for Server {
             role: Role::default(),
             instance_id: None,
             surfaces: None,
+            public_origin: None,
             public_url: None,
             shutdown_grace_secs: default_shutdown_grace_secs(),
             environment: Environment::default(),

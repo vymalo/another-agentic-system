@@ -221,7 +221,7 @@ expect "the export holds the message (the checks below are not of an empty file)
   "$(jq -r --arg t "$accepted" '[.events[] | select(.kind == "user_message" and ((.data.text // "") | contains($t)))] | length' "$tmp/export.json" 2>/dev/null || echo unreadable)" "1"
 expect "the envelope is in no export" "$(grep -c -F "$envelope" "$tmp/export.json" || true)" "0"
 expect "the part that names the envelope's header is in no export" "$(grep -c -F "$header_part" "$tmp/export.json" || true)" "0"
-expect "the export names no envelope member" "$(grep -E -c 'promptSignature|prompt_signature' "$tmp/export.json" || true)" "0"
+expect "the export names no envelope member" "$(grep -E -i -c 'promptSignature|prompt_signature|signedPrompt|signed_prompt' "$tmp/export.json" || true)" "0"
 expect "the envelope is in none of the run's own frames" "$(grep -c -F "$envelope" "$tmp/run.out" || true)" "0"
 frames "$thread" "$signing" "$tmp/frames.json"
 expect "the replay holds the message (the checks below are not of an empty stream)" \

@@ -1262,7 +1262,7 @@ cancel the running task and keeps the text in `Job.after_stop`; a thread that ha
 
 | Input | Result |
 |---|---|
-| `StopAndSend` or `UserMessage` | `user_message { delivery: interrupt }`; the text is joined to `after_stop` after a blank line, no command (a joined text over 64 KiB is `TextTooLong`, 422). If the held message or the new one carries a prompt signature (ADR 0087, held in `after_stop_prompt_signature` and passed on with the text), nothing is joined: `StopPending`, 409 `stop_pending` |
+| `StopAndSend` or `UserMessage` | `user_message { delivery: interrupt }`; the text is joined to `after_stop` after a blank line, no command (a joined text over 64 KiB is `TextTooLong`, 422). If the held message or the new one carries a prompt signature (ADR 0087, held in `after_stop_signed_prompt` and passed on with the text), nothing is joined: `StopPending`, 409 `stop_pending` |
 | the task ends (`completed`, `failed`, `canceled`, `rejected`) or the delegation is dead-lettered | the agent's event is logged, **the job is not judged** (no gate, no verification, no rework, no attempt, no `thread_state`), then `Job::next()`, `job_started`, `DropQueued { job }`, `Delegate { after_stop }`; state `queued` |
 | `input_required`, `auth_required` | `agent_status` is logged; the thread stays as it is (no `blocked`) |
 | `CancelRejected`, not retryable | an `error` "<agent> could not be stopped; your message was sent to it instead", `Steer { after_stop }`, `after_stop` cleared; a retryable one logs the error and keeps waiting |

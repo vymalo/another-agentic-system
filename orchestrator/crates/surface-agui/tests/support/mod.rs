@@ -321,6 +321,9 @@ pub fn fast_dispatcher() -> DispatcherConfig {
     }
 }
 
+/// The configured public origin of a signing deployment: the shared vectors' `aud`.
+pub const PUBLIC_ORIGIN: &str = "https://api.test.invalid";
+
 impl Harness {
     pub async fn start() -> Self {
         Self::start_as(None).await
@@ -343,7 +346,7 @@ impl Harness {
         Self::start_configured(api, auth, orch_app::Policy::default()).await
     }
 
-    /// A deployment that lists `clients` as signing clients (ADR 0087, decision 1): a request whose
+    /// A deployment whose public origin is [`PUBLIC_ORIGIN`] and that lists `clients` as signing clients (ADR 0087, decision 1): a request whose
     /// token names one of them must carry `vymalo.promptSignature` in its last user message's metadata.
     /// The resource API gets the same list, as the binary gives it.
     pub async fn start_signing(clients: &[&str]) -> Self {
@@ -358,12 +361,14 @@ impl Harness {
             orch_app::Policy::default(),
             orch_app::SharingSettings::default(),
             None,
-            Arc::from(
-                clients
+            orch_surface_agui::Intake {
+                signing_clients: clients
                     .iter()
                     .map(|c| (*c).to_owned())
-                    .collect::<Vec<String>>(),
-            ),
+                    .collect::<Vec<String>>()
+                    .into(),
+                public_origin: Some(PUBLIC_ORIGIN.into()),
+            },
         )
         .await
     }
@@ -389,7 +394,15 @@ impl Harness {
         policy: orch_app::Policy,
         sharing: orch_app::SharingSettings,
     ) -> Self {
-        Self::start_full(api, auth, policy, sharing, None, Arc::from([])).await
+        Self::start_full(
+            api,
+            auth,
+            policy,
+            sharing,
+            None,
+            orch_surface_agui::Intake::default(),
+        )
+        .await
     }
 
     /// With a deployment that makes the person's own `coder` agent: `provisioning` is its
@@ -406,7 +419,7 @@ impl Harness {
             orch_app::Policy::default(),
             orch_app::SharingSettings::default(),
             Some(provisioning),
-            Arc::from([]),
+            orch_surface_agui::Intake::default(),
         )
         .await
     }
@@ -417,7 +430,7 @@ impl Harness {
         policy: orch_app::Policy,
         sharing: orch_app::SharingSettings,
         provisioning: Option<orch_app::Provisioning>,
-        signing_clients: Arc<[String]>,
+        intake: orch_surface_agui::Intake,
     ) -> Self {
         let store = MemoryStore::new();
         let agent = ScriptedAgent::new().with_releases("coder", sample_releases());
@@ -429,7 +442,13 @@ impl Harness {
             ),
             name: name.to_owned(),
         };
-        let directory = AgentDirectory::new(vec![entry("coder", "Coder"), entry("plain", "Plain")]);
+        let mut directory =
+            AgentDirectory::new(vec![entry("coder", "Coder"), entry("plain", "Plain")]);
+        // a signing deployment also has a former name of `plain` (ADR 0049)
+        if intake.public_origin.is_some() {
+            directory =
+                directory.with_aliases([(AgentId::new("old-plain"), AgentId::new("plain"))]);
+        }
         let registry = MemoryRegistry::new();
         let app = Arc::new(
             App::new(
@@ -481,7 +500,7 @@ impl Harness {
                 Arc::clone(&app),
                 keepalive,
                 lifetime,
-                signing_clients,
+                intake,
             )],
         );
         let server = tokio::spawn(async move {
