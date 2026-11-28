@@ -343,13 +343,33 @@ now `ForkAt::Replace.signed_prompt`.
   made from it could differ from the app's. `content` is the message's `content`, or an answer's whole `payload`.
 - **`server.publicOrigin` is built,** in decision 2's normal form. A file that lists a signing client with the key
   absent or empty **does not start**. `production` refuses `http://` except for the loopback. With no signing client it
-  may be absent; an envelope an unlisted client sends is then carried with no claims. The resource API is not given it:
-  its two signing routes, `startChildSession` and `forkThread`, keep no claims.
-- **The claims are optional as a whole.** A helper-session start (`POST /api/threads/{id}/sessions`) carries the
-  envelope **only**: it has no AG-UI message id, `content`, `forwardedProps` or `agentId` segment, and this record does
-  not say what it signs, so nothing is made up. **It is signed and not yet verifiable. The verifier's work (ANR-903)
-  must refuse a helper start from a signing client until the contract says what such a start signs. Open.** The intake
-  behaviour of ANR-1383 is unchanged: today the start is accepted.
+  may be absent; an envelope an unlisted client sends is then carried with no claims. The resource API's two signing
+  routes, `startChildSession` and `forkThread`, keep claims of their own (the first since 2026-11-28, below; the second
+  still open, below).
+- **A helper-session start signs these claims (decided 2026-11-28).** `POST /api/threads/{id}/sessions` has no AG-UI
+  `content`, `forwardedProps` or `agentId` segment, so each claim is taken from what the route does carry: `aud` is the
+  configuration's `server.publicOrigin` (decision 2, as on a run); `thread` is the **parent** thread's id, from the path
+  (the child context does not exist when the request arrives); `agent` is the body's `agent` **as written** — the
+  helper's name, not an agent id, and before any alias is resolved; `msg` is the body's `id`, the request id the caller
+  chooses so that a repeat is recognised; `content` is the body's `text`, one JSON string, so `content_sha256` is
+  `base64url(SHA-256(JCS(text)))`; and `props_sha256` is the hash of the empty object, `base64url(SHA-256("{}"))`, since
+  the route has no `forwardedProps`. The vector, for the text `List every place that writes the session header.`:
+
+  ```json
+  {
+    "aud": "https://chat.example.com",
+    "thread": "0194a6c2-6b1e-7c3a-9f40-5d2e8b7a1c33",
+    "agent": "planner",
+    "msg": "0194a6c2-7c10-7a1e-8f42-1b2c3d4e5f60",
+    "content_sha256": "zJA-Pfw1qI_cyfimdG87eRX4_7u91p6bvhHsKwaCM8E",
+    "props_sha256": "RBNvo1WzZ4oRRq0W9-hknpT7T8If536DEMBg9hyq_4o"
+  }
+  ```
+
+  (`zJA-…` is the SHA-256 of `"List every place that writes the session header."`, quotes included, and `RBNv…` of `{}`;
+  both were computed outside the orchestrator's code, as the other vectors are.) A signing client's start is therefore
+  **verifiable**, and ANR-903 no longer has to refuse it. What the orchestrator keeps is unchanged: the envelope and the
+  claims made at intake (ANR-1422) travel with the message. The intake behaviour of ANR-1383 is unchanged.
 - **The same holds for the REST fork and edit** (`POST /api/threads/{id}/fork`, ANR-1375): its body has no AG-UI
   `content`, `forwardedProps` or `agentId` segment, and its `messageId` is optional, so it carries the envelope
   **only**. **It is signed and not yet verifiable, and the verifier (ANR-903) must refuse it from a signing client
@@ -358,9 +378,14 @@ now `ForkAt::Replace.signed_prompt`.
   `prompt_signature` and `afterStopPromptSignature` were. There is no migration and no reading of the old members:
   they are ignored. **During a rolling upgrade, a message queued or held across it loses its signature and goes out
   unsigned.** With a verifier on, that message is refused downstream, which fails closed; today nothing shows it.
-- **Open: no time of intake is kept.** A held or queued message can reach the verifier long after it was signed, and
-  whether the verifier compares the signature's `iat` with its own clock or with an intake time is not decided; adding
-  `received_at` would change the statement contract and its vectors, so it waits for that decision.
+- **The verifier's own clock, not an intake time (decided 2026-11-28).** It compares the signature's `iat` with **its**
+  clock inside a skew window; the 300 seconds the orchestrator uses at intake is the natural default, and the window is a
+  deployment's value, not this contract's. No `received_at` is kept and the statement contract and its vectors do not
+  change. **The consequence belongs to the hold, not to this record:** a Stop & send message that outlives the window is
+  refused by the verifier, and neither the held envelope (ANR-1376) nor the claims kept at intake (ANR-1422) re-signs
+  anything — so the client re-signs it at delivery, or the person is asked to send it again, or the hold is bounded by
+  the window and Stop & send refuses a message that would outlive it. ADR 0087's card for the hold (ANR-1376) says
+  which.
 
 *Unverified: nothing of this change was built or run where it was written; CI is the first build. The shared vectors
 have no resume case; the test of one compares with a hash computed outside the orchestrator's code.*

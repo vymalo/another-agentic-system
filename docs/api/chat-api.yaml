@@ -2822,7 +2822,7 @@ components:
           additionalProperties: true
           description: "The metadata of `text`, as an AG-UI message's. Only `vymalo.promptSignature` is read; other members are ignored."
           properties:
-            vymalo.promptSignature: { type: string, maxLength: 16384, description: "The person's prompt signature of `text` ([ADR 0087](../decisions/0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md)): a compact JWS with a detached payload. Required from a signing client (`auth.signingClients`)." }
+            vymalo.promptSignature: { type: string, maxLength: 16384, description: "The person's prompt signature of `text` ([ADR 0087](../decisions/0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md)): a compact JWS with a detached payload. Required from a signing client (`auth.signingClients`). Its claims are built from this request: `thread` is the parent thread's id, `agent` this body's `agent` as written, `msg` the body's `id`, `content_sha256` the hash of `text` and `props_sha256` the hash of the empty object (the route has no `forwardedProps`) — decided 2026-11-28, with the worked vector in ADR 0087." }
     ChildSessionStartAccepted:
       type: object
       required: [request]
