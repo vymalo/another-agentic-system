@@ -1531,8 +1531,9 @@ fn commit_in(
 
 /// The per-thread rule: a delegate row is held back while an older delegate of the same thread is
 /// `pending` or `inflight`, a steer row likewise waits for an older steer and for no delegate
-/// (ADR 0036); cancel, verify, ask, title and description rows are unrestricted (ADR 0026).
-const OUTBOX_THREAD_RULE: &str = "(o.kind IN ('cancel', 'verify', 'ask', 'title', 'description') \
+/// (ADR 0036); cancel, verify, ask, title, description and suggestions rows are unrestricted
+/// (ADR 0026, ADR 0035).
+const OUTBOX_THREAD_RULE: &str = "(o.kind IN ('cancel', 'verify', 'ask', 'title', 'description', 'suggestions') \
      OR NOT EXISTS (SELECT 1 FROM outbox p \
        WHERE p.thread_id = o.thread_id AND p.kind = o.kind AND p.ord < o.ord \
          AND p.status IN ('pending', 'inflight')))";

@@ -84,6 +84,11 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         description: "outbox_refunded",
         sql: include_str!("../migrations/0009_outbox_refunded.sql"),
     },
+    Migration {
+        version: 10,
+        description: "thread_suggestions",
+        sql: include_str!("../migrations/0010_thread_suggestions.sql"),
+    },
 ];
 
 /// The SHA-256 of a migration's text, lowercase hex: the `checksum` column.
@@ -104,6 +109,20 @@ fn checksum(sql: &str) -> String {
 /// [`StoreError::Corrupt`] when an applied migration's file changed afterwards;
 /// [`StoreError::Internal`] when SQLite rejects a migration's statements.
 pub(crate) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
+    // A migration that rebuilds a table — SQLite cannot alter a CHECK constraint — needs the
+    // foreign keys off while it runs, the documented procedure. `PRAGMA foreign_keys` is a no-op
+    // inside a transaction, so it is set around one; the store runs with them on either way. What
+    // needs it is `message_terms`, which points at `events`: with the keys on, dropping `events`
+    // to rebuild it would cascade the index away.
+    conn.pragma_update(None, "foreign_keys", false)
+        .map_err(store_err)?;
+    let outcome = migrate_in(conn);
+    conn.pragma_update(None, "foreign_keys", true)
+        .map_err(store_err)?;
+    outcome
+}
+
+fn migrate_in(conn: &mut Connection) -> Result<(), StoreError> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(store_err)?;

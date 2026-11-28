@@ -2654,6 +2654,8 @@ impl<P: Ports> App<P> {
             | Input::TitleDeclined { .. }
             | Input::Described { .. }
             | Input::DescriptionDeclined { .. }
+            | Input::Suggested { .. }
+            | Input::SuggestionsDeclined { .. }
             // the servers a person may attach are checked against the deployment's list, which
             // only `set_tools` does
             | Input::SetTools { .. }
@@ -3367,6 +3369,16 @@ impl<P: Ports> App<P> {
                         outbox.push(NewOutbox {
                             id: orch_ports::OutboxId(self.ports.ids().new_id()),
                             payload: OutboxPayload::Description { job },
+                        });
+                    }
+                }
+                // As the description's request: an outbox row in this commit, only when the
+                // suggestions task is configured (the ledger has counted the ask either way).
+                Command::RequestSuggestions { job } => {
+                    if self.cfg.tasks.contains_key(&TaskKind::Suggestions) {
+                        outbox.push(NewOutbox {
+                            id: orch_ports::OutboxId(self.ports.ids().new_id()),
+                            payload: OutboxPayload::Suggestions { job },
                         });
                     }
                 }

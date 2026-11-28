@@ -91,6 +91,7 @@ fn a_minimal_file_is_valid_and_every_default_is_filled_in() {
     assert_eq!(c.mcp.wait_max_per_user, 16);
     assert!(c.tasks.title.is_none(), "no task, titles are off");
     assert!(c.tasks.description.is_none(), "no task, no descriptions");
+    assert!(c.tasks.suggestions.is_none(), "no task, no suggestions");
     assert!(
         c.ui.show_descriptions,
         "the web shows descriptions by default"

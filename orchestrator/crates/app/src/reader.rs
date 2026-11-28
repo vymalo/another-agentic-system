@@ -157,6 +157,7 @@ pub fn reader_event(event: &Event, rules: &ReaderRules) -> Event {
         | EventBody::JobStarted(_)
         | EventBody::ThreadTitled(_)
         | EventBody::ThreadDescribed(_)
+        | EventBody::ThreadSuggested(_)
         | EventBody::ToolsAttached(_)
         | EventBody::ToolsDetached(_)
         | EventBody::AskStarted(_)
@@ -494,6 +495,14 @@ mod tests {
                 EventBody::ChildSessionClosed(orch_core::ChildSessionClosedData {
                     session: "s1".into(),
                     thread: tid(),
+                }),
+            ),
+            ev(
+                14,
+                Actor::system(),
+                EventBody::ThreadSuggested(orch_core::ThreadSuggestedData {
+                    job: 1,
+                    suggestions: vec!["Run the tests".into()],
                 }),
             ),
         ]

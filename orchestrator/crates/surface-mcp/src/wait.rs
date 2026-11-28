@@ -174,7 +174,9 @@ pub fn describe(event: &Event) -> Option<String> {
         // token counts: bookkeeping, not progress of the job (ADR 0056)
         EventBody::ModelUsage(_) | EventBody::ModelUsageTotal(_) => return None,
         // a label of the conversation, not progress of the job
-        EventBody::ThreadTitled(_) | EventBody::ThreadDescribed(_) => return None,
+        EventBody::ThreadTitled(_)
+        | EventBody::ThreadDescribed(_)
+        | EventBody::ThreadSuggested(_) => return None,
         // a helper session (ADR 0072) is not said yet
         EventBody::ChildSessionOpened(_)
         | EventBody::ChildSessionReported(_)

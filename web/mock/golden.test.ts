@@ -604,6 +604,13 @@ const SESSIONS = [
   "sessions-start-failed",
 ];
 
+/**
+ * Suggestions (ADR 0035, amended 2026-11-28): the golden is written from the projection's rules,
+ * and the web's mock does not serve or project `thread_suggested` until the chips land (ANR-1408).
+ * Until then it is read by `tools/agui-conformance` alone, and this suite has no scenario for it.
+ */
+const SUGGESTIONS = ["suggestions"];
+
 /** The events golden with its placeholders made real, as the Rust golden test makes them. */
 function forkLog(name: string): Event[] {
   const raw = JSON.parse(
@@ -666,7 +673,8 @@ describe("the mock server against the AG-UI goldens", () => {
           !ASKS.includes(f) &&
           !USAGE.includes(f) &&
           !AGAIN.includes(f) &&
-          !SESSIONS.includes(f),
+          !SESSIONS.includes(f) &&
+          !SUGGESTIONS.includes(f),
       );
     expect(files.sort()).toEqual(Object.keys(SCENARIOS).sort());
   });

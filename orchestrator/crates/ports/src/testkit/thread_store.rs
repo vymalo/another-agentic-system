@@ -8,8 +8,8 @@ use orch_core::{
     Actor, AgentId, AgentStatus, AgentStatusData, AgentTarget, AgentTaskState, CheckResult,
     CheckSource, CheckStatus, CiConclusion, CiProvider, CiReport, Classify, ErrorClass, Event,
     EventBody, EventKind, GatePolicy, Hold, Job, Origin, PushedRef, ReworkData, SourceFindings,
-    ThreadId, ThreadState, Timer, UiCatalogData, UiCatalogLedger, UiDelivery, UserId,
-    UserMessageData, WatchKey,
+    SuggestionsLedger, ThreadId, ThreadState, Timer, UiCatalogData, UiCatalogLedger, UiDelivery,
+    UserId, UserMessageData, WatchKey,
 };
 use uuid::Uuid;
 
@@ -3492,6 +3492,7 @@ fn busy_job() -> Job {
         answer: orch_core::AnswerLedger::default(),
         title: orch_core::TitleLedger::of(orch_core::TitleSource::User),
         description: orch_core::DescriptionLedger::of(orch_core::DescriptionSource::Model),
+        suggestions: SuggestionsLedger::of(2, true),
         usage: orch_core::UsageLedger::of(42, 3),
         tools: vec!["docs".to_owned(), "websearch".to_owned()],
         // ADR 0036: the text a job being stopped holds for the next one
@@ -4241,6 +4242,70 @@ pub async fn thread_described_roundtrip<S: ThreadStore>(store: S) {
     assert!(
         got.iter()
             .any(|r| r.id == outbox_id(201) && r.kind == OutboxKind::Description),
+        "not held back by the delegate of its thread"
+    );
+}
+
+/// A `thread_suggested` is one transaction like a description, but nothing of the thread's row
+/// changes: the event (job-scoped) reads back as written, and a `suggestions` row is the
+/// orchestrator's own and depends on nothing, like a `title` row.
+pub async fn thread_suggested_roundtrip<S: ThreadStore>(store: S) {
+    use orch_core::ThreadSuggestedData;
+    seed(&store, &alice(), 1).await;
+    let event = NewEvent {
+        at: t0(),
+        actor: Actor::system(),
+        body: EventBody::ThreadSuggested(ThreadSuggestedData {
+            job: 2,
+            suggestions: vec!["Run the tests".to_owned(), "Open a pull request".to_owned()],
+        }),
+        idempotency_key: Some("s".to_owned()),
+    };
+    let before = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    let (record, events) = applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(ThreadState::Queued, vec![event], vec![]),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind(), EventKind::ThreadSuggested);
+    assert_eq!(events[0].kind().as_str(), "thread_suggested");
+    assert_eq!(
+        record.job.suggestions, before.job.suggestions,
+        "the ledger is not written by the event: the ask is the worker's"
+    );
+    let read = store.list_events(thread_id(1), 1, 10).await.unwrap();
+    assert_eq!(read, events, "the event reads back as it was written");
+
+    // A `suggestions` row depends on nothing: claimable while the delegate is in flight.
+    seed(&store, &alice(), 2).await;
+    let row = NewOutbox {
+        id: outbox_id(301),
+        payload: OutboxPayload::Suggestions { job: 2 },
+    };
+    applied(
+        store
+            .commit(
+                thread_id(2),
+                1,
+                commit(ThreadState::Working, vec![], vec![row]),
+            )
+            .await
+            .unwrap(),
+    );
+    let stored = store.get_outbox(outbox_id(301)).await.unwrap().unwrap();
+    assert_eq!(stored.kind, OutboxKind::Suggestions);
+    assert_eq!(stored.payload, OutboxPayload::Suggestions { job: 2 });
+    assert_eq!(stored.task_id, None);
+    let got = claim(&store, "t", t0()).await;
+    assert!(
+        got.iter()
+            .any(|r| r.id == outbox_id(301) && r.kind == OutboxKind::Suggestions),
         "not held back by the delegate of its thread"
     );
 }

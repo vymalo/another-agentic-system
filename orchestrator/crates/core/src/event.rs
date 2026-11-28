@@ -68,6 +68,10 @@ pub enum EventKind {
     /// The thread has a new description: the model wrote one, or a person wrote or cleared it
     /// (ADR 0035).
     ThreadDescribed,
+    /// The suggestions offered under the final answer of a job (ADR 0035, amended 2026-11-28): at
+    /// most three short next things the person could say, which fill the message box and never
+    /// send (ADR 0013, rule 7).
+    ThreadSuggested,
     /// MCP servers were attached to the thread (ADR 0024): the ids of those newly attached.
     ToolsAttached,
     /// MCP servers were detached from the thread (ADR 0024): the ids of those detached.
@@ -130,6 +134,7 @@ impl EventKind {
             EventKind::ThreadTitled => "thread_titled",
             EventKind::ThreadForked => "thread_forked",
             EventKind::ThreadDescribed => "thread_described",
+            EventKind::ThreadSuggested => "thread_suggested",
             EventKind::ToolsAttached => "tools_attached",
             EventKind::ToolsDetached => "tools_detached",
             EventKind::AskStarted => "ask_started",
@@ -630,6 +635,8 @@ pub enum EventBody {
     ThreadForked(ThreadForkedData),
     /// See [`ThreadDescribedData`].
     ThreadDescribed(ThreadDescribedData),
+    /// See [`ThreadSuggestedData`].
+    ThreadSuggested(crate::suggestions::ThreadSuggestedData),
     /// See [`ToolsData`].
     ToolsAttached(ToolsData),
     /// See [`ToolsData`].
@@ -687,6 +694,7 @@ impl EventBody {
             EventBody::ThreadTitled(_) => EventKind::ThreadTitled,
             EventBody::ThreadForked(_) => EventKind::ThreadForked,
             EventBody::ThreadDescribed(_) => EventKind::ThreadDescribed,
+            EventBody::ThreadSuggested(_) => EventKind::ThreadSuggested,
             EventBody::ToolsAttached(_) => EventKind::ToolsAttached,
             EventBody::ToolsDetached(_) => EventKind::ToolsDetached,
             EventBody::AskStarted(_) => EventKind::AskStarted,
@@ -727,6 +735,7 @@ impl EventBody {
             EventBody::ThreadTitled(d) => serde_json::to_value(d),
             EventBody::ThreadForked(d) => serde_json::to_value(d),
             EventBody::ThreadDescribed(d) => serde_json::to_value(d),
+            EventBody::ThreadSuggested(d) => serde_json::to_value(d),
             EventBody::ToolsAttached(d) => serde_json::to_value(d),
             EventBody::ToolsDetached(d) => serde_json::to_value(d),
             EventBody::AskStarted(d) => serde_json::to_value(d),
@@ -769,6 +778,7 @@ impl EventBody {
             EventKind::ThreadTitled => EventBody::ThreadTitled(serde_json::from_value(data)?),
             EventKind::ThreadForked => EventBody::ThreadForked(serde_json::from_value(data)?),
             EventKind::ThreadDescribed => EventBody::ThreadDescribed(serde_json::from_value(data)?),
+            EventKind::ThreadSuggested => EventBody::ThreadSuggested(serde_json::from_value(data)?),
             EventKind::ToolsAttached => EventBody::ToolsAttached(serde_json::from_value(data)?),
             EventKind::ToolsDetached => EventBody::ToolsDetached(serde_json::from_value(data)?),
             EventKind::AskStarted => EventBody::AskStarted(serde_json::from_value(data)?),

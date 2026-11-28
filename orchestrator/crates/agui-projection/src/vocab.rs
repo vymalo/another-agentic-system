@@ -50,6 +50,11 @@ pub const ACTIVITY_FORK: &str = "vymalo.fork";
 /// its id is `evt-<seq>` of the `tools_attached` or `tools_detached` event. Ids only: no URL, no
 /// credential.
 pub const ACTIVITY_TOOLS: &str = "vymalo.tools";
+/// Activity type of the suggestions offered under a job's finished answer (`vymalo.suggestions`,
+/// ADR 0035, amended 2026-11-28): the content is `{job, suggestions: [string], at}`, at most three
+/// suggestions of at most 80 characters each, and its id is `suggestions-<job>`. They fill the
+/// message box and never send (ADR 0013, rule 7).
+pub const ACTIVITY_SUGGESTIONS: &str = "vymalo.suggestions";
 /// Activity type of a user's action on a surface (`{surfaceId, name, sourceComponentId, context, at}`).
 pub const ACTIVITY_ACTION: &str = "vymalo.action";
 

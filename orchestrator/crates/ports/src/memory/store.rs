@@ -1207,7 +1207,8 @@ fn claimable(inner: &Inner, i: usize, now: Timestamp) -> bool {
         | OutboxKind::Verify
         | OutboxKind::Ask
         | OutboxKind::Title
-        | OutboxKind::Description => true,
+        | OutboxKind::Description
+        | OutboxKind::Suggestions => true,
         // one lane for delegations and one for steers: a steer is for the turn the open
         // delegation is running, so it never waits behind it (ADR 0036)
         OutboxKind::Delegate | OutboxKind::Steer => !inner.outbox[..i].iter().any(|older| {

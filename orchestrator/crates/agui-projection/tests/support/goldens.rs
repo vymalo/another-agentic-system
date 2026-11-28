@@ -16,7 +16,7 @@ pub const PARENT: &str = "00000000-0000-7000-8000-000000000002";
 pub const CHILD: &str = "00000000-0000-7000-8000-000000000003";
 /// The second child thread of the session scenarios.
 pub const CHILD_2: &str = "00000000-0000-7000-8000-000000000004";
-pub const SCENARIOS: [&str; 39] = [
+pub const SCENARIOS: [&str; 40] = [
     "echo",
     "file",
     "ask",
@@ -41,6 +41,7 @@ pub const SCENARIOS: [&str; 39] = [
     "turn-output",
     "title",
     "description",
+    "suggestions",
     "fork",
     "fork-blocked",
     "tools-attach",

@@ -83,6 +83,7 @@ macro_rules! thread_store_conformance {
             delegate_rows_keep_their_mentions steer_rows_keep_their_mentions
             ui_catalog_event_by_digest agent_step_roundtrip thread_titled_roundtrip
             title_rows_are_unordered_and_roundtrip thread_described_roundtrip
+            thread_suggested_roundtrip
             a_fork_starts_with_the_description_it_is_given
             inbox_dedupes_by_source_and_key inbox_claims_are_leases_and_lapse
             inbox_claimers_never_share_a_row inbox_parks_and_rearms_in_one_commit
