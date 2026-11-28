@@ -83,11 +83,23 @@ pull request on the mock GitHub.
 
 ## When it does not work
 
-| You see | It is | Do |
-|---|---|---|
-| `port is already allocated` or `address already in use` | one of the stack's ports is taken, a Postgres already on 5432 usually | free it, or move that port: `POSTGRES_PORT=5433 docker compose --profile app up -d --wait` (the orchestrator still finds `postgres:5432` inside the network, so only the host side moves), or `EDGE_PORT` for the chat's |
-| a `401` from a script, or a browser that keeps bouncing through the issuer | no token, one older than an hour, or a key the issuer replaced under your session | `dev/auth-header.sh` prints a fresh token; in a browser, reload or `/oauth2/sign_out` and back in; `docker compose --profile app logs oauth2-proxy mock-oidc` says which |
-| `coder` never reads `healthy` | its image is still downloading, it is starting, or it died | `docker compose --profile app ps` reads `Exited` for a dead one; `docker compose --profile app logs coder` says why. Under emulation on an ARM machine it is slow |
+### A port is already taken
+
+You see `port is already allocated` or `address already in use`: one of the stack's ports is taken, a Postgres already
+on 5432 usually. **Do:** free it, or move that port — `POSTGRES_PORT=5433 docker compose --profile app up -d --wait`
+(the orchestrator still finds `postgres:5432` inside the network, so only the host side moves), or `EDGE_PORT` for the
+chat's.
+
+### An API call answers 401, or the browser keeps bouncing through the issuer
+
+There is no token, it is older than an hour, or the issuer replaced its key under your session. **Do:**
+`dev/auth-header.sh` prints a fresh token; in a browser, reload or `/oauth2/sign_out` and back in;
+`docker compose --profile app logs oauth2-proxy mock-oidc` says which.
+
+### `coder` never reads healthy
+
+Its image is still downloading, it is starting, or it died. **Do:** `docker compose --profile app ps` reads `Exited` for
+a dead one, and `docker compose --profile app logs coder` says why. Under emulation on an ARM machine it is slow.
 
 ## Next steps
 
