@@ -89,8 +89,8 @@ dependencies = [
 
 [[package]]
 name = "adam-a2a"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "a2a-lf",
  "a2a-server-lf",
@@ -121,8 +121,8 @@ dependencies = [
 
 [[package]]
 name = "adam-a2a-runtime"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "a2a-lf",
  "adam-a2a",
@@ -145,8 +145,8 @@ dependencies = [
 
 [[package]]
 name = "adam-agent-fs"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-budget",
  "adam-error",
@@ -161,8 +161,8 @@ dependencies = [
 
 [[package]]
 name = "adam-assembly"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-a2a",
  "adam-a2a-runtime",
@@ -172,6 +172,7 @@ dependencies = [
  "adam-error",
  "adam-llm-agent",
  "adam-model",
+ "adam-plugin",
  "adam-runtime",
  "async-trait",
  "jiff",
@@ -185,8 +186,8 @@ dependencies = [
 
 [[package]]
 name = "adam-budget"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-device-state",
  "adam-error",
@@ -197,8 +198,8 @@ dependencies = [
 
 [[package]]
 name = "adam-core"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-error",
  "async-trait",
@@ -218,13 +219,13 @@ dependencies = [
 
 [[package]]
 name = "adam-device-state"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 
 [[package]]
 name = "adam-engine"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "a2a-lf",
  "adam-a2a",
@@ -251,13 +252,13 @@ dependencies = [
 
 [[package]]
 name = "adam-error"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 
 [[package]]
 name = "adam-host"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-error",
  "thiserror",
@@ -268,8 +269,8 @@ dependencies = [
 
 [[package]]
 name = "adam-llm-agent"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-budget",
  "adam-core",
@@ -292,11 +293,13 @@ dependencies = [
 
 [[package]]
 name = "adam-model"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
+ "adam-core",
  "adam-error",
  "async-trait",
+ "base64 0.22.1",
  "futures",
  "secrecy",
  "serde",
@@ -306,8 +309,8 @@ dependencies = [
 
 [[package]]
 name = "adam-notify-postgres"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -327,17 +330,18 @@ dependencies = [
 
 [[package]]
 name = "adam-plugin"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-error",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
 name = "adam-postgres"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -355,12 +359,13 @@ dependencies = [
 
 [[package]]
 name = "adam-runtime"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-core",
  "adam-error",
  "adam-model",
+ "adam-plugin",
  "async-trait",
  "base64 0.22.1",
  "futures",
@@ -376,8 +381,8 @@ dependencies = [
 
 [[package]]
 name = "adam-schedule"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-agent-fs",
  "adam-core",
@@ -396,8 +401,8 @@ dependencies = [
 
 [[package]]
 name = "adam-store-postgres"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -412,8 +417,8 @@ dependencies = [
 
 [[package]]
 name = "adam-store-sqlite"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -428,8 +433,8 @@ dependencies = [
 
 [[package]]
 name = "adam-ui"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "a2a-lf",
  "adam-a2a",
