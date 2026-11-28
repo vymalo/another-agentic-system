@@ -103,6 +103,7 @@ usage ledger, the inbox), and a new query is a provided default or a stated brea
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a message at the limit
     participant P as Person
     participant O as Orchestrator
     participant S as Store

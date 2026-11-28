@@ -8,6 +8,9 @@ tracks this repository's `HEAD` at `deploy/chart`; the deployment's own values a
 ([`examples/netcup.values.yaml`](examples/netcup.values.yaml)). The coder is **not** here: it is deployed by adam-rs's chart
 (`deploy/coder`, release `coder`, the same namespace) and named in `agents` by its card URL.
 
+**Installing it for the first time** on a cluster of your own: [Deploy to a Kubernetes cluster](../../docs/guides/deploy.md)
+is the task, from an empty namespace to a person signed in. This page is the reference.
+
 ```mermaid
 flowchart LR
   B[Browser] -->|https| T[Traefik<br/>TLS: cert-manager]

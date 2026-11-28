@@ -58,12 +58,12 @@ pub async fn two_first_calls_at_once_make_one_agent<F: ProvisionerFixture>(f: F)
     f.set_ready_delay(Duration::from_millis(150));
     let p = f.provisioner();
     let o = owner("bob");
-    // one account for both calls: a temporary would be dropped at the end of the statement, and the
-    // futures borrow it across the join
-    let account = account();
+    // One binding: `tokio::join!` holds both futures past the statement, so a temporary
+    // `account()` would be dropped while they still borrow it (E0716).
+    let acc = account();
     let (a, b) = tokio::join!(
-        p.ensure_ready(&o, AgentKind::Coder, &account),
-        p.ensure_ready(&o, AgentKind::Coder, &account)
+        p.ensure_ready(&o, AgentKind::Coder, &acc),
+        p.ensure_ready(&o, AgentKind::Coder, &acc)
     );
     let (a, b) = (a.unwrap(), b.unwrap());
     assert_eq!(a, b);

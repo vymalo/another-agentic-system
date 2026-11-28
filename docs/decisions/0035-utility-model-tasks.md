@@ -221,6 +221,8 @@ matches the model's name and the conversation's markers, not the instruction.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the description
+  accDescr: A sequence diagram, between Person, App / core, Dispatcher (description worker), ChatModel (endpoint of tasks.description).
   participant P as Person
   participant A as App / core
   participant D as Dispatcher (description worker)
@@ -244,6 +246,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the description
   [*] --> None: the thread is created
   None --> None: declined (too few messages, NONE, no model, a failure)
   None --> Model: Described (thread_described, source model)

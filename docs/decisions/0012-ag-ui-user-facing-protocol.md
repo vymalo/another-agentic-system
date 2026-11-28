@@ -221,6 +221,8 @@ keeps the event model, the patterns and the processing rules.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the connect stream (our extension)
+  accDescr: A sequence diagram, between Web (react-ag-ui + ThreadAgent), Replica A, Replica B, orch-agui-projection (pure), Postgres event log.
   participant W as Web (react-ag-ui + ThreadAgent)
   participant A as Replica A
   participant B as Replica B
@@ -245,6 +247,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a connection to the connect stream, replayed then tailing
   [*] --> Replaying: connect (cursor c, none = everything)
   Replaying --> Tailing: caught up with the log
   Tailing --> Tailing: new log event, frames with id seq
@@ -260,6 +263,7 @@ A run, as the projection shows it:
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: one run as the projection shows it, from active to its end
   [*] --> RunActive: user_message or producer event (RUN_STARTED)
   RunActive --> Interrupted: input or auth required (RUN_FINISHED interrupt)
   RunActive --> Succeeded: agent completed (RUN_FINISHED success)

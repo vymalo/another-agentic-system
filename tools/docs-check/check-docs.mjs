@@ -126,6 +126,12 @@ for (const file of markdownFiles(root)) {
 
   for (const m of src.matchAll(/```mermaid\n([\s\S]*?)```/g)) {
     diagrams++;
+    // A diagram on the docs site names itself: Mermaid's accTitle becomes the SVG's <title>, which
+    // mermaid.ts hands to the drawing's box as its aria-label. A screen reader otherwise hears the
+    // renderer's "Interactive Mermaid diagram" for every drawing on every page.
+    if (rel.startsWith('docs' + path.sep) && !/^\s*accTitle\s*:\s*\S/m.test(m[1])) {
+      failures.push(`${rel}:${lineOf(src, m.index)} mermaid: no accTitle (say what the diagram shows)`);
+    }
     try { await mermaid.parse(m[1]); }
     catch (e) { failures.push(`${rel}:${lineOf(src, m.index)} mermaid: ${String(e.message).split('\n')[0]}`); }
   }

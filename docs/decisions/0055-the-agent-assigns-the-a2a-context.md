@@ -61,6 +61,7 @@ through. The orchestrator also never adopted a context an agent returned.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the agent assigns the A2A context
   participant D as Dispatcher
   participant S as Store (binding)
   participant A as Agent (kagent, adam, ...)
@@ -77,6 +78,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the agent assigns the A2A context
   [*] --> Unassigned: a new thread, a fork
   Unassigned --> Assigned: the first envelope that names a context
   Unassigned --> Unassigned: an envelope that names none

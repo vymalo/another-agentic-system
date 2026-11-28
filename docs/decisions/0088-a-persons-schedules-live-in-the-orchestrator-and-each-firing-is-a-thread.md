@@ -175,6 +175,8 @@ orchestrator should also list a folder's schedules, read-only, is [open question
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the process
+  accDescr: A sequence diagram, between Person (web), Orchestrator API, Postgres, InboxWorker, transition (pure), Dispatcher, Agent (any A2A).
   autonumber
   participant P as Person (web)
   participant API as Orchestrator API
@@ -200,6 +202,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the process
   [*] --> Armed: created, its next due row written
   Armed --> Firing: the due row is claimed
   Firing --> Armed: a thread is made, the next due row written

@@ -106,8 +106,8 @@ const sidebar = [
     ],
   },
   { text: "Get started", items: [page("getting-started", "Run it locally")] },
-  // Guides: one task per page. No page of the repository is one yet, so the four groups are empty and not drawn.
-  section("Guides", [group("Deploy", []), group("Operate", []), group("Use", []), group("Extend", [])]),
+  // Guides: one task per page. A group with no page is not drawn.
+  section("Guides", [group("Deploy", [page("guides/deploy")]), group("Operate", []), group("Use", []), group("Extend", [])]),
   section("Reference", [
     group("API", [referencePage, chatApiOperations, ...apiPages]),
     group("Extensions", extensionPages),
@@ -116,7 +116,7 @@ const sidebar = [
   ]),
   { text: "Architecture", items: [page("concepts", "Concepts"), page("architecture", "Architecture"), page("orchestrator", "Orchestrator")] },
   { text: "Decisions", collapsed: true, items: [{ text: "ADR index", link: "/decisions/" }, ...pages("decisions", ["index.md"])] },
-  { text: "Contributing", items: [{ text: "How to contribute", link: "/contributing" }] },
+  { text: "Contributing", items: [page("contributing", "How to contribute"), page("writing-docs", "Writing docs"), page("security", "Security policy"), page("roadmap", "Roadmap")] },
 ].filter((s) => s.items.length > 0);
 
 // No label of a page is longer than LABEL_MAX: a longer one wraps in the sidebar. Give the page a `sidebarTitle`.
