@@ -242,8 +242,7 @@ pub(crate) fn last_exchange(events: &[Event]) -> Vec<(&str, &str)> {
         .iter()
         .filter_map(|e| crate::title::agent_words(&e.body))
         .map(str::trim)
-        .filter(|words| !words.is_empty())
-        .next_back();
+        .rfind(|words| !words.is_empty());
     let mut out = vec![("user", person)];
     if let Some(agent) = agent {
         out.push(("agent", agent));
