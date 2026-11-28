@@ -51,7 +51,7 @@ stateDiagram-v2
 
 ## 1. What you need
 
-**On your machine:** `git`, `kubectl` pointed at your cluster, `jq`, `openssl`, and **Helm 4.3.2**, the version CI
+**On your machine:** `git`, `kubectl` pointed at your cluster, `curl`, `jq`, `openssl`, and **Helm 4.3.2**, the version CI
 uses ([why](../decisions/0105-helm-4-only-and-kubernetes-1-37-as-the-floor.md)). Helm 3.16.1 refused to render this chart without a
 cluster, because it assumes Kubernetes 1.31 (*verified 2026-11-28* by running it).
 
@@ -86,15 +86,16 @@ git clone https://github.com/vymalo/another-agentic-system.git
 cd another-agentic-system
 ```
 
-Install from the clone. A release is meant to publish the chart as an OCI package
-([Releases](../../deploy/chart/README.md#releases)), but an anonymous `helm show chart` of version `0.10.0` answered
-`not found` (*verified 2026-11-28*).
+This page installs from the clone. A release also publishes the chart as an OCI package
+([Releases](../../deploy/chart/README.md#releases)). An anonymous `helm show chart` read the published version `0.9.0`.
+It answered `not found` for `0.10.0`, the version this tree's chart says (both *verified 2026-11-28*). This page was
+not tried with the `0.9.0` package.
 
 ## 2. Keycloak
 
 The chart signs people in with a confidential Keycloak client named `another-agentic`. The exports are in
-`deploy/keycloak/` and hold no secret. They carry the host of this repository's own deployment, so write your host
-into a copy of the client first. (Ran.)
+`deploy/keycloak/` and hold no secret. The export of this client carries the host of this repository's own deployment
+(so do the web, Android and iOS clients, which this page does not use), so write your host into a copy first. (Ran.)
 
 ```sh [terminal]
 APP_HOST=agentic.example.com
@@ -111,7 +112,10 @@ memory.** The unchanged exports imported into Keycloak 26.6.1 (*verified 2026-10
 
 1. *Clients → Import client*: choose `my-client.json`.
 2. *Realm settings → Action → Partial import*: choose `deploy/keycloak/roles-and-groups.json`. Do this after step 1.
-   It adds the client roles and the groups. You need only the role `user` and the group `agentic-testers` here.
+   It adds the client roles and the groups. You need only the role `user` and the group `agentic-testers` here, but
+   the import creates all of them. Among them are two roles and two groups for the coders of this repository's own
+   deployment, and their names will appear in your realm. With the values of step 4 those two roles grant nothing.
+   Their groups also give the role `user`, so do not add people to them. You can delete both roles and both groups.
 3. Open the client `another-agentic`, tab *Credentials*, and keep the client secret for the next step.
 4. Create a user with an e-mail address, turn **Email verified** on, and add the user to the group
    `agentic-testers`. The orchestrator keys a person's threads by that address and refuses an unverified one.
@@ -141,7 +145,9 @@ openssl rand -hex 32   # thread_tools_secret, chat_a2a_token, agent_db_password:
 openssl rand -hex 16   # oauth2_cookie_secret
 ```
 
-Write the six properties **before** you install: one missing property stops the whole Secret from syncing. How you
+Write the six properties **before** you install: one missing property stops the whole Secret from syncing. (That is
+External Secrets behaviour as [the chart's README](../../deploy/chart/README.md#the-key-of-the-stored-secrets-adr-0046-slice-3)
+and its `values.yaml` state it; *unverified* here: there was no cluster.) How you
 write them depends on your store, so this page has no command for it (***unverified***). The chart's own deployment
 uses AWS Secrets Manager. A store of another kind must answer `remoteRef.property` (***unverified*** here).
 
@@ -193,7 +199,8 @@ externalSecrets:
 [The coder](../../deploy/chart/README.md#the-coder).
 
 Check the file before you touch the cluster. All three ran with Helm 4.3.2: the lint passed with one note that the
-chart has no icon, the render succeeded, and the dry run ended with `Dry run complete`. They check the chart and your
+chart has no icon, the render succeeded, and the dry run printed `DESCRIPTION: Dry run complete` near the top of its
+output, which ends with the chart's notes. They check the chart and your
 values, **not** your cluster.
 
 ```sh [terminal]
@@ -223,12 +230,14 @@ Work down this list. ***Unverified*: no cluster.** What to expect comes from the
 ```sh [terminal]
 kubectl -n another-agentic-system wait --for=condition=Ready externalsecret --all --timeout=5m
 kubectl -n another-agentic-system wait --for=condition=Ready cluster.postgresql.cnpg.io/another-agentic-db --timeout=10m
-kubectl -n another-agentic-system get database.postgresql.cnpg.io another-agentic-db-agent -o jsonpath='{.status.applied}'
+kubectl -n another-agentic-system wait --for=jsonpath='{.status.applied}'=true \
+  database.postgresql.cnpg.io/another-agentic-db-agent --timeout=5m
 kubectl -n another-agentic-system wait --for=condition=Available deployment --all --timeout=10m
 kubectl -n another-agentic-system get certificate,ingress
 ```
 
-You should see `true` from the third command, five available Deployments (`another-agentic-` plus `orchestrator`,
+Each `wait` should end with `condition met`. The third waits for `status.applied` of the `Database` (the field is in
+the chart's vendored CRD schema). You should then have five available Deployments (`another-agentic-` plus `orchestrator`,
 `web`, `oauth2-proxy`, `edge` and `chat`) and a certificate that is ready.
 
 Then from outside the cluster. ***Unverified*: no deployment.**
@@ -253,7 +262,8 @@ Last, in a browser. ***Unverified*: no deployment.**
 | You see | Look at |
 |---|---|
 | An `ExternalSecret` that is not `Ready` | `kubectl -n another-agentic-system describe externalsecret NAME`: a missing property, or the store |
-| A pod in `CreateContainerConfigError` | its Secret does not exist yet: the row above, or the database |
+| The orchestrator pod stays in `ContainerCreating`, with a `FailedMount` event that says a secret is not found | `kubectl -n another-agentic-system describe pod NAME`. It mounts `another-agentic-orchestrator` (the first row) and `another-agentic-db-app` (CloudNativePG makes it with the database) as files |
+| The `chat` or `oauth2-proxy` pod in `CreateContainerConfigError` | `describe pod` names the missing Secret. They read theirs as environment variables: the first row, or the database |
 | The orchestrator exits with code 78 | its log names the configuration key it refused |
 | The orchestrator never becomes ready | `/readyz` answers 503 until it has the issuer's keys: can the pod reach `auth.issuer`? |
 | Keycloak refuses the redirect | the client's redirect URI must be `https://` + `host` + `/oauth2/callback` (step 2) |

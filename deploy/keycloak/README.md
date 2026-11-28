@@ -7,7 +7,9 @@ update" one (*verified 2026-10-03*, <https://www.keycloak.org/operator/realm-imp
 Keycloak's own format, to import or to read as a checklist. **None holds a secret**: the client's secret is made by Keycloak and goes
 to AWS Secrets Manager (`oauth2_client_secret`), and CI fails if a file gets a secret-looking member.
 
-**For a realm and a host of your own:** the client exports carry this deployment's host. Write yours into a copy before you import it
+**For a realm and a host of your own:** four of the client exports carry this deployment's host: the confidential client of oauth2-proxy
+and the web, Android and iOS clients. (The CLI client has no redirect URI, and the desktop client names only loopback and `tauri` origins.)
+Write your host into a copy before you import one of the four
 ([Deploy to a Kubernetes cluster, "Keycloak"](../../docs/guides/deploy.md#2-keycloak) does it for the web's confidential client).
 
 | File | What | How to apply |
