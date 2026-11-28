@@ -190,6 +190,7 @@ thread's event log. The diagram shows remote agents only, and leaves out the edg
 
 ```mermaid
 flowchart LR
+  accTitle: Flow: how the terms relate
   person(("Person"))
   web["Web"]
   hooks["CI webhook"]
