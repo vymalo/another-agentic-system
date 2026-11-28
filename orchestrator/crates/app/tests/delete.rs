@@ -188,6 +188,7 @@ fn replace(seq: i64, text: &str) -> ForkRequest {
             tier: None,
             locale: None,
             pick: None,
+            prompt_signature: None,
         },
         target: None,
         id: None,
