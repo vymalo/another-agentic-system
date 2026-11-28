@@ -112,6 +112,10 @@ tasks:
     system: { inline: "Say in one or two sentences what the person wants and where it stands." }
     maxTokens: 160
     recompute: { minNewMessages: 4 }
+  suggestions:
+    endpoint: small
+    model: small-model
+    maxTokens: 200
 ui:
   showDescriptions: true
   history: { initialTurns: 12, pageTurns: 20, windowed: true }
@@ -347,6 +351,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `tasks.description.endpoint`, `.model`, `.system`, `.maxTokens`, `.language` | as the title's; `maxTokens` 1 to 1024, `160`; default guidance: "Describe in one or two sentences what the conversation is about now: what the person wants and where it stands." | — | now. **No `tasks.description`, no descriptions**: no row, no model call |
 | `tasks.description.maxChars` | 40 to 500, `300`; the cleaned answer is cut to it at a word | — | now |
 | `tasks.description.recompute.minNewMessages` | ≥ 1, `4`; the messages (the person's, and the agent's final words) since the last description before a new one is asked for; fewer is **no model call** | — | now |
+| `tasks.suggestions.endpoint`, `.model`, `.system`, `.maxTokens`, `.language` | as the title's; `maxTokens` 1 to 512, `200`; default guidance: "Offer up to three short next things the person could say or ask, one per line." | — | now. **No `tasks.suggestions`, no suggestions**: no row, no model call. Asked for after a job's final answer (`done` or `blocked`), at most once per job, from the **last exchange only**; the answer is at most 3 suggestions of at most 80 characters each (the core's fixed form, not a setting), logged as one `thread_suggested`, and they **fill the message box and never send** (ADR 0013, rule 7). A fork inherits none |
 | `tasks.turnSummary`, `tasks.stepLabel` | names kept for later tasks | — | reserved, no PR yet: refused |
 | `ui.showDescriptions` | boolean, `true`; whether the web shows a thread's description (the API returns it either way) | — | now, served by [`GET /api/config`](#get-apiconfig); the web reads it (PR S19) |
 | `ui.history.initialTurns`, `.pageTurns`, `.windowed` | `initialTurns` 1 to 100, `12`: the turns the web asks for when it opens a thread; `pageTurns` 1 to 100, `20`: the turns of the first older page (each later one asks for more, up to `server.history.maxTurns`); `windowed` boolean, `true`: whether the web opens a thread from its history (the newest turns first, older ones as the person scrolls up); `false` replays the whole log as the web always did. Both counts may not exceed `server.history.maxTurns` (refused at startup) | — | now, served by [`GET /api/config`](#get-apiconfig) **with the build's `projection` version, and only by a process that serves the history route** (it mounts `agui` and serves routes): the presence of `ui.history` is the capability ([`history.md`](history.md)) |

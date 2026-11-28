@@ -1180,6 +1180,9 @@ pub struct Tasks {
     /// The thread description. Absent: threads have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<DescriptionTask>,
+    /// The suggestions offered under a job's finished answer. Absent: none are offered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggestions: Option<SuggestionsTask>,
 }
 
 /// The title task: after the agent's first reply, the model is asked for a 3 to 6 word title.
@@ -1264,6 +1267,36 @@ pub struct Recompute {
 
 fn default_min_new_messages() -> u32 {
     4
+}
+
+/// The suggestions task: after a job's final answer, the model is asked for at most three short
+/// next things the person could say (ADR 0035, amended 2026-11-28).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SuggestionsTask {
+    /// The name of an endpoint in `models.endpoints`.
+    #[schemars(length(min = 1))]
+    pub endpoint: String,
+    /// The model's name at the endpoint.
+    #[schemars(length(min = 1))]
+    pub model: String,
+    /// The guidance that says what to write and in what style, in place of the core's own; read
+    /// once at startup. The core always adds the form of the answer (at most three suggestions,
+    /// one per line, at most 80 characters each), the data clause, the fence around the
+    /// conversation and the language line, last, whatever this says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<Prompt>,
+    /// Most tokens of answer, 1 to 512 (default 200).
+    #[serde(default = "default_suggestions_max_tokens")]
+    #[schemars(range(min = 1, max = 512))]
+    pub max_tokens: u32,
+    /// The language of the suggestions: the person's (`conversation`, the default) or a fixed one.
+    #[serde(default)]
+    pub language: Language,
+}
+
+fn default_suggestions_max_tokens() -> u32 {
+    200
 }
 
 impl Default for Recompute {

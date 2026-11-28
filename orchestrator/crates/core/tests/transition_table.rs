@@ -68,6 +68,7 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             | Command::RequestTitle { .. }
             | Command::SetDescription(_)
             | Command::RequestDescription { .. }
+            | Command::RequestSuggestions { .. }
             | Command::Ask { .. }
             | Command::Observe { .. }
             | Command::StartSession { .. }
@@ -1559,6 +1560,7 @@ fn delivery(cmds: &[Command]) -> Option<&UiDelivery> {
         | Command::RequestTitle { .. }
         | Command::SetDescription(_)
         | Command::RequestDescription { .. }
+        | Command::RequestSuggestions { .. }
         | Command::Ask { .. }
         | Command::Observe { .. }
         | Command::StartSession { .. }

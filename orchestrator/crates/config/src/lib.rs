@@ -64,9 +64,9 @@ pub use types::{
     MAX_USAGE_RETENTION_MONTHS, MAX_USER_SECRET_KEYS, MIN_PRESIGN_TTL_SECS, MIN_UPLOAD_TTL_SECS,
     Mcp, Models, OAUTH_CALLBACK_PATH, Prompt, ProvisionedKind, Provisioner, ProvisionerCredentials,
     Recompute, Registry, Role, SecretRef, SecretStoreKind, Server, ServerInternal, Sharing,
-    SharingMode, SharingPublic, SharingRateLimit, SplitScope, Steps, Surface, Tasks, ThreadTools,
-    TitleTask, ToolServer, ToolServerProtocol, ToolServerSigning, Ui, UrlRef, Usage,
-    UsageModelPrice, UsagePrices, UsageSandboxPrice, UserSecretKey, UserSecrets,
+    SharingMode, SharingPublic, SharingRateLimit, SplitScope, Steps, SuggestionsTask, Surface,
+    Tasks, ThreadTools, TitleTask, ToolServer, ToolServerProtocol, ToolServerSigning, Ui, UrlRef,
+    Usage, UsageModelPrice, UsagePrices, UsageSandboxPrice, UserSecretKey, UserSecrets,
     UserSecretsOpenbao, UserSecretsPg, UserToolServers, UserToolServersEgress,
     UserToolServersOauth, WebhookGeneric, WebhookGithub, Webhooks,
 };

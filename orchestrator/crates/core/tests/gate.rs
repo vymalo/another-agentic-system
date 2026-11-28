@@ -141,6 +141,7 @@ fn bodies(cmds: &[Command]) -> Vec<&EventBody> {
             | Command::RequestTitle { .. }
             | Command::SetDescription(_)
             | Command::RequestDescription { .. }
+            | Command::RequestSuggestions { .. }
             | Command::Ask { .. }
             | Command::Observe { .. }
             | Command::StartSession { .. }
@@ -219,16 +220,25 @@ fn a_gate_that_requires_nothing_leaves_the_job_alone() {
         ],
     );
     assert_eq!(snap.state, Done);
-    // the gate never touches the job; the one thing that changes is the description's ledger, which
-    // the end of the job asks for (ADR 0035)
+    // the gate never touches the job; the things that change are the description's and the
+    // suggestions' ledgers, which the end of the job asks for (ADR 0035, amended 2026-11-28)
     assert!(snap.job.description.may_ask(2), "job 1 has asked");
     assert!(!snap.job.description.may_ask(1));
+    assert!(snap.job.suggestions.may_ask(2), "job 1 has asked");
+    assert!(!snap.job.suggestions.may_ask(1));
     let mut job = snap.job.clone();
     job.description = start.job.description;
+    job.suggestions = start.job.suggestions;
     assert_eq!(job, start.job, "the job is never touched");
     assert_eq!(
         cmds.iter()
             .filter(|c| matches!(c, Command::RequestDescription { job: 1 }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        cmds.iter()
+            .filter(|c| matches!(c, Command::RequestSuggestions { job: 1 }))
             .count(),
         1
     );
@@ -258,6 +268,7 @@ fn a_gate_that_requires_nothing_completes_exactly_as_before() {
                 body: EventBody::ThreadState(ThreadStateData { state: Done })
             }),
             Command::RequestDescription { job: 1 },
+            Command::RequestSuggestions { job: 1 },
         ]
     );
 }

@@ -151,6 +151,8 @@ pub struct Prompts {
     pub title: Option<String>,
     /// `tasks.description.system`.
     pub description: Option<String>,
+    /// `tasks.suggestions.system`.
+    pub suggestions: Option<String>,
 }
 
 /// A configuration that passed the three passes: the keys (defaults filled in), the secrets and
@@ -588,6 +590,10 @@ impl Checker<'_> {
             (
                 "tasks.description",
                 cfg.tasks.description.as_ref().map(|t| &t.endpoint),
+            ),
+            (
+                "tasks.suggestions",
+                cfg.tasks.suggestions.as_ref().map(|t| &t.endpoint),
             ),
         ];
         for (path, endpoint) in tasks {
@@ -2346,9 +2352,15 @@ impl Checker<'_> {
             .description
             .as_ref()
             .and_then(|t| t.system.as_ref());
+        let suggestions = cfg
+            .tasks
+            .suggestions
+            .as_ref()
+            .and_then(|t| t.system.as_ref());
         Prompts {
             title: title.and_then(|p| self.prompt(p, "tasks.title.system")),
             description: description.and_then(|p| self.prompt(p, "tasks.description.system")),
+            suggestions: suggestions.and_then(|p| self.prompt(p, "tasks.suggestions.system")),
         }
     }
 

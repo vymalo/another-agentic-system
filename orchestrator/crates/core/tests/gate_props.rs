@@ -188,6 +188,7 @@ fn appended(cmds: &[Command]) -> impl Iterator<Item = &EventBody> {
         | Command::RequestTitle { .. }
         | Command::SetDescription(_)
         | Command::RequestDescription { .. }
+        | Command::RequestSuggestions { .. }
         | Command::Ask { .. }
         | Command::Observe { .. }
         | Command::StartSession { .. }
@@ -421,10 +422,15 @@ proptest! {
         for input in &inputs {
             if let Ok((next, cmds)) = transition(&snap, input) {
                 // Only the number of the job moves (a message on a finished thread), and the
-                // description's ledger, which the end of a job asks for.
+                // description's and the suggestions' ledgers, which the end of a job asks for.
                 prop_assert_eq!(
                     &next.job,
-                    &Job { number: next.job.number, description: next.job.description, ..Job::default() }
+                    &Job {
+                        number: next.job.number,
+                        description: next.job.description,
+                        suggestions: next.job.suggestions,
+                        ..Job::default()
+                    }
                 );
                 prop_assert!(next.job.number >= snap.job.number);
                 prop_assert!(next.state != ThreadState::Verifying);

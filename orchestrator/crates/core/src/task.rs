@@ -1,7 +1,8 @@
 //! The utility tasks: what the orchestrator asks a model for on its own account (ADR 0035), and
 //! the request it builds for each.
 //!
-//! A task is a closed set ([`TaskKind`]): the **title** of a thread and its **description**. A
+//! A task is a closed set ([`TaskKind`]): the **title** of a thread, its **description** and the
+//! **suggestions** offered under a job's finished answer. A
 //! deployment chooses, per task, the model's endpoint and name, how many tokens it may answer
 //! with, the language rule, and the **guidance**: the text that says what to write and in what
 //! style. Everything else is the core's and cannot be configured away ([`task_prompt`]):
@@ -50,17 +51,25 @@ pub enum TaskKind {
     Title,
     /// A thread's description: a sentence or two on what the conversation is about now.
     Description,
+    /// The next things the person could say, offered under a job's finished answer (ADR 0035,
+    /// amended 2026-11-28): at most three, each one line.
+    Suggestions,
 }
 
 impl TaskKind {
     /// Every task.
-    pub const ALL: [TaskKind; 2] = [TaskKind::Title, TaskKind::Description];
+    pub const ALL: [TaskKind; 3] = [
+        TaskKind::Title,
+        TaskKind::Description,
+        TaskKind::Suggestions,
+    ];
 
     /// The wire and configuration name.
     pub const fn as_str(self) -> &'static str {
         match self {
             TaskKind::Title => "title",
             TaskKind::Description => "description",
+            TaskKind::Suggestions => "suggestions",
         }
     }
 
@@ -79,6 +88,7 @@ impl TaskKind {
         match self {
             TaskKind::Title => "title",
             TaskKind::Description => "describe",
+            TaskKind::Suggestions => "suggest",
         }
     }
 
@@ -91,6 +101,9 @@ impl TaskKind {
             TaskKind::Description => {
                 "Describe in one or two sentences what the conversation is about now: what the \
                  person wants and where it stands."
+            }
+            TaskKind::Suggestions => {
+                "Offer up to three short next things the person could say or ask, one per line."
             }
         }
     }
@@ -106,6 +119,10 @@ impl TaskKind {
                 "Answer with the description alone, in plain text without Markdown, or exactly \
                  NONE if there is nothing to describe yet."
             }
+            TaskKind::Suggestions => {
+                "Answer with at most three suggestions, one per line, each at most 80 characters, \
+                 or exactly NONE if there is nothing to suggest."
+            }
         }
     }
 
@@ -114,6 +131,7 @@ impl TaskKind {
         match self {
             TaskKind::Title => "Title this conversation.",
             TaskKind::Description => "Describe this conversation.",
+            TaskKind::Suggestions => "Suggest what the person could say next.",
         }
     }
 }
@@ -175,7 +193,8 @@ impl<'a> TaskPrompt<'a> {
 /// The instruction and the conversation to give the model: `(system, user)`. `events` is the
 /// part of the log the request is built from: for a title the head of the log (the first
 /// [`TITLE_MESSAGES`] messages are shown), for a description the first message and the latest
-/// ones (the caller reads the head and the tail of the log).
+/// ones (the caller reads the head and the tail of the log), for suggestions the last exchange
+/// only (the caller reads the tail).
 ///
 /// `system` is the guidance, the form of the answer and the data clause, in that order, whatever
 /// the guidance says. `user` is the request, the conversation in a code fence its text cannot
@@ -196,6 +215,7 @@ pub fn task_prompt(spec: &TaskPrompt<'_>, events: &[Event]) -> (String, String) 
     let conversation = match kind {
         TaskKind::Title => title_conversation(events),
         TaskKind::Description => description_conversation(events),
+        TaskKind::Suggestions => suggestions_conversation(events),
     };
     let language_line = match spec.language {
         LanguageRule::Conversation => conversation_language(events).map_or_else(
@@ -298,6 +318,17 @@ fn description_conversation(events: &[Event]) -> String {
         }
         let room = DESCRIPTION_BYTES.saturating_sub(conversation.len());
         conversation.push_str(cut_bytes(line, room));
+    }
+    conversation
+}
+
+/// The conversation's **last exchange**, for a suggestions request: the person's last message and
+/// the agent's last words, each cut at [`MESSAGE_CHARS`] characters. Never the whole log: a
+/// suggestion follows the answer the person has just read.
+fn suggestions_conversation(events: &[Event]) -> String {
+    let mut conversation = String::new();
+    for (who, text) in crate::suggestions::last_exchange(events) {
+        conversation.push_str(&format!("{who}: {}\n", cut_chars(text, MESSAGE_CHARS)));
     }
     conversation
 }

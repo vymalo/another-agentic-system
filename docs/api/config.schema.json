@@ -1494,6 +1494,44 @@
       },
       "type": "object"
     },
+    "SuggestionsTask": {
+      "additionalProperties": false,
+      "description": "The suggestions task: after a job's final answer, the model is asked for at most three short next things the person could say (ADR 0035, amended 2026-11-28).",
+      "properties": {
+        "endpoint": {
+          "description": "The name of an endpoint in `models.endpoints`.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "language": {
+          "$ref": "#/$defs/Language",
+          "default": "conversation",
+          "description": "The language of the suggestions: the person's (`conversation`, the default) or a fixed one."
+        },
+        "maxTokens": {
+          "default": 200,
+          "description": "Most tokens of answer, 1 to 512 (default 200).",
+          "format": "uint32",
+          "maximum": 512,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "model": {
+          "description": "The model's name at the endpoint.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "system": {
+          "$ref": "#/$defs/Prompt",
+          "description": "The guidance that says what to write and in what style, in place of the core's own; read once at startup. The core always adds the form of the answer (at most three suggestions, one per line, at most 80 characters each), the data clause, the fence around the conversation and the language line, last, whatever this says."
+        }
+      },
+      "required": [
+        "endpoint",
+        "model"
+      ],
+      "type": "object"
+    },
     "Surface": {
       "description": "An interaction surface: a set of HTTP routes the orchestrator can mount. `agui`: the AG-UI routes the web speaks (ADR 0012). `mcp`: the MCP server at `/mcp` (ADR 0019; needs `mcp.tokensFile` and `mcp.allowedHosts`). `thread-tools`: the per-thread MCP endpoint (`thread-tools/v1`; needs `threadTools.url` and `secret`). `webhook-generic`: `POST /webhooks/ci`, the generic signed CI report (needs `webhooks.generic`). `webhook-github`: `POST /webhooks/github`, GitHub's own deliveries (needs `webhooks.github`).",
       "enum": [
@@ -1512,6 +1550,10 @@
         "description": {
           "$ref": "#/$defs/DescriptionTask",
           "description": "The thread description. Absent: threads have none."
+        },
+        "suggestions": {
+          "$ref": "#/$defs/SuggestionsTask",
+          "description": "The suggestions offered under a job's finished answer. Absent: none are offered."
         },
         "title": {
           "$ref": "#/$defs/TitleTask",

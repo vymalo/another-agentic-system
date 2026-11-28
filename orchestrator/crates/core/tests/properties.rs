@@ -131,6 +131,9 @@ fn arb_input() -> impl Strategy<Value = Input> {
         (1..4_u32, "[a-z ]{0,8}")
             .prop_map(|(job, description)| Input::Described { job, description }),
         (1..4_u32).prop_map(|job| Input::DescriptionDeclined { job }),
+        (1..4_u32, proptest::collection::vec("[a-z ]{1,20}", 1..4))
+            .prop_map(|(job, suggestions)| Input::Suggested { job, suggestions }),
+        (1..4_u32).prop_map(|job| Input::SuggestionsDeclined { job }),
     ]
 }
 
@@ -224,9 +227,18 @@ proptest! {
                             } else {
                                 snap.job.description
                             };
+                            // The suggestions' ledger moves too, when this transition is the
+                            // one that gets the thread to done or blocked and the job has not
+                            // asked: it is compared apart, and changes nowhere else.
+                            let suggested = next_snap.job.suggestions;
                             prop_assert_eq!(
                                 &next_snap.job,
-                                &Job { title: ledger, description: described, ..snap.job.clone() }
+                                &Job {
+                                    title: ledger,
+                                    description: described,
+                                    suggestions: suggested,
+                                    ..snap.job.clone()
+                                }
                             );
                         }
                     } else {
@@ -255,6 +267,19 @@ proptest! {
                     {
                         prop_assert_eq!(next_snap.job.description.source(), DescriptionSource::User);
                         prop_assert!(!cmds.iter().any(|c| matches!(c, Command::SetDescription(_))));
+                    }
+                    // the suggestions are asked for on the same transitions, at most once per
+                    // job, and whatever a person wrote
+                    let suggested = cmds
+                        .iter()
+                        .filter(|c| matches!(c, Command::RequestSuggestions { .. }))
+                        .count();
+                    prop_assert!(suggested <= 1);
+                    if suggested == 1 {
+                        prop_assert!(next != state);
+                        prop_assert!(matches!(next, ThreadState::Done | ThreadState::Blocked));
+                        prop_assert!(snap.job.suggestions.may_ask(snap.job.number));
+                        prop_assert!(!next_snap.job.suggestions.may_ask(next_snap.job.number));
                     }
                     // (b) thread_state events name the resulting state and only mark entry.
                     for cmd in &cmds {

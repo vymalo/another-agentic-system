@@ -641,6 +641,10 @@ fn assert_unremovable(kind: TaskKind, system: &str, user: &str) {
         TaskKind::Description => {
             "Answer with the description alone, in plain text without Markdown, or exactly NONE"
         }
+        TaskKind::Suggestions => {
+            "Answer with at most three suggestions, one per line, each at most 80 characters, or \
+             exactly NONE"
+        }
     };
     assert!(system.contains(form), "{kind:?}: {system}");
     assert!(

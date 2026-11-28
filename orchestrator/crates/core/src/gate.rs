@@ -24,6 +24,7 @@ use crate::locale::LocaleHint;
 use crate::mention::Mention;
 use crate::pick::ModelPick;
 use crate::step::StepLedger;
+use crate::suggestions::SuggestionsLedger;
 use crate::thread::ThreadState;
 use crate::title::TitleLedger;
 use crate::ui_catalog::UiCatalogLedger;
@@ -361,6 +362,12 @@ pub struct Job {
     /// has no description, which is what its thread has.
     #[serde(skip_serializing_if = "DescriptionLedger::is_empty")]
     pub description: DescriptionLedger,
+    /// Which job last asked the model for suggestions (ADR 0035, amended 2026-11-28): a job asks
+    /// at most once, and the next job asks again. Belongs to the conversation in the ledger, but
+    /// is per job in what it means; a fork starts with none ([`SuggestionsLedger::inherited`]).
+    /// A ledger stored before the field existed has none.
+    #[serde(skip_serializing_if = "SuggestionsLedger::is_empty")]
+    pub suggestions: SuggestionsLedger,
     /// The MCP servers attached to the thread (ADR 0024): their ids, sorted and unique, at most
     /// [`MAX_ATTACHED_SERVERS`](crate::MAX_ATTACHED_SERVERS). Belongs to the conversation, not to
     /// a job: a new job keeps it ([`Job::next`]) until a person detaches a server. A ledger stored
@@ -509,6 +516,7 @@ impl Default for Job {
             answer: AnswerLedger::default(),
             title: TitleLedger::default(),
             description: DescriptionLedger::default(),
+            suggestions: SuggestionsLedger::default(),
             tools: Vec::new(),
             builds: Vec::new(),
             after_stop: None,
@@ -573,7 +581,9 @@ impl Job {
     /// starts with none and numbers its own from 1.
     ///
     /// `sessions` and `child` are **kept** (they belong to the conversation); `observed` is
-    /// **forgotten** (it is the round this job follows, ADR 0072).
+    /// **forgotten** (it is the round this job follows, ADR 0072). `suggestions` is **kept**
+    /// because it names the job that asked: the new number is not that job, so the next job asks
+    /// the model again (ADR 0035, amended 2026-11-28).
     #[must_use]
     pub fn next(&self) -> Job {
         Job {
@@ -583,6 +593,7 @@ impl Job {
             catalog: self.catalog.clone(),
             title: self.title,
             description: self.description,
+            suggestions: self.suggestions,
             tools: self.tools.clone(),
             builds: self.builds.clone(),
             sessions: self.sessions.clone(),

@@ -278,6 +278,7 @@ pub(crate) fn agent_words(body: &EventBody) -> Option<&str> {
         | EventBody::AgentStep(_)
         | EventBody::ThreadTitled(_)
         | EventBody::ThreadDescribed(_)
+        | EventBody::ThreadSuggested(_)
         | EventBody::ToolsAttached(_)
         | EventBody::ToolsDetached(_)
         | EventBody::AskStarted(_)

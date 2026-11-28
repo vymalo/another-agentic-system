@@ -37,6 +37,7 @@ mod redact;
 pub mod search;
 mod share;
 mod step;
+mod suggestions;
 mod task;
 mod team;
 mod thread;
@@ -160,6 +161,10 @@ pub use step::{
     MCP_SERVER_ICON_PREFIX, STEP_ICONS, STEP_INPUT_MAX_BYTES, STEP_INPUT_STRING_MAX_CHARS,
     STEP_OUTPUT_MAX_BYTES, StepKind, StepLedger, StepOutput, StepPhase, StepReport, StepSource,
     StepState, record_step,
+};
+pub use suggestions::{
+    MAX_SUGGESTION_CHARS, MAX_SUGGESTIONS, SuggestionsError, SuggestionsLedger,
+    ThreadSuggestedData, check_suggestions, clean_suggestions,
 };
 pub use task::{
     DESCRIPTION_MESSAGES, LanguageRule, MAX_GUIDANCE_BYTES, TaskKind, TaskLanguageError,

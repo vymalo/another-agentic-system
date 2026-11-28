@@ -4222,6 +4222,70 @@ pub async fn thread_described_roundtrip<S: ThreadStore>(store: S) {
     );
 }
 
+/// A `thread_suggested` is one transaction like a description, but nothing of the thread's row
+/// changes: the event (job-scoped) reads back as written, and a `suggestions` row is the
+/// orchestrator's own and depends on nothing, like a `title` row.
+pub async fn thread_suggested_roundtrip<S: ThreadStore>(store: S) {
+    use orch_core::ThreadSuggestedData;
+    seed(&store, &alice(), 1).await;
+    let event = NewEvent {
+        at: t0(),
+        actor: Actor::system(),
+        body: EventBody::ThreadSuggested(ThreadSuggestedData {
+            job: 2,
+            suggestions: vec!["Run the tests".to_owned(), "Open a pull request".to_owned()],
+        }),
+        idempotency_key: Some("s".to_owned()),
+    };
+    let before = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    let (record, events) = applied(
+        store
+            .commit(
+                thread_id(1),
+                1,
+                commit(ThreadState::Queued, vec![event], vec![]),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind(), EventKind::ThreadSuggested);
+    assert_eq!(events[0].kind().as_str(), "thread_suggested");
+    assert_eq!(
+        record.job.suggestions, before.job.suggestions,
+        "the ledger is not written by the event: the ask is the worker's"
+    );
+    let read = store.list_events(thread_id(1), 1, 10).await.unwrap();
+    assert_eq!(read, events, "the event reads back as it was written");
+
+    // A `suggestions` row depends on nothing: claimable while the delegate is in flight.
+    seed(&store, &alice(), 2).await;
+    let row = NewOutbox {
+        id: outbox_id(301),
+        payload: OutboxPayload::Suggestions { job: 2 },
+    };
+    applied(
+        store
+            .commit(
+                thread_id(2),
+                1,
+                commit(ThreadState::Working, vec![], vec![row]),
+            )
+            .await
+            .unwrap(),
+    );
+    let stored = store.get_outbox(outbox_id(301)).await.unwrap().unwrap();
+    assert_eq!(stored.kind, OutboxKind::Suggestions);
+    assert_eq!(stored.payload, OutboxPayload::Suggestions { job: 2 });
+    assert_eq!(stored.task_id, None);
+    let got = claim(&store, "t", t0()).await;
+    assert!(
+        got.iter()
+            .any(|r| r.id == outbox_id(301) && r.kind == OutboxKind::Suggestions),
+        "not held back by the delegate of its thread"
+    );
+}
+
 /// A fork starts with the description it is given (its parent's), which the listing and the
 /// thread resource say.
 pub async fn a_fork_starts_with_the_description_it_is_given<S: ThreadStore>(store: S) {

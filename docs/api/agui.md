@@ -205,6 +205,7 @@ gets everything.
 | `ui_catalog{catalogId, version, digest, catalog}` (ADR 0023) | — | **No frame**, and no resume point of its own (a log that ends in it is told by an `id:` alone, [Resume points](#connect-binding)): the catalog is not part of the transcript. The projector keeps which catalog is the thread's current one (the highest version it has recorded), and every later `STATE_SNAPSHOT` says so in `thread.uiCatalog`; an `error` before it still explains the `thread_state` after it. See [The UI catalog](#the-ui-catalog) |
 | `thread_titled{title, source}` | A person renamed the thread (`patchThread`), or a model titled it (`source: model`, after the agent's first reply); in any state | The title is part of every `STATE_SNAPSHOT`, so the event is said as one. **Inside a run**: `STATE_SNAPSHOT` with the new `thread.title`. **Outside any run**, with the thread finished or waiting: a producer-initiated run of its own, `RUN_STARTED{runId:"run-<seq>"}` → `STATE_SNAPSHOT` (new title) → the run's close by the state the thread is in (`RUN_FINISHED{success}` for `done`, `{cancelled}` for `cancelled`, the thread's interrupt again for a `blocked` one that waits for the user, the thread's `RUN_ERROR` again for `failed`), which a client with nothing else to show for it drops (the web does). **Outside a run with the thread active**: the run opens, as for any event of an active thread. No message, activity or subagent frame: the transcript does not change. See [Titles](#titles) |
 | `thread_described{description, source}` (ADR 0035) | A model described the thread when a job ended or paused (`source: model`), or a person wrote or cleared it (`patchThread`, `source: user`; an empty description is a person clearing it); in any state | Said exactly as `thread_titled` is: the description is part of every `STATE_SNAPSHOT` (`thread.description`, absent when the thread has none), so the event is a `STATE_SNAPSHOT` inside a run, or a producer-initiated run of its own that holds that snapshot when nothing is going on. No message, activity or subagent frame. See [Descriptions](#descriptions) |
+| `thread_suggested{job, suggestions}` (ADR 0035, amended 2026-11-28) | A model wrote the next things the person could say, after the final answer of `job` (`done` or `blocked`), at most once per job | A card, not the thread's state: `ACTIVITY_SNAPSHOT{messageId:"suggestions-<job>", activityType:"vymalo.suggestions", content:{job, suggestions, at}}` — at most 3 strings of at most 80 characters each. **Inside a run**: the card. **Outside any run** with the thread finished or waiting: a producer-initiated run of its own, `RUN_STARTED{runId:"run-<seq>"}` → the card → the run's close by the state the thread is in (as for a title), which a client with nothing else to show for it drops. **Outside a run with the thread active**: the run opens. The suggestions **fill the message box and never send** ([ADR 0013](../decisions/0013-a2ui-generative-ui.md), rule 7). See [Suggestions](#suggestions) |
 | `thread_shared{visibility, nonce_sha256}`, `thread_unshared{}` (ADR 0040) | The owner shared the thread, widened or narrowed the share, made a new link, or took the link down; in any state | **No frame**, and no resume point of its own (the stream tells a client that the log ends there with an `id:` alone, [Resume points](#connect-binding)): who may read a thread is not part of the transcript. The log moves, an `error` before it still explains the `thread_state` that follows, and a viewer's screen is told nothing (a reader's stream is ended by the application when the link goes, see [Reading a shared thread](#reading-a-shared-thread)) |
 | `agent_status{completed}` | The job is under a gate ([Verification](#verification-the-gate)) and the agent pushed, or tried to push, or is being reworked | The status words, if any → status activity → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT{thread.state:"verifying", job}`. **Not** `RUN_FINISHED`: the run stays open and no `thread_state` follows |
 | `agent_status{completed}` | The job is under a gate and the agent pushed nothing (and no earlier attempt of the job pushed a commit): **an answer**, not work to verify, whatever `checks` it reported ([ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-07-pushed-work-is-verified-in-every-attempt-and-a-failure-on-the-base-is-a-note), 2026-10-04 and 2026-10-07) | The status words, if any → status activity → `SUBAGENT_FINISHED{}`; **no** `verifying` snapshot and no `vymalo.check`: the `thread_state{done}` that follows is `STATE_SNAPSHOT{done, job}` → `RUN_FINISHED` success |
@@ -1255,6 +1256,33 @@ and only when the conversation has grown by `recompute.minNewMessages` messages 
 (`GET /api/config`) can hide it there. Goldens: `description.events.json` (a model's description after the job's end, then a
 person clearing it), `agui/description.agui.json` (what a live viewer reads for it) and `agui/connect-description.agui.json` (what a
 viewer that connects after a person wrote one reads).
+
+## Suggestions
+
+*Built 2026-11-28 ([ADR 0035](../decisions/0035-utility-model-tasks.md), its amendment of that day, ANR-1407).* After a job's
+final answer (`done` or `blocked`), the orchestrator's own model is asked **at most once per job** for the next things the
+person could say, from **the conversation's last exchange only** (the person's last message and the agent's final answer),
+never the whole log. The answer is at most **three suggestions of at most 80 characters each**, in the thread's language by
+the titles' rule, logged as one `thread_suggested{job, suggestions}` event. A slow or failed model gives **no suggestions and
+no error**: the row is declined and the thread stays as it is. The suggestions **fill the message box and never send**
+([ADR 0013](../decisions/0013-a2ui-generative-ui.md), rule 7): no action, no message and no run of the agent is caused by
+reading them.
+
+They are **scoped to the job**, not to the thread: there is no `thread.suggestions` member of the snapshot and no field of
+the thread resource. A client reads them from the event:
+
+- **A live viewer** reads `ACTIVITY_SNAPSHOT{messageId:"suggestions-<job>", activityType:"vymalo.suggestions",
+  content:{job, suggestions: [string], at}}`, where the event is in the log. The model's answer comes after the job's end, so
+  the run is normally closed by then: the event opens a producer-initiated run of its own that holds the card and closes at
+  once (as a late CI card does), which a client with nothing else to show for it drops.
+- **A viewer that connects later** reads the same card where the event is in the replay, so a finished thread that is
+  reopened still offers its newest job's suggestions.
+- **The export** holds the `thread_suggested` event in its `events`, as it holds every event; there is no separate field.
+- **A fork** inherits none: suggestions belong to the job that asked, and the fork's jobs are its own. Its own first job to
+  end asks again.
+
+`GET /api/config` does not mention the task; `tasks.suggestions` in the configuration is what turns it on
+([`config.md`](config.md)), and no `tasks.suggestions` means no row, no model call and no event.
 
 ## Attaching MCP servers
 

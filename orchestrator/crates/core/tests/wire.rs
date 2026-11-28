@@ -117,6 +117,10 @@ fn every_kind_roundtrips_and_never_emits_null() {
             title: "Fix the build".into(),
             source: TitledBy::User,
         }),
+        EventBody::ThreadSuggested(ThreadSuggestedData {
+            job: 2,
+            suggestions: vec!["Run the tests".into(), "Open a pull request".into()],
+        }),
         EventBody::ThreadForked(ThreadForkedData {
             from: ForkSource {
                 thread_id: tid(),

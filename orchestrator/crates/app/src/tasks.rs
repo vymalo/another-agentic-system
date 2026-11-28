@@ -35,8 +35,9 @@ pub struct TaskSettings {
 
 impl TaskSettings {
     /// The settings of `kind` at `endpoint` with `model`, and the defaults of ADR 0035 for the
-    /// rest: the core's guidance, 32 tokens for a title and 160 for a description, the person's
-    /// language, a 20 second timeout, 300 characters and 4 new messages.
+    /// rest: the core's guidance, 32 tokens for a title, 160 for a description and 200 for
+    /// suggestions, the person's language, a 20 second timeout, 300 characters and 4 new
+    /// messages.
     pub fn new(kind: TaskKind, endpoint: impl Into<String>, model: impl Into<String>) -> Self {
         TaskSettings {
             endpoint: endpoint.into(),
@@ -45,6 +46,7 @@ impl TaskSettings {
             max_tokens: match kind {
                 TaskKind::Title => 32,
                 TaskKind::Description => 160,
+                TaskKind::Suggestions => 200,
             },
             language: LanguageRule::Conversation,
             timeout: Duration::from_secs(20),

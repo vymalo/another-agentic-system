@@ -214,6 +214,7 @@ pub fn fork_cut(events: &[Event], parent: ThreadState, at: ForkPoint) -> Result<
                 | EventKind::AgentStep
                 | EventKind::ThreadTitled
                 | EventKind::ThreadDescribed
+                | EventKind::ThreadSuggested
                 | EventKind::ToolsAttached
                 | EventKind::ToolsDetached
                 | EventKind::AskStarted
@@ -250,6 +251,9 @@ pub fn fork_cut(events: &[Event], parent: ThreadState, at: ForkPoint) -> Result<
 /// * `description`: the parent's ledger ([`DescriptionLedger`]) with nothing in flight and no job
 ///   asked: the fork has the parent's description, a person's stays final, and the fork's first job
 ///   to end asks as any job does (ADR 0035).
+/// * `suggestions`: **nothing** ([`SuggestionsLedger::inherited`](crate::SuggestionsLedger::inherited)):
+///   suggestions are scoped to the job that asked, and the fork's jobs are its own, so its first
+///   job to end asks (ADR 0035, amended 2026-11-28).
 /// * `tools`: the servers the copied events leave attached ([`attached_by`]): the copy says they
 ///   were attached, so the fork has them. (The application drops those its agent may not use.)
 /// * the UI catalog ledger is **empty**: a fork is a new A2A context and its agent has been sent
@@ -621,6 +625,7 @@ pub fn fork_history(copied: &[Event]) -> ForkHistory {
             | EventBody::AgentStep(_)
             | EventBody::ThreadTitled(_)
             | EventBody::ThreadDescribed(_)
+            | EventBody::ThreadSuggested(_)
             | EventBody::ToolsAttached(_)
             | EventBody::ToolsDetached(_)
             | EventBody::AskStarted(_)

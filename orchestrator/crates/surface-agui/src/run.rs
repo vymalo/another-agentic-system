@@ -429,6 +429,8 @@ fn carrying(mut input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
         | Input::SetDescription { .. }
         | Input::Described { .. }
         | Input::DescriptionDeclined { .. }
+        | Input::Suggested { .. }
+        | Input::SuggestionsDeclined { .. }
         | Input::SetTools { .. }
         | Input::AgentBuild { .. }
         | Input::Ask { .. }
@@ -544,6 +546,8 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
         | Input::SetDescription { .. }
         | Input::Described { .. }
         | Input::DescriptionDeclined { .. }
+        | Input::Suggested { .. }
+        | Input::SuggestionsDeclined { .. }
         | Input::SetTools { .. }
         | Input::AgentBuild { .. }
         | Input::Ask { .. }

@@ -157,6 +157,7 @@ pub fn reader_event(event: &Event, rules: &ReaderRules) -> Event {
         | EventBody::JobStarted(_)
         | EventBody::ThreadTitled(_)
         | EventBody::ThreadDescribed(_)
+        | EventBody::ThreadSuggested(_)
         | EventBody::ToolsAttached(_)
         | EventBody::ToolsDetached(_)
         | EventBody::AskStarted(_)

@@ -75,6 +75,7 @@ fn migrator() -> Result<Migrator, StoreError> {
         "0036_outbox_open_owner_due.sql",
         "0037_orch_commit_open.sql",
         "0038_orch_admit.sql",
+        "0039_thread_suggestions.sql",
     )
     .map_err(migrate_err)?;
     Migrator::new(MIGRATIONS_TABLE, migrations).map_err(migrate_err)
@@ -1192,10 +1193,11 @@ macro_rules! outbox_due {
 /// The per-thread rule: a delegate row is held back while an older delegate of the same thread is
 /// `pending` or `inflight` (whatever its lease or due time says), which also covers an older row
 /// the very statement claims; a steer row likewise waits for an older steer, and for no delegate
-/// (ADR 0036); an ask row waits for nothing, as a verify row does (ADR 0026).
+/// (ADR 0036); an ask row waits for nothing, as a verify, title, description or suggestions row
+/// does (ADR 0026, ADR 0035).
 macro_rules! outbox_thread_rule {
     () => {
-        "(o.kind IN ('cancel', 'verify', 'ask', 'title', 'description') OR NOT EXISTS ( \
+        "(o.kind IN ('cancel', 'verify', 'ask', 'title', 'description', 'suggestions') OR NOT EXISTS ( \
             SELECT 1 FROM outbox p \
             WHERE p.thread_id = o.thread_id AND p.kind = o.kind \
               AND p.ord < o.ord AND p.status IN ('pending', 'inflight')))"
@@ -2920,7 +2922,7 @@ mod tests {
             .unwrap();
         let first = &migrator.migrations()[0];
         assert_eq!((first.version(), first.description()), (1, "init"));
-        assert_eq!(migrator.migrations().len(), 38);
+        assert_eq!(migrator.migrations().len(), 39);
     }
 
     /// `orch_admit` takes the admission lock with a number of its own text, which must be

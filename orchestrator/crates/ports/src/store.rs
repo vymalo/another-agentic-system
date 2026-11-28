@@ -223,6 +223,9 @@ pub enum OutboxKind {
     Title,
     /// Ask the model for a description of the thread (ADR 0035).
     Description,
+    /// Ask the model for the next things the person could say, under a job's finished answer
+    /// (ADR 0035, amended 2026-11-28).
+    Suggestions,
     /// Send a message into the agent's **running task** (`steer/v1`, ADR 0036). Claimed beside the
     /// thread's delegation in flight and in order among the thread's other steer rows; a row the
     /// agent cannot take becomes a `delegate` ([`ThreadStore::requeue_as_delegate`]).
@@ -358,6 +361,13 @@ pub enum OutboxPayload {
     /// ADR 0035): `job` is the job whose end asks. The conversation is read from the log when the
     /// row is worked, so the row holds nothing of it.
     Description {
+        /// The job whose end asks.
+        job: u32,
+    },
+    /// Ask the model for the next things the person could say, under the final answer of `job`
+    /// (`orch_core::Command::RequestSuggestions`, ADR 0035, amended 2026-11-28). The answer is one
+    /// `thread_suggested` event, scoped to the job.
+    Suggestions {
         /// The job whose end asks.
         job: u32,
     },
@@ -506,6 +516,7 @@ impl OutboxPayload {
             OutboxPayload::Verify { .. } => OutboxKind::Verify,
             OutboxPayload::Title { .. } => OutboxKind::Title,
             OutboxPayload::Description { .. } => OutboxKind::Description,
+            OutboxPayload::Suggestions { .. } => OutboxKind::Suggestions,
             OutboxPayload::Steer { .. }
             | OutboxPayload::SessionStart { .. }
             | OutboxPayload::SessionClose { .. } => OutboxKind::Steer,
@@ -547,6 +558,7 @@ impl OutboxPayload {
             | OutboxPayload::Verify { .. }
             | OutboxPayload::Title { .. }
             | OutboxPayload::Description { .. }
+            | OutboxPayload::Suggestions { .. }
             | OutboxPayload::Observe { .. }
             | OutboxPayload::SessionStart { .. }
             | OutboxPayload::SessionClose { .. }

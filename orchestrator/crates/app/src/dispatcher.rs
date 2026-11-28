@@ -36,6 +36,7 @@ mod description;
 mod files;
 mod live;
 mod sessions;
+mod suggestions;
 mod title;
 mod utility;
 mod verify;
@@ -580,6 +581,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             OutboxKind::Verify => Box::pin(self.verify(row)).await,
             OutboxKind::Title => Box::pin(self.title(row)).await,
             OutboxKind::Description => Box::pin(self.description(row)).await,
+            OutboxKind::Suggestions => Box::pin(self.suggestions(row)).await,
             OutboxKind::Ask => Box::pin(self.ask(row)).await,
         }
     }
@@ -745,6 +747,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             | OutboxPayload::Verify { .. }
             | OutboxPayload::Title { .. }
             | OutboxPayload::Description { .. }
+            | OutboxPayload::Suggestions { .. }
             | OutboxPayload::Ask { .. } => self.give_up(row, reason, operator, false).await,
         }
     }
@@ -1170,6 +1173,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             | OutboxPayload::Verify { .. }
             | OutboxPayload::Title { .. }
             | OutboxPayload::Description { .. }
+            | OutboxPayload::Suggestions { .. }
             | OutboxPayload::Ask { .. } => {
                 return self
                     .finish(

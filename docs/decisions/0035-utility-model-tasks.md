@@ -25,6 +25,18 @@ sidebarTitle: "0035 · Utility model tasks"
   per-person and no per-agent pick (which model to use is the owner's decision, out of scope here). The code
   follows in ANR-1407, the web in ANR-1408 and the dev scenario in ANR-1409.
 
+  Status note (2026-11-28, built, ANR-1407). What was decided while building the suggestions, all in `orchestrator/`:
+  - **The ledger is per job** (`SuggestionsLedger` in `Job.suggestions`: the job that asked and whether its ask is in
+    flight). `Job::next()` keeps it, so the next job asks again; a fork starts with **nothing** (`inherited()`), because
+    the fork's jobs are its own and the suggestions of the parent's job are not its answer.
+  - **The event is job-scoped** (`thread_suggested { job, suggestions }`): nothing on the thread's row changes, there is
+    no `thread.suggestions` member, and a client reads the suggestions from the log — live and in the history as the
+    `vymalo.suggestions` activity, and in the export's `events`.
+  - **The request shows the last exchange** — the person's last message and the agent's last words — and never the whole
+    log. The core's fixed form says at most three lines of at most 80 characters; the cleaner enforces both.
+  - **A decline is silent**: a slow model (the endpoint's timeout), a failure, `NONE` and a wrong script twice all end
+    in `SuggestionsDeclined`, no event and no error to the person, and the thread stays as it is.
+
   Status note (2026-10-02, PR S18). What is built is everything decided here: named endpoints
   (`ChatRequest.endpoint`; `OpenAiChat` over a map of endpoints, each with its own client, key and timeout; an unknown
   name is `ModelError::NotConfigured`, with a case in the port's conformance testkit), the closed `TaskKind`

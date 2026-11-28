@@ -1,5 +1,5 @@
-//! The model call the utility tasks share (ADR 0035): the title worker and the description worker
-//! ask a model the same way, and neither fails a thread when it cannot be had.
+//! The model call the utility tasks share (ADR 0035): the title, description and suggestions
+//! workers ask a model the same way, and none fails a thread when it cannot be had.
 //!
 //! Since card ANR-670 the call is billed to the thread's owner, so the worker **binds a lease for
 //! it first**, in this same step and before the model is asked: the deployment's model injector

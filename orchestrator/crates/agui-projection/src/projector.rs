@@ -55,9 +55,9 @@ use orch_core::{
     Delivery, ErrorData, Event, EventBody, ForkedFrom, GatePolicy, JobStartedData, JobView,
     MAX_SURFACE_BYTES, MessagePurpose, ModelUsageData, ModelUsageTotalData, Preview, Recognised,
     ReworkData, SessionBy, SessionOutcome, SessionState, StartOutcomeKind, StepKind, StepPhase,
-    SurfaceOp, ThreadDescribedData, ThreadForkedData, ThreadId, ThreadState, ThreadTitledData,
-    ToolsData, TrustedRequestData, UiActionData, UiCatalogLedger, UiSurfaceData, UiVersion, UserId,
-    UserMessageData, recognise_artifact, serialized_len,
+    SurfaceOp, ThreadDescribedData, ThreadForkedData, ThreadId, ThreadState, ThreadSuggestedData,
+    ThreadTitledData, ToolsData, TrustedRequestData, UiActionData, UiCatalogLedger, UiSurfaceData,
+    UiVersion, UserId, UserMessageData, recognise_artifact, serialized_len,
 };
 use serde_json::{Value, json};
 
@@ -68,12 +68,12 @@ use crate::usage::{UsageFold, ask_number};
 use crate::vocab::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_ASK,
     ACTIVITY_CHECK, ACTIVITY_CI, ACTIVITY_ERROR, ACTIVITY_FORK, ACTIVITY_JOB, ACTIVITY_REWORK,
-    ACTIVITY_SESSION, ACTIVITY_SESSION_START, ACTIVITY_STATUS, ACTIVITY_STEP, ACTIVITY_TOOLS,
-    ACTIVITY_TRUSTED_REQUEST, AT_KEY, CHILD_THREAD_KEY, CODE_AGENT_FAILED, CODE_ASK_FAILED,
-    CODE_ASK_TIMED_OUT, CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED, CODE_SESSION_FAILED,
-    CODE_STEP_FAILED, CODE_VERIFIER_FAILED, CUSTOM_USAGE, CUSTOM_USAGE_TOTAL, SESSION_KEY,
-    WHEN_KEY, actor_metadata, message_metadata, problem_metadata, response_schema, status_content,
-    user_message_metadata,
+    ACTIVITY_SESSION, ACTIVITY_SESSION_START, ACTIVITY_STATUS, ACTIVITY_STEP, ACTIVITY_SUGGESTIONS,
+    ACTIVITY_TOOLS, ACTIVITY_TRUSTED_REQUEST, AT_KEY, CHILD_THREAD_KEY, CODE_AGENT_FAILED,
+    CODE_ASK_FAILED, CODE_ASK_TIMED_OUT, CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED,
+    CODE_SESSION_FAILED, CODE_STEP_FAILED, CODE_VERIFIER_FAILED, CUSTOM_USAGE, CUSTOM_USAGE_TOTAL,
+    SESSION_KEY, WHEN_KEY, actor_metadata, message_metadata, problem_metadata, response_schema,
+    status_content, user_message_metadata,
 };
 
 /// Characters of a commit hash a card shows (`shortSha`).
@@ -822,6 +822,12 @@ impl Projector {
                 self.on_thread_described(event, d, &mut out);
                 self.pending_error = pending_error;
             }
+            // The suggestions of a job (ADR 0035, amended 2026-11-28) are a card, not the
+            // thread's state: they fill the message box of the person.
+            EventBody::ThreadSuggested(d) => {
+                self.on_thread_suggested(event, d, &mut out);
+                self.pending_error = pending_error;
+            }
             EventBody::ThreadForked(d) => self.on_thread_forked(event, d, &mut out),
             // The set of tools is the thread's, in every snapshot, and the change is a card.
             EventBody::ToolsAttached(d) => {
@@ -1412,6 +1418,43 @@ impl Projector {
         } else {
             self.open_run(format!("run-{}", ev.seq), false, out);
             // the closing snapshot says the new description
+            self.settle(ev, out);
+        }
+    }
+
+    /// The suggestions offered under the final answer of a job (ADR 0035, amended 2026-11-28).
+    /// They are **not** the thread's state, so they are a card of their own:
+    /// `ACTIVITY_SNAPSHOT{messageId:"suggestions-<job>", activityType:"vymalo.suggestions",
+    /// content:{job, suggestions, at}}`. They fill the message box and never send (ADR 0013,
+    /// rule 7). Inside a run: the card. Outside any run with the thread active: the run opens and
+    /// holds it. Otherwise a producer-initiated run of its own holds the card and closes at once
+    /// (like a late CI card), which a client that has nothing else to show for it drops.
+    fn on_thread_suggested(
+        &mut self,
+        ev: &Event,
+        d: &ThreadSuggestedData,
+        out: &mut Vec<agui::Event>,
+    ) {
+        let settles = if self.run.is_some() {
+            false
+        } else if is_active(self.state) {
+            self.open_run(format!("run-{}", ev.seq), true, out);
+            false
+        } else {
+            self.open_run(format!("run-{}", ev.seq), false, out);
+            true
+        };
+        let mut content = Metadata::new();
+        content.insert("job".to_owned(), Value::from(d.job));
+        content.insert("suggestions".to_owned(), Value::from(d.suggestions.clone()));
+        out.push(self.activity(
+            format!("suggestions-{}", d.job),
+            ACTIVITY_SUGGESTIONS,
+            content,
+            ev,
+            false,
+        ));
+        if settles {
             self.settle(ev, out);
         }
     }
