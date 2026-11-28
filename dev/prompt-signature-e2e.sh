@@ -25,6 +25,8 @@
 #     whose detail is the person's sentence; the thread does not exist (404) and `mock-coder` was sent nothing;
 #   * the same for a malformed envelope — `a.b` (two parts), `a..b.c` (four) and one over 16 KiB — and the problem's body holds
 #     none of it;
+#   * a helper-session start (`POST /api/threads/{id}/sessions`, a random thread) from the signing client with no envelope is the
+#     same 403, and the same request from `dev-chat` is a 404: the check comes before the thread is looked up;
 #   * a well-formed detached JWS (`eyJhbGciOiJFUzI1NiJ9..c2ln`) is accepted (200), the thread runs to `done`, and `mock-coder` was
 #     sent the prompt exactly once;
 #   * a token whose `azp` is `dev-chat` sends no envelope and is accepted (200), and its thread ends `done` (the negative control);
@@ -41,7 +43,8 @@
 # and `AUTH_BEARER` of your shell: any of them would change every token the script asks for, and the two `azp` values are what the
 # scenario is about. It EMPTIES the request journal of `mock-agent` first, so run it on a stack you are not in the middle of another
 # scenario on. Needs curl and jq (and /proc or uuidgen for a UUID). Run against the `app` profile built from this branch on
-# 2026-11-28 (39 ok, no FAIL); CI runs it too, in .github/workflows/coder-e2e.yml.
+# 2026-11-28 (39 ok, no FAIL), before the four checks of the helper-session start were added, which have not been run there; CI
+# runs it too, in .github/workflows/coder-e2e.yml.
 set -eu
 
 base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
@@ -183,6 +186,25 @@ for entry in "two parts:a.b" "four parts:a..b.c" "over 16 KiB:$long"; do
   expect "  no thread was written ($why)" "$(status_of "$signing" "/api/threads/$thread")" "404"
 done
 expect "mock-coder was sent none of the refused prompts" "$(sent "$refused")" "0"
+
+# --- a signing client's helper-session start with no envelope ---------------------------------------------------------
+# `startChildSession` is given `auth.signingClients` separately from the run route (boot.rs), and an empty list checks nobody, so
+# it is asked here too. The thread does not exist: the 403 comes before the lookup, so no agent with helpers is needed. The
+# control's 404 for the same request says the thread is what a request that is let through finds.
+echo "== a signing client (azp dev-signing) starting a helper session with no envelope"
+thread=$(uuid)
+start=$(jq -n --arg id "$(uuid)" --arg text "add a health endpoint ($refused)" \
+  '{id: $id, agent: "planner", description: "Find the health endpoint", text: $text}')
+# start_session HEADER: that start. Prints the HTTP status; the answer is $tmp/run.out.
+start_session() {
+  curl -sS --max-time 60 -o "$tmp/run.out" -w '%{http_code}' -X POST "$base/api/threads/$thread/sessions" -H "$1" \
+    -H 'content-type: application/json' -d "$start" 2>"$tmp/err" || true
+}
+code=$(start_session "$signing")
+expect "a helper start with no envelope is a 403" "$code" "403"
+expect "  its code is prompt_signature_invalid (helper start)" "$(problem .code)" "prompt_signature_invalid"
+expect "  its reason is invalid (helper start)" "$(problem .reason)" "invalid"
+expect "the same start from dev-chat gets past the check, to a thread that does not exist" "$(start_session "$control")" "404"
 
 # --- a signing client's prompt with a well-formed envelope -------------------------------------------------------------
 echo "== a signing client (azp dev-signing) with a well-formed envelope"

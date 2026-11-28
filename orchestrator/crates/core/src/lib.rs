@@ -52,6 +52,11 @@ mod usage;
 mod usage_record;
 mod verify;
 
+/// The metadata member that holds a person's prompt signature (ADR 0087, decision 2): a compact JWS
+/// with a detached payload. One name for every route that carries a person's words: the AG-UI new
+/// message or `resume` entry, and the body of `startChildSession`.
+pub const PROMPT_SIGNATURE_KEY: &str = "vymalo.promptSignature";
+
 pub use access_tier::{ACCESS_TIER_EXTENSION, AccessTier, CapRefusal, TierListing, TierOffer};
 pub use agent::{AgentTaskState, AgentUpdate, FileRefusal};
 pub use answer::{AnswerError, AnswerLedger, MAX_ANSWER_BYTES, check_answer};

@@ -1778,6 +1778,21 @@
           },
           "description": "How the web opens a long thread (ADR 0059). `GET /api/config` serves it only when the process mounts the AG-UI surface, which is where the history route is, so its presence is the capability."
         },
+        "languages": {
+          "default": [
+            "en-GB",
+            "fr-FR",
+            "gsw-CH",
+            "fur-IT"
+          ],
+          "description": "The interface languages this deployment offers (ADR 0085): the web draws a picker from them and sends the person's choice with each message. Each is a language tag an interface offers — a language, an optional script of four letters and an optional region of two letters or three digits — and the list is the four of the design when the file names none. The schema refuses an empty list and more than 32 entries; the rules pass refuses an entry that is not such a tag and two entries that are the same tag case-insensitively.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "type": "array"
+        },
         "showDescriptions": {
           "default": true,
           "description": "Whether the web shows a thread's description (default true). The API returns it either way.",
@@ -2333,6 +2348,12 @@
           "pageTurns": 20,
           "windowed": true
         },
+        "languages": [
+          "en-GB",
+          "fr-FR",
+          "gsw-CH",
+          "fur-IT"
+        ],
         "showDescriptions": true
       },
       "description": "What the web is told (`GET /api/config`)."

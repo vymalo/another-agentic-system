@@ -14,6 +14,7 @@ use orch_ports::{
 use serde::{Deserialize, Serialize};
 
 use crate::ApiState;
+use crate::check_prompt_signature;
 use crate::extract::{ApiJson, ApiQuery};
 use crate::problem::{ApiError, Problem};
 
@@ -744,6 +745,9 @@ pub(crate) struct StartSessionBody {
     keep_open: bool,
     /// As `forwardedProps["vymalo.tier"]`: one of the four words, or `null`.
     tier: Option<serde_json::Value>,
+    /// The metadata of `text`, as an AG-UI message's: only
+    /// [`PROMPT_SIGNATURE_KEY`](orch_core::PROMPT_SIGNATURE_KEY) is read.
+    metadata: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// The answer to `startChildSession`: the request's id, which the parent's
@@ -769,6 +773,21 @@ pub(crate) async fn start_child_session<P: Ports>(
         }
         None => None,
     };
+    // The person's prompt signature, read as the AG-UI run reads a message's: a member that is not
+    // text names none. The string is passed on as it arrived.
+    let prompt_signature = body
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get(orch_core::PROMPT_SIGNATURE_KEY))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    // ADR 0087, decision 3: `text` is the person's words, so a signing client's start is signed or
+    // refused, here, before the application reads, makes or writes anything.
+    check_prompt_signature(
+        &principal,
+        &state.signing_clients,
+        prompt_signature.as_deref(),
+    )?;
     state
         .app
         .start_child_session(
@@ -781,6 +800,7 @@ pub(crate) async fn start_child_session<P: Ports>(
                 text: body.text,
                 keep_open: body.keep_open,
                 tier,
+                prompt_signature,
             },
         )
         .await?;

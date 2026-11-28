@@ -345,9 +345,11 @@ impl Harness {
 
     /// A deployment that lists `clients` as signing clients (ADR 0087, decision 1): a request whose
     /// token names one of them must carry `vymalo.promptSignature` in its last user message's metadata.
+    /// The resource API gets the same list, as the binary gives it.
     pub async fn start_signing(clients: &[&str]) -> Self {
         let api = ApiConfig {
             sse_keepalive: Duration::from_millis(150),
+            signing_clients: clients.iter().map(|c| (*c).to_owned()).collect(),
             ..ApiConfig::default()
         };
         Self::start_full(
@@ -533,6 +535,27 @@ impl Harness {
             .send()
             .await
             .unwrap()
+    }
+
+    /// `POST {path}` on the resource API as `user` of the OAuth client `client`.
+    pub async fn api_post_as_client(
+        &self,
+        path: &str,
+        user: &str,
+        client: &str,
+        body: &Value,
+    ) -> Resp {
+        resp_of(
+            self.client
+                .post(self.url(path))
+                .header("X-Auth-Request-Email", user)
+                .header("Authorization", format!("Bearer {client}"))
+                .json(body)
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await
     }
 
     /// A run of the client `client` that must be accepted: its stream.

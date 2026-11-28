@@ -135,7 +135,8 @@ export const Layout = {
       if (other && !other.closest(".mermaid-container")) return;
       document.querySelector<HTMLElement>(".mermaid-dialog-backdrop")?.click();
     };
-    // A drawing arrives, or is redrawn in the other scheme, as new nodes or a new viewBox: size its box and name it again.
+    // A drawing arrives, is redrawn in the other scheme, or is revealed by an opened ::: in-depth: size its box and name it
+    // again. (A diagram inside a closed <details> is drawn at once, with no width, so it is sized the moment it is shown.)
     let queued = false;
     const observer = typeof MutationObserver === "undefined" ? null : new MutationObserver(() => {
       if (queued) return;
@@ -144,7 +145,7 @@ export const Layout = {
     });
     onMounted(() => {
       document.addEventListener("keydown", onKey);
-      observer?.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["viewBox", "aria-label"] });
+      observer?.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["viewBox", "aria-label", "open"] });
       window.addEventListener("resize", sizeBoxes);
     });
     onUnmounted(() => {

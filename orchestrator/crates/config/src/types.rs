@@ -1426,6 +1426,30 @@ pub struct Ui {
     /// the capability.
     #[serde(default)]
     pub history: UiHistory,
+    /// The interface languages this deployment offers (ADR 0085): the web draws a picker from them
+    /// and sends the person's choice with each message. Each is a language tag an interface offers —
+    /// a language, an optional script of four letters and an optional region of two letters or three
+    /// digits — and the list is the four of the design when the file names none. The schema refuses
+    /// an empty list and more than 32 entries; the rules pass refuses an entry that is not such a tag
+    /// and two entries that are the same tag case-insensitively.
+    #[serde(default = "default_languages")]
+    #[schemars(length(min = 1, max = 32), default = "default_languages")]
+    pub languages: Vec<String>,
+}
+
+/// The languages an interface offers from day 0 (ADR 0085): British English, French, Swiss
+/// German and Friulian.
+pub const DEFAULT_LANGUAGES: [&str; 4] = ["en-GB", "fr-FR", "gsw-CH", "fur-IT"];
+
+/// The most `ui.languages` may list, 32: a picker, not a directory. The schema attribute on
+/// [`Ui::languages`] carries the same number as a literal.
+pub const MAX_UI_LANGUAGES: usize = 32;
+
+fn default_languages() -> Vec<String> {
+    DEFAULT_LANGUAGES
+        .iter()
+        .map(|tag| (*tag).to_owned())
+        .collect()
 }
 
 impl Default for Ui {
@@ -1433,6 +1457,7 @@ impl Default for Ui {
         Ui {
             show_descriptions: true,
             history: UiHistory::default(),
+            languages: default_languages(),
         }
     }
 }

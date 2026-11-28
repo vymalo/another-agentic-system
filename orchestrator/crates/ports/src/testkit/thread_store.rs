@@ -2950,6 +2950,8 @@ fn session_start_row(n: u128) -> NewOutbox {
             keep_open: true,
             tier: Some(orch_core::AccessTier::Edits),
             tier_cap: None,
+            // a store keeps the envelope byte for byte (ADR 0087)
+            prompt_signature: Some("eyJhbGciOiJFZERTQSJ9..c2ln-_x".to_owned()),
         },
     }
 }

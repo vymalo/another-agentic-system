@@ -147,7 +147,7 @@ pub const SEND_KEY: &str = "vymalo.send";
 /// detached payload, on the **new user message** (`metadata`) or, for an answer, on the
 /// `resume` entry that carries it (decision 3). It is a message's own member and never a
 /// `forwardedProps` one: the statement hashes the whole of `forwardedProps` as `props_sha256`.
-pub const PROMPT_SIGNATURE_KEY: &str = "vymalo.promptSignature";
+pub use orch_core::PROMPT_SIGNATURE_KEY;
 
 /// Metadata key of how a message reached an agent that was working (ADR 0036): `"steer"` or
 /// `"interrupt"`, on the `TEXT_MESSAGE_START` of a user message the core logged with that

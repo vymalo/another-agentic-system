@@ -21,6 +21,18 @@
 # same database), SKIPS (exit 77, as dev/ci-e2e.sh does): `docker compose --profile app down -v` and up again, or LEDGER_EMAIL=<a user of
 # users.json with no usage>, runs it again.
 #
+# **A child round is counted once** (ADR 0072 decision 4, ADR 0065's amendment of 2026-11-18). A third person, `usage-child@example.com`, used
+# by no other scenario, starts one thread of `mock-sessions` (dev/wiremock/sessions, the agent of dev/child-sessions-e2e.sh): the parent opens a
+# session of its helper and ENDS while the helper still works; the round, a task of its own (`<task>-s1`) in a child thread, reports its tokens
+# after that. The parent's totals already hold them, so the child's own report is logged and not counted. The month is read before and after
+# and only the DIFFERENCE is asserted, so this part runs on every run, the second one on a database included. By hand, from the mock:
+#   the parent's totals (get-task-parent.json)  glm-5.3 1000 in, 100 out, 1100 (its own call p1); glm-5.3-mini 400 in, 50 out, 450 (the helper's h1)
+#   the child's totals  (get-task-round.json)   glm-5.3-mini 400 in, 50 out, 450: the SAME tokens
+#   so the month grows by   tasks 1 (one row, the parent's task)
+#     glm-5.3       1000/100/1100, price 1000 * 0.40 + 100 * 1.60 = 400 + 160 = 560 millionths (a whole number: no rounding in the difference)
+#     glm-5.3-mini  400/50/450, no price (counted twice it would be 800/100/900, and tasks 2)
+#     sandbox       nothing (the mock measures none); total.amount + 560 millionths
+#
 # The prices are those of `usage` in dev/orchestrator.yaml (EUR; glm-5.3 input 0.40, cached input 0.10, output 1.60 per million tokens;
 # glm-5.3-mini has NO price on purpose; the sandbox 0.04 per core-hour and 0.005 per GiB-hour). The expected amounts below are computed by
 # hand from them and written as constants; change a price there and change them here.
@@ -37,7 +49,10 @@
 #     total.amount  the sum of the lines that are priced (the rounded lines): 2920 + 564 = 3484 millionths = "0.003484"
 #   and "complete": false, because glm-5.3-mini has no price.
 #
-# It prints one ok or FAIL line per check and exits 1 if any failed (77 when it skips, 2 when the stack is not the one it needs):
+# It prints one ok or FAIL line per check and exits 1 if any failed (77 when it skips and nothing failed, 2 when the stack is not the one
+# it needs):
+#   * first, the child round: the parent of `mock-sessions` ends `done`, so does its child thread, whose log holds the round's own totals (so
+#     the helper's report did arrive); the month of `usage-child@example.com` grew by the difference above and by nothing else;
 #   * the ledger user's month is empty to begin with; two threads of `mock-usage` end `done`;
 #   * GET /api/me/usage, with no month and with the current UTC month named, answers 200 as JSON with `Cache-Control: no-store`, `tasks: 2`,
 #     the two models and the sandbox line above, currency EUR, a `prices` id of `sha256:` and sixteen hex digits, no unmeasured task, and
@@ -58,12 +73,13 @@
 # Environment (defaults match compose.yaml on one machine):
 #   BASE_URL          http://127.0.0.1:${EDGE_PORT:-8080}, the compose `edge`: oauth2-proxy in front of the API (ADR 0033)
 #   LEDGER_EMAIL      usage-ledger@example.com, who runs the two threads (a user of dev/mock-oidc/users.json)
+#   CHILD_EMAIL       usage-child@example.com, who runs the thread with the child round
 #   BYSTANDER_EMAIL   usage-bystander@example.com, who runs none
 #   ORCH_SERVICE      orchestrator, the compose service whose metrics tell the purge is over (needs docker compose; without it the script waits 5 s)
 #   TIMEOUT           120    seconds to wait for a thread to stop
 #
 # It does not touch the request journals of the mocks, so it can run beside the other scenarios. Needs curl and jq (and /proc or uuidgen
-# for a UUID). Verified by CI only, in .github/workflows/coder-e2e.yml (dev/e2e-all.sh); the ledger and the route are also proven by the
+# for a UUID). CI runs it in .github/workflows/coder-e2e.yml (dev/e2e-all.sh); the ledger and the route are also proven by the
 # Rust tests (orchestrator/crates/store-postgres, orchestrator/crates/api/tests/usage.rs).
 set -eu
 
@@ -72,6 +88,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 ledger_email=${LEDGER_EMAIL:-usage-ledger@example.com}
 bystander_email=${BYSTANDER_EMAIL:-usage-bystander@example.com}
+child_email=${CHILD_EMAIL:-usage-child@example.com}
 service=${ORCH_SERVICE:-orchestrator}
 timeout=${TIMEOUT:-120}
 
@@ -80,8 +97,9 @@ for tool in curl jq; do
 done
 
 # The API wants a bearer token of the mock issuer, not a header (ADR 0033): dev/auth-header.sh prints the header line.
-if ! ledger_header=$(sh "$here/auth-header.sh" "$ledger_email") || ! bystander_header=$(sh "$here/auth-header.sh" "$bystander_email"); then
-  echo "no token for $ledger_email or $bystander_email: the mock issuer must be built with them (dev/mock-oidc/users.json): docker compose --profile app up -d --build mock-oidc" >&2
+if ! ledger_header=$(sh "$here/auth-header.sh" "$ledger_email") || ! bystander_header=$(sh "$here/auth-header.sh" "$bystander_email") ||
+  ! child_header=$(sh "$here/auth-header.sh" "$child_email"); then
+  echo "no token for $ledger_email, $bystander_email or $child_email: the mock issuer must be built with them (dev/mock-oidc/users.json): docker compose --profile app up -d --build mock-oidc" >&2
   exit 2
 fi
 
@@ -112,12 +130,13 @@ status() {
   curl -sS --max-time 60 -o /dev/null -w '%{http_code}' -X "$2" -H "$1" "$base$3" || echo 000
 }
 
+# run_agui, wait_state and settle act as the person `who` names.
 # run_agui AGENT THREAD TEXT: one run (a message) on a new thread, to its end. Prints the HTTP status.
 run_agui() {
   _input=$(jq -n --arg thread "$2" --arg run "$(uuid)" --arg msg "$(uuid)" --arg text "$3" '{
     threadId: $thread, runId: $run, state: {}, tools: [], context: [],
     messages: [{id: $msg, role: "user", content: $text}], forwardedProps: {}}')
-  curl -sS -N --max-time "$timeout" -o "$tmp/run.sse" -w '%{http_code}' -X POST "$base/agui/agents/$1" -H "$ledger_header" \
+  curl -sS -N --max-time "$timeout" -o "$tmp/run.sse" -w '%{http_code}' -X POST "$base/agui/agents/$1" -H "$who" \
     -H 'content-type: application/json' -H 'accept: text/event-stream' -d "$_input" 2>"$tmp/err" || true
 }
 
@@ -126,7 +145,7 @@ wait_state() {
   _deadline=$(( $(date +%s) + timeout ))
   _state=
   while :; do
-    _state=$(curl -sS --max-time 30 -H "$ledger_header" "$base/api/threads/$1" 2>/dev/null | jq -r '.state // empty' 2>/dev/null || true)
+    _state=$(curl -sS --max-time 30 -H "$who" "$base/api/threads/$1" 2>/dev/null | jq -r '.state // empty' 2>/dev/null || true)
     case $_state in done | blocked | failed | cancelled) echo "$_state"; return 0 ;; esac
     if [ "$(date +%s)" -ge "$_deadline" ]; then echo "${_state:-unknown}"; return 0; fi
     sleep 2
@@ -138,7 +157,7 @@ wait_state() {
 settle() {
   _deadline=$(( $(date +%s) + 15 ))
   while :; do
-    _n=$(curl -sS --max-time 30 -H "$ledger_header" "$base/api/threads/$1/export" 2>/dev/null |
+    _n=$(curl -sS --max-time 30 -H "$who" "$base/api/threads/$1/export" 2>/dev/null |
       jq -r '[.events[] | select(.kind == "thread_titled" or .kind == "thread_described") | .kind] | unique | length' 2>/dev/null || echo 0)
     if [ "$_n" = 2 ] || [ "$(date +%s)" -ge "$_deadline" ]; then break; fi
     sleep 1
@@ -156,6 +175,10 @@ case " $agents " in
   *" mock-usage "*) ok "GET /api/agents lists mock-usage" ;;
   *) echo "the agent 'mock-usage' is not listed by GET /api/agents (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
 esac
+case " $agents " in
+  *" mock-sessions "*) ok "GET /api/agents lists mock-sessions" ;;
+  *) echo "the agent 'mock-sessions' is not listed by GET /api/agents (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+esac
 
 month=$(date -u +%Y-%m)
 code=$(fetch "$ledger_header" /api/me/usage)
@@ -167,8 +190,81 @@ if [ "$(jq -r '.currency' "$tmp/body")" != EUR ]; then
   echo "the orchestrator has no price table (GET /api/me/usage says currency '$(jq -r '.currency' "$tmp/body")'): the \`usage\` block of dev/orchestrator.yaml is read at start, so restart it: docker compose --profile app up -d --force-recreate orchestrator" >&2
   exit 2
 fi
-tasks=$(jq -r '.tasks' "$tmp/body")
+# --- a child round is counted once -------------------------------------------------------------------------------------------
+# A difference of the month, so it is before the skip below and runs on a database an earlier run has used.
+echo "== a child round that outlives its parent's task is counted once in the month of $child_email"
+who=$child_header
+
+# month_of FILE: the child user's month in FILE; stops the script when the answer is not a month.
+month_of() {
+  _code=$(fetch "$child_header" "/api/me/usage?month=$month")
+  if [ "$_code" != 200 ]; then bad "GET /api/me/usage as $child_email answered $_code"; exit 1; fi
+  cp "$tmp/body" "$1"
+}
+
+# export_child THREAD FILE: the thread's log in FILE
+export_child() { curl -sS --max-time 30 -H "$child_header" "$base/api/threads/$1/export" >"$2" 2>/dev/null || echo '{"events":[]}' >"$2"; }
+
+month_of "$tmp/child.before.json"
+parent=$(uuid)
+code=$(run_agui mock-sessions "$parent" "plan the migration ($(uuid))")
+expect "POST /agui/agents/mock-sessions answers 200 ($parent)" "$code" "200"
+expect "the parent thread ends done" "$(wait_state "$parent")" "done"
+settle "$parent"
+# The helper works on after the parent ended: the month is read only once its round has closed the session and ended the child, so that a
+# second count of it, were there one, is in the ledger by then.
+_deadline=$(( $(date +%s) + timeout ))
+while :; do
+  export_child "$parent" "$tmp/parent.export.json"
+  _closed=$(jq -r '[.events[] | select(.kind == "child_session_closed")] | length' "$tmp/parent.export.json" 2>/dev/null || echo 0)
+  if [ "$_closed" -ge 1 ] || [ "$(date +%s)" -ge "$_deadline" ]; then break; fi
+  sleep 1
+done
+expect "the round outlived the parent's task: the parent's own completed comes before the round's report and the close" \
+  "$(jq -r '[.events[] | select(.kind == "child_session_reported" or .kind == "child_session_closed" or (.kind == "agent_status" and .data.status == "completed"))
+     | if .kind == "agent_status" then "completed" else .kind end] | join(",")' "$tmp/parent.export.json")" \
+  "completed,child_session_reported,child_session_closed"
+child=$(jq -r '[.events[] | select(.kind == "child_session_opened") | .data.thread] | first // ""' "$tmp/parent.export.json")
+if [ -n "$child" ]; then
+  expect "the child thread ends done" "$(wait_state "$child")" "done"
+  export_child "$child" "$tmp/child.export.json"
+  expect "the child's report did arrive: its log holds the round's own totals, the helper's tokens again" \
+    "$(jq -r '[.events[] | select(.kind == "model_usage_total") | .data.totals[] | "\(.model):\(.inputTokens)/\(.outputTokens)/\(.totalTokens)"] | join(" ")' "$tmp/child.export.json")" \
+    "glm-5.3-mini:400/50/450"
+else
+  bad "the parent names no child thread"
+fi
+month_of "$tmp/child.after.json"
+
+# delta EXPRESSION: EXPRESSION of the month after less EXPRESSION of the month before.
+delta() { jq -n --slurpfile a "$tmp/child.after.json" --slurpfile b "$tmp/child.before.json" "(\$a[0] | $1) - (\$b[0] | $1)"; }
+# model_delta MODEL: "input/output/total" the month grew by for MODEL.
+model_delta() {
+  _out=
+  for _f in inputTokens outputTokens totalTokens; do
+    _out="$_out${_out:+/}$(delta "([.models[] | select(.model == \"$1\") | .$_f] | add // 0)")"
+  done
+  echo "$_out"
+}
+# millionths MODEL-OR-total: how many millionths of the currency its price grew by.
+millionths() { delta "([$1 | select(. != null) | tonumber * 1000000 | round] | add // 0)"; }
+
+expect "child round: the month grew by one task, the parent's: one row, none for the child's" "$(delta .tasks)" "1"
+expect "child round: glm-5.3 grew by the parent's own call, 1000/100/1100" "$(model_delta glm-5.3)" "1000/100/1100"
+expect "child round: glm-5.3-mini grew by the helper's tokens ONCE, 400/50/450 (twice would be 800/100/900)" \
+  "$(model_delta glm-5.3-mini)" "400/50/450"
+expect "child round: no other model grew, and no sandbox line" \
+  "$(delta '([.models[] | select(.model != "glm-5.3" and .model != "glm-5.3-mini") | .totalTokens] | add // 0)') $(delta '([.sandbox[] | .commands] | add // 0)')" "0 0"
+expect "child round: glm-5.3 is priced 560 millionths more, and total.amount 560 millionths more" \
+  "$(millionths '.models[] | select(.model == "glm-5.3") | .price') $(millionths .total.amount)" "560 560"
+echo "     the difference: tasks $(delta .tasks), glm-5.3 $(model_delta glm-5.3), glm-5.3-mini $(model_delta glm-5.3-mini)"
+who=$ledger_header
+
+# --- the ledger user -------------------------------------------------------------------------------------------------------
+tasks=$(fetch "$ledger_header" /api/me/usage >/dev/null; jq -r '.tasks' "$tmp/body")
 if [ "$tasks" != 0 ]; then
+  # a failure of the child round above is not hidden by the skip
+  if [ "$fail" -ne 0 ]; then echo "usage ledger e2e FAILED"; exit 1; fi
   echo "SKIP  $ledger_email already has $tasks task(s) in $month: an earlier run on this database"
   echo "      the scenario counts exactly its own two tasks; recreate the stack (docker compose --profile app down -v, then up) or set LEDGER_EMAIL"
   exit 77

@@ -86,13 +86,26 @@ pub struct UiSettings {
     /// orchestrator, or one without the AG-UI surface, leaves it out and the web replays the log.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history: Option<UiHistory>,
+    /// `ui.languages` (ADR 0085): the interface languages this deployment offers — a language, an
+    /// optional script and an optional region — which the web draws a picker from. Always there:
+    /// [`DEFAULT_LANGUAGES`] when the file names none.
+    pub languages: Vec<String>,
 }
+
+/// The interface languages a deployment offers when its file names none (ADR 0085): British
+/// English, French, Swiss German and Friulian. It mirrors `orch_config`'s default; this crate does
+/// not depend on `orch-config`, so the two copies are held equal by the binary's own test.
+pub const DEFAULT_LANGUAGES: [&str; 4] = ["en-GB", "fr-FR", "gsw-CH", "fur-IT"];
 
 impl Default for UiSettings {
     fn default() -> Self {
         UiSettings {
             show_descriptions: true,
             history: None,
+            languages: DEFAULT_LANGUAGES
+                .iter()
+                .map(|tag| (*tag).to_owned())
+                .collect(),
         }
     }
 }

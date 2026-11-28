@@ -21,6 +21,12 @@ data:
     limits:
       max_turns: 20
       max_output_tokens: 8192
+    # Not the screen's tools of its own (the card says so, and ANR-394's 5,000-token budget needs it):
+    # `ask_user`, `show` and the `plan_*` trio are not offered to this root, which asks in words and
+    # answers in words; `ui_catalog` stays because the chat's scripted scenario drives it
+    # (`dev/wiremock/model/mappings/persona-slow.json`), and the three helpers' tools and the session
+    # tools adam adds are not `tools:`-selectable and stay.
+    tools: [ui_catalog]
     vars:
       # The name the agent says (the body opens with `Your name is {{display_name}}.`). Keep it in
       # step with `card.name`.
@@ -214,4 +220,4 @@ data:
     step is something only the person can do.
     
 
-checksum/agent:50c97fe89398aa0a06eea9f9c3d4a4151834bbe4dad11dfc06ff5eab26c3a1c5
+checksum/agent:23a9b3c01ee1112efcd28b45e1e6c29426d2bebece7282c4298de9fb93465169

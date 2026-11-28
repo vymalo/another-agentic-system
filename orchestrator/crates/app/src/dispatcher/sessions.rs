@@ -142,6 +142,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             keep_open,
             tier,
             tier_cap,
+            prompt_signature,
         } = row.payload.clone()
         else {
             return self
@@ -192,7 +193,9 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             tier_cap: plain_cap(sent_tier, tier_cap),
             locale: None,
             pick: None,
-            prompt_signature: None,
+            // the bytes the person's app sent with the start (ADR 0087); `PersonPrompt`, which
+            // becomes the child's logged message, has no place for them
+            prompt_signature,
         };
         let answer = match tokio::time::timeout(ANSWER_TIMEOUT, self.read_answer(req)).await {
             Ok(Ok(answer)) => answer,

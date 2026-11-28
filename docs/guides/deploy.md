@@ -88,10 +88,12 @@ git clone https://github.com/vymalo/another-agentic-system.git
 cd another-agentic-system
 ```
 
+::: in-depth Why this page installs from a clone
 This page installs from the clone. A release also publishes the chart as an OCI package
 ([Releases](../../deploy/chart/README.md#releases)). An anonymous `helm show chart` read the published version `0.9.0`.
 It answered `not found` for `0.10.0`, the version this tree's chart says (both *verified 2026-11-28*). This page was
 not tried with the `0.9.0` package.
+:::
 
 ## 2. Keycloak
 
@@ -130,6 +132,7 @@ The chart holds no secret. Each `ExternalSecret` reads **properties** of one ent
 name is `externalSecrets.key`. With the values of step 4 the chart renders four. (The names below were read from the
 rendered chart.)
 
+::: in-depth Which properties each ExternalSecret reads
 | `ExternalSecret` | Properties it reads |
 |---|---|
 | `another-agentic-orchestrator` | `thread_tools_secret`, `model_api_key`, `chat_a2a_token` |
@@ -137,7 +140,9 @@ rendered chart.)
 | `another-agentic-chat` | `chat_a2a_token`, `model_api_key` |
 | `another-agentic-db-agent` | `agent_db_password` |
 
-That is six properties. `oauth2_client_secret` comes from Keycloak and `model_api_key` from your model provider. You
+:::
+
+The six properties. `oauth2_client_secret` comes from Keycloak and `model_api_key` from your model provider. You
 make the other four. How to make each one, with its length and format, is in
 [the chart's table](../../deploy/chart/README.md#the-aws-secret). These print random values of the two forms it asks
 for (ran):
@@ -147,13 +152,16 @@ openssl rand -hex 32   # thread_tools_secret, chat_a2a_token, agent_db_password:
 openssl rand -hex 16   # oauth2_cookie_secret
 ```
 
-Write the six properties **before** you install: one missing property stops the whole Secret from syncing. (That is
-External Secrets behaviour as [the chart's README](../../deploy/chart/README.md#the-key-of-the-stored-secrets-adr-0046-slice-3)
-and its `values.yaml` state it; *unverified* here: there was no cluster.) How you
+Write the six properties **before** you install: one missing property stops the whole Secret from syncing.
+
+::: in-depth Where that rule comes from, and how you write the properties
+That is External Secrets behaviour as [the chart's README](../../deploy/chart/README.md#the-key-of-the-stored-secrets-adr-0046-slice-3)
+and its `values.yaml` state it; *unverified* here: there was no cluster. How you
 write them depends on your store, so this page has no command for it (***unverified***). The chart's own deployment
 uses AWS Secrets Manager. A store of another kind must answer `remoteRef.property` (***unverified*** here).
 
 An option you turn on later may read more properties. The chart's table says which.
+:::
 
 ## 4. The values
 
