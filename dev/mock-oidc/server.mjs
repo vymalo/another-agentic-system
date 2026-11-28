@@ -10,10 +10,13 @@
 //                                            302 to the `redirect_uri` with `code` and `state`. PKCE (S256, plain) is checked
 //   POST /token                              grant_type=authorization_code (an ID token and an access token),
 //                                            grant_type=client_credentials with the extension parameters `user` (an e-mail of
-//                                            users.json, default the default user), `audience` (default the client id) and `roles`
+//                                            users.json, default the default user), `audience` (default the client id), `roles`
 //                                            (a comma list that replaces the user's roles in this token, empty for none: the same
-//                                            person, whose role was taken away; dev/auth-header.sh sends it for OIDC_ROLES): the
-//                                            access token of that user, for a script. The client authenticates with
+//                                            person, whose role was taken away; dev/auth-header.sh sends it for OIDC_ROLES) and
+//                                            `azp` (the client the token says it was issued to, default the client id: a script
+//                                            becomes a signing client of ADR 0087 while it authenticates as the confidential one;
+//                                            dev/auth-header.sh sends it for OIDC_AZP, dev/prompt-signature-e2e.sh): the access
+//                                            token of that user, for a script. The client authenticates with
 //                                            client_secret_post or client_secret_basic
 //   GET  /userinfo                           the claims of the bearer access token (a DPoP-bound one: `Authorization: DPoP` and a proof)
 //   GET  /login-as?user=<e-mail>             remembers the user for the next /authorize of this browser (`user=` clears it)
@@ -435,6 +438,14 @@ export function createMockServer({
       const email = (form.get("user") ?? defaultUser).trim().toLowerCase();
       if (!known(email)) return oauthError(res, 400, "invalid_request", `user ${JSON.stringify(email)} is not a user of this issuer`);
       const audience = form.get("audience") || undefined;
+      // The client the token says it was issued to: a dev-only extension (ADR 0087), so that a script can be a signing
+      // client while it authenticates as the confidential one. Absent or empty: the client id, as before.
+      const azp = form.get("azp") || undefined;
+      // A client id, as `auth.signingClients` reads one: 1 to 256 printable characters with no space. Anything else is refused
+      // rather than minted into a claim no configuration would take.
+      if (azp !== undefined && !/^[\x21-\x7e]{1,256}$/.test(azp)) {
+        return oauthError(res, 400, "invalid_request", "azp is a client id: 1 to 256 printable characters, no space");
+      }
       // `roles=` (present, empty) is no role at all; absent is the user's own
       const roles = form.has("roles")
         ? form.get("roles").split(",").map((role) => role.trim()).filter((role) => role !== "")
@@ -442,8 +453,11 @@ export function createMockServer({
       if (roles !== undefined && (roles.length > MAX_ROLES_OVERRIDE || roles.some((role) => role.length > 64))) {
         return oauthError(res, 400, "invalid_request", `roles is at most ${MAX_ROLES_OVERRIDE} names of at most 64 characters`);
       }
-      log(`client_credentials: ${email}, aud ${audience ?? clientId}${roles === undefined ? "" : `, roles ${JSON.stringify(roles)}`}`);
-      const access = token(email, { audience, roles });
+      log(
+        `client_credentials: ${email}, aud ${audience ?? clientId}` +
+          `${azp === undefined ? "" : `, azp ${azp}`}${roles === undefined ? "" : `, roles ${JSON.stringify(roles)}`}`,
+      );
+      const access = token(email, { audience, roles, azp });
       return reply(res, 200, { access_token: access, id_token: access, token_type: "Bearer", expires_in: ttlSecs, scope: "openid email profile" });
     }
     if (grant === "authorization_code") {
