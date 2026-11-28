@@ -20,6 +20,7 @@ use crate::ids::{AgentId, ThreadId, UserId};
 use crate::locale::LocaleHint;
 use crate::mention::Mention;
 use crate::pick::ModelPick;
+use crate::prompt_signature::PromptSignature;
 use crate::thread::{AgentTarget, ThreadRecord, ThreadState};
 use crate::title::{TitleLedger, agent_words};
 use crate::tools::attached_by;
@@ -446,7 +447,7 @@ pub fn fork_commit(
             tier_cap: replacement.tier_cap,
             locale: replacement.locale,
             pick: replacement.pick,
-            prompt_signature: replacement.prompt_signature,
+            prompt_signature: replacement.prompt_signature.map(PromptSignature::from),
         },
     )?;
     commands.extend(more);

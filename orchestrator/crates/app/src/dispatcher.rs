@@ -236,7 +236,7 @@ struct Adopt {
     pick: Option<orch_core::ModelPick>,
     /// The person's prompt signature, as the row holds it (ADR 0087): the adopted message keeps it,
     /// as it keeps its locale.
-    prompt_signature: Option<String>,
+    prompt_signature: Option<orch_core::PromptSignature>,
     /// The task the binding had when the message was sent, if any.
     previous: Option<String>,
 }
@@ -1368,7 +1368,9 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             pick,
             // the person's envelope, as the row holds it (ADR 0087): byte for byte, never decoded.
             // Cloned because the row's copy is what an adoption hands the core.
-            prompt_signature: prompt_signature.clone(),
+            prompt_signature: prompt_signature
+                .clone()
+                .map(orch_core::PromptSignature::into_string),
         };
         // A message that starts a task of its own while the thread has meanwhile ended is adopted
         // (open question 33): `consume` tells the core, from the first event.
@@ -1764,7 +1766,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             locale,
             pick,
             // the person's envelope, as the row holds it (ADR 0087): byte for byte
-            prompt_signature,
+            prompt_signature: prompt_signature.map(orch_core::PromptSignature::into_string),
         };
         let answer = tokio::time::timeout(STEER_ANSWER_TIMEOUT, async {
             let mut stream = self.app.ports().agents().send_stream(req).await?;

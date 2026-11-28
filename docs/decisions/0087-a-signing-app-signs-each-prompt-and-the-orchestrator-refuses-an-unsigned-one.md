@@ -269,3 +269,33 @@ message **in** a helper's thread is a run, so the run route's check already cove
 **Two gaps remain:** the REST fork and edit (**ANR-1375**) and a Stop & send's held text (**ANR-1376**).
 
 *Verified 2026-11-28 by reading the code; the new tests have not been built or run.*
+
+*Amended 2026-11-28 (ANR-1376): a Stop & send's held message keeps its signature.* This closes that gap, and changes
+two things said above: that the envelope is not stored in the job ledger, and that the outbox row is the only durable
+place it has.
+
+- **The ledger may hold it,** for the one message a stop holds: `Job.after_stop_prompt_signature`, beside
+  `Job.after_stop`. The held text is in the ledger already, and both are saved by the same commit under the same version
+  check, so they survive a restart together. A side table would be a migration and a new store operation for one field,
+  and the ledger is JSON with defaults, so there is no migration. It goes, byte for byte, to the next job's delegation
+  (the task ends, the job is cancelled before it starts, or the delegation is given up), or to the steer of a stop the
+  agent refuses for good. It is cleared with the text, and by Stop.
+- **The export takes it out.** `App::export_thread` removes it, so the export document and any later user of a
+  `ThreadExport` never has it. It is in no event, frame or step, as before. Every core and port type that carries it
+  holds it as `PromptSignature`, whose `Debug` shows its length.
+- **Nothing signed is joined.** A signature covers one message, and the statement has one `user`. Keeping several
+  would need a form the statement does not have, and one signature on a joined text would present text that was not
+  signed as covered. So while a message is held, a second one (a Send or a Stop & send) is refused when **either** of
+  the two carries a signature: signed then signed, signed then unsigned, unsigned then signed. It is a `409`,
+  `code: stop_pending`, and nothing is written. The person sends it again once the next job has started. Two unsigned
+  messages are joined as before, so a client that is not listed sees no change.
+- **A repeat is still a repeat.** Two copies of one request that race are answered as one: before the `409`, the commit
+  loop looks up the request's idempotency key.
+- **Limits:** a message refused this way is not counted against `messages_per_minute`, which is a count of the messages
+  in the log. The limit and the allowance are checked before the transition, so a person at either one gets that answer
+  instead. What the application does before the transition has run too, as for any message the core refuses: the card
+  is read, and a person's own agent is made ready.
+
+**One gap remains:** the REST fork and edit (**ANR-1375**).
+
+*Unverified: nothing of this change was built or run where it was written; CI is the first build.*

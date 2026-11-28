@@ -117,6 +117,8 @@ the roles lack); there is no `read_only` code since ADR 0039, because nobody rea
 
 The thread as one downloadable JSON document, for the owner to send to a developer
 ([`docs/orchestrator.md`](../../../docs/orchestrator.md#exporting-a-thread), operation `exportThread` of the contract).
+The `job` member is the ledger as stored, except the prompt signature of a message a Stop & send holds, which `App::export_thread` takes out ([ADR 0087](../../../docs/decisions/0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md)).
+
 Authorised exactly like `GET /api/threads/{id}`: behind the identity layer (401 without it), and `App::export_thread` reads the
 thread as the caller (`thread.read`), so a thread the caller may not read, an unknown one and an id that is not a UUID are the same 404. The answer is
 `200 application/json` with `Content-Disposition: attachment; filename="thread-<id>.json"` and `Cache-Control: no-store`,

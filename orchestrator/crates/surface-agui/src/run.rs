@@ -22,7 +22,7 @@ use orch_app::{
 };
 use orch_core::{
     AccessTier, AgentId, AgentTarget, Event, Input, LocaleHint, Mention, ModelPick, Origin,
-    ThreadId, ThreadRecord, UiCatalogData, fork_message, is_fork_at, report,
+    PromptSignature, ThreadId, ThreadRecord, UiCatalogData, fork_message, is_fork_at, report,
 };
 use orch_ports::{Clock, Ports, Principal};
 
@@ -662,7 +662,7 @@ async fn attempt<P: Ports>(
         }
         | Input::StopAndSend {
             prompt_signature, ..
-        } => Some(prompt_signature.as_deref()),
+        } => Some(prompt_signature.as_ref().map(PromptSignature::as_str)),
         _ => None,
     });
     if let Some(envelope) = prompt {
@@ -742,7 +742,9 @@ async fn attempt<P: Ports>(
                         tier,
                         locale: locale.cloned(),
                         pick: pick.cloned(),
-                        prompt_signature: prompt_signature.clone(),
+                        prompt_signature: prompt_signature
+                            .clone()
+                            .map(PromptSignature::into_string),
                     },
                     held,
                 )
@@ -765,7 +767,7 @@ async fn attempt<P: Ports>(
                 tier,
                 locale: locale.cloned(),
                 pick: pick.cloned(),
-                prompt_signature: prompt_signature.clone(),
+                prompt_signature: prompt_signature.clone().map(PromptSignature::into_string),
             };
             match app
                 .create_thread_as(principal, thread, new, inbound)
