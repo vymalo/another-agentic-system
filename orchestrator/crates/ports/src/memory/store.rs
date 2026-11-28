@@ -1644,7 +1644,11 @@ impl ThreadStore for MemoryStore {
         &self,
         thread: ThreadId,
     ) -> Result<Option<orch_core::ModeName>, StoreError> {
-        Ok(self.lock().threads.get(&thread).and_then(|e| e.mode.clone()))
+        Ok(self
+            .lock()
+            .threads
+            .get(&thread)
+            .and_then(|e| e.mode.clone()))
     }
 
     async fn set_thread_mode(
