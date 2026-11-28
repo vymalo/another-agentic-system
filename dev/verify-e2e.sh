@@ -34,7 +34,7 @@
 #   AUTH_EMAIL  the user (default dev@example.com): a token of the mock issuer (dev/auth-header.sh)
 #   TIMEOUT     seconds a run may take      (default 90)
 #
-# Exit status: 0 when every assertion holds, 1 otherwise. Needs: curl, jq (and /proc or uuidgen).
+# Exit status: 0 when every assertion holds, 1 otherwise. Needs: curl, jq (and python3, or /proc, uuidgen).
 set -eu
 
 BASE_URL=${BASE_URL:-http://127.0.0.1:8080}
@@ -45,7 +45,7 @@ id_header=$(sh "$(dirname "$0")/auth-header.sh" "$AUTH_EMAIL")
 TIMEOUT=${TIMEOUT:-90}
 fail=0
 
-uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

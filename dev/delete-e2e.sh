@@ -58,7 +58,7 @@
 # dev/split-e2e.sh does, so it needs docker and a stack started with docker compose in this directory's project. It
 # deletes the threads it makes (and leaves the fork of the `coder-share` thread, which is a thread of the user's list like
 # any other scenario's). It takes about a minute: the `[mock:slow]` task is stopped, the title is waited for. Needs curl and
-# jq (and /proc or uuidgen for a UUID). Verified by CI only, in .github/workflows/coder-e2e.yml; the stack could not be run
+# jq (and python3, or /proc, uuidgen for a v7 UUID). Verified by CI only, in .github/workflows/coder-e2e.yml; the stack could not be run
 # where this script was written, so it has been read and shellchecked, not run.
 set -eu
 
@@ -101,7 +101,7 @@ for f in "$catalog_file" "$catalog_lock" "$files_dir/chart.svg" "$files_dir/squa
   [ -f "$f" ] || { echo "FAIL $f does not exist (CATALOG_FILE, CATALOG_LOCK and FILES_DIR name the catalog, its lock and the files)"; exit 1; }
 done
 
-uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
 
 expect() { # expect DESCRIPTION ACTUAL EXPECTED
   if [ "$2" = "$3" ]; then ok "$1"; else bad "$1: expected '$3', got '$2'"; fi

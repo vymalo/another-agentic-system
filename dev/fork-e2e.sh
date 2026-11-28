@@ -56,7 +56,7 @@
 #
 # It does not empty any journal: the requests it reads are the ones of its own threads, found by the words of the first message of each
 # (the first message of a thread names no context, ADR 0055; the later ones name the context the mock gave it).
-# Needs curl and jq (and /proc or uuidgen for a UUID). Verified by CI only, in .github/workflows/coder-e2e.yml.
+# Needs curl and jq (and python3, or /proc, uuidgen for a v7 UUID). Verified by CI only, in .github/workflows/coder-e2e.yml.
 set -eu
 
 base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
@@ -82,7 +82,7 @@ finish() {
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
 
 expect() { # expect DESCRIPTION ACTUAL EXPECTED
   if [ "$2" = "$3" ]; then ok "$1"; else bad "$1: expected '$3', got '$2'"; fi

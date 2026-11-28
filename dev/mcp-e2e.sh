@@ -31,7 +31,7 @@
 #   AGENT_ID     mock-coder, the mock A2A agent that finishes with a pull request
 #   TIMEOUT      120    seconds to wait for the job
 #
-# Needs curl and jq (and /proc or uuidgen for a UUID). Verified by CI only, in
+# Needs curl and jq (and python3, or /proc, uuidgen for a v7 UUID). Verified by CI only, in
 # .github/workflows/coder-e2e.yml.
 set -eu
 
@@ -54,7 +54,7 @@ finish() {
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
 
 # post TOKEN BODY: one JSON-RPC POST to /mcp. The headers go to $tmp/h, the body to $tmp/b, and the
 # HTTP status is printed. An empty TOKEN sends no Authorization header.

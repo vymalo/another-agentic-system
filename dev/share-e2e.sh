@@ -80,7 +80,7 @@
 #   TIMEOUT       120    seconds to wait for a thread to stop, and the longest a stream may stay open
 #
 # If the cap is left at `public` (the script was killed hard): docker compose --profile app up -d --no-build --no-deps orchestrator
-# It leaves one thread (private again) and its fork, like any other scenario. Needs curl and jq (and /proc or uuidgen for a UUID).
+# It leaves one thread (private again) and its fork, like any other scenario. Needs curl and jq (and python3, or /proc, uuidgen for a v7 UUID).
 # Verified by CI only, in .github/workflows/coder-e2e.yml; the stack could not be run where this script was written: it was dry-run
 # against stand-ins behind the real Caddy 2.11.4, oauth2-proxy 7.15.5 and mock issuer, which proves its mechanics and the edge, not the
 # orchestrator's answers, so CI is the first run of the rest.
@@ -147,7 +147,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
 
 expect() { # expect DESCRIPTION ACTUAL EXPECTED
   if [ "$2" = "$3" ]; then ok "$1"; else bad "$1: expected '$3', got '$2'"; fi

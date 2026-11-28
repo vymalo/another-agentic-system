@@ -40,7 +40,7 @@
 #   COMPOSE_PROFILES  app,split unless set, so `docker compose` can address the worker services
 #   TIMEOUT           120    seconds to wait for each step
 #
-# Needs curl, jq and docker compose (and /proc or uuidgen for a UUID; the metrics are read from inside the network, through the `edge`
+# Needs curl, jq and docker compose (and python3, or /proc, uuidgen for a v7 UUID; the metrics are read from inside the network, through the `edge`
 # container, and the database through the `postgres` container). Verified by CI only, in
 # .github/workflows/coder-e2e.yml.
 set -eu
@@ -82,7 +82,7 @@ api() { # api METHOD PATH: the body on stdout, non-zero when the status is not 2
   curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "$id_header"
 }
 
-uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
 
 metrics() { # metrics SERVICE: the /metrics text of a service, read from inside the compose network
   docker compose exec -T edge wget -qO- "http://$1:8080/metrics"

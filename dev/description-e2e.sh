@@ -47,7 +47,7 @@
 #   TIMEOUT         120    seconds to wait for a thread to stop or a description to appear
 #
 # It EMPTIES the request journal of `mock-model` first and resets its scenarios, so run it on a stack you are not in the
-# middle of another scenario on. Needs curl and jq (and /proc or uuidgen for a UUID). Verified by CI only, in
+# middle of another scenario on. Needs curl and jq (and python3, or /proc, uuidgen for a v7 UUID). Verified by CI only, in
 # .github/workflows/coder-e2e.yml.
 set -eu
 
@@ -70,7 +70,7 @@ finish() {
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
 
 api() { # api METHOD PATH [BODY]: the body on stdout, non-zero when the status is not 2xx (the resource API)
   if [ $# -ge 3 ]; then

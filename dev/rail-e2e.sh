@@ -44,7 +44,7 @@
 #   TIMEOUT         90    seconds to wait for a thread to stop
 #
 # The list may hold other threads (the other scenarios' threads of the same user): every check looks at the order of
-# THIS script's threads among themselves. Needs curl and jq (and /proc or uuidgen for a UUID). Verified by CI only, in
+# THIS script's threads among themselves. Needs curl and jq (and python3, or /proc, uuidgen for a v7 UUID). Verified by CI only, in
 # .github/workflows/coder-e2e.yml.
 set -eu
 
@@ -78,7 +78,7 @@ finish() {
   if [ "$fail" -eq 0 ]; then echo "rail e2e passed"; else echo "rail e2e FAILED"; exit 1; fi
 }
 
-uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
 # The clock is read once: a clock that steps back between two readings would put a later id before an earlier one.
 now_ms=$(date +%s%3N 2>/dev/null)
 case $now_ms in *[!0-9]* | '') now_ms=$(($(date +%s) * 1000)) ;; esac
@@ -138,8 +138,20 @@ wait_state() { # wait_state THREAD STATE: the resource API's view says STATE (wi
 # filtered, since other scenarios' threads may be in it
 mine="" # set below: a jq array of the three ids
 order_of() { # order_of QUERY: the ids among ours, in the order of the listing QUERY, comma-separated
-  api GET "/api/threads?limit=100$1" | jq -r --argjson ours "$mine" \
-    '[.[].id | select(. as $i | $ours | index($i))] | join(",")'
+  # Every page is read: on a reused database another scenario's threads push ours past the hundredth row (an archived
+  # thread sorts last with `archived=include`), and the assertion is about the order, not about the first page.
+  _found="" _before="" _pages=0
+  while [ "$_pages" -lt 50 ]; do
+    _page=$(api GET "/api/threads?limit=100$1${_before:+&before=$_before}") || break
+    _ids=$(printf '%s' "$_page" | jq -r --argjson ours "$mine" \
+      '[.[].id | select(. as $i | $ours | index($i))] | join(",")')
+    [ -n "$_ids" ] && _found="${_found:+$_found,}$_ids"
+    _last=$(printf '%s' "$_page" | jq -r 'if length == 100 then .[-1].id else "" end')
+    [ -n "$_last" ] || break
+    _before=$_last
+    _pages=$((_pages + 1))
+  done
+  printf '%s' "$_found"
 }
 
 for tool in curl jq; do
