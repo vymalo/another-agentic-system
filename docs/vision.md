@@ -47,6 +47,7 @@ has attached, which repositories they are working in. Agents should know all of 
 
 ```mermaid
 flowchart LR
+  accTitle: Flow: the actors
   P((Person)) --> W[Web UI<br/>defines the components]
   W -- AG-UI --> O[Orchestrator<br/>no AI, one event log]
   O -- A2A only --> A[Agents<br/>coder · researcher · browser · chat]
@@ -546,6 +547,8 @@ agent, which the addressed agent asks.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a message, end to end
+  accDescr: A sequence diagram, between Person, Web UI, Orchestrator, Registry (platform), Addressed agent, Mentioned agent.
   actor P as Person
   participant W as Web UI
   participant O as Orchestrator
@@ -585,6 +588,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a workspace
   [*] --> Ephemeral: work starts with no repository
   [*] --> RepoBacked: the person names a repository
   Ephemeral --> AskFirst: the work needs a repository

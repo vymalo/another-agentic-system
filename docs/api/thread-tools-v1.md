@@ -53,6 +53,8 @@ Facts about the RFCs and MCP are marked *verified* (with a date and a source) or
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram, between Dispatcher, A2A adapter, Agent (card lists thread-tools/v1), Thread tools endpoint (any replica), Store.
   autonumber
   participant D as Dispatcher
   participant X as A2A adapter
@@ -78,6 +80,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: A2A extension
   [*] --> Minted: the A2A adapter signs it at send time
   Minted --> Sent: put in the message metadata
   Minted --> [*]: the send fails (nothing keeps the token)
@@ -703,6 +706,8 @@ MCP client and `FakeToolServer`s, on both stores):
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: as built
+  accDescr: A sequence diagram, between Agent, Thread tools endpoint (relay), Event log, MCP server (credentials held here).
   autonumber
   participant A as Agent
   participant E as Thread tools endpoint (relay)
@@ -724,6 +729,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: as built
   [*] --> Running: tools/call accepted, the step starts
   Running --> Completed: the server answered
   Running --> Failed: unreachable, timeout, 401/403, a JSON-RPC error or isError
@@ -812,6 +818,8 @@ with them what a stranger's server said, the lent bearer included if it chose to
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a person's own servers
+  accDescr: A sequence diagram, between Agent, Relay (RelayTools), Definitions, Credential broker, Guarded client, The person's server, Event log.
   autonumber
   participant A as Agent
   participant R as Relay (RelayTools)
@@ -851,6 +859,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a person's own servers
+  accDescr: A state diagram with 10 states: Read, NotOnEndpoint, NeedsSignIn, Busy, NotReachable, Lease, CouldNotBeHad, Connect, Refused, Served.
   [*] --> Read: tools/list or tools/call
   Read --> NotOnEndpoint: no definition for the owner, the feature off, or detached
   Read --> NeedsSignIn: state is not connected
@@ -1069,6 +1079,8 @@ about 200 bytes is refused ("the callId is too long").
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the child task
+  accDescr: A sequence diagram, between Addressed agent, Thread tools endpoint (asks provider), Core and event log, Dispatcher (ask row), Asked agent.
   autonumber
   participant A as Addressed agent
   participant E as Thread tools endpoint (asks provider)
@@ -1092,6 +1104,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the child task
   [*] --> Running: ask_started (the checks passed)
   Running --> Running: the asked agent works: its tool calls are steps under ask-n, progress to the call
   Running --> Finished: the asked agent's task completed, failed, was rejected or asked

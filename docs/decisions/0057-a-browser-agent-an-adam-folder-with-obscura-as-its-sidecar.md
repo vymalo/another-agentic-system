@@ -50,6 +50,8 @@ as an adam folder, as the chat and the researcher are, with **obscura** as its b
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a browser agent
+  accDescr: A sequence diagram, between Person (web), Orchestrator, chat (adam-agent), browser (adam-agent), obscura (127.0.0.1:9223), Web page.
   autonumber
   participant P as Person (web)
   participant O as Orchestrator
@@ -75,6 +77,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a browser agent
   [*] --> SidecarStarting: the pod is scheduled
   SidecarStarting --> AgentStarting: obscura started (a native sidecar)
   AgentStarting --> AgentStarting: obscura does not answer (exit 69, restarted)
@@ -216,6 +219,8 @@ What this repository does with it:
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: amended (2026-10-09) — screenshots are files
+  accDescr: A sequence diagram, between Person (web), Orchestrator, chat (adam-agent), browser (adam-agent), obscura (127.0.0.1:9223).
   autonumber
   participant P as Person (web)
   participant O as Orchestrator
@@ -240,6 +245,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: amended (2026-10-09) — screenshots are files
   [*] --> Taken: obscura answers browser_screenshot
   Taken --> InBrowserRun: files true, base64, within 4 MiB and the run's 6 MiB
   Taken --> Refused: over a cap, or not base64 (a line says why, an error result)

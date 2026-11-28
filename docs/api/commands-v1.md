@@ -41,6 +41,8 @@ An agent whose card does not list the extension is unchanged, and so is a client
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram, between Person, Web (composer), Orchestrator, Event log, Agent (card lists commands/v1).
   autonumber
   actor P as Person
   participant W as Web (composer)
@@ -68,6 +70,7 @@ One message, as the agent reads it:
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: A2A extension
   [*] --> Plain: the text does not begin with a name the agent serves
   [*] --> Invoked: "/name" at the start, or metadata[URI].command with the extension activated
   [*] --> Literal: "//name" for a name the agent serves

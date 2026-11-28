@@ -37,6 +37,8 @@ never holds a store credential. The orchestrator never receives the bytes. An ag
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram, between Orchestrator (message), Agent (card lists uploads/v1), Thread tools (orchestrator), Bucket, at the public files host, Dispatcher (orchestrator), Event log.
   autonumber
   participant O as Orchestrator (message)
   participant A as Agent (card lists uploads/v1)
@@ -59,6 +61,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: A2A extension
   [*] --> Refused: too large, over the job's limits, no store that presigns, an asked agent
   [*] --> Issued: request_upload accepted
   Issued --> Uploaded: the agent's PUT (the URL works until it expires)
@@ -239,6 +242,8 @@ Not an extension: no card, no activation. The same bucket and the same public ho
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: downloads (A1)
+  accDescr: A sequence diagram, between Browser (or a reader of a link), File route (orch-api, deliver), App (readable*, redirectttl), ArtifactStore (S3, public signer), Bucket, at the public files host.
   autonumber
   participant W as Browser (or a reader of a link)
   participant R as File route (orch-api, deliver)
@@ -261,6 +266,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: downloads (A1)
   [*] --> Refused: a check fails (401, 403, the one 404): never a redirect
   [*] --> Readable: every check of the route passes
   Readable --> Streamed: downloads is stream, or the store cannot presign

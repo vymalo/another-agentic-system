@@ -42,6 +42,8 @@ asking for German.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram, between Person, Web (interface in fr-FR), Orchestrator, Event log, Agent (card lists locale/v1).
   autonumber
   actor P as Person
   participant W as Web (interface in fr-FR)
@@ -63,6 +65,7 @@ One message's hint goes through these states:
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: A2A extension
   [*] --> Unnamed: the run names no locale
   [*] --> Refused: the run names something that is not a tag (400, nothing written)
   [*] --> Named: the run names a well-formed tag

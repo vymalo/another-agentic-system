@@ -138,6 +138,8 @@ dispatcher keeps following that task. The question moves to Closed when this is 
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the dispatcher
+  accDescr: A sequence diagram, between Person, Orchestrator, Event log, Agent (task T1 working).
   autonumber
   participant P as Person
   participant O as Orchestrator
@@ -168,6 +170,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the dispatcher
   [*] --> Working: a job runs (queued or working)
   Working --> Working: Send: steer, the job and its attempt are unchanged
   Working --> Stopping: Stop and send: after_stop set, cancel requested

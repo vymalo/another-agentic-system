@@ -28,6 +28,8 @@ the web says so before the person sends. The rest of this page is for agents tha
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram, between Web (composer), Orchestrator, Agent registry, Event log, Addressed agent (lists mentions/v1, thread-tools/v1), Mentioned agent.
   autonumber
   participant W as Web (composer)
   participant O as Orchestrator
@@ -54,6 +56,7 @@ A mention goes through these, from the composer to the agent:
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: A2A extension
   [*] --> Chosen: the person picks an agent from the list after "@"
   Chosen --> Dropped: the label is edited away or the text changes it: no reference at send
   Chosen --> Sent: the message goes with start and end recomputed in the text as it is

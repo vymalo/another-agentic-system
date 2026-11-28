@@ -77,6 +77,7 @@ idle after it and the meter backfills up to 24 hours, so the pod's last minutes 
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a run is charged to the identity provider's sub
     participant O as Orchestrator
     participant B as Broker
     participant M as Meter (the platform)
@@ -92,6 +93,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a run is charged to the identity provider's sub
     [*] --> Live: bind
     Live --> Live: bind again (same binding)
     Live --> Ended: unbind (ended_at = now)
