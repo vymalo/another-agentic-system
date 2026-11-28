@@ -20,6 +20,7 @@ use crate::ids::{AgentId, ThreadId, UserId};
 use crate::locale::LocaleHint;
 use crate::mention::Mention;
 use crate::pick::ModelPick;
+use crate::prompt_signature::PromptSignature;
 use crate::thread::{AgentTarget, ThreadRecord, ThreadState};
 use crate::title::{TitleLedger, agent_words};
 use crate::tools::attached_by;
@@ -383,7 +384,7 @@ pub struct Replacement {
     /// The person's prompt signature for the message (ADR 0087), as for
     /// [`Input::UserMessage`](crate::Input::UserMessage): carried to the fork's delegation, never to
     /// the log. `None` for an edit, which the orchestrator's own words do not carry.
-    pub prompt_signature: Option<String>,
+    pub prompt_signature: Option<PromptSignature>,
     /// The run (AG-UI `runId`) the message opens, which names the response that streams it.
     pub run_id: Option<String>,
     /// Where the message came from.
