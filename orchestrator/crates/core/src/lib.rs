@@ -27,6 +27,7 @@ mod locale;
 mod memory;
 mod mention;
 mod mission;
+mod mode;
 mod notify;
 mod pick;
 mod pricing;
@@ -98,6 +99,10 @@ pub use event::{
 pub use extension::{
     KnownExtension, MENTIONS_EXTENSION, STEER_EXTENSION, STEPS_EXTENSION, TEXT_STREAM_EXTENSION,
     THREAD_TOOLS_EXTENSION, UI_CATALOG_EXTENSION, UPLOADS_EXTENSION, USAGE_EXTENSION,
+};
+pub use mode::{
+    AGENT_MODE_EXTENSION, MAX_MODE_NAME_BYTES, ModeChoice, ModeListing, ModeName, ModeNameError,
+    ModeOffer, ModeRefusal,
 };
 pub use fork::{
     BranchPoint, EditLink, ForkError, ForkHistory, ForkKind, ForkNode, ForkPoint, ForkSource,
