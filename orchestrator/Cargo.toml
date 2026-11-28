@@ -145,6 +145,10 @@ aes-gcm = { version = "0.11", default-features = false, features = ["aes", "allo
 hmac = "0.12"
 # The thread-tools token (`orch-thread-token`): base64url without padding, the encoding of a JWS.
 base64 = "0.22"
+# The claim object of the signed requests to a tool server (`orch-signed-request`, ADR 0080): `sign_claims` writes it and
+# `open_claims` verifies it. The contract (docs/api/signed-tool-requests-v1.md) is its bytes; the crate's known-answer
+# test fails if a new version writes others.
+cratestack-cose = "0.17.2"
 # Ed25519 for the signed requests to a tool server (`orch-signed-request`, ADR 0080): already in the tree as rustls'
 # crypto provider, so the crate adds no new library.
 aws-lc-rs = "1.18"

@@ -1,5 +1,0 @@
-# cratestack-cose 0.17.2 needs Rust 1.98 (its rust-version). This crate is outside the workspace and is built on its own;
-# the workspace itself moved to 1.98 on 2026-11-27 (ANR-1328).
-[toolchain]
-channel = "1.98.1"
-profile = "minimal"

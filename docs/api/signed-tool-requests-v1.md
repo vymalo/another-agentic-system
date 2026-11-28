@@ -6,6 +6,9 @@
   the real `cratestack-cose` 0.17.2 (the [interoperability crate](#how-this-page-is-kept-true), run on 2026-11-02, locally and by its CI job on
   the pull request that brought it, #311). **No tool server verifies it yet**: the receiving side of the first one (vaam-apps, on a cratestack 0.17.2
   MCP endpoint) is written against this page.
+  **Amended 2026-11-28 (ANR-1342):** `orch-signed-request` wrote the claim object with a writer of its own until now; it now calls the
+  real `cratestack_cose::sign_claims`, and its reference verifier the real `open_claims`, and the interoperability crate is part of
+  that crate's own tests. The format, the [worked example](#worked-example) and what a tool server accepts **do not change**.
 - **Served by:** nobody: this is not an A2A extension and an agent never sees it. **Used by:** the orchestrator's relay when it
   calls a tool server on an agent's behalf, and the tool servers that choose to verify it.
 - **Decided in:** [ADR 0080](../decisions/0080-requests-to-a-tool-server-are-signed-for-the-person.md); it extends the relay of
@@ -99,7 +102,7 @@ is valid, it is a credential for exactly one request (once the `cti` rule below 
 It is the **claim object** of `cratestack-cose`: a tagged `COSE_Sign1` whose protected header carries the CWT claims, whose
 payload is the request binding, and which `cratestack_cose::open_claims` verifies. The format is that crate's, byte for byte
 (*verified 2026-11-02*, `cratestack-cose` v0.17.2, `src/claims/{header,sign,open}.rs`, and by the
-[interoperability test](#how-this-page-is-kept-true)); everything below is fixed by it or by this page.
+[tests](#how-this-page-is-kept-true)); the orchestrator writes it with that crate's `sign_claims` (since 2026-11-28, ANR-1342); everything below is fixed by it or by this page.
 
 ```text
 COSE_Sign1 = #6.18([
@@ -211,7 +214,7 @@ failed (the server's log may say). 7 is `403`.
 ### On cratestack
 
 *Unverified against the server it is for* (vaam-apps' endpoint is not built); *verified 2026-11-02* for the library calls, which the
-interoperability test runs. A cratestack 0.17 MCP endpoint does 2 with `StaticVerifierResolver` (one entry per pinned key) and
+tests of `orch-signed-request` call. A cratestack 0.17 MCP endpoint does 2 with `StaticVerifierResolver` (one entry per pinned key) and
 `open_claims`, in an `AuthProvider`; it declares the header with
 `CredentialPresence::ask_provider()` and `Credential::header(headers, "tool-request-claims")` in `AuthProvider::credential`, so a
 request without the header gets the 401 challenge before its body is read; and the guard then calls `authenticate` with
@@ -341,7 +344,7 @@ fails in the check named: `PUT` or `/mcp2` or one more space in the body (5); `a
 |---|---|
 | `orch-signed-request` (unit tests) | the bytes the orchestrator writes for the worked example are exactly the ones above; every field is bound (a different method, path, body, thread or owner fails); the limits above; a key that does not parse |
 | `orch-tools-mcp` (`tests/signed.rs`) | a real MCP server over HTTP that speaks only `2026-07-28` and verifies every request as the table above says: the handshake, the listing and the call are each signed, with a fresh `cti`; no bearer is sent; the body digest is of the bytes on the wire; tampering fails; the legacy path is unchanged |
-| `orchestrator/crates/signed-request/interop` (CI job `signed-request-interop`) | the orchestrator's bytes verify with the real `cratestack_cose::open_claims` at 0.17.2, and the real `sign_claims` writes the same bytes for the same inputs. It is its own crate with its own `Cargo.lock` and toolchain file (1.98.1). The workspace moved to 1.98 on 2026-11-27 (ANR-1328), so the real crate can now be used by `orch-signed-request`; folding this crate into the workspace is a change of its own |
+| `orch-signed-request` (`tests/cratestack.rs`, in the workspace's tests) | with `cratestack-cose` 0.17.2 used directly: the real `open_claims` opens what the orchestrator signs, with the contract's `typ`, an empty `external_aad` and the five members in order; the library's own Ed25519 signer writes the bytes of the vector; the reference verifier accepts what that signer signs and names another `typ` as the wrong one. **Until 2026-11-28 (ANR-1342)** these were a crate of its own, `orchestrator/crates/signed-request/interop`, with its own `Cargo.lock`, toolchain file and CI job `signed-request-interop`, and the orchestrator's writer was its own code |
 
 ## Verified and unverified (2026-11-02)
 
@@ -352,5 +355,6 @@ fails in the check named: `PUT` or `/mcp2` or one more space in the body (5); `a
 | A cratestack MCP guard gives an `AuthProvider` the method, the resource's path, the query and the exact body bytes, and asks `AuthProvider::credential` before the body is read when the deployment uses `ask_provider()` | **Verified 2026-11-02**: `crates/cratestack-mcp/src/streamable_http/{guard,auth,credential,presence}.rs` and `cratestack-core/src/{context,credential}.rs` at the tag |
 | `cratestack-cose` 0.17.2 needs Rust 1.98 (`rust-version`); the orchestrator built on 1.94.1 when this page was written and **moved to 1.98 on 2026-11-27 (ANR-1328)** | **Verified 2026-11-02**: `cargo info cratestack-cose` and `orchestrator/rust-toolchain.toml`; **verified 2026-11-27** for the move: `orchestrator/Cargo.toml` (`rust-version = "1.98"`) and `orchestrator/rust-toolchain.toml` (`1.98.1`) |
 | The orchestrator's bytes open with the real `cratestack_cose::open_claims` at 0.17.2, the real `sign_claims` writes the same bytes, and the reference verifier accepts what the real `sign_claims` writes | **Verified 2026-11-02** by running `orchestrator/crates/signed-request/interop` (4 tests, Rust 1.98.1). and by the CI job `signed-request-interop` on the pull request that brought it (#311) |
+| Since 2026-11-28 the orchestrator writes the object with the real `sign_claims` (signing with `aws-lc-rs` behind `ExternalSigner::ed25519`) and the bytes of the worked example are the same | **Verified 2026-11-28** by reading `cratestack-cose` 0.17.2's published source (`src/claims/{header,sign}.rs`): the order and encoding are those above; the vector and this page's example are unchanged. **Unverified by a run** when written: the tests had not been built or run after the change |
 | A tool server on cratestack verifies all of the above in the order given | **Unverified**: not built yet. The steps are the contract; the first implementation will say where this page is wrong |
 | The orchestrator's clock and the server's agree within 30 seconds in the deployment | **Unverified**: an operational assumption (NTP) |

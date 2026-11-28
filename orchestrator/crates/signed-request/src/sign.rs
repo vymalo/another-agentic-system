@@ -4,11 +4,11 @@ use std::fmt;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use cratestack_cose::{CwtClaims, sign_claims};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::cbor;
 use crate::key::{SigningKey, hex};
 
 /// The name of the header that carries the object.
@@ -95,6 +95,9 @@ pub enum SignError {
     /// The operating system's random source failed.
     #[error("the operating system's random source failed")]
     Random,
+    /// `cratestack_cose::sign_claims` did not sign the object.
+    #[error("the claim object could not be signed")]
+    Cose,
     /// The object would be longer than a header may be.
     #[error("the claim object is longer than a header may be")]
     TooLarge,
@@ -174,42 +177,42 @@ impl Signer {
     ///
     /// # Errors
     /// [`SignError`]; nothing was signed.
-    pub fn sign(&self, request: &Request<'_>, iat: u64) -> Result<String, SignError> {
+    pub async fn sign(&self, request: &Request<'_>, iat: u64) -> Result<String, SignError> {
         let mut cti = [0_u8; CTI_LEN];
         getrandom::fill(&mut cti).map_err(|_| SignError::Random)?;
-        self.sign_with_cti(request, iat, cti)
+        self.sign_with_cti(request, iat, cti).await
     }
 
     /// [`sign`](Self::sign) with the `cti` given: for the known-answer test and nothing else. A `cti` used twice is a replay.
     ///
     /// # Errors
     /// [`SignError`]; nothing was signed.
-    pub fn sign_with_cti(
+    pub async fn sign_with_cti(
         &self,
         request: &Request<'_>,
         iat: u64,
         cti: [u8; CTI_LEN],
     ) -> Result<String, SignError> {
         let exp = iat.checked_add(self.ttl_secs).ok_or(SignError::Lifetime)?;
-        self.sign_object(request, iat, exp, cti)
+        self.sign_object(request, iat, exp, cti).await
     }
 
     /// An object with any `exp`, including one a signer refuses to make (longer than [`MAX_TTL_SECS`], or before `iat`): for the
     /// tests of the receiving side, which must refuse it. Only with the feature `verify`.
     #[cfg(feature = "verify")]
     #[doc(hidden)]
-    pub fn sign_for_tests(
+    pub async fn sign_for_tests(
         &self,
         request: &Request<'_>,
         iat: u64,
         exp: u64,
         cti: [u8; CTI_LEN],
     ) -> Result<String, SignError> {
-        self.sign_object(request, iat, exp, cti)
+        self.sign_object(request, iat, exp, cti).await
     }
 
     /// The object for any `exp`: [`sign_with_cti`](Self::sign_with_cti) with the lifetime of the signer.
-    fn sign_object(
+    async fn sign_object(
         &self,
         request: &Request<'_>,
         iat: u64,
@@ -225,56 +228,24 @@ impl Signer {
             owner: request.owner,
         })
         .map_err(|_| SignError::TooLarge)?;
-        let protected = self.protected(exp, iat, cti);
-        let signature = self.key.sign(&to_be_signed(&protected, &payload));
-
-        let mut object = Vec::with_capacity(protected.len() + payload.len() + signature.len() + 16);
-        cbor::head(&mut object, cbor::MAJOR_TAG, 18);
-        cbor::head(&mut object, cbor::MAJOR_ARRAY, 4);
-        cbor::bstr(&mut object, &protected);
-        object.push(cbor::EMPTY_MAP);
-        cbor::bstr(&mut object, &payload);
-        cbor::bstr(&mut object, &signature);
+        // `sign_claims` writes the claims in the order of the contract and leaves out one that is `None`: all four are
+        // always there.
+        let claims = CwtClaims {
+            aud: Some(self.audience.clone()),
+            exp: Some(exp),
+            iat: Some(iat),
+            cti: Some(cti.to_vec()),
+        };
+        // `external_aad` is empty, as the contract says.
+        let object = sign_claims(self.key.cose(), TYP, &claims, &payload, b"")
+            .await
+            .map_err(|_| SignError::Cose)?;
         let value = URL_SAFE_NO_PAD.encode(&object);
         if value.len() > MAX_HEADER_BYTES {
             return Err(SignError::TooLarge);
         }
         Ok(value)
     }
-
-    /// The protected header: `{1: -19, 4: kid, 15: {3: aud, 4: exp, 6: iat, 7: cti}, 16: typ}`.
-    fn protected(&self, exp: u64, iat: u64, cti: [u8; CTI_LEN]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(96 + self.audience.len() + TYP.len());
-        cbor::head(&mut out, cbor::MAJOR_MAP, 4);
-        cbor::head(&mut out, cbor::MAJOR_UINT, 1);
-        cbor::nint(&mut out, 18); // -19, Ed25519 (RFC 9864)
-        cbor::head(&mut out, cbor::MAJOR_UINT, 4);
-        cbor::bstr(&mut out, &self.key.kid());
-        cbor::head(&mut out, cbor::MAJOR_UINT, 15);
-        cbor::head(&mut out, cbor::MAJOR_MAP, 4);
-        cbor::head(&mut out, cbor::MAJOR_UINT, 3);
-        cbor::tstr(&mut out, &self.audience);
-        cbor::head(&mut out, cbor::MAJOR_UINT, 4);
-        cbor::head(&mut out, cbor::MAJOR_UINT, exp);
-        cbor::head(&mut out, cbor::MAJOR_UINT, 6);
-        cbor::head(&mut out, cbor::MAJOR_UINT, iat);
-        cbor::head(&mut out, cbor::MAJOR_UINT, 7);
-        cbor::bstr(&mut out, &cti);
-        cbor::head(&mut out, cbor::MAJOR_UINT, 16);
-        cbor::tstr(&mut out, TYP);
-        out
-    }
-}
-
-/// The `Sig_structure` of RFC 9052 §4.4 for a `COSE_Sign1` with an empty `external_aad`.
-pub(crate) fn to_be_signed(protected: &[u8], payload: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(protected.len() + payload.len() + 24);
-    cbor::head(&mut out, cbor::MAJOR_ARRAY, 4);
-    cbor::tstr(&mut out, "Signature1");
-    cbor::bstr(&mut out, protected);
-    cbor::bstr(&mut out, b"");
-    cbor::bstr(&mut out, payload);
-    out
 }
 
 /// The payload. The order of the members is the contract's, and serde writes them in the order they are declared.

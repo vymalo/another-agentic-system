@@ -128,7 +128,7 @@ impl WireClient {
     }
 
     /// `request` with the header that signs it, over `body`, when the server takes signed requests.
-    fn signed(
+    async fn signed(
         &self,
         request: reqwest::RequestBuilder,
         method: Method,
@@ -138,7 +138,7 @@ impl WireClient {
         match &self.signing {
             None => Ok(request),
             Some(signing) => {
-                let (name, value) = signing.header(method, uri, body).map_err(|_| {
+                let (name, value) = signing.header(method, uri, body).await.map_err(|_| {
                     StreamableHttpError::UnexpectedServerResponse(Cow::Borrowed(SIGNING_FAILED))
                 })?;
                 Ok(request.header(name, value))
@@ -355,9 +355,8 @@ impl StreamableHttpClient for WireClient {
             let body = serde_json::to_vec(&message).map_err(|_| {
                 StreamableHttpError::UnexpectedServerResponse(Cow::Borrowed(SIGNING_FAILED))
             })?;
-            self.signed(request, Method::Post, &uri, &body)?
-                .header(CONTENT_TYPE, JSON_MIME_TYPE)
-                .body(body)
+            let request = self.signed(request, Method::Post, &uri, &body).await?;
+            request.header(CONTENT_TYPE, JSON_MIME_TYPE).body(body)
         } else {
             request.json(&message)
         };
@@ -459,7 +458,7 @@ impl StreamableHttpClient for WireClient {
         }
         request = request.header(HEADER_SESSION_ID, session_id.as_ref());
         request = with_custom_headers(request, custom_headers)?;
-        request = self.signed(request, Method::Delete, &uri, b"")?;
+        request = self.signed(request, Method::Delete, &uri, b"").await?;
         let response = request.send().await.map_err(client_error)?;
         if response.status() == StatusCode::METHOD_NOT_ALLOWED {
             return Ok(());
@@ -524,7 +523,7 @@ impl StreamableHttpClient for WireClient {
             request = request.bearer_auth(token);
         }
         request = with_custom_headers(request, custom_headers)?;
-        request = self.signed(request, Method::Get, &uri, b"")?;
+        request = self.signed(request, Method::Get, &uri, b"").await?;
         let response = request.send().await.map_err(client_error)?;
         if response.status() == StatusCode::METHOD_NOT_ALLOWED {
             return Err(StreamableHttpError::ServerDoesNotSupportSse);

@@ -5,10 +5,9 @@ use std::fmt;
 use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair as _};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use sha2::{Digest, Sha256};
+use cratestack_cose::ExternalSigner;
+use cratestack_cose::thumbprint::{kid_from_thumbprint, okp_ed25519_thumbprint};
 use zeroize::Zeroizing;
-
-use crate::cbor;
 
 /// The length of a `kid` on the wire: 8 bytes.
 pub const KID_LEN: usize = 8;
@@ -35,7 +34,9 @@ pub enum KeyError {
 /// [RFC 9679](https://www.rfc-editor.org/rfc/rfc9679) thumbprint (SHA-256 of the deterministic CBOR of the COSE key
 /// `{1: 1, -1: 6, -2: x}`). `Debug` shows the `kid` and nothing else.
 pub struct SigningKey {
-    pair: Ed25519KeyPair,
+    /// What `cratestack_cose::sign_claims` signs with: the key stays in `aws-lc-rs`, behind the library's seam for a key
+    /// it does not hold.
+    cose: ExternalSigner,
     public: [u8; 32],
     kid: [u8; KID_LEN],
 }
@@ -79,7 +80,11 @@ impl SigningKey {
             .try_into()
             .map_err(|_| KeyError::NotEd25519)?;
         let kid = kid_of(&public);
-        Ok(SigningKey { pair, public, kid })
+        let cose = ExternalSigner::ed25519(&public, move |message: Vec<u8>| {
+            std::future::ready(Ok(pair.sign(&message).as_ref().to_vec()))
+        })
+        .map_err(|_| KeyError::NotEd25519)?;
+        Ok(SigningKey { cose, public, kid })
     }
 
     /// The `kid` of the public half.
@@ -92,8 +97,8 @@ impl SigningKey {
         self.public
     }
 
-    pub(crate) fn sign(&self, message: &[u8]) -> Vec<u8> {
-        self.pair.sign(message).as_ref().to_vec()
+    pub(crate) fn cose(&self) -> &ExternalSigner {
+        &self.cose
     }
 }
 
@@ -107,15 +112,7 @@ impl fmt::Debug for SigningKey {
 
 /// The `kid` of an Ed25519 public key.
 pub fn kid_of(public: &[u8; 32]) -> [u8; KID_LEN] {
-    let mut cose_key = Vec::with_capacity(41);
-    cbor::head(&mut cose_key, cbor::MAJOR_MAP, 3);
-    // 1 (kty): 1 (OKP), -1 (crv): 6 (Ed25519), -2 (x): the key
-    cose_key.extend_from_slice(&[0x01, 0x01, 0x20, 0x06, 0x21]);
-    cbor::bstr(&mut cose_key, public);
-    let thumbprint = Sha256::digest(&cose_key);
-    let mut kid = [0_u8; KID_LEN];
-    kid.copy_from_slice(&thumbprint[..KID_LEN]);
-    kid
+    kid_from_thumbprint(&okp_ed25519_thumbprint(public))
 }
 
 /// Lower-case hexadecimal.

@@ -4,7 +4,7 @@
 //!
 //! The server is `FakeToolServer` with `modern_only` and `signed`: it verifies each request with the reference verifier
 //! (checks 1 to 5), refuses a `cti` it has seen (check 6), and journals the verdict. The same bytes are held to the real
-//! `cratestack_cose::open_claims` by `crates/signed-request/interop`.
+//! `cratestack_cose::open_claims` by `orch-signed-request`'s own tests (`tests/cratestack.rs`).
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use std::collections::BTreeSet;
@@ -78,7 +78,7 @@ fn client() -> McpToolClient {
 }
 
 /// Checks 1 to 5 of the contract on a request as it was captured.
-fn check(
+async fn check(
     verifier: &Verifier,
     header: &str,
     method: &str,
@@ -86,17 +86,19 @@ fn check(
     body: &[u8],
     now: u64,
 ) -> Result<orch_signed_request::verify::Verified, VerifyError> {
-    verifier.verify(
-        &[header],
-        &Incoming {
-            method,
-            path,
-            query: None,
-            body,
-            content_encoding: None,
-        },
-        now,
-    )
+    verifier
+        .verify(
+            &[header],
+            &Incoming {
+                method,
+                path,
+                query: None,
+                body,
+                content_encoding: None,
+            },
+            now,
+        )
+        .await
 }
 
 fn json_body(request: &SignedRequest) -> Value {
@@ -191,27 +193,32 @@ async fn a_tools_call_binds_the_bytes_that_were_sent_and_tampering_with_any_of_t
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let received = |method: &str, path: &str, body: &[u8]| -> Result<_, VerifyError> {
-        check(&verifier, header, method, path, body, now)
-    };
     // untouched: the same request the server accepted verifies
     let body = captured.body.as_slice();
-    let ok = received("POST", "/mcp", body).unwrap();
+    let ok = check(&verifier, header, "POST", "/mcp", body, now)
+        .await
+        .unwrap();
     assert_eq!(ok.owner, "amina@example.com");
     // the method, the path and the body: each fails in its own check
     assert_eq!(
-        received("GET", "/mcp", body).unwrap_err(),
+        check(&verifier, header, "GET", "/mcp", body, now)
+            .await
+            .unwrap_err(),
         VerifyError::Request(Mismatch::Method)
     );
     assert_eq!(
-        received("POST", "/mcp/x", body).unwrap_err(),
+        check(&verifier, header, "POST", "/mcp/x", body, now)
+            .await
+            .unwrap_err(),
         VerifyError::Request(Mismatch::Path)
     );
     let mut changed = captured.body.clone();
     let at = changed.iter().position(|b| *b == b'w').unwrap();
     changed[at] = b'W';
     assert_eq!(
-        received("POST", "/mcp", &changed).unwrap_err(),
+        check(&verifier, header, "POST", "/mcp", &changed, now)
+            .await
+            .unwrap_err(),
         VerifyError::Request(Mismatch::Body)
     );
     // the thread and the owner are in the signed payload: change one and the object is not the one that was signed
@@ -232,7 +239,9 @@ async fn a_tools_call_binds_the_bytes_that_were_sent_and_tampering_with_any_of_t
         bytes[at..at + to.len()].copy_from_slice(to.as_bytes());
         let tampered = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
         assert_eq!(
-            check(&verifier, &tampered, "POST", "/mcp", body, now).unwrap_err(),
+            check(&verifier, &tampered, "POST", "/mcp", body, now)
+                .await
+                .unwrap_err(),
             VerifyError::Object(Object::Unverified),
             "{from} -> {to}"
         );
