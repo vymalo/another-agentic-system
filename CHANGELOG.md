@@ -1,5 +1,94 @@
 # Changelog
 
+## [0.11.0](https://github.com/vymalo/another-agentic-system/compare/v0.10.0...v0.11.0) (2026-11-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **provisioner:** send the person\x27s account in the agent form (ANR-1321)
+
+### Features
+
+* **agent:** a message\x27s files reach the agent as URL parts, never bytes (ANR-1434) ([2644733](https://github.com/vymalo/another-agentic-system/commit/26447333cae3ce284df5df60e7abd58fbdb41468))
+* **api:** a helper-session start carries the prompt signature (ANR-1383) ([3578e31](https://github.com/vymalo/another-agentic-system/commit/3578e31b589cfe94bd5e38c563ef9108f2c6cc6e))
+* **api:** a helper-session start keeps the claims it signs (ANR-1441) ([#711](https://github.com/vymalo/another-agentic-system/issues/711)) ([92e6a13](https://github.com/vymalo/another-agentic-system/commit/92e6a130a1b268672a1c8e8cd57ee6344c8aeccd))
+* **api:** a signed prompt carries the claims computed at intake (ANR-1422) ([05d6821](https://github.com/vymalo/another-agentic-system/commit/05d68215bdfc55e00690d12837f5aa88e4fbd9a2))
+* **auth:** a signing client's prompt is checked at intake (ANR-1338) ([d69c4ce](https://github.com/vymalo/another-agentic-system/commit/d69c4cefa3abdf9f0bd4b42faca7b84bb86ec5f6))
+* **chart:** example alert rules for running out, off by default (ANR-339) ([65ec31a](https://github.com/vymalo/another-agentic-system/commit/65ec31ad535fc8758474c2f322ac587dbcbce3cb))
+* **config:** the prompt statement's aud and signer, and the production refusals (ANR-1430) ([#709](https://github.com/vymalo/another-agentic-system/issues/709)) ([229baec](https://github.com/vymalo/another-agentic-system/commit/229baec6a1cdc839bba7ab630b844ca600f99c34))
+* **orchestrator:** suggestions as the third utility-model task (ANR-1407) ([8a5c263](https://github.com/vymalo/another-agentic-system/commit/8a5c2631c53cb9e7afb574fb217d9098ac7775ad))
+* **provisioner:** send the person\x27s account in the agent form (ANR-1321) ([1839b91](https://github.com/vymalo/another-agentic-system/commit/1839b913d9c950bc0f86427e62133cb68163e8eb))
+* **store:** admission is one function in the commit\x27s transaction (ANR-1149) ([a9d89e8](https://github.com/vymalo/another-agentic-system/commit/a9d89e8463c32f5f291dd0e805813200092a159f))
+* **store:** claims, watches and the park in PostgreSQL, ADR 0107 slice P3 (ANR-1372) ([ca06575](https://github.com/vymalo/another-agentic-system/commit/ca06575448f6accb80d5ba5199ef0313bd2e0f07))
+* **web:** name the stills that sit above half of the screenshot bound (ANR-1351) ([#659](https://github.com/vymalo/another-agentic-system/issues/659)) ([0dfb8ba](https://github.com/vymalo/another-agentic-system/commit/0dfb8bad6fea1b9f64c7282ddc303b481e8afed4))
+* **web:** the person picks the interface language from the deployment's list (ANR-957) ([#667](https://github.com/vymalo/another-agentic-system/issues/667)) ([bbed34b](https://github.com/vymalo/another-agentic-system/commit/bbed34bd1dbef1d609ed0d5c4de1b9a209978375))
+* **web:** the screenshot bound is configuration with a documented default (ANR-Q149) ([#664](https://github.com/vymalo/another-agentic-system/issues/664)) ([92eff3b](https://github.com/vymalo/another-agentic-system/commit/92eff3b030ec06d2565678de4cfcd8cf97c7a9a5))
+* **web:** the screenshot bound's default is 0.1 % (owner's answer to ANR-Q149) ([#665](https://github.com/vymalo/another-agentic-system/issues/665)) ([3fd5ff3](https://github.com/vymalo/another-agentic-system/commit/3fd5ff339fe4e3354f89015355b486ddacb54fbb))
+
+
+### Bug Fixes
+
+* **api:** a signing client's fork and edit are checked for a prompt signature (ANR-1375) ([#694](https://github.com/vymalo/another-agentic-system/issues/694)) ([d4e78d0](https://github.com/vymalo/another-agentic-system/commit/d4e78d06a506d0891dd9ad28ca16a9e774d81917))
+* **api:** a Stop & send keeps its message\x27s prompt signature (ANR-1376) ([11e7c5e](https://github.com/vymalo/another-agentic-system/commit/11e7c5eaeafcb0e45849dcca138b8a918ee58f6e))
+* **api:** main compiles again and the fork carries the checked envelope (ANR-1375 follow-up) ([#697](https://github.com/vymalo/another-agentic-system/issues/697)) ([3b54a44](https://github.com/vymalo/another-agentic-system/commit/3b54a44ce2e932794d57a968580356005fc25774))
+* **chart:** regenerate the chat folder golden after the tools selection (ANR-394) ([b077261](https://github.com/vymalo/another-agentic-system/commit/b0772610942ab4b3471e6b8a235490cc1eab53e2))
+* **chart:** the alert thresholds are read from the rule's expr block (ANR-1450) ([#710](https://github.com/vymalo/another-agentic-system/issues/710)) ([00d7aac](https://github.com/vymalo/another-agentic-system/commit/00d7aacce3c777a2ba38b80f86a290c4d4515fbe))
+* **docs-check:** fail on a committed merge conflict (ANR-1359) ([a7036b0](https://github.com/vymalo/another-agentic-system/commit/a7036b0dd5c947317c8246257c98c322586aed63))
+* **docs:** name the three diagrams the accessible-name rule reached after they merged (ANR-1105) ([e48335a](https://github.com/vymalo/another-agentic-system/commit/e48335a67d0f4b68394ecec6e8094dd2838b7148))
+* **docs:** the current pin does have a real-image run of the child-sessions scenario (ANR-1377) ([027ae5c](https://github.com/vymalo/another-agentic-system/commit/027ae5c7a2010cef320ab6afac6c41c82f3d1d96))
+* **orchestrator:** the lints toolchain 1.98's clippy adds (ANR-1404) ([#691](https://github.com/vymalo/another-agentic-system/issues/691)) ([5c20992](https://github.com/vymalo/another-agentic-system/commit/5c20992c4dee0a5f18271b2550bc527c11d2ec5a))
+* **ports:** bind the account before tokio::join! in the provisioner testkit (ANR-1404) ([#674](https://github.com/vymalo/another-agentic-system/issues/674)) ([213a7c6](https://github.com/vymalo/another-agentic-system/commit/213a7c61b78381c26a32390fa162e681f76d92dd))
+* **store-postgres:** drop the redundant FromSql import in codec's tests (ANR-1404) ([#701](https://github.com/vymalo/another-agentic-system/issues/701)) ([aca4611](https://github.com/vymalo/another-agentic-system/commit/aca4611b19e8d1759e18f84f0931cee51612cc30))
+* **store:** main compiles its test targets and the derived dev configs agree again ([be7f323](https://github.com/vymalo/another-agentic-system/commit/be7f323dab009a9956a2272d995128f9217bae56))
+* **thread-token:** use as_chunks in the test, as the source already does ([b898f41](https://github.com/vymalo/another-agentic-system/commit/b898f4131863414a25048b109bf8dac45bbbb26d))
+
+
+### Refactoring
+
+* **signed-request:** write and open the claims with cratestack-cose (ANR-1342) ([b2fb09c](https://github.com/vymalo/another-agentic-system/commit/b2fb09ca6cc310228d41129ead7b7474c50d39e8))
+
+
+### Documentation
+
+* **adr:** suggestions are a third utility-model task (ANR-1406) ([1e3ad08](https://github.com/vymalo/another-agentic-system/commit/1e3ad08d3a7db42fd26e47af10c0df0edeee1956))
+* **adr:** what a helper-session start signs, and which clock checks iat (ANR-1424) ([#705](https://github.com/vymalo/another-agentic-system/issues/705)) ([0c66917](https://github.com/vymalo/another-agentic-system/commit/0c669177bb00ba9af0e45cecd4e9dac17e57e1f9))
+* **api:** a Reference to Extensions group and a checked status on every contract page (ANR-925) ([5de555d](https://github.com/vymalo/another-agentic-system/commit/5de555df98e51bd6bec4ba1be924197ea774f387))
+* **api:** make four extension statuses and pages say what is true (ANR-1377) ([76960e8](https://github.com/vymalo/another-agentic-system/commit/76960e8181231f6f654eacb4ef174e3d374d099b))
+* **api:** record the attachment decisions and the planned message contract (ANR-1433) ([36851a8](https://github.com/vymalo/another-agentic-system/commit/36851a801f1c3e100cc4a8e6aaccbfeec2847c93))
+* **architecture:** a run is open while the thread is verifying too (ANR-1394) ([3699850](https://github.com/vymalo/another-agentic-system/commit/36998504934d25d73ab8951fada21b31f8dc51d6))
+* **child-sessions:** the start config, and the session config (ANR-1094) ([#702](https://github.com/vymalo/another-agentic-system/issues/702)) ([4050654](https://github.com/vymalo/another-agentic-system/commit/405065456af16e86a063f0e9bc1543b1162b4646))
+* **concepts:** the remaining terms, a diagram and the glossary (ANR-926) ([681d832](https://github.com/vymalo/another-agentic-system/commit/681d832fe5ae0d328b4eb5282264529dc22ae5cc))
+* **contributing:** the Contributing section and a Writing docs page (ANR-927) ([ee0d17a](https://github.com/vymalo/another-agentic-system/commit/ee0d17a868fe0bae976d0da52de37a8c43c5da87))
+* **contributing:** tokio-postgres, not sqlx, and one home for the docs rules (ANR-1411) ([9fa6a32](https://github.com/vymalo/another-agentic-system/commit/9fa6a32d77613d19042aa8d3af6931fcf65d1d71))
+* **diagrams:** name every Mermaid diagram for a screen reader (ANR-1105) ([#668](https://github.com/vymalo/another-agentic-system/issues/668)) ([263194d](https://github.com/vymalo/another-agentic-system/commit/263194da7f0240b3109d3ad6dd61cb34794536fc))
+* **getting-started:** a real first success on the local stack (ANR-921) ([7e7cf6f](https://github.com/vymalo/another-agentic-system/commit/7e7cf6fdb566506f024f233781e11384e0b21b8e))
+* **getting-started:** the Deploy next step links the Guides page (ANR-1414) ([a2a2c6b](https://github.com/vymalo/another-agentic-system/commit/a2a2c6b3ae2bb82b72abc2fc584bd9b4b60a73ed))
+* **guides:** a Guides → Operate section for the day-2 work (ANR-924) ([#685](https://github.com/vymalo/another-agentic-system/issues/685)) ([afcac00](https://github.com/vymalo/another-agentic-system/commit/afcac00dcc9ca76fac5718f17ff95aa6b82859dc))
+* **guides:** read the Guides pages in layers (ANR-1421) ([#690](https://github.com/vymalo/another-agentic-system/issues/690)) ([b851c3c](https://github.com/vymalo/another-agentic-system/commit/b851c3ca42147a203f5120b899b5c951057203ce))
+* **guides:** the Deploy guide, from an empty cluster to a signed-in person (ANR-923) ([e1ec41a](https://github.com/vymalo/another-agentic-system/commit/e1ec41ad1a7c032aedf21570354040cd906c07af))
+* **questions:** a routed thread's mention and ask still reach the shared coder (ANR-1079) ([#658](https://github.com/vymalo/another-agentic-system/issues/658)) ([91c4975](https://github.com/vymalo/another-agentic-system/commit/91c497540a6d7fcc7f1d43130629b26bee35b8c8))
+* **roadmap:** what is missing, incomplete and long, per repository ([#671](https://github.com/vymalo/another-agentic-system/issues/671)) ([5646ed3](https://github.com/vymalo/another-agentic-system/commit/5646ed3744c3a725817c86ae03a26248c080056a))
+
+
+### Tests
+
+* **chat:** the chat folder's first request stays under 5,000 tokens (ANR-394) ([#676](https://github.com/vymalo/another-agentic-system/issues/676)) ([18bd2be](https://github.com/vymalo/another-agentic-system/commit/18bd2be6fea8c83d09255027065c7081f6b1adeb))
+* **dev:** a child round is counted once in the person\x27s month (ANR-633) ([7f6ef63](https://github.com/vymalo/another-agentic-system/commit/7f6ef631b05d2448408a6810a5d02e96e034a45a))
+* **dev:** name a busy port, and prove two stacks do not share volumes (ANR-136) ([#698](https://github.com/vymalo/another-agentic-system/issues/698)) ([08c7e9f](https://github.com/vymalo/another-agentic-system/commit/08c7e9f6f38820e1c51f04072704f4334deddd61))
+* **dev:** the scenarios make v7 thread ids, so recent is creation order (ANR-1340) ([#695](https://github.com/vymalo/another-agentic-system/issues/695)) ([9b30afb](https://github.com/vymalo/another-agentic-system/commit/9b30afb7506a0ab1e611bee0879a4a792be207ef))
+
+
+### Build System
+
+* **adam:** the stack's pin to adam-rs 5883708, with the chat's modes (ANR-983) ([#663](https://github.com/vymalo/another-agentic-system/issues/663)) ([58ccfd4](https://github.com/vymalo/another-agentic-system/commit/58ccfd43ba80a991e7a853349a6af98087b1c9cf))
+* **orchestrator:** the workspace's Rust toolchain to 1.98 (ANR-1328) ([#655](https://github.com/vymalo/another-agentic-system/issues/655)) ([e9a4e7d](https://github.com/vymalo/another-agentic-system/commit/e9a4e7dd7549c3a8b56da24663e19f5e82dd09dd))
+
+
+### Chores
+
+* **deploy:** bump web to sha-0c66917 ([81c3896](https://github.com/vymalo/another-agentic-system/commit/81c38967ee8b4e02ffdd78e7e9d5d482bd49ce5a))
+* **deploy:** bump web to sha-8a5c263 ([b7c5c5f](https://github.com/vymalo/another-agentic-system/commit/b7c5c5f61feb3a9dce2a935156365ac39535c769))
+
 ## [0.10.0](https://github.com/vymalo/another-agentic-system/compare/v0.9.0...v0.10.0) (2026-11-27)
 
 
