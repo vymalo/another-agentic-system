@@ -51,8 +51,9 @@ public `ui` subset of this file from [`GET /api/config`](#get-apiconfig).
   none: a rule cannot be checked on a value that is not there.
 - **Anchors and aliases** are resolved by the parser and merge keys (`<<:`) are applied before validation; a YAML tag
   (`!something`) is an error.
-- **A key that selects an implementation** (`artifacts.store`, `secrets.store`, `auth.mode`, a surface in `server.surfaces`) names only
-  what this build compiled in; anything else is exit 78 naming the Cargo feature, as `ORCH_SURFACES` does today.
+- **A key that selects an implementation** (`artifacts.store`, `secrets.store`, `auth.mode`, a surface in `server.surfaces`,
+  `promptStatement.signer`) names only what this build compiled in; anything else is exit 78 naming the Cargo feature, as
+  `ORCH_SURFACES` does today.
 - The JSON Schema of the file is generated from the Rust types (`schemars`) and committed at
   [`docs/api/config.schema.json`](config.schema.json); a test fails when the types and the committed file differ
   (regenerate with `UPDATE_SCHEMA=1 cargo test -p orch-config --test schema`, as the goldens do with `UPDATE_GOLDEN=1`).
@@ -596,6 +597,38 @@ The refusals name the key path (`usage.prices.models[1].cachedInput`) and say wh
 line is priced (one division per line, rounded half up, and what makes a line unpriced) is in
 [`chat-api.yaml`](chat-api.yaml) `GET /api/me/usage` and ADR 0065.
 
+### `promptStatement`
+
+*Built 2026-11-28 (ANR-1430; [ADR 0087](../decisions/0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md),
+the note of 2026-11-25).* On the cloud path the orchestrator signs a **prompt statement** of its own beside the person's
+envelope, and the verifier behind the model gateway's authorizer checks it. This section is the statement's `aud` and the
+key it signs with. **Absent: signing is off.** The process starts, and **no statement metadata goes with an agent's
+messages**, even to an agent whose card lists the `prompt-statement/v1` extension; a verifier must then refuse those
+calls. The file is read once at startup, so a change is a restart. The section has no variable.
+
+| Key | Type, default | Replaces | When |
+|---|---|---|---|
+| `promptStatement.aud` | an origin in its normal form, like `https://gateway.example.com`: `http` or `https`, a lower-case host (an international name as punycode), a port only when it is not the scheme's default, and nothing after it, not even a slash; required with the section. The model gateway's origin: the `aud` of every statement, taken from here and never from a request. A deployment's value, not a constant | — | now |
+| `promptStatement.signer` | `static`, required with the section. The only signer built: an Ed25519 key and a certificate chain read from files, **never renewed or revoked**, which is why it is for tests and a `production` process refuses it. It needs the binary's off-by-default Cargo feature `prompt-signer-static`; a build without it refuses the file (exit 78) rather than signing nothing. The PKI signer is its own change | — | now |
+| `promptStatement.static.key` | **secret**, required with `signer: static`. The Ed25519 private key, a PKCS#8 PEM block (`openssl genpkey -algorithm ed25519`), by reference. A value that is not one stops the process at startup (exit 78), naming this key and never its text | — | now |
+| `promptStatement.static.chain` | a file of PEM certificates, 1 to 1024 characters, required with `signer: static`: the leaf first, the root left out. Relative to the configuration file's directory, read at startup, and the file must hold a `CERTIFICATE` block | — | now |
+
+A `production` process refuses `promptStatement.signer: static` (exit 78, naming the key): a deployment's signer is
+certified by a PKI and renews itself, and this one is a test signer. The same file starts in `development`, where the
+binary decides whether its feature is in the build. `promptStatement.aud` follows `server.publicOrigin`'s rules: an
+origin in its normal form, and `production` refuses a plain `http://` one except for `localhost`, `127.0.0.1` and
+`[::1]`. With no signer, nothing is signed: the section is the only way to have one, and a section without a signer is a
+shape error.
+
+```yaml [orchestrator.yaml]
+promptStatement:
+  aud: https://gateway.example.com
+  signer: static
+  static:
+    key: { file: /run/secrets/orchestrator/prompt-signer.key }
+    chain: /etc/orchestrator/prompt-signer-chain.pem
+```
+
 ### `toolServers`
 
 *Built 2026-10-02 ([ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md), slice 8).* The MCP servers a person may
@@ -624,8 +657,8 @@ application, the API and the log hold only the part that is not secret. Replaces
 
 A server's `signing.key` is a secret of the contract too, by the same rules (a reference, resolved at startup, printed by `--print-config` as the
 reference): **the nineteenth in the schema**, counting the ones that later changes added (the run routes'
-`server.internal.token` and `server.internal.agents`, ADR 0084; `secrets.openbao.token` is the twentieth, and `server.internal.meter`, ADR 0108, the twenty-first); the list the test
-`the_secrets_are_the_twenty_one_the_contract_names` keeps is the authority. A server's `bearer` and each of its `headers` are two of the **fourteen** secrets of the contract (the ten of ADR 0032, the
+`server.internal.token` and `server.internal.agents`, ADR 0084; `secrets.openbao.token` is the twentieth, `server.internal.meter`, ADR 0108, the twenty-first, and `promptStatement.static.key`, ADR 0087, the twenty-second); the list the test
+`the_secrets_are_the_twenty_two_the_contract_names` keeps is the authority. A server's `bearer` and each of its `headers` are two of the **fourteen** secrets of the contract (the ten of ADR 0032, the
 two here and the two of `sharing`): a reference, resolved at startup, with an error that names the key and the variable or path and never a value, and
 printed by `--print-config` as the reference. The public part of each server (`id`, `name`, `description`, `icon`, `tools`,
 `agents`, the timeout) is what reaches the application; `GET /api/tool-servers` shows the first four and `agents`, never the

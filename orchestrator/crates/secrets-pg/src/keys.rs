@@ -111,7 +111,7 @@ impl KeyBytes {
             return Err(KeyError::BadKey);
         }
         let mut bytes = Zeroizing::new([0u8; KEY_LEN]);
-        for (byte, pair) in bytes.iter_mut().zip(digits.chunks_exact(2)) {
+        for (byte, pair) in bytes.iter_mut().zip(digits.as_chunks::<2>().0) {
             let (high, low) = (hex_digit(pair[0]), hex_digit(pair[1]));
             match (high, low) {
                 (Some(high), Some(low)) => *byte = (high << 4) | low,

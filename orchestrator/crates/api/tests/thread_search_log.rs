@@ -105,6 +105,7 @@ async fn nothing_of_a_query_is_in_any_log_line() {
         },
     );
     let stack: Stack = PortSet {
+        prompt_signer: orch_ports::NoPromptSigner,
         artifacts: MemoryArtifacts::new(),
         store: MemoryStore::new(),
         wakeup: MemoryWakeup::new(),

@@ -248,6 +248,8 @@ impl<A: AgentClient, M: ChatModel, X: ArtifactStore, T: UserToolPorts> Embedded<
             registry,
             artifacts: parts.artifacts,
             user_tools: parts.user_tools,
+            // an embedded application signs nothing: the statement rider is a deployment's (ADR 0087)
+            prompt_signer: orch_ports::NoPromptSigner,
         };
         let config = AppConfig {
             stream_poll: std::time::Duration::from_millis(50),

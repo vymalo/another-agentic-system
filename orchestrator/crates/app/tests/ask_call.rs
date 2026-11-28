@@ -63,6 +63,7 @@ fn app_listing(w: &World, ids: &[&str], cfg: AppConfig) -> Arc<TestApp> {
     Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: orch_ports::NoArtifacts,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),
@@ -698,6 +699,7 @@ async fn a_registry_that_cannot_say_is_a_retry_not_a_refusal_and_a_repeat_does_n
     let app: Arc<App<RegistryPorts>> = Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: orch_ports::NoArtifacts,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),
@@ -783,6 +785,7 @@ async fn an_agent_whose_audience_is_none_is_asked_only_when_somebody_could_use_i
         Arc::new(
             App::new(
                 PortSet {
+                    prompt_signer: orch_ports::NoPromptSigner,
                     artifacts: orch_ports::NoArtifacts,
                     store: w.store.clone(),
                     wakeup: w.wakeup.clone(),

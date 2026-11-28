@@ -85,6 +85,7 @@ async fn rig_polling(agents: &[(&str, &str)], poll: Duration) -> Rig {
     let app = Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: orch_ports::NoArtifacts,
                 store: MemoryStore::new(),
                 wakeup: MemoryWakeup::new(),

@@ -110,3 +110,25 @@ pub trait PromptSigner: Send + Sync + 'static {
     /// Whether it can sign now.
     fn state(&self) -> SignerState;
 }
+
+/// The signer of a deployment that configured none (ADR 0087): signing is off, it is always
+/// [`SignerState::Unavailable`], and every [`sign`](PromptSigner::sign) is refused with a fixed
+/// sentence that names no key, token, CSR or URL. It is the default of
+/// [`PortSet`](crate::PortSet), and the value a bundle has when `promptStatement` is absent.
+///
+/// A caller that would send a statement asks [`state`](PromptSigner::state) first: `Unavailable` is
+/// "send none", which is the same answer as an expired certificate's, and never "send unsigned".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct NoPromptSigner;
+
+impl PromptSigner for NoPromptSigner {
+    async fn sign(&self, _payload: &AttestedPayload) -> Result<SignedStatement, SignerError> {
+        Err(SignerError::Unavailable {
+            detail: "no prompt signer is configured",
+        })
+    }
+
+    fn state(&self) -> SignerState {
+        SignerState::Unavailable
+    }
+}

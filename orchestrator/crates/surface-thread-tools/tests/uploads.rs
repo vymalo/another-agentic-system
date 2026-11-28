@@ -87,6 +87,7 @@ async fn rig<X: ArtifactStore>(
     let app = Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: store,
                 store: MemoryStore::new(),
                 wakeup: MemoryWakeup::new(),

@@ -1,8 +1,10 @@
+use std::fmt;
+
 use crate::{
     AgentClient, AgentRegistry, ArtifactStore, Authenticator, ChatModel, Clock, CredentialBroker,
     EgressPolicy, FixedRegistry, IdGen, KeepsCredentials, NoArtifacts, NoBroker,
-    NoPendingAuthorizations, NoUserToolServers, PendingAuthorizations, RefuseAll, ThreadStore,
-    UserToolServerStore, Wakeup,
+    NoPendingAuthorizations, NoPromptSigner, NoUserToolServers, PendingAuthorizations,
+    PromptSigner, RefuseAll, ThreadStore, UserToolServerStore, Wakeup,
 };
 
 /// A static-dispatch bundle of every port (ADR 0009: composition happens at build time).
@@ -29,6 +31,8 @@ pub trait Ports: Send + Sync + 'static {
     /// The ports of people's own MCP servers, held together (`NoUserTools` in a deployment where
     /// they are off, ADR 0046).
     type UserTools: UserToolPorts;
+    /// The prompt signer (ADR 0087): [`NoPromptSigner`] when signing is off.
+    type Signer: PromptSigner;
 
     /// The store.
     fn store(&self) -> &Self::Store;
@@ -50,6 +54,13 @@ pub trait Ports: Send + Sync + 'static {
     fn artifacts(&self) -> &Self::Artifacts;
     /// The ports of people's own MCP servers.
     fn user_tools(&self) -> &Self::UserTools;
+
+    /// The prompt signer the deployment configured (ADR 0087). [`NoPromptSigner`] is signing off:
+    /// no statement is signed, and **no statement metadata goes with an agent's messages**, even to
+    /// an agent whose card lists the `prompt-statement/v1` extension. A caller asks its
+    /// [`state`](PromptSigner::state) before sending one. Its first caller is ANR-1431, which puts
+    /// the statement on the A2A request; nothing reads it yet.
+    fn prompt_signer(&self) -> &Self::Signer;
 }
 
 /// What a deployment has made of people's own MCP servers (ADR 0046): a closed enum, so a mode
@@ -276,8 +287,10 @@ where
 /// The plain struct implementation of [`Ports`]. The registry type defaults to the static list,
 /// the authenticator to [`RefuseAll`] (which lets nobody in), the artifact store to none and
 /// people's own MCP servers to off, so a `PortSet<S, W, A, C, I, M>` that never heard of
-/// registries, authentication, files or those servers still names a complete bundle.
-#[derive(Debug, Clone)]
+/// registries, authentication, files or those servers still names a complete bundle. The prompt
+/// signer defaults to [`NoPromptSigner`] (signing off): a deployment that signs gives the binary's
+/// composition its signer (ADR 0087), and every other literal names `NoPromptSigner`.
+#[derive(Clone)]
 pub struct PortSet<
     S,
     W,
@@ -289,6 +302,7 @@ pub struct PortSet<
     U = RefuseAll,
     X = NoArtifacts,
     T = NoUserTools,
+    P = NoPromptSigner,
 > {
     /// The store.
     pub store: S,
@@ -310,9 +324,42 @@ pub struct PortSet<
     pub artifacts: X,
     /// The ports of people's own MCP servers.
     pub user_tools: T,
+    /// The prompt signer (ADR 0087); [`NoPromptSigner`] when signing is off.
+    pub prompt_signer: P,
 }
 
-impl<S, W, A, C, I, M, R, U, X, T> Ports for PortSet<S, W, A, C, I, M, R, U, X, T>
+impl<
+    S: fmt::Debug,
+    W: fmt::Debug,
+    A: fmt::Debug,
+    C: fmt::Debug,
+    I: fmt::Debug,
+    M: fmt::Debug,
+    R: fmt::Debug,
+    U: fmt::Debug,
+    X: fmt::Debug,
+    T: fmt::Debug,
+    P: fmt::Debug,
+> fmt::Debug for PortSet<S, W, A, C, I, M, R, U, X, T, P>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PortSet")
+            .field("store", &self.store)
+            .field("wakeup", &self.wakeup)
+            .field("agents", &self.agents)
+            .field("clock", &self.clock)
+            .field("ids", &self.ids)
+            .field("model", &self.model)
+            .field("auth", &self.auth)
+            .field("registry", &self.registry)
+            .field("artifacts", &self.artifacts)
+            .field("user_tools", &self.user_tools)
+            .field("prompt_signer", &self.prompt_signer)
+            .finish()
+    }
+}
+
+impl<S, W, A, C, I, M, R, U, X, T, P> Ports for PortSet<S, W, A, C, I, M, R, U, X, T, P>
 where
     S: ThreadStore,
     W: Wakeup,
@@ -324,6 +371,7 @@ where
     U: Authenticator,
     X: ArtifactStore,
     T: UserToolPorts,
+    P: PromptSigner,
 {
     type Store = S;
     type Wakeup = W;
@@ -335,6 +383,7 @@ where
     type Registry = R;
     type Artifacts = X;
     type UserTools = T;
+    type Signer = P;
 
     fn store(&self) -> &S {
         &self.store
@@ -365,5 +414,8 @@ where
     }
     fn user_tools(&self) -> &T {
         &self.user_tools
+    }
+    fn prompt_signer(&self) -> &P {
+        &self.prompt_signer
     }
 }

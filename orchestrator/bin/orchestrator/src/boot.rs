@@ -383,6 +383,7 @@ type Stack = PortSet<
     ConfiguredAuth,
     ConfiguredArtifacts,
     ConfiguredUserTools,
+    crate::config::ConfiguredSigner,
 >;
 
 /// The platform's registry client, when `AGENT_REGISTRY_URL` is set.
@@ -596,6 +597,9 @@ async fn setup(cfg: &Config) -> anyhow::Result<Shared> {
                     .context("cannot build the model endpoints (models.endpoints)")?,
                 auth,
                 registry: CompositeRegistry::new(directory.fixed_registry(), platform),
+                // The prompt signer the file selected, if any (ADR 0087): ANR-1431 is its first
+                // user, and nothing reads it yet.
+                prompt_signer: cfg.prompt_signer.clone(),
             },
             directory,
             app_config,

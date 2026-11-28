@@ -3694,6 +3694,7 @@ dependencies = [
  "orch-pg-migrate",
  "orch-platform-credentials-openbao",
  "orch-ports",
+ "orch-prompt-signer-static",
  "orch-provisioner-platform",
  "orch-registry-platform",
  "orch-secrets-openbao",

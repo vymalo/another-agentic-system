@@ -172,6 +172,12 @@ pub struct Config {
     /// Authentication.
     #[serde(default)]
     pub auth: Auth,
+    /// The prompt statement the orchestrator signs on the cloud path (ADR 0087, the note of
+    /// 2026-11-25): the `aud` it is for and the signer. Absent: signing is off, and **no statement
+    /// metadata goes with an agent's messages**, even to an agent whose card lists the
+    /// `prompt-statement/v1` extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_statement: Option<PromptStatement>,
     /// The MCP servers a person may attach to a conversation (ADR 0024), in the order the web
     /// lists them. Absent or empty: nothing is attachable. At most 64.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2288,6 +2294,63 @@ pub struct Auth {
     /// replaces both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roles: Option<BTreeMap<String, AuthRole>>,
+}
+
+/// The prompt statement the orchestrator signs on the cloud path (ADR 0087, the note of 2026-11-25).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PromptStatement {
+    /// The statement's `aud`: the model gateway's origin, the one the verifier behind its
+    /// authorizer expects (ADR 0087, the note of 2026-11-25). It is a deployment's value, so it is
+    /// configuration and not a constant. Written in its normal form like `server.publicOrigin`:
+    /// `http` or `https`, a lower-case host (an international name as punycode), a port only when it
+    /// is not the scheme's default, and nothing after it, not even a slash, for example
+    /// `https://gateway.example.com`; a `production` process takes `http` only for the loopback.
+    pub aud: String,
+    /// The signer. `static` is the only one built: an Ed25519 key and a certificate chain from
+    /// files, never renewed, **for tests**; it needs the Cargo feature `prompt-signer-static` of
+    /// the binary and is refused when `server.environment` is `production` (a deployment's signer is
+    /// certified by a PKI, its own change). The section is absent when nothing is signed.
+    pub signer: PromptSignerKind,
+    /// `promptStatement.static`: the key and chain of the static signer. Required with
+    /// `signer: static`, and refused with any other signer.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "static")]
+    pub static_signer: Option<PromptStatementStatic>,
+}
+
+/// Which prompt signer the deployment uses (ADR 0087). Closed, so a kind added later fails to
+/// compile wherever one is matched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum PromptSignerKind {
+    /// An Ed25519 key and a certificate chain read from files, never renewed or revoked. It is
+    /// **not for a deployment**: it is the test signer, refused when `server.environment` is
+    /// `production`, and it needs the binary's off-by-default Cargo feature `prompt-signer-static`.
+    Static,
+}
+
+impl PromptSignerKind {
+    /// The name used in the file.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            PromptSignerKind::Static => "static",
+        }
+    }
+}
+
+/// The static prompt signer's two files (ADR 0087). **Not for a deployment.**
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PromptStatementStatic {
+    /// The Ed25519 private key the statement is signed with, a PKCS#8 PEM block
+    /// (`openssl genpkey -algorithm ed25519`), **a secret** by reference. A value that is not one
+    /// stops the process at startup (exit 78), naming this key and never its text.
+    pub key: SecretRef,
+    /// A file of PEM certificates: the leaf first, the root left out. Relative to the configuration
+    /// file's directory, read at startup. A certificate is public, but it is read through the same
+    /// door as a secret.
+    #[schemars(length(min = 1, max = 1024))]
+    pub chain: String,
 }
 
 /// How DPoP proofs are checked (`auth.dpop`, RFC 9449, ADR 0054).
