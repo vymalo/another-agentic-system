@@ -1,19 +1,19 @@
 # Run it locally
 
-The first success: one command starts the whole system on your machine, and you say hello to the default agent. It runs
-offline and deterministically — the chat UI, the orchestrator, Postgres, adam-coder and scripted stand-ins for a model,
-GitHub, a git remote and CI — behind a real sign-in against a mock issuer. Every credential is a dummy and every port is
-bound to `127.0.0.1`.
+The first success: one command brings up the chat, the orchestrator, a Postgres and adam-coder, with stand-ins for its
+model, for GitHub, for a git remote and for CI. A real oauth2-proxy signs you in against a mock issuer. You need no
+account and no key, and once the images are built nothing leaves the machine: every credential in the stack is a dummy
+and every port listens on `127.0.0.1`.
 
 ## Prerequisites
 
 | | |
 |---|---|
-| Docker Compose | v2.24.4 or newer (`docker compose version`); older versions refuse the live override |
-| Disk and memory | about 10 GB of free disk and 8 GB for Docker: the coder image is 2.9 GB, and the builds add several more |
-| CPU | `linux/amd64`: the coder image has no arm64 build, so an ARM machine runs it under emulation, slower |
-| Ports | 8080 for the edge (the chat, the API, MCP and the webhooks), and about a dozen more on `127.0.0.1`; each has a `*_PORT` variable in [`.env.example`](../.env.example) if one clashes |
-| Host tools | `curl`, `jq`, `git` and `openssl`, for the scenario scripts (the stack does not need them) |
+| Docker Compose | any v2 (`docker compose version`) runs the command below; v2.24.4 or newer is only for `compose.live.yaml`'s `!override`, which this page never uses |
+| Disk and memory | about 10 GB of free disk and 8 GB for Docker, the coder image alone being 2.9 GB (*unverified*: an estimate, not measured) |
+| CPU | `linux/amd64`. The coder image has no arm64 build; an ARM machine runs it under emulation, which works but is slow |
+| Ports | 8080 is the edge (chat, API, MCP, webhooks), and the `app` profile publishes about two dozen more on `127.0.0.1`. Most have a `*_PORT` variable in [`.env.example`](../.env.example); the rest are the `ports:` of [`compose.yaml`](../compose.yaml) |
+| Host tools | `curl`, `jq`, `git` and `openssl` for most scenario scripts, and `node` 22 or newer for one of them. The stack itself needs none |
 
 ## Start it
 
@@ -21,44 +21,49 @@ bound to `127.0.0.1`.
 docker compose --profile app up -d --build --wait
 ```
 
-The first run pulls the coder (2.9 GB, once: the chat and the researcher run from the same image) and builds the
-orchestrator, the web, the git server and the mock CI: several minutes. A later run takes seconds. The command returns
-when the containers are up:
+The first run downloads the 2.9 GB coder image once — the chat and the researcher are the same image — then compiles the
+orchestrator in Rust, the web, the git server, the mock CI and two mock servers: several minutes (*unverified*: an
+estimate, not measured on a clean clone here). A later run takes seconds.
+
+`--wait` returns once the containers are healthy, not when they have merely started. In `ps`, `edge`, `coder`, `chat`
+and `researcher` read `healthy`; the orchestrator has no probe of its own, and the edge checks it.
 
 ```sh [terminal]
 docker compose --profile app ps
 ```
 
-`edge`, `coder`, `chat` and `researcher` read `healthy` (the orchestrator has no health check of its own: the edge
-probes it). `docker compose --profile app down -v` stops it and forgets the databases and the pushed branches.
+`docker compose --profile app down` stops the stack; add `-v` to throw the databases and the pushed branches away with
+it.
 
 ## Sign in and say hello
 
-Open <http://127.0.0.1:8080>. You are signed in as `dev@example.com` without typing anything: the edge sends the
-browser to a mock issuer that approves it and brings it back. The coder is preselected; send:
-
-```text
-hi
-```
-
-It answers with a greeting — its name, what it does in one sentence and what it can help with — and the thread waits
-for you: the pill in the top bar reads **Your turn**. To be an administrator instead, tell the issuer first, then sign
-out and in again: <http://127.0.0.1:8099/login-as?user=admin@example.com>, then
-<http://127.0.0.1:8080/oauth2/sign_out>.
+Open <http://127.0.0.1:8080>. You land in the chat already signed in as `dev@example.com`: the edge hands the browser to
+a mock issuer, which approves it and sends it back, so there is nothing to type. The coder is preselected.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../web/e2e/__screens__/desktop-dark-sign-in.png">
   <img src="../web/e2e/__screens__/desktop-light-sign-in.png" alt="The web's sign-in page: the wordmark another·agentic, the line “Sign in with your acme account at auth.example.com.” and a Sign in button, on an otherwise empty page." width="640">
 </picture>
 
-*The web's sign-in page, which the local stack skips: the edge signs you in without showing it. From the web's mock server.*
+*The web's sign-in page, which the local stack skips — the edge signs you in and brings you back. From the web's mock server.*
+
+Send:
+
+```text
+hi
+```
+
+You get a greeting rather than a request: who it is, what it does, and what you would like to do. The thread then waits
+for you — the pill in the top bar reads **Your turn** — until you answer. To be an administrator instead, tell the issuer
+first and sign in again: <http://127.0.0.1:8099/login-as?user=admin@example.com>, then
+<http://127.0.0.1:8080/oauth2/sign_out>.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="../web/e2e/__screens__/desktop-dark-empty-thread.png">
-  <img src="../web/e2e/__screens__/desktop-light-empty-thread.png" alt="An empty thread with the coder selected: the agent Adam in the top bar, the question “What should we get done?”, one line on what Adam does, a composer reading “Describe a task for the agent…”, four suggestion chips, and a sidebar whose chats list says “Your chats will show up here.”" width="640">
+  <source media="(prefers-color-scheme: dark)" srcset="../web/e2e/__screens__/desktop-dark-your-turn.png">
+  <img src="../web/e2e/__screens__/desktop-light-your-turn.png" alt="A thread that waits for the person: Adam asks “Should I deploy to staging or straight to production?”, a “Waiting for your reply” chip sits under the question, the pill in the top bar reads Your turn, the composer reads “Reply…”, and the Activity panel shows two steps." width="640">
 </picture>
 
-*An empty thread, the coder selected, with the person signed in as `dev@example.com`. From the web's mock server.*
+*A thread that waits for you. The question is the mock's, not the coder's greeting: the greeting is a sentence of its own. From the web's mock server.*
 
 Then give it work in the same thread, and watch its steps in the side panel:
 
@@ -74,15 +79,15 @@ pull request on the mock GitHub.
   <img src="../web/e2e/__screens__/desktop-light-done-answer.png" alt="A finished answer: Adam's words, a Rust code block, the line that all 42 tests pass, a pull request card with a View pull request button, and the Activity panel listing the turn's steps, from Started working to Opened pull request #12." width="640">
 </picture>
 
-*A finished answer: the words, the code it changed, the pull request card and the steps of the turn. From the web's mock server.*
+*A finished answer: the words, the code it changed, the card and the steps of the turn, on a different task than the one above. On the local stack the same job ends in a file card holding the pull request's JSON instead, because the mock GitHub speaks plain `http` and the web does not open that as a link. From the web's mock server.*
 
 ## When it does not work
 
 | You see | It is | Do |
 |---|---|---|
-| `port is already allocated` or `address already in use` | a port of the stack is taken, a local Postgres on 5432 usually | stop the other process, or set that port's variable: `POSTGRES_PORT=5433 docker compose --profile app up -d --wait`, or `EDGE_PORT` for the chat's |
-| an API call answers `401`, or the browser loops through the issuer | no token, an expired one (an hour), or `mock-oidc` was recreated and signs with a new key your session predates | `dev/auth-header.sh` prints a fresh one; in the browser reload, or `/oauth2/sign_out` and in again; `docker compose --profile app logs oauth2-proxy mock-oidc` |
-| `coder` never reads `healthy` | its 2.9 GB image is still being pulled, or it is starting (`start_period` 10 s, then 30 tries) | `docker compose --profile app logs coder`; on an ARM machine it runs under emulation and is slow |
+| `port is already allocated` or `address already in use` | one of the stack's ports is taken, a Postgres already on 5432 usually | free it, or move that port: `POSTGRES_PORT=5433 docker compose --profile app up -d --wait` (the orchestrator still finds `postgres:5432` inside the network, so only the host side moves), or `EDGE_PORT` for the chat's |
+| a `401` from a script, or a browser that keeps bouncing through the issuer | no token, one older than an hour, or a key the issuer replaced under your session | `dev/auth-header.sh` prints a fresh token; in a browser, reload or `/oauth2/sign_out` and back in; `docker compose --profile app logs oauth2-proxy mock-oidc` says which |
+| `coder` never reads `healthy` | its image is still downloading, it is starting, or it died | `docker compose --profile app ps` reads `Exited` for a dead one; `docker compose --profile app logs coder` says why. Under emulation on an ARM machine it is slow |
 
 ## Next steps
 
