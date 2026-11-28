@@ -92,6 +92,7 @@ async fn delegated_texts(w: &World, id: ThreadId) -> Vec<String> {
             | OutboxPayload::Verify { .. }
             | OutboxPayload::Title { .. }
             | OutboxPayload::Description { .. }
+            | OutboxPayload::Suggestions { .. }
             | OutboxPayload::Ask { .. }
             | OutboxPayload::Observe { .. }
             | OutboxPayload::Steer { .. }
@@ -111,13 +112,15 @@ async fn the_default_gate_requires_nothing_and_the_job_stays_the_default() {
     apply(&app, t.id, completed()).await;
     let done = app.get_thread(&alice(), t.id).await.unwrap();
     assert_eq!(done.state, ThreadState::Done);
-    // the job is the default but for the description's ledger, which the end of the job counted
-    // (ADR 0035) whether or not the deployment has a description task
+    // the job is the default but for the description's and the suggestions' ledgers, which the
+    // end of the job counted (ADR 0035) whether or not the deployment has either task
     assert!(!done.job.description.may_ask(1), "job 1 asked");
+    assert!(!done.job.suggestions.may_ask(1), "job 1 asked");
     assert_eq!(
         done.job,
         Job {
             description: done.job.description,
+            suggestions: done.job.suggestions,
             ..Job::default()
         }
     );

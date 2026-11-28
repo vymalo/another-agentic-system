@@ -407,6 +407,7 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                 answer: announced.clone(),
                 title: TitleLedger::default(),
                 description: DescriptionLedger::default(),
+                suggestions: SuggestionsLedger::default(),
                 tools: vec!["docs".into(), "websearch".into()],
                 // the builds of the agents that worked belong to the conversation
                 builds: vec![orch_core::AgentBuild::new(

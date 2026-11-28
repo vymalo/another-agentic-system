@@ -8,8 +8,8 @@ use orch_core::{
     Actor, AgentId, AgentStatus, AgentStatusData, AgentTarget, AgentTaskState, CheckResult,
     CheckSource, CheckStatus, CiConclusion, CiProvider, CiReport, Classify, ErrorClass, Event,
     EventBody, EventKind, GatePolicy, Hold, Job, Origin, PushedRef, ReworkData, SourceFindings,
-    ThreadId, ThreadState, Timer, UiCatalogData, UiCatalogLedger, UiDelivery, UserId,
-    UserMessageData, WatchKey,
+    SuggestionsLedger, ThreadId, ThreadState, Timer, UiCatalogData, UiCatalogLedger, UiDelivery,
+    UserId, UserMessageData, WatchKey,
 };
 use uuid::Uuid;
 
@@ -3476,6 +3476,7 @@ fn busy_job() -> Job {
         answer: orch_core::AnswerLedger::default(),
         title: orch_core::TitleLedger::of(orch_core::TitleSource::User),
         description: orch_core::DescriptionLedger::of(orch_core::DescriptionSource::Model),
+        suggestions: SuggestionsLedger::of(2, true),
         usage: orch_core::UsageLedger::of(42, 3),
         tools: vec!["docs".to_owned(), "websearch".to_owned()],
         // ADR 0036: the text a job being stopped holds for the next one

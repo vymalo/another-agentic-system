@@ -11,7 +11,10 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use orch_app::{AppConfig, TaskSettings};
-use orch_core::{EventBody, EventKind, Lang, LanguageRule, TaskKind, ThreadId, ThreadState};
+use orch_core::{
+    AgentId, AgentTaskState, AgentUpdate, EventBody, EventKind, Input, Lang, LanguageRule,
+    TaskKind, ThreadId, ThreadState,
+};
 use orch_ports::memory::ModelStep;
 use orch_ports::{OutboxKind, OutboxStatus, ThreadStore};
 use support::*;
@@ -269,7 +272,7 @@ async fn a_job_that_blocks_and_then_ends_asks_once() {
 }
 
 #[tokio::test]
-async fn the_persons_words_are_never_sent_as_suggestions() {
+async fn the_model_answers_and_the_person_is_only_data() {
     let w = World::new();
     // the model echoes the person's message back as a "suggestion"
     w.model.then_answer("stream hello there");
@@ -399,11 +402,11 @@ async fn suggestions_in_a_script_the_language_rule_refuses_are_asked_again_once(
     assert!(
         calls[1]
             .user
-            .contains("Your last suggestions was in a script the person did not write in."),
+            .contains("Your last suggestion was in a script the person did not write in."),
         "{}",
         calls[1].user
     );
-    assert!(!calls[0].user.contains("Your last suggestions"));
+    assert!(!calls[0].user.contains("Your last suggestion"));
     assert_eq!(
         suggested(&events(&app, &alice(), t.id).await),
         [(1, vec!["Run the tests"])]
@@ -498,5 +501,110 @@ async fn a_suggestion_the_model_forges_cannot_be_submitted_by_a_person() {
         let err = app.submit(&alice(), t.id, input, None).await.unwrap_err();
         assert!(matches!(err, orch_app::AppError::Invalid(_)), "{err:?}");
     }
+    assert!(suggested(&events(&app, &alice(), t.id).await).is_empty());
+}
+
+#[tokio::test]
+async fn a_long_job_still_carries_the_persons_message() {
+    let w = World::new();
+    w.model.then_answer("Run the tests");
+    let app = suggesting(&w);
+    let t = create(&app, &alice(), "plain", "slow please").await;
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    eventually("the agent to be sent the message", || async {
+        (!w.agent.sends().is_empty()).then_some(())
+    })
+    .await;
+    // A job of tool calls is many more events than the old 128-event window: the person's message
+    // must still be in the tail the worker reads.
+    for n in 0..200 {
+        app.apply(
+            t.id,
+            Input::Agent {
+                agent: AgentId::new("plain"),
+                revision: None,
+                update: AgentUpdate::Status {
+                    state: AgentTaskState::Working,
+                    detail: Some(format!("step {n}")),
+                    tier: None,
+                },
+            },
+            Some(format!("s{n}")),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    app.apply(
+        t.id,
+        Input::Agent {
+            agent: AgentId::new("plain"),
+            revision: None,
+            update: AgentUpdate::Status {
+                state: AgentTaskState::Completed,
+                detail: Some("done".to_owned()),
+                tier: None,
+            },
+        },
+        Some("done".to_owned()),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    wait_state(&app, &alice(), t.id, ThreadState::Done).await;
+    eventually("the suggestions", || async {
+        (!suggested(&events(&app, &alice(), t.id).await).is_empty()).then_some(())
+    })
+    .await;
+    run.shutdown().await;
+    let calls = w.model.calls();
+    assert_eq!(calls.len(), 1);
+    assert!(
+        calls[0].user.contains("user: slow please"),
+        "the person's message is in the window: {}",
+        calls[0].user
+    );
+}
+
+#[tokio::test]
+async fn a_row_whose_thread_moved_on_declines_without_asking() {
+    let w = World::new();
+    w.model.then_answer("Never used");
+    let app = suggesting(&w);
+    let t = create(&app, &alice(), "plain", "slow please").await;
+    // The job ends and its suggestions row waits; the person writes before it is worked.
+    app.apply(
+        t.id,
+        Input::Agent {
+            agent: AgentId::new("plain"),
+            revision: None,
+            update: AgentUpdate::Status {
+                state: AgentTaskState::Completed,
+                detail: Some("done".to_owned()),
+                tier: None,
+            },
+        },
+        Some("done".to_owned()),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(rows(&w, t.id).len(), 1, "the job's end asked");
+    app.post_message(&alice(), t.id, "slow again".to_owned())
+        .await
+        .unwrap();
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    eventually("the row to end", || async {
+        (rows(&w, t.id)[0].status == OutboxStatus::Delivered).then_some(())
+    })
+    .await;
+    run.shutdown().await;
+    assert!(
+        w.model.calls().is_empty(),
+        "the thread is no longer done or blocked: no model is asked"
+    );
     assert!(suggested(&events(&app, &alice(), t.id).await).is_empty());
 }

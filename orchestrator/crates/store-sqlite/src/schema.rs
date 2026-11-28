@@ -111,7 +111,9 @@ fn checksum(sql: &str) -> String {
 pub(crate) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
     // A migration that rebuilds a table — SQLite cannot alter a CHECK constraint — needs the
     // foreign keys off while it runs, the documented procedure. `PRAGMA foreign_keys` is a no-op
-    // inside a transaction, so it is set around one; the store runs with them on either way.
+    // inside a transaction, so it is set around one; the store runs with them on either way. What
+    // needs it is `message_terms`, which points at `events`: with the keys on, dropping `events`
+    // to rebuild it would cascade the index away.
     conn.pragma_update(None, "foreign_keys", false)
         .map_err(store_err)?;
     let outcome = migrate_in(conn);

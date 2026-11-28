@@ -21,6 +21,7 @@ use crate::locale::LocaleHint;
 use crate::mention::Mention;
 use crate::pick::ModelPick;
 use crate::prompt_signature::PromptSignature;
+use crate::suggestions::SuggestionsLedger;
 use crate::thread::{AgentTarget, ThreadRecord, ThreadState};
 use crate::title::{TitleLedger, agent_words};
 use crate::tools::attached_by;
@@ -296,6 +297,7 @@ pub fn forked_snapshot(
             verification,
             title: title.inherited(),
             description: description.inherited(),
+            suggestions: SuggestionsLedger::default().inherited(),
             tools: attached_by(copied),
             ..Job::default()
         },

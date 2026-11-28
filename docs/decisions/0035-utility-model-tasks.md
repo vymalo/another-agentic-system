@@ -29,6 +29,11 @@ sidebarTitle: "0035 · Utility model tasks"
   - **The ledger is per job** (`SuggestionsLedger` in `Job.suggestions`: the job that asked and whether its ask is in
     flight). `Job::next()` keeps it, so the next job asks again; a fork starts with **nothing** (`inherited()`), because
     the fork's jobs are its own and the suggestions of the parent's job are not its answer.
+  - **A fork keeps the parent's events, not its offer**: its ledger starts with nothing and its agent's history has none;
+    the parent's `thread_suggested` events stay in the copied log as history, as a copied title or description does
+    (ADR 0029 copies the prefix whole, and dropping one event would break the fork's `copied == cut` seq check).
+  - **A child thread never asks**, and a row whose thread is no longer `done` or `blocked` (the person answered) declines
+    without a model call; a window with no message of the person declines too.
   - **The event is job-scoped** (`thread_suggested { job, suggestions }`): nothing on the thread's row changes, there is
     no `thread.suggestions` member, and a client reads the suggestions from the log — live and in the history as the
     `vymalo.suggestions` activity, and in the export's `events`.

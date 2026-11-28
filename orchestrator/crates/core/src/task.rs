@@ -92,6 +92,16 @@ impl TaskKind {
         }
     }
 
+    /// What one answer of the task is called, for the retry's fault line ("Your last title…",
+    /// "Your last suggestion…"): the singular of what it writes.
+    const fn singular(self) -> &'static str {
+        match self {
+            TaskKind::Title => "title",
+            TaskKind::Description => "description",
+            TaskKind::Suggestions => "suggestion",
+        }
+    }
+
     /// What the model is told to write when a deployment gives no guidance of its own.
     pub const fn default_guidance(self) -> &'static str {
         match self {
@@ -120,8 +130,9 @@ impl TaskKind {
                  NONE if there is nothing to describe yet."
             }
             TaskKind::Suggestions => {
-                "Answer with at most three suggestions, one per line, each at most 80 characters, \
-                 or exactly NONE if there is nothing to suggest."
+                "Answer with at most three suggestions, one per line, in plain text without \
+                 Markdown, each at most 80 characters, or exactly NONE if there is nothing to \
+                 suggest."
             }
         }
     }
@@ -228,11 +239,11 @@ pub fn task_prompt(spec: &TaskPrompt<'_>, events: &[Event]) -> (String, String) 
         (false, _) => String::new(),
         (true, LanguageRule::Conversation) => format!(
             "Your last {} was in a script the person did not write in.\n",
-            kind.noun()
+            kind.singular()
         ),
         (true, LanguageRule::Fixed(lang)) => format!(
             "Your last {} was in a script that {} is not written in.\n",
-            kind.noun(),
+            kind.singular(),
             lang.name()
         ),
     };

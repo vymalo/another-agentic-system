@@ -171,7 +171,7 @@ pub use step::{
 };
 pub use suggestions::{
     MAX_SUGGESTION_CHARS, MAX_SUGGESTIONS, SuggestionsError, SuggestionsLedger,
-    ThreadSuggestedData, check_suggestions, clean_suggestions,
+    ThreadSuggestedData, check_suggestions, clean_suggestions, has_exchange,
 };
 pub use task::{
     DESCRIPTION_MESSAGES, LanguageRule, MAX_GUIDANCE_BYTES, TaskKind, TaskLanguageError,

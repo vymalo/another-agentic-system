@@ -5,8 +5,10 @@
 
 use jiff::Timestamp;
 use orch_core::{
-    Actor, AgentMessageData, AgentStatus, AgentStatusData, Event, EventBody, Lang, LanguageRule,
-    TaskKind, TaskPrompt, ThreadId, UserMessageData, check_task_language, task_prompt,
+    Actor, AgentId, AgentMessageData, AgentStatus, AgentStatusData, AgentTaskState, AgentUpdate,
+    ChildLedger, Command, Event, EventBody, Input, Job, Lang, LanguageRule, RoundTrack,
+    SessionState, Snapshot, TaskKind, TaskPrompt, ThreadId, ThreadState, UserMessageData,
+    check_task_language, has_exchange, task_prompt,
 };
 
 fn at(seq: i64, body: EventBody) -> Event {
@@ -75,7 +77,7 @@ fn the_request_is_the_last_exchange_only_with_the_fixed_parts() {
     );
     assert!(
         system.contains(
-            "Answer with at most three suggestions, one per line, each at most 80 characters"
+            "Answer with at most three suggestions, one per line, in plain text without Markdown, each at most 80 characters"
         ),
         "{system}"
     );
@@ -145,7 +147,7 @@ fn a_retry_says_what_was_wrong_and_names_the_language_again_last() {
         &log,
     );
     assert!(
-        user.contains("Your last suggestions was in a script the person did not write in."),
+        user.contains("Your last suggestion was in a script the person did not write in."),
         "{user}"
     );
     assert_eq!(
@@ -173,5 +175,76 @@ fn the_language_rule_checks_the_list_as_the_person_writes() {
     assert!(
         check_task_language(LanguageRule::Fixed(Lang::French), &log, "运行测试").is_err(),
         "a fixed language checks its own script"
+    );
+}
+
+#[test]
+fn an_exchange_is_the_persons_message_of_the_job_and_the_answer_after_it() {
+    // Nothing, an agent alone, and a child thread's round (a boundary with no message) have none.
+    assert!(!has_exchange(&[]));
+    assert!(!has_exchange(&[agent_says(1, "Done")]));
+    assert!(!has_exchange(&[at(
+        1,
+        EventBody::JobStarted(orch_core::JobStartedData {
+            job: 1,
+            round: None,
+        }),
+    )]));
+    // A person alone is one: the suggestions may be asked of the words without an answer.
+    assert!(has_exchange(&[user_says(1, "Fix it")]));
+    // The answer of the job before the person's message is not this exchange's.
+    let log = [
+        user_says(1, "the first job"),
+        agent_says(2, "the first answer"),
+        user_says(3, "the second job"),
+    ];
+    let (_, user) = task_prompt(&TaskPrompt::new(TaskKind::Suggestions), &log);
+    assert!(user.contains("user: the second job"), "{user}");
+    assert!(
+        !user.contains("the first answer"),
+        "no answer of the second job yet: {user}"
+    );
+}
+
+#[test]
+fn a_child_threads_round_asks_no_suggestions() {
+    let snapshot = Snapshot {
+        state: ThreadState::Working,
+        job: Job {
+            child: Some(ChildLedger {
+                session: "s1".to_owned(),
+                agent: "planner".to_owned(),
+                keep_open: false,
+                state: SessionState::Working,
+                closing: false,
+                followed: 1,
+                started: 1,
+                refollow: false,
+                close_asked: false,
+                close_cancel: false,
+                track: RoundTrack::default(),
+            }),
+            ..Job::default()
+        },
+    };
+    let (after, cmds) = orch_core::transition(
+        &snapshot,
+        &Input::Agent {
+            agent: AgentId::new("planner"),
+            revision: None,
+            update: AgentUpdate::Status {
+                state: AgentTaskState::Completed,
+                detail: None,
+                tier: None,
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(after.state, ThreadState::Done);
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, Command::RequestSuggestions { .. })),
+        "a helper's round is not the person's conversation: {cmds:?}"
     );
 }

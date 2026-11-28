@@ -3224,6 +3224,7 @@ components:
           description: "thread_described: the thread's new description; empty when a person cleared it. thread_forked: the parent's description when the fork was made, which is the fork's; absent when it had none. child_session_opened: what the helper was asked to do (the agent's text, untrusted, at most 256 characters). child_session_start_asked: what the person said it is for (at most 80 characters)."
         suggestions:
           type: array
+          minItems: 1
           maxItems: 3
           items: { type: string, minLength: 1, maxLength: 80 }
           description: "thread_suggested only: at most 3 next things the person could say, each at most 80 characters, in the thread's language. They fill the message box and never send (ADR 0013, rule 7). Job-scoped: the event's `job` says which job's final answer they follow."

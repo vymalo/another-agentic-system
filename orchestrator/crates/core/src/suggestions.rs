@@ -61,6 +61,11 @@ impl SuggestionsLedger {
         self.asked_job == 0 && !self.pending
     }
 
+    /// A ledger that has asked `asked_job` for suggestions, whose answer is `pending` or has come.
+    pub const fn of(asked_job: u32, pending: bool) -> Self {
+        SuggestionsLedger { asked_job, pending }
+    }
+
     /// The ledger a fork starts with: nothing. Suggestions are per job, and the fork's jobs are
     /// its own.
     pub fn inherited(self) -> Self {
@@ -138,8 +143,8 @@ pub fn check_suggestions(raw: &[String]) -> Result<Vec<String>, SuggestionsError
 /// The suggestions a model's answer stands for: one per line, in order, each with the bullets,
 /// numbering, quotes and Markdown markers a model likes to add taken off the edges, spaces
 /// collapsed, at most [`MAX_SUGGESTION_CHARS`] characters (cut at a word), at most
-/// [`MAX_SUGGESTIONS`] of them. A repeated suggestion is said once, and `NONE` (the model's way of
-/// saying there is nothing to suggest) is no suggestion.
+/// [`MAX_SUGGESTIONS`] of them. A repeated suggestion is said once, and a line that says `NONE`
+/// (in any case, with or without a final period) is no suggestion.
 pub fn clean_suggestions(raw: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in raw.lines() {
@@ -195,8 +200,8 @@ fn strip_marker(line: &str) -> &str {
 }
 
 /// `text` at most [`MAX_SUGGESTION_CHARS`] characters, cut at the last space that leaves room
-/// (the whole word is kept), else in the middle of the word. No ellipsis: a suggestion is a
-/// sentence the person is offered, not a truncated one.
+/// (the whole word is kept), else in the middle of the word. There is no ellipsis: the cut is the
+/// suggestion the person is offered, not a marked truncation.
 fn cut_suggestion(text: &str) -> String {
     if text.chars().count() <= MAX_SUGGESTION_CHARS {
         return text.to_owned();
@@ -210,36 +215,47 @@ fn cut_suggestion(text: &str) -> String {
 }
 
 /// The conversation's **last exchange** for a suggestions request: the person's last message and
-/// the agent's last words, in that order, each one line. Empty when the log has neither.
+/// the agent's last words **of the same job**, in that order, each one line. The job is the one the
+/// last `job_started` of the window began; the person's message is the window's last, which the
+/// boundary's commit writes just before it (a redelivery's message was written earlier, and a job
+/// that went on from a blocked state has no boundary of its own). The agent's words are taken only
+/// from after both, so a job whose answer left no words is not given the answer of the job before
+/// it. Empty when the window has no message of the person.
 pub(crate) fn last_exchange(events: &[Event]) -> Vec<(&str, &str)> {
-    let mut person: Option<&str> = None;
-    let mut agent: Option<&str> = None;
-    for event in events {
-        match &event.body {
-            EventBody::UserMessage(m) => {
-                let text = m.text.trim();
-                if !text.is_empty() {
-                    person = Some(text);
-                }
-            }
-            other => {
-                if let Some(words) = crate::title::agent_words(other) {
-                    let text = words.trim();
-                    if !text.is_empty() {
-                        agent = Some(text);
-                    }
-                }
-            }
-        }
-    }
-    let mut out = Vec::new();
-    if let Some(text) = person {
-        out.push(("user", text));
-    }
-    if let Some(text) = agent {
-        out.push(("agent", text));
+    let boundary = events
+        .iter()
+        .rposition(|e| matches!(e.body, EventBody::JobStarted(_)))
+        .unwrap_or(0);
+    let Some((person_at, person)) =
+        events
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, e)| match &e.body {
+                EventBody::UserMessage(m) if !m.text.trim().is_empty() => Some((i, m.text.trim())),
+                _ => None,
+            })
+    else {
+        return Vec::new();
+    };
+    let agent = events[person_at.max(boundary) + 1..]
+        .iter()
+        .filter_map(|e| crate::title::agent_words(&e.body))
+        .map(str::trim)
+        .filter(|words| !words.is_empty())
+        .next_back();
+    let mut out = vec![("user", person)];
+    if let Some(agent) = agent {
+        out.push(("agent", agent));
     }
     out
+}
+
+/// Whether the log has an exchange a suggestions request can be built from: a message of the person
+/// of the job it names, and the agent's answer when there is one. The dispatcher asks nothing for a
+/// log without one.
+pub fn has_exchange(events: &[Event]) -> bool {
+    !last_exchange(events).is_empty()
 }
 
 #[cfg(test)]

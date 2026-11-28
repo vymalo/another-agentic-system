@@ -1281,14 +1281,19 @@ the thread resource. A client reads them from the event:
   content:{job, suggestions: [string], at}}`, where the event is in the log. The model's answer comes after the job's end, so
   the run is normally closed by then: the event opens a producer-initiated run of its own that holds the card and closes at
   once (as a late CI card does), which a client with nothing else to show for it drops.
-- **A viewer that connects later** reads the same card where the event is in the replay, so a finished thread that is
-  reopened still offers its newest job's suggestions.
+- **A viewer that connects later** reads the same card where the event is in the replay, so a reopened finished thread
+  still offers the suggestions of each job that asked.
 - **The export** holds the `thread_suggested` event in its `events`, as it holds every event; there is no separate field.
-- **A fork** inherits none: suggestions belong to the job that asked, and the fork's jobs are its own. Its own first job to
-  end asks again.
+- **A fork** starts with **no suggestions ledger**: suggestions belong to the job that asked, and the fork's jobs are its
+  own, so its first job to end asks. The parent's `thread_suggested` events are copied with the prefix as history, as its
+  title and description are (ADR 0029 copies the log whole): the projection says them for the parent's jobs, and what the
+  fork's agent is told of the conversation has none.
 
 `GET /api/config` does not mention the task; `tasks.suggestions` in the configuration is what turns it on
 ([`config.md`](config.md)), and no `tasks.suggestions` means no row, no model call and no event.
+
+Goldens: `suggestions.events.json` (a job's `done`, then the model's `thread_suggested`) and
+`agui/suggestions.agui.json` (what a live viewer reads for it).
 
 ## Attaching MCP servers
 
@@ -2351,6 +2356,17 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
             "by": { "enum": ["agent", "person"], "description": "Who started the round, when the agent said" }
           }
         },
+        "at": { "$ref": "#/$defs/at" }
+      }
+    },
+    "vymalo.suggestions": {
+      "type": "object",
+      "description": "The next things the person could say, offered under a job's final answer (ADR 0035, amended 2026-11-28). They fill the message box and never send (ADR 0013, rule 7).",
+      "required": ["job", "suggestions", "at"],
+      "additionalProperties": false,
+      "properties": {
+        "job": { "type": "integer", "minimum": 1, "description": "The job whose final answer they follow" },
+        "suggestions": { "type": "array", "minItems": 1, "maxItems": 3, "items": { "type": "string", "minLength": 1, "maxLength": 80 } },
         "at": { "$ref": "#/$defs/at" }
       }
     },

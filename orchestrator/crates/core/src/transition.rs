@@ -1465,8 +1465,10 @@ fn ask_for_description(
 /// A job has just ended (`done`) or paused for the person (`blocked`): the model is asked for the
 /// next things the person could say, once for the job (ADR 0035, amended 2026-11-28). `failed` and
 /// `cancelled` never ask, and a state the thread was in already asks nothing: only the transition
-/// that gets there does. Unlike a description, nothing a person wrote makes it final: a later job
-/// asks again.
+/// that gets there does. A **child thread** never asks: its jobs follow the rounds of a helper
+/// session, which are not a conversation with the person to suggest the next words of, and each
+/// round would bill a call for suggestions nobody reads. Unlike a description, nothing a person
+/// wrote makes it final: a later job asks again.
 fn ask_for_suggestions(
     before: ThreadState,
     after: ThreadState,
@@ -1474,7 +1476,7 @@ fn ask_for_suggestions(
     cmds: &mut Vec<Command>,
 ) {
     let stops = matches!(after, ThreadState::Done | ThreadState::Blocked);
-    if stops && before != after && job.suggestions.may_ask(job.number) {
+    if stops && before != after && job.child.is_none() && job.suggestions.may_ask(job.number) {
         job.suggestions.asked(job.number);
         cmds.push(Command::RequestSuggestions { job: job.number });
     }

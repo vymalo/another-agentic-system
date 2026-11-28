@@ -497,6 +497,14 @@ mod tests {
                     thread: tid(),
                 }),
             ),
+            ev(
+                14,
+                Actor::system(),
+                EventBody::ThreadSuggested(orch_core::ThreadSuggestedData {
+                    job: 1,
+                    suggestions: vec!["Run the tests".into()],
+                }),
+            ),
         ]
     }
 

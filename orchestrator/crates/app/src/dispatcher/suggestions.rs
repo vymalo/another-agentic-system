@@ -9,10 +9,13 @@
 //! `suggestions:<row id>`, so one row is one event whoever works it.
 //!
 //! * **It is asked for the end of a job, once.** The core asks when a transition leaves the thread
-//!   `done` or `blocked`, at most once per job; a later job asks again.
+//!   `done` or `blocked`, at most once per job; a later job asks again. A **child thread** never
+//!   asks (its jobs follow a helper session's rounds), and a row whose thread is no longer `done`
+//!   or `blocked` — the person answered meanwhile — declines without asking.
 //! * **What the model is shown is the last exchange only**, read from the tail of the log when the
-//!   row is worked: the person's last message and the agent's final answer of the job, never the
-//!   whole log ([`task_prompt`]). It is untrusted text and goes fenced, as data.
+//!   row is worked: the person's last message and the agent's final answer **of the same job**,
+//!   never the whole log ([`task_prompt`]). It is untrusted text and goes fenced, as data. A window
+//!   with no message of the person declines without asking.
 //! * **The suggestions are in the language the task's rule says, and checked**, as the title is:
 //!   an answer in a script the rule refuses is declined and the model asked **once more in the
 //!   same row** ([`check_task_language`]); wrong twice, the row is declined.
@@ -22,7 +25,8 @@
 //! * **Every write is fenced** with the row's claim: a worker that lost it writes nothing.
 
 use orch_core::{
-    Event, Input, TaskKind, TaskPrompt, check_task_language, clean_suggestions, task_prompt,
+    Event, Input, TaskKind, TaskPrompt, ThreadState, check_task_language, clean_suggestions,
+    has_exchange, task_prompt,
 };
 use orch_ports::{
     ChatRequest, OutboxFinal, OutboxItem, OutboxPayload, Ports, RunBindings, ThreadStore,
@@ -32,8 +36,9 @@ use super::{DispatchError, Dispatcher, Done};
 use crate::{AppError, ApplyOutcome, LateSource, TaskSettings};
 
 /// How many events of the tail of the log are read: the last exchange, and the person's messages
-/// the language rule is decided from.
-const TAIL_EVENTS: u32 = 128;
+/// the language rule is decided from. The description's bound: a long job of tool calls is more
+/// than a hundred events, and the person's message has to stay in the window.
+const TAIL_EVENTS: u32 = 512;
 
 impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     /// Processes one `suggestions` row. See the module documentation.
@@ -55,10 +60,29 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             // suggestions were switched off since the row was written
             None => Input::SuggestionsDeclined { job },
             Some(task) => {
-                let events = self.suggestions_events(&row, thread.last_seq).await?;
-                match self.suggestions_in_language(&row, task, &events).await? {
-                    Some(suggestions) => Input::Suggested { job, suggestions },
-                    None => Input::SuggestionsDeclined { job },
+                if !matches!(thread.state, ThreadState::Done | ThreadState::Blocked) {
+                    // The person answered since the row was written: the thread has moved on, and
+                    // the suggestions of a job it is no longer waiting on are not asked for.
+                    tracing::debug!(
+                        id = %row.id,
+                        state = thread.state.as_str(),
+                        "the thread moved on; no suggestions"
+                    );
+                    Input::SuggestionsDeclined { job }
+                } else {
+                    let events = self.suggestions_events(&row, thread.last_seq).await?;
+                    if !has_exchange(&events) {
+                        tracing::debug!(
+                            id = %row.id,
+                            "no exchange of the person to suggest from; no model is asked"
+                        );
+                        Input::SuggestionsDeclined { job }
+                    } else {
+                        match self.suggestions_in_language(&row, task, &events).await? {
+                            Some(suggestions) => Input::Suggested { job, suggestions },
+                            None => Input::SuggestionsDeclined { job },
+                        }
+                    }
                 }
             }
         };

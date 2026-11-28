@@ -3,8 +3,9 @@
 --
 -- SQLite cannot alter a CHECK constraint, so the two tables are rebuilt as its documented
 -- procedure says (create the new table, copy, drop, rename, recreate the indexes). The runner turns
--- the foreign keys off around a migration for exactly this: `outbox` and `message_terms` point at
--- `events`, and with the keys on dropping it would cascade their rows away.
+-- the foreign keys off around a migration for exactly this: `message_terms` points at `events`
+-- (`outbox` points at `threads`), and with the keys on dropping `events` would cascade its rows
+-- away. `outbox` is rebuilt for its own CHECK, not for a reference to `events`.
 --
 -- No row changes meaning: every column is copied as it was.
 --

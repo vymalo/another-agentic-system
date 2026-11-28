@@ -79,6 +79,17 @@ fn job_started(seq: i64, job: u32) -> Event {
     )
 }
 
+fn suggested(seq: i64, job: u32, suggestions: &[&str]) -> Event {
+    ev(
+        seq,
+        Actor::system(),
+        EventBody::ThreadSuggested(ThreadSuggestedData {
+            job,
+            suggestions: suggestions.iter().map(|s| (*s).to_owned()).collect(),
+        }),
+    )
+}
+
 fn step(seq: i64) -> Event {
     ev(
         seq,
@@ -945,7 +956,9 @@ fn what_is_not_a_conversation_is_left_out() {
         action(4),
         agent(5, "  "),
         agent(6, "hi"),
-        entered(7, Done),
+        // the suggestions of a job are not the conversation either
+        suggested(7, 1, &["Run the tests"]),
+        entered(8, Done),
     ];
     assert_eq!(lines(&fork_history(&log)), ["person: hello", "coder: hi"]);
 }
@@ -1672,4 +1685,21 @@ fn the_models_reasoning_is_not_part_of_the_conversation_a_fork_continues() {
         fork_cut(&log, ThreadState::Done, ForkPoint::Replace(3)),
         Err(ForkError::NotAMessage)
     );
+}
+
+/// The parent's suggestions are not the fork's: its ledger starts with none (so its first job to
+/// end asks), and what its agent is told of the conversation has none. The `thread_suggested`
+/// events the copy holds stay in the log as history, as a copied title or description does
+/// (ADR 0029 copies the prefix whole); the projection says them for the parent's jobs only.
+#[test]
+fn a_fork_starts_with_no_suggestions_ledger_and_its_history_has_none() {
+    let copied_log = [person(1, "fix it"), suggested(2, 1, &["Run the tests"])];
+    let snapshot = forked_snapshot(
+        &copied_log,
+        GatePolicy::default(),
+        TitleLedger::default(),
+        DescriptionLedger::default(),
+    );
+    assert_eq!(snapshot.job.suggestions, SuggestionsLedger::default());
+    assert_eq!(lines(&fork_history(&copied_log)), ["person: fix it"]);
 }
