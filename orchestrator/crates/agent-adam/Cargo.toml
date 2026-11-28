@@ -53,6 +53,12 @@ orch-agent-adam = { path = ".", features = ["testkit"] }
 orch-agent-a2a.workspace = true
 axum.workspace = true
 url.workspace = true
+# The `chat` folder's first request (`tests/chat_first_request.rs`, ANR-394): the folder loader and
+# the assembly, through `adam-engine`'s re-exports (`adam_agent_fs`, `adam_assembly`,
+# `adam_llm_agent`, `adam_model`, `adam_ui`). The embedded set, so no server, no MCP client and no
+# network: the feature `embedded` is off and this is a dev-dependency only, so a build of the crate
+# does not carry it.
+adam-engine.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]
