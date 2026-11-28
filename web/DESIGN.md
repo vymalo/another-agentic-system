@@ -1159,6 +1159,17 @@ the arrows move, Enter chooses, and the menu stays open so the change is seen. T
 nothing moves. Where there is no account menu (the sign-in screen, a shared conversation, a local run with nobody signed in)
 the same group opens from a **Theme** icon button.
 
+### The interface language
+
+The person picks the language of the page and of their messages from the languages the deployment offers (`ui.languages` of
+`GET /api/config`; the four `en-GB`, `fr-FR`, `gsw-CH`, `fur-IT` when it names none): a **Language** group of one radio item per
+tag in the account menu, beside Theme. Each language is drawn by its own name, and the item carries that tag in `lang`, so a
+screen reader says the name in that language; a tag this build has no name for is drawn as the tag. The choice is this device's
+(`chat.lang`), put on `<html lang>` by a head script before the first paint, and the send path reads that attribute unchanged
+(`locale/v1`). **The interface is not translated**: the words of this app stay English, and the choice says which language the
+person reads and which one their messages tell the agent. There is no `/settings` page for it: this app's settings are the
+account menu, and a footer with no account has no language group, because a language is a person's setting.
+
 ## Motion
 
 A new turn fades in and rises 4 px (160 ms, ease-out); the live step and the summary line's spinner spin; "starting" shimmers;

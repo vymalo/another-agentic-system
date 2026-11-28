@@ -266,6 +266,18 @@ rm -f "$null_counts"
 check "a first page above the largest page is refused" fails renders --set orchestrator.history.initialTurns=60 --set orchestrator.history.maxTurns=50
 check "a first page above the default largest page is refused" fails renders --set orchestrator.history.pageTurns=100 --set orchestrator.history.maxTurns=99
 check "a first page at the largest page is accepted" renders --set orchestrator.history.initialTurns=50 --set orchestrator.history.maxTurns=50
+# ADR 0085, card ANR-957: the interface languages the deployment offers, written only when the operator sets its own list
+render
+config_of config.yaml "$cfg"
+check "languages: the default render writes no ui.languages (the orchestrator's four apply)" cfg_lacks 'languages'
+render --set 'orchestrator.languages[0]=en-GB' --set 'orchestrator.languages[1]=fr-FR'
+config_of config.yaml "$cfg"
+check "languages: ui.languages is the operator's list, in order" cfg_all '^  languages:$' '^    - "en-GB"$' '^    - "fr-FR"$'
+check "languages: the list sits under ui, beside showDescriptions" sh -c "awk '/^ui:\$/ {u=1; next} u && /^[^ ]/ {u=0} u' '$cfg' | grep -Eq '^  languages:\$'"
+for bad in 'orchestrator.languages[0]=en_CM' 'orchestrator.languages[0]=français' 'orchestrator.languages[0]=' 'orchestrator.languages[0]=en-GB-abcdefghi' 'orchestrator.languages[0]=en-12' 'orchestrator.languages[0]=en-GB-oed' 'orchestrator.languages[0]=x-twain'; do
+  check "a language value $bad is refused" fails renders --set "$bad"
+done
+check "a language named twice, case-insensitively, is refused" fails renders --set 'orchestrator.languages[0]=en-GB' --set 'orchestrator.languages[1]=EN-gb'
 render --set chat.enabled=false --set 'agents[0].id=coder' --set 'agents[0].name=Coder' --set 'agents[0].cardUrl=http://coder.x.svc:8080/c' --set 'agents[0].tokenEnv=CODER_A2A_TOKEN'
 check "without the chat agent: no chat Deployment, database or ExternalSecret" lacks 'another-agentic-chat'
 check "without the chat agent the other four pods remain" count '^kind: Deployment$' 4

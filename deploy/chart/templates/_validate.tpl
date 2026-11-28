@@ -475,6 +475,29 @@ missing identity must fail the render rather than silently serve a link another 
 {{- fail (printf "orchestrator.history.%s is above orchestrator.history.maxTurns (default 100): the server would refuse the page the web asks for" $key) -}}
 {{- end -}}
 {{- end -}}
+{{- /* The interface languages the deployment offers (ADR 0085, card ANR-957): each a BCP 47 tag, at most 32, none twice
+       (case-insensitively). Empty is the orchestrator's own default, so nothing is written then. */ -}}
+{{- $languages := .Values.orchestrator.languages -}}
+{{- if not (kindIs "slice" $languages) -}}
+{{- fail (printf "orchestrator.languages must be a list of BCP 47 tags, got %s" (kindOf $languages)) -}}
+{{- end -}}
+{{- if gt (len $languages) 32 -}}
+{{- fail (printf "orchestrator.languages has %d entries: at most 32" (len $languages)) -}}
+{{- end -}}
+{{- $seen := list -}}
+{{- range $language := $languages -}}
+{{- if not (kindIs "string" $language) -}}
+{{- fail (printf "orchestrator.languages entries must be strings, got %s" (kindOf $language)) -}}
+{{- end -}}
+{{- if or (gt (len $language) 35) (not (regexMatch "^[A-Za-z]{2,8}(-[A-Za-z]{4})?(-([A-Za-z]{2}|[0-9]{3}))?$" $language)) -}}
+{{- fail (printf "orchestrator.languages entry %q is not a language tag an interface offers (a language, an optional script of 4 letters and an optional region of 2 letters or 3 digits, at most 35 bytes)" $language) -}}
+{{- end -}}
+{{- $folded := lower $language -}}
+{{- if has $folded $seen -}}
+{{- fail (printf "orchestrator.languages names %q twice (subtags are case-insensitive)" $language) -}}
+{{- end -}}
+{{- $seen = append $seen $folded -}}
+{{- end -}}
 {{- /* The model. */ -}}
 {{- if and .Values.model.baseUrl (not (regexMatch "^https?://[^/]" (toString .Values.model.baseUrl))) -}}
 {{- fail "model.baseUrl must be an http(s) URL" -}}

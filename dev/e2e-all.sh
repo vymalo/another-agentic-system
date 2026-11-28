@@ -108,9 +108,9 @@
 #                     compose.yaml), a message naming de-DE reaches the model as one more turn
 #                     after the history and never in `system`, a thread that names none gets no
 #                     line, and a tag for the researcher (whose card lists nothing) changes nothing;
-#                     the run body is the web's own (web/scripts/run-forwarded-props.mjs), which
-#                     puts an interface tag under vymalo.locale and refuses one it would not send
-#                     line, and a tag for the researcher (whose card lists nothing) changes nothing
+#                     the run body is the web's own (web/scripts/run-forwarded-props.mjs), which puts an
+#                     interface tag under vymalo.locale and refuses one it would not send, and
+#                     GET /api/config carries ui.languages, the list the web's picker offers (ANR-957)
 #   commands          commands/v1 on the REAL coder (ADR 0079): the capabilities            commands-e2e.sh
 #                     of adam list the folder's three commands, chat lists none, the
 #                     coder's first model request holds `/explain acme/app` expanded,

@@ -93,6 +93,21 @@ describe("the device's voice", () => {
     expect(spoken.map((u) => u.text).join(" ")).toBe(words);
   });
 
+  it("reads in the interface language the person picked, the tag the page carries", () => {
+    vi.useFakeTimers();
+    installVoice();
+    const before = document.documentElement.lang;
+    document.documentElement.lang = "fr-FR";
+    try {
+      deviceSpeechEngine()?.speak("Bonjour.", handlers().handlers);
+      vi.runAllTimers();
+      // the same attribute the run sends as `vymalo.locale` (features/locale): one choice, one language
+      expect(spoken[0]?.lang).toBe("fr-FR");
+    } finally {
+      document.documentElement.lang = before;
+    }
+  });
+
   it("queues nothing when it was stopped in the same task as the speak", () => {
     vi.useFakeTimers();
     installVoice();

@@ -3620,6 +3620,17 @@ mod tests {
         // and the JSON of the endpoint has the key exactly when the capability is there
         let json = serde_json::to_value(&app.public).unwrap();
         assert_eq!(json["ui"]["history"]["projection"], history.projection);
+        // ADR 0085: the languages are always in `ui`, the four of the design when the file names
+        // none, whether or not the process serves the history route. The app crate carries its own
+        // copy of the four (it does not depend on `orch-config`), so the two are held equal here.
+        assert_eq!(
+            json["ui"]["languages"],
+            serde_json::to_value(orch_config::DEFAULT_LANGUAGES).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&worker.public).unwrap()["ui"]["languages"],
+            serde_json::to_value(orch_config::DEFAULT_LANGUAGES).unwrap()
+        );
         assert!(
             serde_json::to_value(&worker.public).unwrap()["ui"]
                 .get("history")

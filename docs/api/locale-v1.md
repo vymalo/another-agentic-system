@@ -6,8 +6,10 @@
   card read, the activation, the local stack's scenario); adam lists it whenever `DEFAULT_LOCALE` is set, which the stack's `chat` does
   (proven against the real chat by `dev/locale-real-e2e.sh`); and **the web sends it** — the tag the page is drawn in,
   `document.documentElement.lang`, on each message that carries the person's words (`web/src/features/locale`, `web/e2e/locale.spec.ts`;
-  the owner's ruling of 2026-11-26, option b). The interface language a person **picks** is still ahead (ANR-957), so today the tag is
-  the page's own.
+  the owner's ruling of 2026-11-26, option b) — and **the person picks the interface language** from the list the deployment
+  offers (`ui.languages` of [`GET /api/config`](config.md#get-apiconfig), ADR 0085's four by default): the picker is in the
+  account menu, the choice is kept in the browser, and `<html lang>` follows it before the first paint, so the send is the
+  same code path (ANR-957).
 - **Decided in:** [ADR 0085](../decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md); the
   optional-extension pattern is [ADR 0008](../decisions/0008-platform-integration-via-a2a-extension.md).
 - **Defined by:** the orchestrator. **Used by:** agents that can write in more than one language and want to know which one
@@ -132,8 +134,12 @@ extension singleton; a private-use part with no subtag (`en-GB-x`); a first subt
 grandfathered tags (`i-klingon`, `en-GB-oed`), which no interface produces.
 
 **The set of languages is not a list in the code.** Which ones an interface offers is the **deployment's configuration**
-(ADR 0085): the orchestrator accepts any well-formed tag, and the four above are what the interface offers today. A tag the
-agent cannot write is not refused here — the agent says so in words, which is what a hint is for.
+(ADR 0085): the orchestrator accepts any well-formed tag, and the deployment names its list under `ui.languages` of
+[`GET /api/config`](config.md#get-apiconfig) — ADR 0085's four (`en-GB`, `fr-FR`, `gsw-CH`, `fur-IT`) when it names none. Each entry is a
+language, an optional script and an optional region (the shape the picker sends, narrower than the tag a message may carry), so a
+deployment cannot offer a tag the client would never send. The
+web draws a picker for exactly those, and a tag a person picks is the one each message carries. A tag the agent cannot write
+is not refused here — the agent says so in words, which is what a hint is for.
 
 ## 4. The message
 
@@ -244,7 +250,7 @@ dispatcher does not fail the job for a locale, and the adapter never refuses a m
 | Orchestrator | the closed, validated `LocaleHint` and `LocaleListing` (`crates/core/src/locale.rs`), the card read and the activation (`crates/agent-a2a/src/locale.rs`), `locale` on `SendRequest` and on the `delegate`/`steer` outbox rows, the `forwardedProps` key and its **400** (`crates/app/src/locale.rs`, `crates/surface-agui`), the scenario `dev/locale-e2e.sh` |
 | [`agui.md`](agui.md) | the inbound key, and the statement that nothing of it is projected |
 | [`extensions.md`](extensions.md), [`README.md`](README.md) | the row |
-| Web | the tag the page is drawn in, `document.documentElement.lang`, on the run that carries a message (`web/src/features/locale/lib/locale.ts`, `web/e2e/locale.spec.ts`); the interface language a person picks is ANR-957 |
+| Web | the tag the page is drawn in, `document.documentElement.lang`, on the run that carries a message (`web/src/features/locale/lib/locale.ts`, `web/e2e/locale.spec.ts`), and **the picker** of the deployment's `ui.languages`, the choice kept in the browser and `<html lang>` following it before the first paint (ANR-957) |
 | adam-rs | reads the tag and answers in it (**built**, *verified 2026-11-27*: at `9f90f1e` `crates/adam-service/src/config.rs:366` reads `DEFAULT_LOCALE` and `serve` lists `locale/v1` with it; the stack's `chat` sets it) |
 
 ## Conformance
