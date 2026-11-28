@@ -4,7 +4,7 @@ sidebarTitle: "0103 · Own agents kept ready"
 
 # ADR 0103 — A person's own agent is made and kept ready before their message is accepted
 
-- **Status:** **Proposed (2026-11-26)** (ANR-806, part 2; built in `orchestrator/crates/app/src/provisioning.rs`, off unless the deployment has a `provisioner` section). Not yet tried against a real platform: the dev stack plays it with a WireMock stand-in (`dev/provisioner-e2e.sh`). **Amended (2026-11-27): ANR-1061, a person's message goes to their own agent by a route recorded in `Job.route`, and the dispatcher's sends for a routed thread provision too (decision 5, the amendment below).** **Amended (2026-11-27): ANR-1062, a `Blocked` agent is waited for, except two reasons that waiting cannot clear, which are a 500 `agent_blocked` (the amendment below).** **Amended (2026-11-27): ANR-1078, the two known gaps of a stop that waited are fixed by refunding the wait (note under Consequences).** **Amended (2026-11-27): ANR-1078 PR 2, a routed row waiting for the person's agent to wake is cut at a short probe and waits `pending`, so it no longer holds a dispatcher slot, and a stop that finds it between two probes ends the thread before it starts (the amendment `Amended 2026-11-27 (ANR-1078, PR 2)` below).** **Amended (2026-11-27): ANR-1175, the known limit of the claim order is removed: a person's due rows are ranked by `next_attempt_at`, then by age (note under the Known limit).**
+- **Status:** **Proposed (2026-11-26)** (ANR-806, part 2; built in `orchestrator/crates/app/src/provisioning.rs`, off unless the deployment has a `provisioner` section). Not yet tried against a real platform: the dev stack plays it with a WireMock stand-in (`dev/provisioner-e2e.sh`). **Amended (2026-11-27): ANR-1061, a person's message goes to their own agent by a route recorded in `Job.route`, and the dispatcher's sends for a routed thread provision too (decision 5, the amendment below).** **Amended (2026-11-27): ANR-1062, a `Blocked` agent is waited for, except two reasons that waiting cannot clear, which are a 500 `agent_blocked` (the amendment below).** **Amended (2026-11-27): ANR-1078, the two known gaps of a stop that waited are fixed by refunding the wait (note under Consequences).** **Amended (2026-11-27): ANR-1078 PR 2, a routed row waiting for the person's agent to wake is cut at a short probe and waits `pending`, so it no longer holds a dispatcher slot, and a stop that finds it between two probes ends the thread before it starts (the amendment `Amended 2026-11-27 (ANR-1078, PR 2)` below).** **Amended (2026-11-27): ANR-1175, the known limit of the claim order is removed: a person's due rows are ranked by `next_attempt_at`, then by age (note under the Known limit).** **Amended (2026-11-28): ANR-1321, the agent carries the person's account, the identity provider's `sub`, and a provisioner requires `auth.jwt.userClaim: sub` (the amendment `Amended 2026-11-28 (ANR-1321)` below).**
 
 ## Context
 
@@ -170,6 +170,18 @@ slow agents could take every slot (`concurrency`, 32 by default) from everyone e
   unrelated work is no longer held back. No row is starved: a row due earlier is never behind a row that becomes due after it. A row
   recovered after a crash keeps its place, because a claim never changes `next_attempt_at`. The text above is kept as it was written.
   See the note on [ADR 0066](0066-a-fair-share-of-the-dispatcher.md).
+
+## Amended 2026-11-28 (ANR-1321): the agent carries the person's account
+
+The agent form the orchestrator sends now carries the person's `account`, which the platform charges the agent's pods to.
+The account is the identity provider's `sub`, trimmed and lower-cased ([ADR 0108](0108-a-run-is-charged-to-the-identity-providers-sub-and-an-ended-run-is-still-answered-to-the-meter.md)),
+so **a `provisioner` section requires `auth.mode: jwt` with `auth.jwt.userClaim: sub` and the orchestrator refuses to start
+otherwise** (exit 78 naming `provisioner`; the rule the meter is held to). A person who is still not an account id (a `sub`
+outside `[A-Za-z0-9._:/-]{1,128}`) is refused with `ProvisionError::AccountNotOpaque`, a 500 with the platform not asked
+and nothing written, rather than given an agent nobody is charged for. **The owner key is unchanged** (decision 1: still the
+hash of the user id, never the account). For a provisioner this narrows decision 1's choice of claim: a deployment that
+moves to `sub` re-keys its people, as decision 1 says. The account is sent only when the agent is written (create, resume,
+suspend), so an agent that is already `ready` and was made without one keeps none.
 
 ## Consequences
 

@@ -10,6 +10,14 @@
 //! Which messages: the target agent of a thread is `coder` or `workspace` (the kind's
 //! [`prefix`](AgentKind::prefix)) and the deployment provisions that kind. The shared `chat` agent
 //! and every other agent are never provisioned.
+//!
+//! The person's agent is charged to their account, the [`AccountId`] of their [`UserId`]
+//! ([`account_of`], ADR 0108). That account is the identity provider's `sub` **because the
+//! orchestrator's configuration requires `auth.jwt.userClaim: sub` beside a `provisioner` section
+//! and refuses to start otherwise**; [`account_of`] checks the alphabet and the length alone, so a
+//! composition of its own must hold the same rule. A person who is not an [`AccountId`] is refused,
+//! before the platform is asked, with [`ProvisionError::AccountNotOpaque`]: no agent is made
+//! without an account.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -17,9 +25,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use orch_core::{AgentId, UserId};
+use orch_core::{AccountId, AgentId, UserId};
 use orch_ports::{
     AgentKind, AgentOwner, AgentProvisioner, AgentState, ProvisionError, ProvisionedAgent,
+    account_of,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
@@ -49,6 +58,7 @@ trait ErasedProvisioner: Send + Sync {
         &'a self,
         owner: &'a AgentOwner,
         kind: AgentKind,
+        account: &'a AccountId,
     ) -> BoxFuture<'a, Result<ProvisionedAgent, ProvisionError>>;
 }
 
@@ -57,8 +67,9 @@ impl<T: AgentProvisioner> ErasedProvisioner for T {
         &'a self,
         owner: &'a AgentOwner,
         kind: AgentKind,
+        account: &'a AccountId,
     ) -> BoxFuture<'a, Result<ProvisionedAgent, ProvisionError>> {
-        Box::pin(AgentProvisioner::ensure_ready(self, owner, kind))
+        Box::pin(AgentProvisioner::ensure_ready(self, owner, kind, account))
     }
 }
 
@@ -192,7 +203,9 @@ impl Provisioning {
     ///
     /// # Errors
     /// [`AppError::AgentNotReady`] when it is not ready within the wait-ready bound,
-    /// [`AppError::Provisioning`] for any other refusal of the platform.
+    /// [`AppError::Provisioning`] for any other refusal of the platform, and, with
+    /// [`ProvisionError::AccountNotOpaque`] and nothing asked of the platform, for a person who is
+    /// not an [`AccountId`].
     pub(crate) async fn ensure(
         &self,
         user: &UserId,
@@ -202,6 +215,12 @@ impl Provisioning {
             return Ok(None);
         };
         let owner = Self::owner_of(user);
+        // The one conversion of a person into an account (ADR 0108). Its refusal holds no part of
+        // the person, and neither does the one made of it here.
+        let account = account_of(user).map_err(|_| AppError::Provisioning {
+            kind: kind.prefix(),
+            source: ProvisionError::AccountNotOpaque,
+        })?;
         // This caller's own deadline, whatever flight it joins, a margin past the backstop of a
         // flight it would start; none if the sum overflows.
         let began = Instant::now();
@@ -213,7 +232,7 @@ impl Provisioning {
         let mut last_seen = None;
         let mut rounds = 0_u32;
         loop {
-            let round = self.fly(owner.clone(), kind);
+            let round = self.fly(owner.clone(), kind, &account);
             // Dropping the wait at the deadline is safe: the flight goes on without it.
             let (outcome, started) = match deadline {
                 Some(at) => match tokio::time::timeout_at(at, round).await {
@@ -267,7 +286,14 @@ impl Provisioning {
     /// Joins the flight of `owner`'s agent of `kind`, starting it when there is none, and waits for
     /// its end; the flag says that this call started it. Dropping this future leaves the flight
     /// running. No lock is held across an await, nor across the spawn.
-    async fn fly(&self, owner: AgentOwner, kind: AgentKind) -> (Arc<Outcome>, bool) {
+    async fn fly(
+        &self,
+        owner: AgentOwner,
+        kind: AgentKind,
+        account: &AccountId,
+    ) -> (Arc<Outcome>, bool) {
+        // The account is not part of the key: the owner key is a function of the same user id, so
+        // one owner has one account.
         let key = (owner, kind);
         let (mut flight, task) = {
             let mut flights = self.flights.lock().unwrap_or_else(PoisonError::into_inner);
@@ -286,9 +312,11 @@ impl Provisioning {
                     };
                     let bound = self.ready_timeout.saturating_add(OUTER_SLACK);
                     let owner = key.0.clone();
+                    let account = account.clone();
                     let task = async move {
                         let result =
-                            tokio::time::timeout(bound, inner.ensure_ready(&owner, kind)).await;
+                            tokio::time::timeout(bound, inner.ensure_ready(&owner, kind, &account))
+                                .await;
                         let outcome = match result {
                             Ok(Ok(agent)) => Outcome::Ready(agent),
                             Ok(Err(ProvisionError::NotReady { last })) => {
