@@ -132,40 +132,6 @@ async fn continues_own_thread<P: Ports>(
     }
 }
 
-/// ADR 0087, decision 1 and 7: a prompt from a **signing client** (`auth.signingClients`) that
-/// carries no envelope, or one that is not a compact JWS, is refused with `403
-/// prompt_signature_invalid`, reason `invalid`, before anything is written or any agent is called.
-/// No cryptography happens here (the verifier behind the model gateway checks the signature); the
-/// finer reason (`missing`, `malformed`) is logged and never sent. A client that is not listed, and
-/// a deployment that lists none, is never checked.
-///
-/// It is called only for an input that writes the person's words (a message or a Stop & send), and
-/// before the rate limit and the allowance: a message that is both unsigned and over the limit is
-/// the 403, and nothing is counted.
-fn check_signature(
-    principal: &Principal,
-    signing_clients: &[String],
-    envelope: Option<&str>,
-) -> Result<(), Problem> {
-    if !orch_prompt_statement::requires_signature(signing_clients, principal.client_id.as_deref()) {
-        return Ok(());
-    }
-    match orch_prompt_statement::check_presence(envelope) {
-        Ok(_) => Ok(()),
-        Err(refusal) => {
-            tracing::warn!(
-                reason = refusal.log_reason(),
-                "a signing client's prompt was refused"
-            );
-            Err(Problem::forbidden(
-                "this message couldn't be verified as coming from your device; please try again",
-            )
-            .with_code(refusal.code())
-            .with_reason(refusal.client_reason()))
-        }
-    }
-}
-
 /// The gate the run asks for, `forwardedProps["vymalo.gate"]` (ADR 0018): `{require?,
 /// maxAttempts?}`. It is read whether or not the run creates the thread, so a malformed one is
 /// a 400 every time. It applies when the run creates the thread, whose gate is fixed then; a run
@@ -567,7 +533,7 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
 /// mentions, the access tier of the message, the model and reasoning pick, and the thread to make
 /// the thread a fork of; and, from the **new message's metadata**, the person's prompt signature
 /// (ADR 0087), which the projection reads into the input it builds (the presence check is
-/// `check_signature`'s, on that input).
+/// `orch_api::signature::check`'s, on that input).
 struct Requested<'a> {
     gate: Option<&'a GateLayer>,
     catalog: Option<&'a UiCatalogData>,
@@ -700,7 +666,7 @@ async fn attempt<P: Ports>(
         _ => None,
     });
     if let Some(envelope) = prompt {
-        check_signature(principal, signing_clients, envelope)?;
+        orch_api::signature::check(principal, signing_clients, envelope)?;
     }
     let held = held_message_ids(input);
 

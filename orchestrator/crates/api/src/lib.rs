@@ -37,6 +37,7 @@ mod public_auth;
 mod routes;
 mod search;
 mod shared;
+pub mod signature;
 pub mod sse;
 mod teams;
 pub mod trace;
@@ -126,6 +127,14 @@ pub struct ApiConfig {
     /// resource API whose client states a lower version (header `X-Client-Version`), an unreadable
     /// one or none gets the problem of [`client_version`]. `None` (the default): no client is refused.
     pub min_client_version: Option<client_version::ClientVersion>,
+    /// `auth.signingClients` (ADR 0087, decision 1): the OAuth clients whose prompts must carry a
+    /// `vymalo.promptSignature`. Empty (the default) asks nobody.
+    ///
+    /// The resource API reads it for a fork that writes the person's words
+    /// (`POST /api/threads/{id}/fork`, `after` with `text` or `replace`), through
+    /// [`signature::check`]. The composition root gives the AG-UI surface the same list, so there
+    /// is one source of truth: `auth.signingClients`.
+    pub signing_clients: Arc<[String]>,
 }
 
 impl Default for ApiConfig {
@@ -144,6 +153,7 @@ impl Default for ApiConfig {
             },
             client_metadata: None,
             min_client_version: None,
+            signing_clients: Arc::from(Vec::<String>::new()),
         }
     }
 }
@@ -180,6 +190,9 @@ pub(crate) struct ApiState<P: Ports> {
     pub(crate) search: Arc<AuthorizeLimiter>,
     /// The searches this process runs at once, for everybody (`search::MAX_CONCURRENT_SEARCHES`).
     pub(crate) search_slots: Arc<tokio::sync::Semaphore>,
+    /// `auth.signingClients` (ADR 0087): the clients whose prompts must carry a signature, as the
+    /// fork route reads it.
+    pub(crate) signing_clients: Arc<[String]>,
 }
 
 impl<P: Ports> Clone for ApiState<P> {
@@ -189,6 +202,7 @@ impl<P: Ports> Clone for ApiState<P> {
             authorize: Arc::clone(&self.authorize),
             search: Arc::clone(&self.search),
             search_slots: Arc::clone(&self.search_slots),
+            signing_clients: Arc::clone(&self.signing_clients),
         }
     }
 }
@@ -297,6 +311,7 @@ pub fn health_router<P: Ports>(app: Arc<App<P>>) -> Router {
         authorize: Arc::new(AuthorizeLimiter::new(AuthorizeLimits::default())),
         search: Arc::new(AuthorizeLimiter::new(AuthorizeLimits::default())),
         search_slots: Arc::new(tokio::sync::Semaphore::new(search::MAX_CONCURRENT_SEARCHES)),
+        signing_clients: Arc::from(Vec::<String>::new()),
     }))
 }
 
@@ -321,6 +336,7 @@ pub fn router_with_surfaces<P: Ports>(
         authorize: Arc::new(AuthorizeLimiter::new(cfg.authorize_limits)),
         search: Arc::new(AuthorizeLimiter::new(cfg.search_limits)),
         search_slots: Arc::new(tokio::sync::Semaphore::new(search::MAX_CONCURRENT_SEARCHES)),
+        signing_clients: Arc::clone(&cfg.signing_clients),
     };
     let state_for_me = state.clone();
     let state_for_public = state.clone();

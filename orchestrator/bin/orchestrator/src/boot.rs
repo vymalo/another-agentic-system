@@ -89,19 +89,21 @@ fn surface_routes<P: orch_ports::Ports>(
     app: &Arc<App<P>>,
     sse_keepalive: Duration,
     sse_lifetime: Duration,
+    signing_clients: &Arc<[String]>,
     cfg: &Config,
 ) -> Result<SurfaceRoutes, ConfigError> {
+    let _ = signing_clients;
     match surface {
         #[cfg(feature = "surface-agui")]
         Surface::Agui => {
             // The clients whose prompts must be signed (ADR 0087, decision 1): the deployment's
-            // `auth.signingClients`, read once here. Empty asks nobody.
-            let signing_clients: Arc<[String]> = Arc::from(cfg.auth.signing_clients.clone());
+            // `auth.signingClients`, read once by the composition root and given to the resource
+            // API's fork route too. Empty asks nobody.
             Ok(orch_surface_agui::routes(
                 Arc::clone(app),
                 sse_keepalive,
                 sse_lifetime,
-                signing_clients,
+                Arc::clone(signing_clients),
             ))
         }
         #[cfg(not(feature = "surface-agui"))]
@@ -736,6 +738,10 @@ fn control_plane_router(cfg: &Config, app: &Arc<App<Stack>>) -> Result<Router, C
         public_limits: Some(cfg.public_limits),
         browser_auth,
         cors_allowed_origins: cfg.cors_allowed_origins.clone(),
+        // The clients whose prompts must be signed (ADR 0087, decision 1): read once here and given
+        // to the resource API (a fork's first message or edit) and to the AG-UI surface, so there
+        // is one source of truth. Empty asks nobody.
+        signing_clients: Arc::from(cfg.auth.signing_clients.clone()),
         min_client_version: cfg
             .min_client_version
             .as_deref()
@@ -763,7 +769,16 @@ fn control_plane_router(cfg: &Config, app: &Arc<App<Stack>>) -> Result<Router, C
     let surfaces = cfg
         .surfaces
         .iter()
-        .map(|&surface| surface_routes(surface, app, api.sse_keepalive, api.sse_lifetime, cfg))
+        .map(|&surface| {
+            surface_routes(
+                surface,
+                app,
+                api.sse_keepalive,
+                api.sse_lifetime,
+                &api.signing_clients,
+                cfg,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(orch_api::router_with_surfaces(
         Arc::clone(app),
