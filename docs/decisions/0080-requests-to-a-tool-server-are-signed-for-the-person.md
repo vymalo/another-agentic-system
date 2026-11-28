@@ -112,6 +112,8 @@ That held while the workspace was on Rust 1.94.1. It moved to 1.98 on 2026-11-27
   and gives the public half to the tool server's operator.
 - **Harder:** a second place writes the bytes of a format whose reference is another repository's. The known-answer vector and the
   interoperability job are what keep the two honest, and the job needs a second toolchain in CI until the workspace moves to 1.98 (*met 2026-11-27, ANR-1328*).
+  *No longer applies (2026-11-28, ANR-1342): there is one writer, `cratestack-cose` itself, so no second place and no interoperability job; the
+  known-answer vector and the worked example are the anchor, and they did not move.*
 - **Risk:** the key holder can name any owner on its server. The contract says so; the key is one per server, held by reference, and rotated
   by the steps on the contract page.
 
