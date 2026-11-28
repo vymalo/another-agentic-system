@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use orch_api::ApiConfig;
 use orch_app::{AgentDirectory, AgentEntry, App, AppConfig, Policy};
-use orch_core::{AgentId, AgentTarget, ThreadId};
+use orch_core::{AgentId, AgentTarget, SignedPrompt, ThreadId};
 use orch_ports::memory::{
     MemoryArtifacts, MemoryAuth, MemoryStore, MemoryWakeup, ScriptedAgent, SeqIds,
 };
@@ -264,14 +264,12 @@ impl Harness {
     }
 
     /// The envelope of `id`'s one delegation, if it has one.
-    async fn delegated_envelope(&self, id: ThreadId) -> Option<Option<String>> {
+    async fn delegated_envelope(&self, id: ThreadId) -> Option<Option<SignedPrompt>> {
         self.outbox(id)
             .await
             .into_iter()
             .find_map(|item| match item.payload {
-                OutboxPayload::Delegate {
-                    prompt_signature, ..
-                } => Some(prompt_signature),
+                OutboxPayload::Delegate { signed_prompt, .. } => Some(signed_prompt),
                 _ => None,
             })
     }
@@ -373,7 +371,7 @@ async fn a_signed_fork_and_edit_are_accepted_and_the_envelope_reaches_the_delega
     let fork_id = ThreadId(Uuid::parse_str(&fork).unwrap());
     assert_eq!(
         h.delegated_envelope(fork_id).await,
-        Some(Some(ENVELOPE.to_owned())),
+        Some(Some(SignedPrompt::envelope_only(ENVELOPE.to_owned()))),
         "the envelope did not reach the delegation"
     );
 
@@ -390,7 +388,7 @@ async fn a_signed_fork_and_edit_are_accepted_and_the_envelope_reaches_the_delega
     let edit_id = ThreadId(Uuid::parse_str(&edit).unwrap());
     assert_eq!(
         h.delegated_envelope(edit_id).await,
-        Some(Some(ENVELOPE.to_owned())),
+        Some(Some(SignedPrompt::envelope_only(ENVELOPE.to_owned()))),
         "an edit's envelope did not reach the delegation"
     );
 
@@ -401,7 +399,11 @@ async fn a_signed_fork_and_edit_are_accepted_and_the_envelope_reaches_the_delega
         let export = String::from_utf8_lossy(&export.body).to_string();
         assert!(!export.contains(ENVELOPE), "the envelope is in the export");
         assert!(
-            !export.contains("promptSignature") && !export.contains("prompt_signature"),
+            !export.contains("promptSignature")
+                && !export.contains("prompt_signature")
+                && !export.contains("signedPrompt")
+                && !export.contains("signed_prompt")
+                && !export.contains("afterStopSignedPrompt"),
             "the export names the envelope"
         );
         let events = h

@@ -113,7 +113,7 @@ mod tests {
             tier_cap: None,
             locale: locale.map(|tag| LocaleHint::parse(tag).unwrap()),
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
         }
     }
 

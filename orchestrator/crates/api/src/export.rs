@@ -61,7 +61,7 @@ pub fn web_revision(header: Option<&str>) -> String {
 ///   hold, and `afterStop` (the text the next job starts with while a Stop & send is landing,
 ///   ADR 0036; absent unless the thread is stopping). A job without a gate is `{}` apart from the
 ///   defaults. It is as the store keeps it **but for one member**: the prompt signature of a held
-///   message ([`Job::after_stop_prompt_signature`], ADR 0087) is never in it, because
+///   message ([`Job::after_stop_signed_prompt`], ADR 0087) is never in it, because
 ///   [`App::export_thread`](orch_app::App::export_thread) takes it out. *(Amended 2026-11-28,
 ///   ANR-1376: this said the job is exported exactly as the store keeps it.)*
 /// * `binding`: the A2A agent, context and task the thread is bound to.

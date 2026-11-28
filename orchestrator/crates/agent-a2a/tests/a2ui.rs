@@ -52,7 +52,7 @@ fn text(ep: &AgentEndpoint, text: &str, task_id: Option<String>) -> SendRequest 
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
     }
 }
 
@@ -434,7 +434,7 @@ async fn an_action_goes_back_as_a_data_part_of_the_same_task() {
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
     };
     let second = drain(c.send_stream(request).await.unwrap()).await;
     assert_eq!(
@@ -539,7 +539,7 @@ async fn an_action_is_a_v1_0_message_whatever_the_card_says() {
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
     };
     drain(c.send_stream(request).await.unwrap()).await;
     let call = &fake.executions()[1];

@@ -206,7 +206,7 @@ fn message(text: &str, pick: Option<ModelPick>) -> orch_core::Input {
         tier_cap: None,
         locale: None,
         pick,
-        prompt_signature: None,
+        signed_prompt: None,
     }
 }
 

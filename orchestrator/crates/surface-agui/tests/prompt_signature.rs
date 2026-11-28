@@ -29,6 +29,52 @@ fn signed(thread: &str, run: &str, id: &str, text: &str, envelope: &str) -> Valu
     }]})
 }
 
+/// The envelope a send carried.
+fn envelope_of(call: &orch_ports::memory::SendCall) -> Option<String> {
+    call.signed_prompt
+        .as_ref()
+        .map(|signed| signed.envelope.as_str().to_owned())
+}
+
+/// The whole signed prompt of every send, oldest first.
+fn signed_sends(h: &Harness) -> Vec<Option<orch_core::SignedPrompt>> {
+    h.agent
+        .sends()
+        .into_iter()
+        .filter_map(|call| match call {
+            orch_ports::memory::Call::Send(call) => Some(call.signed_prompt.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The shared test vectors of the signature contract, whose hashes an implementation of its own
+/// made.
+fn vectors() -> Value {
+    serde_json::from_str(include_str!(
+        "../../prompt-statement/tests/vectors/prompt-signatures.json"
+    ))
+    .unwrap()
+}
+
+/// The claims a run's message should be sent with.
+fn claims(
+    thread: &str,
+    agent: &str,
+    msg: &str,
+    content: &str,
+    props: &str,
+) -> orch_core::PromptClaims {
+    orch_core::PromptClaims {
+        aud: PUBLIC_ORIGIN.to_owned(),
+        thread: thread.to_owned(),
+        agent: agent.to_owned(),
+        msg: msg.to_owned(),
+        content_sha256: content.to_owned(),
+        props_sha256: props.to_owned(),
+    }
+}
+
 async fn no_thread(h: &Harness, id: &str) {
     let r = h.get(&format!("/api/threads/{id}"), Some(ALICE)).await;
     assert_eq!(r.status, 404, "the refused request wrote a thread");
@@ -171,11 +217,7 @@ async fn a_signed_prompt_is_accepted_and_reaches_the_agent_byte_for_byte() {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            orch_ports::memory::Call::Send(call) => Some(
-                call.prompt_signature
-                    .clone()
-                    .map(orch_core::PromptSignature::into_string),
-            ),
+            orch_ports::memory::Call::Send(call) => Some(envelope_of(&call)),
             _ => None,
         })
         .collect();
@@ -204,11 +246,7 @@ async fn a_client_that_is_not_listed_is_never_checked() {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            orch_ports::memory::Call::Send(call) => Some(
-                call.prompt_signature
-                    .clone()
-                    .map(orch_core::PromptSignature::into_string),
-            ),
+            orch_ports::memory::Call::Send(call) => Some(envelope_of(&call)),
             _ => None,
         })
         .collect();
@@ -262,7 +300,7 @@ async fn no_word_of_the_envelope_is_in_the_log_or_in_a_tracing_line() {
     let export = String::from_utf8_lossy(&export.body).to_string();
     assert!(!export.contains(ENVELOPE), "the envelope is in the export");
     assert!(
-        !export.contains("promptSignature") && !export.contains("prompt_signature"),
+        !export.to_lowercase().contains("signedprompt") && !export.contains("signed_prompt"),
         "the export names the envelope"
     );
     // the frames of the run
@@ -391,11 +429,7 @@ async fn a_signing_clients_resolved_resume_is_checked_at_its_entry() {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            orch_ports::memory::Call::Send(call) => Some(
-                call.prompt_signature
-                    .clone()
-                    .map(orch_core::PromptSignature::into_string),
-            ),
+            orch_ports::memory::Call::Send(call) => Some(envelope_of(&call)),
             _ => None,
         })
         .collect();
@@ -569,9 +603,9 @@ async fn a_stop_and_sends_envelope_waits_in_the_ledger_and_no_export_has_it() {
     assert_eq!(
         stored
             .job
-            .after_stop_prompt_signature
+            .after_stop_signed_prompt
             .as_ref()
-            .map(orch_core::PromptSignature::as_str),
+            .map(|signed| signed.envelope.as_str()),
         Some(HELD),
         "the ledger holds it"
     );
@@ -585,14 +619,14 @@ async fn a_stop_and_sends_envelope_waits_in_the_ledger_and_no_export_has_it() {
         "the export is of a thread that is stopping: {document}"
     );
     assert!(
-        document["job"].get("afterStopPromptSignature").is_none(),
+        document["job"].get("afterStopSignedPrompt").is_none(),
         "the export has the member"
     );
     let export = String::from_utf8_lossy(&export.body).to_string();
     assert!(!export.contains(HELD), "the envelope is in the export");
-    // whatever the member were called: `afterStopPromptSignature` has a capital P
+    // whatever the member were called: `afterStopSignedPrompt` has capitals
     assert!(
-        !export.to_lowercase().contains("promptsignature") && !export.contains("prompt_signature"),
+        !export.to_lowercase().contains("signedprompt") && !export.contains("signed_prompt"),
         "the export names the envelope"
     );
     let thread_resource = h.thread(ALICE, &thread).await.to_string();
@@ -623,8 +657,8 @@ async fn a_stop_and_sends_envelope_waits_in_the_ledger_and_no_export_has_it() {
     let unchanged = h.store.get_thread(None, id).await.unwrap().unwrap();
     assert_eq!(unchanged.job.after_stop, stored.job.after_stop);
     assert_eq!(
-        unchanged.job.after_stop_prompt_signature,
-        stored.job.after_stop_prompt_signature
+        unchanged.job.after_stop_signed_prompt,
+        stored.job.after_stop_signed_prompt
     );
 
     // The task ends: the held message starts the next job, with its own bytes.
@@ -637,12 +671,7 @@ async fn a_stop_and_sends_envelope_waits_in_the_ledger_and_no_export_has_it() {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            orch_ports::memory::Call::Send(call) => Some((
-                call.text.clone(),
-                call.prompt_signature
-                    .clone()
-                    .map(orch_core::PromptSignature::into_string),
-            )),
+            orch_ports::memory::Call::Send(call) => Some((call.text.clone(), envelope_of(&call))),
             _ => None,
         })
         .collect();
@@ -707,7 +736,7 @@ async fn an_unlisted_clients_value_is_not_held(junk: &str) {
     assert_eq!(stored.job.after_stop.as_deref(), Some("echo do X instead"));
     // not `assert_eq!`: a failure must not print 16 KiB
     assert!(
-        stored.job.after_stop_prompt_signature.is_none(),
+        stored.job.after_stop_signed_prompt.is_none(),
         "the ledger holds an unlisted client's value"
     );
 
@@ -726,7 +755,7 @@ async fn an_unlisted_clients_value_is_not_held(junk: &str) {
         Some("echo do X instead\n\necho and Y")
     );
     assert!(
-        joined.job.after_stop_prompt_signature.is_none(),
+        joined.job.after_stop_signed_prompt.is_none(),
         "the ledger holds an unlisted client's value"
     );
 }
@@ -795,11 +824,9 @@ fn helper_sends(h: &Harness) -> Vec<Option<String>> {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            orch_ports::memory::Call::Send(call) if call.text == HELPER_PROMPT => Some(
-                call.prompt_signature
-                    .clone()
-                    .map(orch_core::PromptSignature::into_string),
-            ),
+            orch_ports::memory::Call::Send(call) if call.text == HELPER_PROMPT => {
+                Some(envelope_of(&call))
+            }
             _ => None,
         })
         .collect()
@@ -918,6 +945,23 @@ async fn a_signed_helper_start_opens_the_session_with_the_same_bytes_and_logs_no
     let ended = start_ended(&h, &parent).await;
     assert_eq!(ended["data"]["outcome"], "opened", "{ended}");
     assert_eq!(helper_sends(&h), [Some(ENVELOPE.to_owned())]);
+    // The envelope and nothing else (ADR 0087): the contract does not say what a helper start
+    // signs, so no claim is made up, although this deployment has a public origin. The parent's
+    // own run, sent before it, has its claims.
+    let sends = signed_sends(&h);
+    let (helper, runs): (Vec<_>, Vec<_>) = sends
+        .into_iter()
+        .flatten()
+        .partition(|signed| signed.envelope.as_str() == ENVELOPE);
+    assert_eq!(
+        helper,
+        [orch_core::SignedPrompt::envelope_only(ENVELOPE.to_owned())]
+    );
+    assert!(
+        runs.iter().all(|signed| signed.claims.is_some()),
+        "{runs:?}"
+    );
+    assert!(!runs.is_empty());
 
     // neither the parent's export nor the helper's, whose log holds the person's message
     let child = ended["data"]["thread"].as_str().unwrap().to_owned();
@@ -930,7 +974,7 @@ async fn a_signed_helper_start_opens_the_session_with_the_same_bytes_and_logs_no
         let export = String::from_utf8_lossy(&export.body).to_string();
         assert!(!export.contains(ENVELOPE), "the envelope is in an export");
         assert!(
-            !export.contains("promptSignature") && !export.contains("prompt_signature"),
+            !export.to_lowercase().contains("signedprompt") && !export.contains("signed_prompt"),
             "an export names the envelope"
         );
         let events = h.events(ALICE, thread).await;
@@ -976,4 +1020,122 @@ async fn a_client_that_is_not_listed_starts_a_helper_unsigned() {
     let ended = start_ended(&h, &parent).await;
     assert_eq!(ended["data"]["outcome"], "opened", "{ended}");
     assert_eq!(helper_sends(&h), [None]);
+}
+
+// --- the claims (ANR-1422): what only the request could say, computed at intake ----------------
+
+#[tokio::test]
+async fn every_claim_of_a_run_reaches_the_agents_request_as_the_request_held_it() {
+    let v = vectors();
+    // (the vector, its forwarded props, the hash they must give: `{}`'s when there are none)
+    for (name, props, props_sha256) in [
+        ("v3a", Value::Null, &v["v3a"]["props_sha256"]),
+        (
+            "v3c",
+            v["v3c"]["forwardedProps"].clone(),
+            &v["v3c"]["props_sha256"],
+        ),
+    ] {
+        let h = Harness::start_signing(&["desktop"]).await;
+        // the thread as the request writes it, which is not how the id is written back
+        let thread = new_thread_id().to_uppercase();
+        let mut body = json!({"threadId": thread, "runId": "r", "messages": [{
+            "id": "msg-test-0001", "role": "user", "content": v[name]["content"],
+            "metadata": {"vymalo.promptSignature": ENVELOPE}
+        }]});
+        if !props.is_null() {
+            body["forwardedProps"] = props;
+        }
+        // an alias of `plain` (ADR 0049): the person signed the segment they sent
+        h.run_as_client("old-plain", ALICE, "desktop", &body)
+            .await
+            .all()
+            .await;
+        let expected = orch_core::SignedPrompt {
+            envelope: ENVELOPE.to_owned().into(),
+            claims: Some(claims(
+                &thread,
+                "old-plain",
+                "msg-test-0001",
+                v[name]["content_sha256"].as_str().unwrap(),
+                props_sha256.as_str().unwrap(),
+            )),
+        };
+        assert_eq!(signed_sends(&h), [Some(expected)], "{name}");
+    }
+}
+
+#[tokio::test]
+async fn the_content_is_hashed_as_it_arrived_with_the_members_the_typed_view_drops() {
+    /// `[{"type":"text","text":"echo hi","annotations":{"seen":1}}]`, RFC 8785 and SHA-256, computed
+    /// outside this code.
+    const AS_SENT: &str = "00yCoXv62iPoblQpTXh2MbCH3E8X6r7aYevkkXKEq-k";
+    /// The same without `annotations`: what the typed view would give.
+    const AS_PARSED: &str = "3k8Bgd297ueNhZ7sPIO8HZ4WYIfPoEcir8LK0JV_pqA";
+    let h = Harness::start_signing(&["desktop"]).await;
+    let thread = new_thread_id();
+    let body = json!({"threadId": thread, "runId": "r", "messages": [{
+        "id": "m", "role": "user",
+        "content": [{"type": "text", "text": "echo hi", "annotations": {"seen": 1}}],
+        "metadata": {"vymalo.promptSignature": ENVELOPE}
+    }]});
+    h.run_as_client("plain", ALICE, "desktop", &body)
+        .await
+        .all()
+        .await;
+    let sends = signed_sends(&h);
+    let hash = &sends[0]
+        .as_ref()
+        .unwrap()
+        .claims
+        .as_ref()
+        .unwrap()
+        .content_sha256;
+    assert_eq!(hash, AS_SENT);
+    assert_ne!(hash, AS_PARSED);
+}
+
+#[tokio::test]
+async fn a_resumed_answers_claims_name_the_interrupt_and_hash_its_whole_payload() {
+    // The shared vectors have no resume. The hash is of `{"draft":{"n":2},"text":"main"}`, RFC
+    // 8785 and SHA-256, computed outside this code.
+    const PAYLOAD: &str = "gmzhEDTM0PmEU8jQD0P0WoPmXe6vXaj3XpNjLsMCqLE";
+    let h = Harness::start_signing(&["desktop"]).await;
+    let thread = new_thread_id();
+    let mut attach = blocked(&h, &thread).await;
+    let _ = attach
+        .until(|f| matches!(f.kind(), "RUN_FINISHED" | "RUN_ERROR"))
+        .await;
+    let answer = h
+        .post_as_client(
+            "plain",
+            ALICE,
+            "desktop",
+            &with_resume(
+                &thread,
+                "run-2",
+                &[("m-1", "ask about branches")],
+                json!([{
+                    "interruptId": "int-3",
+                    "status": "resolved",
+                    "payload": {"text": "main", "draft": {"n": 2}},
+                    "metadata": {"vymalo.promptSignature": ENVELOPE},
+                }]),
+            ),
+        )
+        .await;
+    assert_eq!(answer.status().as_u16(), 200);
+    Stream::new(answer)
+        .until(|f| matches!(f.kind(), "RUN_FINISHED" | "RUN_ERROR"))
+        .await;
+    let v = vectors();
+    let expected = claims(
+        &thread,
+        "plain",
+        "int-3",
+        PAYLOAD,
+        v["v3a"]["props_sha256"].as_str().unwrap(),
+    );
+    let last = signed_sends(&h).pop().unwrap().unwrap();
+    assert_eq!(last.claims, Some(expected));
 }

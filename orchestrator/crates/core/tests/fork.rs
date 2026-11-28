@@ -296,7 +296,7 @@ fn the_next_message_of_a_fork_starts_the_next_job() {
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
             user: user(),
             text: "go on".into(),
             message_id: None,
@@ -459,7 +459,7 @@ fn a_fork_has_no_catalog_for_its_agent_has_been_sent_none() {
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
             user: user(),
             text: "next".into(),
             message_id: None,
@@ -585,17 +585,18 @@ fn an_edit_carries_the_persons_envelope_to_the_delegation_and_to_no_event() {
             "and the docs?".into(),
             Some("m-edit".into()),
             None,
-            Some(ENVELOPE.to_owned().into()),
+            Some(SignedPrompt::envelope_only(ENVELOPE.to_owned())),
         )),
     )
     .unwrap();
     let sent = commands.iter().find_map(|c| match c {
-        Command::Delegate {
-            prompt_signature, ..
-        } => Some(prompt_signature.clone()),
+        Command::Delegate { signed_prompt, .. } => Some(signed_prompt.clone()),
         _ => None,
     });
-    assert_eq!(sent, Some(Some(ENVELOPE.to_owned())));
+    assert_eq!(
+        sent,
+        Some(Some(SignedPrompt::envelope_only(ENVELOPE.to_owned())))
+    );
     let log = commands
         .iter()
         .filter_map(|c| match c {
@@ -606,7 +607,10 @@ fn an_edit_carries_the_persons_envelope_to_the_delegation_and_to_no_event() {
         .join("");
     assert!(!log.contains(ENVELOPE), "the envelope is in the log: {log}");
     assert!(
-        !log.contains("promptSignature") && !log.contains("prompt_signature"),
+        !log.contains("promptSignature")
+            && !log.contains("prompt_signature")
+            && !log.contains("signedPrompt")
+            && !log.contains("signed_prompt"),
         "the log names the envelope: {log}"
     );
 }
@@ -665,7 +669,7 @@ fn first_message() -> Replacement {
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
         text: "@researcher and the docs?".into(),
         message_id: Some("m-first".into()),
         catalog: Some(catalog_data()),
@@ -740,7 +744,7 @@ fn a_fork_made_with_its_first_message_commits_it_as_the_next_job() {
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
     } = commands.last().unwrap()
     else {
         panic!("{commands:?}")

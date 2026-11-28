@@ -107,7 +107,7 @@ async fn serve(min_client_version: Option<&str>) -> Option<Server> {
         Arc::clone(&app),
         cfg.sse_keepalive,
         cfg.sse_lifetime,
-        Arc::from(Vec::<String>::new()),
+        orch_surface_agui::Intake::default(),
     )];
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.ok()?;
     let addr = listener.local_addr().ok()?;
