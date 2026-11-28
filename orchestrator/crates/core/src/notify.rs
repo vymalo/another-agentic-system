@@ -189,10 +189,11 @@ pub fn fold(
                 | ThreadState::Verifying
                 | ThreadState::Blocked => {}
             },
-            EventBody::Artifact(a) if role == ThreadRole::Top => {
-                if pull_request_url(&a.name, a.uri.as_deref(), a.text.as_deref()).is_some() {
-                    intent(NotifyKind::PullRequest, 1, ttl.done);
-                }
+            EventBody::Artifact(a)
+                if role == ThreadRole::Top
+                    && pull_request_url(&a.name, a.uri.as_deref(), a.text.as_deref()).is_some() =>
+            {
+                intent(NotifyKind::PullRequest, 1, ttl.done);
             }
             _ => {}
         }
