@@ -4,8 +4,8 @@
 //! **This suite cannot skip.** The other Postgres tests print "skipped" when `ORCH_TEST_DATABASE_URL`
 //! is unset, because they test a store a developer may not have; this one is the evidence that the
 //! owner predicate is in the adapter's queries, so a run without a database **fails** instead of
-//! passing with nothing done. `the_suite_ran_every_case_and_skipped_none` adds a positive count: N
-//! cases ran, none skipped.
+//! passing with nothing done. The cases come from `memory_note_store_conformance!`, whose `make` here
+//! is never `None`, so none is skipped and none is missing.
 //!
 //! The migration is applied to a database at the previous number, the table's CHECKs refuse what the
 //! rules would never write, and the read uses the `(owner, ord)` index.
@@ -21,10 +21,6 @@ use orch_store_postgres::PgStore;
 use orch_store_postgres::sql::{query, query_as, query_scalar};
 use support::TestDb;
 use uuid::Uuid;
-
-/// The number of cases of `orch_ports::memory_note_store_conformance!`: asserted below, so that a
-/// case added to the macro without one here is caught.
-const CASES: usize = 13;
 
 /// The store of this test, or a failure: this suite has no "skipped" branch.
 async fn store() -> PgStore {
@@ -43,56 +39,15 @@ fn at() -> Timestamp {
     Timestamp::from_second(1_700_000_000).expect("a time")
 }
 
-macro_rules! case {
-    ($name:ident) => {
-        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-        async fn $name() {
-            orch_ports::testkit::memory_notes::$name(store().await).await;
-        }
-    };
+/// The suite's `make`: always `Some`, because `store()` fails without a database where the other
+/// suites' `make` returns `None` to skip.
+async fn make_store() -> Option<PgStore> {
+    Some(store().await)
 }
 
-case!(a_note_round_trips_every_field);
-case!(a_new_persons_settings_read_as_off);
-case!(a_grant_round_trips_and_replaces);
-case!(another_person_never_reads_edits_or_deletes_a_note);
-case!(another_persons_grants_are_not_mine);
-case!(a_read_is_newest_first_and_cut_at_the_limit);
-case!(the_limit_is_clamped);
-case!(a_query_is_a_case_insensitive_substring);
-case!(forgetting_is_idempotent);
-case!(an_id_the_person_holds_is_exists);
-case!(at_most_two_hundred_per_person);
-case!(concurrent_saves_never_pass_the_limit);
-case!(concurrent_saves_of_one_id_have_one_winner);
-
-/// Every case of the suite ran: the count is positive, and it is every case.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_suite_ran_every_case_and_skipped_none() {
-    let mut ran = 0usize;
-    macro_rules! run {
-        ($name:ident) => {{
-            eprintln!("memory note case {}:", stringify!($name));
-            orch_ports::testkit::memory_notes::$name(store().await).await;
-            ran += 1;
-        }};
-    }
-    run!(a_note_round_trips_every_field);
-    run!(a_new_persons_settings_read_as_off);
-    run!(a_grant_round_trips_and_replaces);
-    run!(another_person_never_reads_edits_or_deletes_a_note);
-    run!(another_persons_grants_are_not_mine);
-    run!(a_read_is_newest_first_and_cut_at_the_limit);
-    run!(the_limit_is_clamped);
-    run!(a_query_is_a_case_insensitive_substring);
-    run!(forgetting_is_idempotent);
-    run!(an_id_the_person_holds_is_exists);
-    run!(at_most_two_hundred_per_person);
-    run!(concurrent_saves_never_pass_the_limit);
-    run!(concurrent_saves_of_one_id_have_one_winner);
-    assert!(ran > 0, "the suite ran no case at all");
-    assert_eq!(ran, CASES, "the suite ran {ran} of {CASES} cases");
-}
+// The macro writes one test per case of the testkit, from the one list in `orch_ports`: a case added
+// there runs here with no edit to this file, so it cannot be left out of the Postgres run.
+orch_ports::memory_note_store_conformance!(make_store);
 
 // ------------------------------------------------------------------------------- the migration
 
