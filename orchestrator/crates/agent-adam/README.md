@@ -96,6 +96,11 @@ The crate reads no environment variable (adam-rs's `PgNotify` would read `NOTIFY
   listener would not get it), naming the password and never its value, and a URL that names one is taken.
 * Unit tests in `src/`: the echo agent and its starter agree, the error class table, and a store's or a worker's
   driver error kept as words with its class.
+* `tests/chat_first_request.rs` (no database, no network): the `chat` folder of `dev/agents/chat/agent` is loaded with
+  adam-rs's own folder loader, assembled with the screen's tools and a scripted model, and its **first model
+  request** — the system prompt plus every tool schema — is measured the way adam-rs measures its shipped folders
+  and held to the 5,000-token budget for a lean agent (ANR-394, adam-rs ADR 0066). A second test asserts that
+  `deploy/chart/files/chat/` is byte-equal to that folder, the researcher's rendered `mcp.json` excepted.
 * End to end through the dispatcher and the binary: [`orch-e2e`](../e2e/README.md) (`tests/local_agent.rs`) and
   [`orchestrator`](../../bin/orchestrator/README.md) (`tests/local.rs`).
 

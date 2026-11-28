@@ -29,8 +29,8 @@ not match: when the agent asks a question the run ends, and the answer opens the
 
 ::: in-depth When a run is open, and the other "run"
 A run is open exactly while the thread is `queued`, `working` or `verifying`; an event that arrives when none is open
-gets a run of its own, closed at once. [AG-UI binding](api/agui.md#outbound-log-event--ag-ui),
-[ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md)
+gets a run of its own, closed at once. [A chat turn](architecture.md#a-chat-turn),
+[AG-UI binding](api/agui.md#outbound-log-event--ag-ui), [ADR 0012](decisions/0012-ag-ui-user-facing-protocol.md)
 
 The credential broker's "run" is another thing: its id is the agent's A2A task id
 ([ADR 0084](decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md) and
