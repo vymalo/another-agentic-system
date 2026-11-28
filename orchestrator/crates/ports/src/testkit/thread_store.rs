@@ -2939,8 +2939,8 @@ pub async fn steer_rows_claim_beside_an_inflight_delegate<S: ThreadStore>(store:
     );
 }
 
-/// A signed prompt with every claim, so that a store that dropped one would be seen. (A helper
-/// start has no claims; a store does not know that, and keeps what it is given.)
+/// A signed prompt with every claim, so that a store that dropped one would be seen. (The claims
+/// are the route's to build; a store does not know them, and keeps what it is given.)
 fn signed_prompt(envelope: &str) -> orch_core::SignedPrompt {
     orch_core::SignedPrompt {
         envelope: envelope.to_owned().into(),

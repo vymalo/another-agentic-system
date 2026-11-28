@@ -62,9 +62,9 @@ pub struct SignedPrompt {
     /// The compact JWS, byte for byte.
     pub envelope: PromptSignature,
     /// What a verifier needs beside the envelope to rebuild what was signed. **Optional as a
-    /// whole.** A run (a message or a resumed answer, a fork made by one included) fills it. A
-    /// helper-session start and a REST fork or edit have none, because the contract does not yet
-    /// say what they sign, so they are signed and **not verifiable** (ADR 0087). A deployment that
+    /// whole.** A run (a message or a resumed answer, a fork made by one included) and a
+    /// helper-session start fill it. A REST fork or edit has none, because the contract does not
+    /// yet say what it signs, so it is signed and **not verifiable** (ADR 0087). A deployment that
     /// configures no public origin keeps none either.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claims: Option<PromptClaims>,
@@ -92,15 +92,18 @@ pub struct PromptClaims {
     /// The origin the person signed for: the deployment's configured public origin, never taken
     /// from the request.
     pub aud: String,
-    /// The thread id as the request wrote it.
+    /// The thread id as the request wrote it: a run's `threadId`; for a helper start, the parent
+    /// thread of its path, printed in its normal form.
     pub thread: String,
-    /// The agent as sent: the `agentId` path segment, percent-decoded once, before an alias is
-    /// resolved.
+    /// The agent as sent: a run's `agentId` path segment, percent-decoded once, before an alias is
+    /// resolved; for a helper start, the body's `agent` — the helper's name exactly as the card
+    /// lists it.
     pub agent: String,
-    /// The AG-UI message id; for a resumed answer, the interrupt id.
+    /// The message id: a run's AG-UI message id (for a resumed answer, the interrupt id); for a
+    /// helper start, the body's `id` in its normal form.
     pub msg: String,
-    /// `base64url(SHA-256(JCS(content)))` of the message's `content` as received; for a resumed
-    /// answer, of the whole `payload`.
+    /// `base64url(SHA-256(JCS(content)))` of a run's `content` as received (for a resumed answer,
+    /// of the whole `payload`); for a helper start, of the body's `text` as one JSON string.
     pub content_sha256: String,
     /// `base64url(SHA-256(JCS(forwardedProps)))` as received, or of `{}` when there is none.
     pub props_sha256: String,

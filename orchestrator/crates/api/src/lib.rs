@@ -134,6 +134,13 @@ pub struct ApiConfig {
     /// `startChildSession` and `forkThread`. Empty (the default) asks nobody. A composer that mounts the AG-UI
     /// surface gives it the same list.
     pub signing_clients: Vec<String>,
+    /// `server.publicOrigin` (ADR 0087, decision 2): the deployment's canonical API origin, and the
+    /// `aud` of the claims kept beside a person's envelope on `startChildSession` (the note of
+    /// 2026-11-28), **never** taken from a request. `None` (the default): an envelope is carried
+    /// with no claims. The configuration refuses a signing client without it, so a deployment that
+    /// asks for a signature has one. A composer that mounts the AG-UI surface gives it the same
+    /// origin.
+    pub public_origin: Option<Arc<str>>,
 }
 
 impl Default for ApiConfig {
@@ -153,6 +160,7 @@ impl Default for ApiConfig {
             client_metadata: None,
             min_client_version: None,
             signing_clients: Vec::new(),
+            public_origin: None,
         }
     }
 }
@@ -191,6 +199,8 @@ pub(crate) struct ApiState<P: Ports> {
     pub(crate) search_slots: Arc<tokio::sync::Semaphore>,
     /// [`ApiConfig::signing_clients`].
     pub(crate) signing_clients: Arc<[String]>,
+    /// [`ApiConfig::public_origin`]: the `aud` of the claims a route keeps beside an envelope.
+    pub(crate) public_origin: Option<Arc<str>>,
 }
 
 impl<P: Ports> Clone for ApiState<P> {
@@ -201,6 +211,7 @@ impl<P: Ports> Clone for ApiState<P> {
             search: Arc::clone(&self.search),
             search_slots: Arc::clone(&self.search_slots),
             signing_clients: Arc::clone(&self.signing_clients),
+            public_origin: self.public_origin.clone(),
         }
     }
 }
@@ -311,6 +322,7 @@ pub fn health_router<P: Ports>(app: Arc<App<P>>) -> Router {
         search_slots: Arc::new(tokio::sync::Semaphore::new(search::MAX_CONCURRENT_SEARCHES)),
         // no resource route is served here
         signing_clients: Arc::from([]),
+        public_origin: None,
     }))
 }
 
@@ -336,6 +348,7 @@ pub fn router_with_surfaces<P: Ports>(
         search: Arc::new(AuthorizeLimiter::new(cfg.search_limits)),
         search_slots: Arc::new(tokio::sync::Semaphore::new(search::MAX_CONCURRENT_SEARCHES)),
         signing_clients: Arc::from(cfg.signing_clients.clone()),
+        public_origin: cfg.public_origin.clone(),
     };
     let state_for_me = state.clone();
     let state_for_public = state.clone();

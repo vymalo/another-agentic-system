@@ -803,11 +803,21 @@ async fn parent_with_helpers(h: &Harness, client: &str) -> String {
     thread
 }
 
-const HELPER_PROMPT: &str = "echo list every banana";
+const HELPER_PROMPT: &str = "List every place that writes the session header.";
+
+/// The request id of a start, written **upper case** as a client may write it: the route parses it
+/// into a UUID and prints it again, so the signed `msg` is its normal (lower-case) form.
+const HELPER_REQUEST_ID_UPPER: &str = "0194A6C2-7C10-7A1E-8F42-1B2C3D4E5F60";
+const HELPER_REQUEST_ID: &str = "0194a6c2-7c10-7a1e-8f42-1b2c3d4e5f60";
+
+/// The hashes ADR 0087's helper-start vector gives `HELPER_PROMPT` and `{}`: computed outside the
+/// orchestrator's code, so the test cannot agree with a bug in it.
+const HELPER_CONTENT_SHA256: &str = "zJA-Pfw1qI_cyfimdG87eRX4_7u91p6bvhHsKwaCM8E";
+const HELPER_PROPS_SHA256: &str = "RBNvo1WzZ4oRRq0W9-hknpT7T8If536DEMBg9hyq_4o";
 
 fn helper_start(metadata: Option<Value>) -> Value {
     let mut body = json!({
-        "id": "0190bbbb-0000-7000-8000-000000001383",
+        "id": HELPER_REQUEST_ID_UPPER,
         "agent": "planner",
         "description": "Find the writers",
         "text": HELPER_PROMPT,
@@ -945,17 +955,37 @@ async fn a_signed_helper_start_opens_the_session_with_the_same_bytes_and_logs_no
     let ended = start_ended(&h, &parent).await;
     assert_eq!(ended["data"]["outcome"], "opened", "{ended}");
     assert_eq!(helper_sends(&h), [Some(ENVELOPE.to_owned())]);
-    // The envelope and nothing else (ADR 0087): the contract does not say what a helper start
-    // signs, so no claim is made up, although this deployment has a public origin. The parent's
-    // own run, sent before it, has its claims.
+    // The claims ADR 0087 decided for a helper start (the note of 2026-11-28): each member from the
+    // body and the path, `thread` and `msg` in their normal form although the request wrote the id
+    // upper case. The parent's own run, sent before it, has its claims too.
     let sends = signed_sends(&h);
     let (helper, runs): (Vec<_>, Vec<_>) = sends
         .into_iter()
         .flatten()
         .partition(|signed| signed.envelope.as_str() == ENVELOPE);
+    let [sent] = helper.as_slice() else {
+        panic!("one helper send: {helper:?}")
+    };
+    assert_eq!(sent.envelope.as_str(), ENVELOPE, "byte for byte");
+    let got = sent.claims.as_ref().expect("the claims of a helper start");
+    assert_eq!(got.aud, PUBLIC_ORIGIN);
+    assert_eq!(got.thread, parent);
+    assert_eq!(got.agent, "planner");
+    assert_eq!(got.msg, HELPER_REQUEST_ID);
+    assert_eq!(got.content_sha256, HELPER_CONTENT_SHA256);
+    assert_eq!(got.props_sha256, HELPER_PROPS_SHA256);
     assert_eq!(
-        helper,
-        [orch_core::SignedPrompt::envelope_only(ENVELOPE.to_owned())]
+        *sent,
+        orch_core::SignedPrompt {
+            envelope: ENVELOPE.to_owned().into(),
+            claims: Some(claims(
+                &parent,
+                "planner",
+                HELPER_REQUEST_ID,
+                HELPER_CONTENT_SHA256,
+                HELPER_PROPS_SHA256,
+            )),
+        }
     );
     assert!(
         runs.iter().all(|signed| signed.claims.is_some()),
@@ -977,6 +1007,9 @@ async fn a_signed_helper_start_opens_the_session_with_the_same_bytes_and_logs_no
             !export.to_lowercase().contains("signedprompt") && !export.contains("signed_prompt"),
             "an export names the envelope"
         );
+        for value in [HELPER_CONTENT_SHA256, HELPER_PROPS_SHA256] {
+            assert!(!export.contains(value), "a claim is in an export: {value}");
+        }
         let events = h.events(ALICE, thread).await;
         // the positive control: the absences below are not of empty answers. The prompt is the
         // helper's log alone.
@@ -991,6 +1024,9 @@ async fn a_signed_helper_start_opens_the_session_with_the_same_bytes_and_logs_no
         }
         let events = serde_json::to_string(&events).unwrap();
         assert!(!events.contains(ENVELOPE), "the envelope is in an event");
+        for value in [HELPER_CONTENT_SHA256, HELPER_PROPS_SHA256] {
+            assert!(!events.contains(value), "a claim is in an event: {value}");
+        }
         // the frames every viewer of the thread is sent, folded from the whole log
         let history = h
             .get(&format!("/agui/threads/{thread}/history"), Some(ALICE))
@@ -1001,6 +1037,9 @@ async fn a_signed_helper_start_opens_the_session_with_the_same_bytes_and_logs_no
             assert!(history.contains(HELPER_PROMPT), "the history has no prompt");
         }
         assert!(!history.contains(ENVELOPE), "the envelope is in a frame");
+        for value in [HELPER_CONTENT_SHA256, HELPER_PROPS_SHA256] {
+            assert!(!history.contains(value), "a claim is in a frame: {value}");
+        }
     }
 }
 

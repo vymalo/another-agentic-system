@@ -757,8 +757,10 @@ fn control_plane_router(cfg: &Config, app: &Arc<App<Stack>>) -> Result<Router, C
             })
             .transpose()?,
         client_metadata,
-        // the same list the AG-UI surface is given (ADR 0087): `startChildSession` asks it too
+        // the same list and origin the AG-UI surface is given (ADR 0087): `startChildSession`
+        // asks the list and keeps the claims `server.publicOrigin` gives them an `aud` for
         signing_clients: cfg.auth.signing_clients.clone(),
+        public_origin: cfg.public_origin.as_deref().map(Arc::from),
         ..ApiConfig::default()
     };
     // Public sharing needs the rate limit of the public routes (ADR 0040, section 10): the order
