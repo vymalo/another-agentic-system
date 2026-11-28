@@ -600,7 +600,9 @@ fn an_edit_carries_the_persons_envelope_to_the_delegation_and_to_no_event() {
     let log = commands
         .iter()
         .filter_map(|c| match c {
-            Command::Append(draft) => serde_json::to_string(&draft.body).ok(),
+            // the body is not `Serialize` (the log stores the event, not this draft): its Debug form
+            // is enough for the substring checks below
+            Command::Append(draft) => Some(format!("{:?}", draft.body)),
             _ => None,
         })
         .collect::<Vec<String>>()

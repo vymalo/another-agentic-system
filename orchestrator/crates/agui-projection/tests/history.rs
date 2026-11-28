@@ -667,7 +667,7 @@ proptest! {
         for turns in [1usize, 3, 100] {
             let free = limits(100, 4 << 20);
             let newest = read(&events, &meta, Window::Turns { before: None, turns }, free);
-            for before in [None, Some(newest.start).filter(|_| newest.earlier)] {
+            for before in [None, if newest.earlier { Some(newest.start) } else { None }] {
                 let window = Window::Turns { before, turns };
                 let uncapped = read(&events, &meta, window, free);
                 let (capped, _) = fold(&events, &meta, window, limits(100, cap));

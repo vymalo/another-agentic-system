@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use orch_core::{Classify as _, ErrorClass};
-use orch_ports::{CredentialRef, UserAuth, UserToolPorts as _, UserToolsMode};
+use orch_ports::{CredentialRef, UserAuth, UserToolsMode};
 #[cfg(feature = "secrets-pg")]
 use orch_ports::{SecretServer, SecretStore as _};
 use orch_store_postgres::PgPool;

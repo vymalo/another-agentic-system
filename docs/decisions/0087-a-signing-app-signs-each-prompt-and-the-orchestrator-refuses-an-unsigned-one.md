@@ -429,5 +429,5 @@ the port set's signer being `NoPromptSigner`.
   lists the extension while this deployment signs nothing.
 
 *Verified 2026-11-28 on this branch: `cargo test -p orch-config` (the section, its rules, the schema) and
-`cargo test -p orchestrator` pass without and with the feature, and the production refusal and the missing-feature
-refusal were each seen to fail when their guard was removed.*
+`cargo test -p orchestrator` pass without and with the feature, and the production refusal was seen to fail when its
+guard was removed. The missing-feature refusal is a unit test of the binary (`a_static_prompt_signer_without_its_feature_stops_startup`).*

@@ -168,7 +168,7 @@ async fn a_message_with_no_file_asks_for_no_link() {
     let fake = FakeAgent::spawn(FakeAgentOptions::default()).await;
     let ep = fake.endpoint("fake", None);
     // a signer that fails for good would stop the send if it were asked
-    client(Some(Arc::new(NoLink { for_now: false })))
+    let _stream = client(Some(Arc::new(NoLink { for_now: false })))
         .send_stream(request(&ep, Vec::new()))
         .await
         .unwrap();

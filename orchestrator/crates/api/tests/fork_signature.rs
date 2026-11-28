@@ -229,8 +229,8 @@ impl Harness {
             .ports()
             .store
             .list_threads(
-                Some(&orch_core::UserId::new(ALICE)),
-                orch_ports::ThreadListing::default(),
+                &orch_core::UserId::new(ALICE),
+                orch_ports::ThreadListing::recent(None, 100, true),
             )
             .await
             .unwrap()

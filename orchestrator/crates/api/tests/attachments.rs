@@ -592,7 +592,7 @@ fn hex(text: &str) -> [u8; 32] {
         _ => panic!("not a lower-case hex digit"),
     };
     let mut out = [0u8; 32];
-    for (slot, pair) in out.iter_mut().zip(text.as_bytes().chunks_exact(2)) {
+    for (slot, pair) in out.iter_mut().zip(text.as_bytes().as_chunks::<2>().0) {
         *slot = digit(pair[0]) << 4 | digit(pair[1]);
     }
     out
