@@ -114,7 +114,7 @@ it is yours to make.
 To read one process more closely without drowning in the rest, raise its own filter, for one pod:
 
 ```sh [terminal]
-kubectl -n another-agentic-system set env deploy/another-agentic-system-orchestrator RUST_LOG=info,orch_app=debug
+kubectl -n another-agentic-system set env deploy/another-agentic-orchestrator RUST_LOG=info,orch_app=debug
 ```
 
 ***Unverified*: no cluster.** The variable and its effect are the binary's; the `kubectl set env` form
@@ -170,7 +170,7 @@ An **exit code** is the other half of the story, and the binary uses `sysexits.h
 `traceparent` column, and a W3C trace context cannot cross it: the request span, the request id and the
 thread id are what tie a task's lines together, not a trace
 ([`orchestrator.md`](../../orchestrator.md), open question 27 in
-[open questions](../../open-questions.md)). The work is tracked as card ANR-1170, which is open
+[open questions](../../open-questions.md)). The work is tracked in the project's board and is not done
 (*unverified* here: the card is not in this repository).
 
 What that costs you, plainly: **a slow task cannot be followed as one trace across a control plane and
@@ -224,7 +224,7 @@ missing trace would have saved you:
 
 ```sh [terminal]
 # every line of one pod, newest last, as it happens
-kubectl -n another-agentic-system logs deploy/another-agentic-system-orchestrator -f
+kubectl -n another-agentic-system logs deploy/another-agentic-orchestrator -f
 
 # the lines of one thread, across every process of the release
 kubectl -n another-agentic-system logs -l app.kubernetes.io/instance=another-agentic-system \

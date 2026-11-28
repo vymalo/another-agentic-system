@@ -15,8 +15,10 @@ YAML and the commands are copied from the files named beside them. The only part
 `backup-e2e` job on kind against a RustFS (§8); a managed cluster, an AWS bucket, the retention sweep, the credentials' ExternalSecret
 and the whole cutover of §6 are *unverified*.
 
-Every name with `example.com`, `my-` or `<…>` in it is a placeholder. The examples use the release name `another-agentic-system`,
-which is also the chart's default resource prefix: `<release>-db` is the cluster, `<release>-db-backup` its credentials.
+Every name with `example.com`, `my-` or `<…>` in it is a placeholder — except the objects the chart names itself: it fixes
+their prefix to `another-agentic` (`fullnameOverride`, so the name does not follow the release). The examples use the release
+name `another-agentic-system`; the cluster is `another-agentic-db` whatever that release is called, its credentials
+`another-agentic-db-backup`, and the orchestrator `another-agentic-orchestrator`.
 
 ```mermaid
 sequenceDiagram
@@ -239,23 +241,27 @@ server's files until it has worked.
    ```
 5. **Restore**: apply your copy, then wait for `Cluster in healthy state`. If the pod's log says `Expected empty archive`, the new
    server name was not new.
-6. **Make the live Cluster one the chart can take over.** The chart renders `bootstrap.initdb`, the restored cluster has
+6. **Take a base backup at once** (§3, the last block), before anything else. The restored cluster archives under the new name
+   from the moment it is up, but it has **no base backup** there, and WAL without one restores nothing: the schedule's next run
+   may be a day away (the cron is daily), so until one completes a second loss inside that window cannot be restored.
+7. **Make the live Cluster one the chart can take over.** The chart renders `bootstrap.initdb`, the restored cluster has
    `bootstrap.recovery`, and CloudNativePG refuses two bootstrap methods, which is what a sync would ask for:
    ```sh [terminal]
    kubectl -n another-agentic-system patch cluster another-agentic-db --type=json \
      -p '[{"op":"remove","path":"/spec/bootstrap"},{"op":"remove","path":"/spec/externalClusters"}]'
    ```
-   Nothing refuses a change of the bootstrap on a running Cluster, and `initdb` is the method when none is given; that the operator
-   then ignores the `initdb` a sync adds to a running cluster is *unverified*.
-7. **Put `backup.serverName: another-agentic-db-2` in the release's values, commit it, and only then turn the sync back on.** In that
+   A JSON patch is all or nothing: if either path is already gone (a re-run, or half of this done earlier) the whole command is
+   rejected and `/spec/bootstrap` is not removed either — check with `kubectl get cluster another-agentic-db -o
+   jsonpath='{.spec.bootstrap}'` first, or remove the two paths one at a time. Nothing refuses a change of the bootstrap on a
+   running Cluster, and `initdb` is the method when none is given; that the operator then ignores the `initdb` a sync adds to a
+   running cluster is *unverified*.
+8. **Put `backup.serverName: another-agentic-db-2` in the release's values, commit it, and only then turn the sync back on.** In that
    order: a sync without the value would put the plugin entry back on the cluster's own name, which is the old path. The sync then
    adds the managed roles and the `Database` objects, which adopt the databases the restore brought back (*unverified*).
-8. **Restart the orchestrator** (`rollout restart deployment/another-agentic-orchestrator`): CloudNativePG made
+9. **Restart the orchestrator** (`rollout restart deployment/another-agentic-orchestrator`): CloudNativePG made
    `another-agentic-db-app` anew, with a new random password for `orchestrator`, and the orchestrator reads its connection string from
    that Secret at start. The chat agent and the coders keep their roles' passwords — they are in the restored data and in their own
    Secrets (*unverified*); look at their logs.
-9. **Take a base backup and look** (§3, the last block): the new server has none until one completes, and WAL without a base backup
-   restores nothing.
 10. **Deal with the old server's folder.** It stays in the bucket and **no longer expires**, because the sweep is per server name
     (§4). Keep it until the new cluster has run well, then delete it or give its prefix a lifecycle rule: it holds people's threads.
 

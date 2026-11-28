@@ -73,11 +73,11 @@ they do:
 kubectl -n another-agentic-system describe externalsecret another-agentic-orchestrator
 kubectl -n another-agentic-system annotate externalsecret another-agentic-orchestrator \
   force-sync=$(date +%s) --overwrite
-kubectl -n another-agentic-system rollout restart deploy/another-agentic-system-orchestrator
+kubectl -n another-agentic-system rollout restart deploy/another-agentic-orchestrator
 ```
 
 ***Unverified*: no cluster.** The `force-sync` annotation is the chart README's own
-([the key of the stored secrets](../../../deploy/chart/README.md#the-key-of-the-stored-secrets-adr-0046-slice-3));
+([one database cluster](../../../deploy/chart/README.md#one-database-cluster));
 the `rollout restart` line is this page's.
 
 **Where to read more.** [The AWS secret](../../../deploy/chart/README.md#the-aws-secret) for the name,

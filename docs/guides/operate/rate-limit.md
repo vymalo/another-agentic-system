@@ -1,5 +1,5 @@
 ---
-sidebarTitle: Rate limit at the edge
+sidebarTitle: Limit one client's rate
 ---
 
 # Limit how fast one client address may call the host
@@ -53,15 +53,10 @@ stateDiagram-v2
 
 A Traefik [`RateLimit`](https://doc.traefik.io/traefik/reference/routing-configuration/http/middlewares/ratelimit/) — a
 `traefik.io/v1alpha1` custom resource of the cluster's Traefik — that the chart renders and names on its own `Ingress` with
-the annotation `traefik.ingress.kubernetes.io/router.middlewares`. Five values, and the numbers are checked whether or not the
-limit is on, so a wrong one is found when it is written and not the day it is turned on:
-
-- `ingress.rateLimit.enabled` — `false`. Renders the middleware and names it on the Ingress; refused without
-  `ingress.enabled`, because a middleware nothing names limits nothing.
-- `ingress.rateLimit.average` — `20`. Requests allowed per `period` for one client address.
-- `ingress.rateLimit.period` — `1s`. A whole number above zero and `ms`, `s`, `m` or `h`.
-- `ingress.rateLimit.burst` — `50`. Requests one address may make at once: the bucket's size.
-- `ingress.rateLimit.sourceDepth` — `0`. Which address is the client's; section 4 decides it.
+the annotation `traefik.ingress.kubernetes.io/router.middlewares`. It is five values — `ingress.rateLimit.enabled`,
+`.average`, `.period`, `.burst` and `.sourceDepth` — and every one is checked whether or not the limit is on, so a wrong one is
+found when it is written and not the day it is turned on. Their defaults and refusals are in the
+[chart's README](../../../deploy/chart/README.md#a-limit-per-client-at-the-edge), which owns them; `sourceDepth` is section 4.
 
 **Traefik keeps a token bucket per client address:** it holds `burst` requests at once and gains `average` per `period`. A
 request that would have to wait less than half the interval between two tokens — 25 ms at 20 a second — is held that long
@@ -164,7 +159,7 @@ guess and not a measurement.
 
    ```sh [terminal]
    kubectl -n my-namespace get middleware.traefik.io
-   kubectl -n my-namespace get ingress my-release -o jsonpath='{.metadata.annotations}'
+   kubectl -n my-namespace get ingress another-agentic -o jsonpath='{.metadata.annotations}'
    ```
 
    The `Middleware` should be there with your numbers, and the Ingress's annotation should name it.

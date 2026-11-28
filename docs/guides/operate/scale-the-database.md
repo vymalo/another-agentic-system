@@ -18,7 +18,10 @@ repository's status note records), though the scenario's own
 [README](../../../deploy/chart/tests/pooler-e2e/README.md) still says it had not run when it was written. **Unverified:** the
 production cluster, a failover, a real load, and the resource numbers, which are a starting point and not a measurement.
 
-Every name with `my-` in it is a placeholder. Replace it with your own.
+Every name with `my-` in it is a placeholder, except the objects the chart names itself: it fixes their prefix to
+`another-agentic` (`fullnameOverride`), so the app Secret is `another-agentic-db-app`, the pooler `another-agentic-db-pooler`,
+the cluster's read-write Service `another-agentic-db-rw` and the orchestrator `another-agentic-orchestrator`, whatever the
+release is called.
 
 ```mermaid
 sequenceDiagram
@@ -78,7 +81,9 @@ transactions.
 **`max_prepared_statements` must be above 0**, which needs PgBouncer 1.21 or later. The orchestrator's driver names its
 prepared statements (`tokio-postgres` names them `s0`, `s1`, … in each process, so two replicas use the same names), and the
 setting is what lets PgBouncer keep them across server connections. At 0 the first statements of two clients collide on one
-server connection (`prepared statement "s0" already exists`). The chart writes `200`, and the render is refused at 0, with
+server connection. The collision was observed with sqlx's names (`prepared statement "sqlx_s_1" already exists`, PgBouncer
+1.22.0, [`docs/api/config.md`](../../api/config.md#database-behind-a-pooler)); that `tokio-postgres`' names collide the same
+way (`s0`) is *unverified*. The chart writes `200`, and the render is refused at 0, with
 the key absent, or with a value that is not a whole number above 0. `pool_mode` among the parameters is refused too.
 
 **The two sizes that decide how much reaches Postgres.** `default_pool_size` is the server connections one pooler pod opens
@@ -111,13 +116,13 @@ mount the app Secret's `uri` key (which names the cluster's own host). It builds
 `password` and `dbname`:
 
 ```yaml
-- { name: ORCH_DB_USER,     valueFrom: { secretKeyRef: { name: my-release-db-app, key: username } } }
-- { name: ORCH_DB_PASSWORD, valueFrom: { secretKeyRef: { name: my-release-db-app, key: password } } }
-- { name: ORCH_DB_NAME,     valueFrom: { secretKeyRef: { name: my-release-db-app, key: dbname } } }
+- { name: ORCH_DB_USER,     valueFrom: { secretKeyRef: { name: another-agentic-db-app, key: username } } }
+- { name: ORCH_DB_PASSWORD, valueFrom: { secretKeyRef: { name: another-agentic-db-app, key: password } } }
+- { name: ORCH_DB_NAME,     valueFrom: { secretKeyRef: { name: another-agentic-db-app, key: dbname } } }
 - name: ORCH_DB_POOLED_URL      # database.url:       { env: ORCH_DB_POOLED_URL }
-  value: "postgresql://$(ORCH_DB_USER):$(ORCH_DB_PASSWORD)@my-release-db-pooler.my-namespace.svc:5432/$(ORCH_DB_NAME)"
+  value: "postgresql://$(ORCH_DB_USER):$(ORCH_DB_PASSWORD)@another-agentic-db-pooler.my-namespace.svc:5432/$(ORCH_DB_NAME)"
 - name: ORCH_DB_DIRECT_URL      # database.directUrl: { env: ORCH_DB_DIRECT_URL }
-  value: "postgresql://$(ORCH_DB_USER):$(ORCH_DB_PASSWORD)@my-release-db-rw.my-namespace.svc:5432/$(ORCH_DB_NAME)"
+  value: "postgresql://$(ORCH_DB_USER):$(ORCH_DB_PASSWORD)@another-agentic-db-rw.my-namespace.svc:5432/$(ORCH_DB_NAME)"
 ```
 
 Three properties make that safe, and each is in the chart's README:
@@ -171,7 +176,7 @@ the pooler is on, so a wrong one is found when it is written and not the day it 
 ```sh [terminal]
 kubectl -n my-namespace get cluster,pods
 kubectl -n my-namespace get pooler
-kubectl -n my-namespace logs deployment/my-release-orchestrator | grep -i 'directUrl'
+kubectl -n my-namespace logs deployment/another-agentic-orchestrator | grep -i 'directUrl'
 ```
 
 You should see the cluster `Ready` with three instances, a `Pooler` with two pods, and — in the orchestrator's log — the

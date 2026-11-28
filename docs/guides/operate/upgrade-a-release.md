@@ -159,7 +159,7 @@ writes with the old key, so the rollout is done only when every pod is new
 ([the key of the stored secrets](../../../deploy/chart/README.md#the-key-of-the-stored-secrets-adr-0046-slice-3)):
 
 ```sh [terminal]
-kubectl -n another-agentic-system rollout status deploy/another-agentic-system-orchestrator
+kubectl -n another-agentic-system rollout status deploy/another-agentic-orchestrator
 kubectl -n another-agentic-system get pods -l app.kubernetes.io/name=another-agentic-system
 ```
 
@@ -230,7 +230,7 @@ Work down this list. ***Unverified*: no cluster.**
 ```sh [terminal]
 kubectl -n another-agentic-system wait --for=condition=Available deployment --all --timeout=10m
 kubectl -n another-agentic-system get pods
-kubectl -n another-agentic-system logs deploy/another-agentic-system-orchestrator --tail=50
+kubectl -n another-agentic-system logs deploy/another-agentic-orchestrator --tail=50
 curl -sS -o /dev/null -w '%{http_code}\n' https://agentic.example.com/api/me
 ```
 
