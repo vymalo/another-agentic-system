@@ -38,7 +38,7 @@ fn keys() -> ThreadToolsKeys {
 
 fn hash() -> [u8; 32] {
     let mut out = [0u8; 32];
-    for (slot, pair) in out.iter_mut().zip(HASH.as_bytes().chunks_exact(2)) {
+    for (slot, pair) in out.iter_mut().zip(HASH.as_bytes().as_chunks::<2>().0) {
         *slot = u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap();
     }
     out
