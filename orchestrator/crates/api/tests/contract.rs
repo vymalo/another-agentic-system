@@ -309,6 +309,7 @@ impl Harness {
                             }),
                             ..orch_app::UiSettings::default()
                         },
+                        ..orch_app::PublicConfig::default()
                     },
                     // the servers a person may attach (ADR 0024): the second one is the coder's
                     tool_servers: vec![

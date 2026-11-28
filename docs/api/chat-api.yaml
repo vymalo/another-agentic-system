@@ -2197,7 +2197,7 @@ components:
     PublicConfig:
       type: object
       required: [ui]
-      description: "`{ui, search, prompts, teams}`: the `ui` section of the configuration file, and nothing else of it (a secret is never in it), and the capabilities of this build that are not configuration (`search`, `prompts`, `teams`)."
+      description: "`{ui, search, prompts, teams, windows?}`: the `ui` section of the configuration file, and nothing else of it (a secret is never in it), and the capabilities of this build that are not configuration (`search`, `prompts`, `teams`)."
       properties:
         search:
           type: object
@@ -2230,6 +2230,12 @@ components:
             minPushTokens: { type: integer }
             maxPushTokens: { type: integer }
             defaultPushTokens: { type: integer }
+        windows:
+          type: object
+          description: "**Its presence is the capability**: this process serves the window tools of [`windows-v1.md`](windows-v1.md) ([ADR 0092](../decisions/0092-a-window-is-a-port-on-the-runs-side-and-the-orchestrator-serves-its-tools.md) decision 8). Absent otherwise, and a client draws no window feature. Today the only adapter is `fake`."
+          required: [adapters]
+          properties:
+            adapters: { type: array, items: { type: string }, description: "The adapters this deployment has, by name (`fake`; later `headless` and `preview`)" }
         ui:
           type: object
           description: "Every key of the `ui` section with its effective value. A client ignores a key it does not know; a key absent from an older orchestrator falls back to the client's own default, which is why none of them is required."

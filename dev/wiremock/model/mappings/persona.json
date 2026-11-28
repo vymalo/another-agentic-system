@@ -36,6 +36,9 @@
           },
           {
             "doesNotContain": "[mock:own-search]"
+          },
+          {
+            "doesNotContain": "[mock:window]"
           }
         ]
       },
@@ -102,6 +105,9 @@
           },
           {
             "doesNotContain": "[mock:own-search]"
+          },
+          {
+            "doesNotContain": "[mock:window]"
           }
         ]
       },

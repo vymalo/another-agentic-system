@@ -68,6 +68,20 @@ impl TaskSettings {
 pub struct PublicConfig {
     /// The `ui` section.
     pub ui: UiSettings,
+    /// `windows` (ADR 0092 decision 8): **present only when this deployment serves the window
+    /// tools**, so a client draws nothing where it is absent. It is the capability of the process,
+    /// not a key of the file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub windows: Option<WindowsSettings>,
+}
+
+/// `windows` of `GET /api/config` (ADR 0092 decision 8, `docs/api/windows-v1.md`): which adapters
+/// the deployment's window tools run on. A later slice adds `headless` and `preview`; today the
+/// only one is `fake`, which draws made-up frames and touches no network.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WindowsSettings {
+    /// The adapters, by name.
+    pub adapters: Vec<String>,
 }
 
 /// The `ui` section: what the web is told about how to show things. A key is added here, in the

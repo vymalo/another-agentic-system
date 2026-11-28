@@ -1815,6 +1815,7 @@ impl Config {
                 history: Some(orch_app::UiHistory::default()),
                 ..orch_app::UiSettings::default()
             },
+            windows: None,
         });
         let tool_servers = resolved.tool_servers;
         let tool_endpoints = resolved.tool_endpoints;
@@ -1946,7 +1947,22 @@ impl Config {
             history.max_turns = u32::try_from(self.history.max_turns).unwrap_or(u32::MAX);
             history
         });
+        // Its presence is the capability (ADR 0092 decision 8): only a process whose thread-tools
+        // endpoint carries the window tools says so.
+        public.windows = self.serves_windows().then(|| orch_app::WindowsSettings {
+            adapters: vec!["fake".to_owned()],
+        });
         public
+    }
+
+    /// Whether the thread-tools endpoint of this process carries the window tools: the build has
+    /// the fake adapter (`window-fake`, never in a release image), the surface is mounted and the
+    /// role serves routes.
+    fn serves_windows(&self) -> bool {
+        cfg!(feature = "window-fake")
+            && cfg!(feature = "surface-thread-tools")
+            && self.surfaces.contains(&Surface::ThreadTools)
+            && self.role.runs_control_plane()
     }
 
     /// Whether the history route is mounted: the AG-UI surface is built in and listed, on a role

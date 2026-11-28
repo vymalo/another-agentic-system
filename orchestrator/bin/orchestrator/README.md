@@ -163,6 +163,11 @@ orchestrator --config dev/orchestrator.yaml --print-config     # the merged conf
 * A build without a Cargo feature refuses the keys that need it, naming the feature (`server.surfaces` naming a surface that is not
   compiled in, `agents.registry` without `registry-platform`, `agents.localConcurrency` without `agent-local`, `artifacts.store`
   naming `fs` without `artifacts-fs` or `s3` without `artifacts-s3`, `secrets.store` naming `pg` without `secrets-pg` or `openbao` without `secrets-openbao`).
+* **The Cargo feature `window-fake`** (off by default, **not in the image that ships**; `ORCH_FEATURES=window-fake` for the Dockerfile, which `compose.yaml` and
+  `coder-e2e.yml` pass) mounts the window tools (`window_open`, `window_look`, `window_act`, `window_close`, [ADR 0092](../../../docs/decisions/0092-a-window-is-a-port-on-the-runs-side-and-the-orchestrator-serves-its-tools.md))
+  on the thread-tools endpoint over the **fake adapter** of `orch-window` (made-up frames, no network), warns once at startup, and makes `GET /api/config` say
+  `windows: {adapters: ["fake"]}` on a process that mounts `thread-tools` and serves routes (`Config::public_config`). It has no configuration key. The tools are for
+  `dev/windows-e2e.sh` until a real adapter exists.
 * **`artifacts`** ([ADR 0032](../../../docs/decisions/0032-files-from-agents-live-in-an-artifact-store.md)) has no variable: it is a key of
   the file only. Without the section the store is `NoArtifacts` and a file is refused with "no artifact store configured"; the
   environment alone (no file) never has one. `artifacts.fs.root` is relative to the directory of the file; `accessKeyId` and

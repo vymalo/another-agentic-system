@@ -37,8 +37,8 @@
 //! and then each provider's ([`ThreadToolProvider`], added with
 //! [`ThreadToolsConfig::with_provider`]), computed per request. `tools/call` offers the name to
 //! the built-ins, then to the providers in order; a name nobody owns is the JSON-RPC error
-//! `-32602`. Later slices add providers (the tools of attached MCP servers, `ask_agent`); they do
-//! not change the token or the route.
+//! `-32602`. Later slices add providers (the tools of attached MCP servers, `ask_agent`, the window
+//! tools of [`WindowTools`]); they do not change the token or the route.
 
 mod ask;
 mod guard;
@@ -47,6 +47,7 @@ mod relay;
 mod server;
 mod tools;
 mod uploads;
+mod window;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -76,6 +77,10 @@ pub use relay::{
 };
 pub use tools::ThreadTool;
 pub use uploads::{CALL_TIMEOUT as UPLOAD_CALL_TIMEOUT, UPLOAD_TOOL_NAME, UploadTools};
+pub use window::{
+    CALL_TIMEOUT as WINDOW_CALL_TIMEOUT, WINDOW_ACT, WINDOW_CLOSE, WINDOW_LOOK, WINDOW_OPEN,
+    WindowTools,
+};
 
 /// How long a built-in tool may take before it is cut off. A machine route has no request
 /// timeout of its own.

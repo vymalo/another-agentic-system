@@ -1569,6 +1569,9 @@ fn project(
                     windowed: c.ui.history.windowed,
                 }),
             },
+            // the capability of the process, set where the surfaces are known
+            // (`Config::public_config`)
+            windows: None,
         }),
         // The retention of the usage ledger and its price table (ADR 0065), read exactly.
         usage: usage_of(valid)?,

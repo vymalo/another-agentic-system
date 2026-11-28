@@ -1,0 +1,225 @@
+{
+  "mappings": [
+    {
+      "name": "window script: the tools are offered, open a window (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "window script: the tools are offered, open a window"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "contains": "[mock:window]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role != 'tool')]"
+          },
+          {
+            "matchesJsonPath": "$.tools[?(@.function.name == 'window_open')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-window-script-open\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"window-call-open\",\"type\":\"function\",\"function\":{\"name\":\"window_open\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-window-script-open\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"url\\\":\\\"http://93.184.216.34/\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-window-script-open\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-window-script-open\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ]
+      }
+    },
+    {
+      "name": "window script: the window is open, look at it (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "window script: the window is open, look at it"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "contains": "[mock:window]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool' && @.content =~ /.*window.*/)]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-window-script-look\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"window-call-look\",\"type\":\"function\",\"function\":{\"name\":\"window_look\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-window-script-look\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"window\\\":\\\"{{regexExtract (jsonPath request.body '$.messages[-1].content') 'w-[0-9]+'}}\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-window-script-look\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-window-script-look\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ]
+      }
+    },
+    {
+      "name": "window script: the frame is in, close the window (stream)",
+      "priority": 1,
+      "metadata": {
+        "twinOf": "window script: the frame is in, close the window"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "contains": "[mock:window]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool' && @.content =~ /.*frame.*/)]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-window-script-close\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"window-call-close\",\"type\":\"function\",\"function\":{\"name\":\"window_close\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-window-script-close\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"window\\\":\\\"{{regexExtract (jsonPath request.body '$.messages[-3].content') 'w-[0-9]+'}}\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-window-script-close\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl-window-script-close\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ]
+      }
+    },
+    {
+      "name": "window script: the window is closed, answer (stream)",
+      "priority": 0,
+      "metadata": {
+        "twinOf": "window script: the window is closed, answer"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "contains": "[mock:window]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role == 'tool' && @.content =~ /.*closed.*/)]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-window-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-window-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"I opened a window, looked at it and closed it. \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-window-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"The frame was artifact:fake-1.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-window-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-window-script-answer\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ],
+        "chunkedDribbleDelay": {
+          "numberOfChunks": 8,
+          "totalDuration": 500
+        }
+      }
+    },
+    {
+      "name": "window script: no window tool is offered, say so (stream)",
+      "priority": 1,
+      "metadata": {
+        "twinOf": "window script: no window tool is offered, say so"
+      },
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "(/v1)?/chat/completions",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.model",
+              "equalTo": "mock-persona"
+            }
+          },
+          {
+            "contains": "[mock:window]"
+          },
+          {
+            "matchesJsonPath": "$.messages[-1:][?(@.role != 'tool')]"
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.stream",
+              "equalTo": "true"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache"
+        },
+        "body": "data: {\"id\":\"chatcmpl-window-script-none\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-window-script-none\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"No window tools are offered to me, \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-window-script-none\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"so I cannot open one.\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-window-script-none\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-window-script-none\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"mock-persona\",\"system_fingerprint\":\"fp_mock\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120}}\n\ndata: [DONE]\n\n",
+        "transformers": [
+          "response-template"
+        ],
+        "chunkedDribbleDelay": {
+          "numberOfChunks": 8,
+          "totalDuration": 500
+        }
+      }
+    }
+  ]
+}

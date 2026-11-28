@@ -244,6 +244,15 @@
 #                     in CI or with REQUIRE_DOCKER=1); a wrong key answers 401, the
 #                     definition becomes `needs_reauth`, attaching it is 422
 #                     `tool_server_needs_auth`, and a new key makes it work with the new token
+#   windows           the window tools (ADR 0092, slice 3): the chat's scripted model     windows-e2e.sh
+#                     opens a window, looks at it and closes it through the tools the
+#                     orchestrator serves on the thread's endpoint, on the FAKE adapter
+#                     (a build with the Cargo feature `window-fake`, which the stack's
+#                     compose file and CI build): GET /api/config says `windows` with
+#                     the adapter `fake`, the model was offered the four tools, the
+#                     result of window_open names a window and a frame handed over by
+#                     reference, window_look and window_close name that same window, and
+#                     window_close answers closed; no frame reaches the model as bytes
 #   coder             chat -> coder -> branch -> mock-ci -> green -> pull request   coder-e2e.sh
 #                     (the work as a tree of steps, the answer shown as it is written)
 #   workspace         the coder needs no repository to start: a scratch project, a      workspace-e2e.sh
@@ -300,7 +309,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier tier-real pick pick-real commands locale locale-real child-sessions title description fork rail search prompts prompt-signature delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier tier-real pick pick-real commands locale locale-real child-sessions title description fork rail search prompts prompt-signature delete share registry rbac user-tools user-tools-relay windows coder workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -374,6 +383,11 @@ for s in "$@"; do
       case " $agents " in
         *" chat "*) ;;
         *) echo "scenario reasoning needs the agent 'chat', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+      esac ;;
+    windows)
+      case " $agents " in
+        *" chat "*) ;;
+        *) echo "scenario windows needs the agent 'chat', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
       esac ;;
     user-tools-relay)
       case " $agents " in
@@ -564,6 +578,7 @@ for s in "$@"; do
     rbac) run rbac sh "$here/rbac-e2e.sh" ;;
     user-tools) run user-tools sh "$here/user-tools-e2e.sh" ;;
     user-tools-relay) run user-tools-relay sh "$here/user-tools-relay-e2e.sh" ;;
+    windows) run windows sh "$here/windows-e2e.sh" ;;
     coder) run coder sh "$here/coder-e2e.sh" ;;
     workspace) run workspace sh "$here/workspace-e2e.sh" ;;
     artifact) run artifact sh "$here/artifact-e2e.sh" ;;

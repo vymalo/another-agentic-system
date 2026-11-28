@@ -2,7 +2,8 @@
 
 The `Window` port (ADR 0092, [`docs/api/windows-v1.md`](../../../docs/api/windows-v1.md)): a view onto something a run is
 producing. Slice 2 of the windows epic: the port, its URL guard, a conformance testkit and a fake adapter. No network, no
-real adapter yet.
+real adapter yet. Slice 3 serves it: `orch-surface-thread-tools`'s `WindowTools` (the four tools over any `Window`), and the orchestrator binary's
+Cargo feature `window-fake` mounts it on `FakeWindow`.
 
 ## API at a glance
 

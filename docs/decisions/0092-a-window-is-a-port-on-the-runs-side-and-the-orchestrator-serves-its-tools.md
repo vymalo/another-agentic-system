@@ -4,7 +4,7 @@ sidebarTitle: "0092 · A window is a port on a run"
 
 # ADR 0092 — A window is a port on the server side of a run, and the orchestrator serves its tools
 
-- **Status:** **Proposed (2026-11-24).** Slice 1 of the windows epic ([#339](https://github.com/vymalo/another-agentic-system/issues/339)). Nothing is built; slices 2 to 10 are listed below. *Amended (2026-11-27): parts are built since; see [the status note of 2026-11-27](#status-note-2026-11-27-what-is-built).* It amends no invariant.
+- **Status:** **Proposed (2026-11-24).** Slice 1 of the windows epic ([#339](https://github.com/vymalo/another-agentic-system/issues/339)). Nothing is built; slices 2 to 10 are listed below. *Amended (2026-11-27): parts are built since; see [the status note of 2026-11-27](#status-note-2026-11-27-what-is-built); slice 3 (the window tools, on the fake adapter): [the status note of 2026-11-28](#status-note-2026-11-28-slice-3-is-built-on-the-fake-adapter).* It amends no invariant.
 - **Why it is proposed and not accepted:** it settles a seam and a set of rules, and it names what a later slice must decide with the platform (decision 5). No owner decision is needed for the seam itself, which is why it can be written now.
 
 ## Context
@@ -73,3 +73,11 @@ Following the epic's table ([#339](https://github.com/vymalo/another-agentic-sys
 [#522](https://github.com/vymalo/another-agentic-system/pull/522) adds `orchestrator/crates/window` (`orch-window`): the
 `Window` port, its URL guard, a conformance testkit and a fake adapter, with no network (`tests/fake.rs`). No other crate
 depends on it yet: the tools (slice 3) and every later slice are not built, so no agent can open a window.
+
+## Status note, 2026-11-28: slice 3 is built, on the fake adapter
+
+*Verified 2026-11-28 against the change that adds it (ANR-332).* Slice 3 adds the four tools to the thread-tools endpoint over the `Window` port, on the fake adapter,
+and `windows` to `GET /api/config`: [`windows-v1.md`](../api/windows-v1.md#what-slice-3-built-and-what-it-did-not) says what it does and, as plainly, what it does not. Three departures from the text above, none of them a change of
+decision: the tools are a **provider** of the endpoint and not a variant of the closed enum (decision 2: the enum's `call` has no adapter to call); the access tier and the network tier of a message
+**gate nothing** (nothing reads them: the token carries neither and no network tier is built); and the orchestrator records **no step** for a window call. The fake adapter is mounted only in a build with the Cargo
+feature `window-fake`, so no deployment serves windows until slice 4's adapter exists.

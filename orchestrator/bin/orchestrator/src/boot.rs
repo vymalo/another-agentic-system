@@ -271,6 +271,18 @@ fn thread_tools_routes<P: orch_ports::Ports>(
     } else {
         config
     };
+    // The window tools (ADR 0092, `windows-v1`) on the FAKE adapter: made-up frames, no network. It is
+    // a build option for the dev stack and the tests (`window-fake`, off in the image that ships), until
+    // a real adapter lands (slice 4); a deployment that wants windows with no adapter has none.
+    #[cfg(feature = "window-fake")]
+    let config = {
+        tracing::warn!(
+            "the window tools are on the FAKE adapter (the `window-fake` build): frames are made up"
+        );
+        config.with_provider(orch_surface_thread_tools::WindowTools::new(Arc::new(
+            orch_window::testkit::FakeWindow::new(),
+        )))
+    };
     tracing::info!(
         allowed_hosts = %settings.allowed_hosts.join(","),
         "the thread-tools endpoint is mounted at {}",
