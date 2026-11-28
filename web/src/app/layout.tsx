@@ -9,6 +9,7 @@ import { SessionBanner } from "@/features/session/components/session-banner";
 import { UpdateRequiredScreen } from "@/features/session/components/update-required-screen";
 import { ShortcutsSheet } from "@/features/shortcuts/components/shortcuts-sheet";
 import { SIDEBAR_SCRIPT } from "@/features/threads/lib/sidebar-state";
+import { LANGUAGE_SCRIPT, PAGE_LANGUAGE } from "@/lib/language";
 import { THEME_COLORS, THEME_SCRIPT } from "@/lib/theme";
 import "./globals.css";
 
@@ -28,11 +29,11 @@ export const viewport: Viewport = {
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
-  // The three head scripts are allowed by their hash, which `scripts/csp-meta.ts` writes into every page of
+  // The head scripts are allowed by their hash, which `scripts/csp-meta.ts` writes into every page of
   // the export (ADR 0047, Amendment 2026-10-09; `lib/csp.ts`).
   return (
-    // the head script below may mark <html> before React hydrates it
-    <html lang="en" suppressHydrationWarning>
+    // the head scripts below may mark <html> before React hydrates it
+    <html lang={PAGE_LANGUAGE} suppressHydrationWarning>
       <head>
         <script
           // biome-ignore lint/security/noDangerouslySetInnerHtml: a constant of ours, no input in it
@@ -45,6 +46,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <script
           // biome-ignore lint/security/noDangerouslySetInnerHtml: a constant of ours, no input in it
           dangerouslySetInnerHTML={{ __html: PANEL_SCRIPT }}
+        />
+        <script
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: a constant of ours, no input in it
+          dangerouslySetInnerHTML={{ __html: LANGUAGE_SCRIPT }}
         />
       </head>
       <body className="bg-background text-foreground antialiased">

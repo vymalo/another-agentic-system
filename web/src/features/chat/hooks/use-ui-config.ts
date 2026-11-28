@@ -1,10 +1,17 @@
 import { useSyncExternalStore } from "react";
+import { isInterfaceTag } from "@/features/locale/lib/locale";
 import { api } from "@/lib/api/client";
+import { DEFAULT_LANGUAGES } from "@/lib/language";
 
 /** The `ui` section of `GET /api/config` (ADR 0034), every key with the default a missing one has. */
 export type UiConfig = {
   /** Whether a thread's description is shown (ADR 0035). The API returns it either way. */
   showDescriptions: boolean;
+  /**
+   * The interface languages the deployment offers (ADR 0085, `ui.languages`): BCP 47 tags, in its order. **Absent**
+   * from an older orchestrator, which names none, and the web then offers `DEFAULT_LANGUAGES`.
+   */
+  languages?: readonly string[];
   /**
    * How a long thread is opened (ADR 0059). **Present only when the orchestrator serves the history route**: an older one, or a
    * configuration it does not know, leaves it out, and the thread is replayed from its first event.
@@ -90,6 +97,26 @@ export function promptsOf(value: unknown): UiConfig["prompts"] | undefined {
     : undefined;
 }
 
+/**
+ * `ui.languages` of the configuration, if it is an array of the tags this client sends, deduped
+ * case-insensitively and never empty; else none (an older orchestrator, and the web offers `DEFAULT_LANGUAGES`).
+ * One element that is not a string, or not an interface tag, refuses the whole list: a deployment that cannot
+ * say its languages correctly is not half understood.
+ */
+export function languagesOf(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const tags: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== "string" || !isInterfaceTag(item)) return undefined;
+    const folded = item.toLowerCase();
+    if (seen.has(folded)) continue;
+    seen.add(folded);
+    tags.push(item);
+  }
+  return tags.length > 0 ? tags : undefined;
+}
+
 function load() {
   if (started) return;
   started = true;
@@ -99,12 +126,14 @@ function load() {
       if (!data) throw new Error("no configuration");
       const shown = data.ui?.showDescriptions;
       const history = historyOf(data.ui?.history);
+      const languages = languagesOf(data.ui?.languages);
       const search = searchOf(data.search);
       const prompts = promptsOf(data.prompts);
       set({
         loaded: true,
         config: {
           showDescriptions: typeof shown === "boolean" ? shown : DEFAULT_UI_CONFIG.showDescriptions,
+          ...(languages ? { languages } : {}),
           ...(history ? { history } : {}),
           ...(search ? { search } : {}),
           ...(prompts ? { prompts } : {}),
@@ -164,4 +193,12 @@ export function useSearchConfig(): UiConfig["search"] {
 /** What the prompt library needs from the configuration: its limits, or `undefined` while unknown or when the server has none. */
 export function usePromptsConfig(): UiConfig["prompts"] {
   return useUiConfig().config.prompts;
+}
+
+/**
+ * The interface languages the deployment offers, in its order: `ui.languages`, or `DEFAULT_LANGUAGES` when it names
+ * none (an older orchestrator) or its list is malformed. The picker draws them; a person's choice is `lib/language.ts`.
+ */
+export function useLanguages(): readonly string[] {
+  return useUiConfig().config.languages ?? DEFAULT_LANGUAGES;
 }

@@ -52,6 +52,9 @@ Included from orchestrator-configmap.yaml, which every render contains, so they 
 {{- if and .Values.networkPolicy.enabled (not .Values.edge.enabled) (not (include "agentic.bff" .)) -}}
 {{- fail "edge.enabled: false with networkPolicy.enabled needs networkPolicy.bff (its namespace and matchLabels): the orchestrator would then admit no caller at all, and the BFF is what calls it" -}}
 {{- end -}}
+{{- /* The example alert rules (ANR-339): closed booleans, thresholds that can fire and are not always firing, and a `for` that is above zero (a rule on one
+       sample is not "for a while"). The numbers are checked whether or not the rules are on, as the rate limit's are. */ -}}
+{{- include "agentic.validateAlerts" . -}}
 {{- /* The model-credential injector (ADR 0084, S9): every value it needs, so a half-configured injector stops the
 render instead of producing a route that forwards the client's own Authorization. */ -}}
 {{- if not (kindIs "bool" .Values.injector.enabled) -}}
@@ -471,6 +474,29 @@ missing identity must fail the render rather than silently serve a link another 
 {{- if and (not (kindIs "invalid" $value)) (gt (float64 $value) $largest) -}}
 {{- fail (printf "orchestrator.history.%s is above orchestrator.history.maxTurns (default 100): the server would refuse the page the web asks for" $key) -}}
 {{- end -}}
+{{- end -}}
+{{- /* The interface languages the deployment offers (ADR 0085, card ANR-957): each a BCP 47 tag, at most 32, none twice
+       (case-insensitively). Empty is the orchestrator's own default, so nothing is written then. */ -}}
+{{- $languages := .Values.orchestrator.languages -}}
+{{- if not (kindIs "slice" $languages) -}}
+{{- fail (printf "orchestrator.languages must be a list of BCP 47 tags, got %s" (kindOf $languages)) -}}
+{{- end -}}
+{{- if gt (len $languages) 32 -}}
+{{- fail (printf "orchestrator.languages has %d entries: at most 32" (len $languages)) -}}
+{{- end -}}
+{{- $seen := list -}}
+{{- range $language := $languages -}}
+{{- if not (kindIs "string" $language) -}}
+{{- fail (printf "orchestrator.languages entries must be strings, got %s" (kindOf $language)) -}}
+{{- end -}}
+{{- if or (gt (len $language) 35) (not (regexMatch "^[A-Za-z]{2,8}(-[A-Za-z]{4})?(-([A-Za-z]{2}|[0-9]{3}))?$" $language)) -}}
+{{- fail (printf "orchestrator.languages entry %q is not a language tag an interface offers (a language, an optional script of 4 letters and an optional region of 2 letters or 3 digits, at most 35 bytes)" $language) -}}
+{{- end -}}
+{{- $folded := lower $language -}}
+{{- if has $folded $seen -}}
+{{- fail (printf "orchestrator.languages names %q twice (subtags are case-insensitive)" $language) -}}
+{{- end -}}
+{{- $seen = append $seen $folded -}}
 {{- end -}}
 {{- /* The model. */ -}}
 {{- if and .Values.model.baseUrl (not (regexMatch "^https?://[^/]" (toString .Values.model.baseUrl))) -}}
@@ -1119,5 +1145,63 @@ proxy compares each with the request's Origin header, exactly, and a `*` there w
 {{- fail (printf "%s: %v is listed twice" $.name .) -}}
 {{- end -}}
 {{- $_ := set $seen . true -}}
+{{- end -}}
+{{- end -}}
+
+{{/* The example alert rules (values.yaml, `alerts`). */}}
+{{- define "agentic.validateAlerts" -}}
+{{- $a := .Values.alerts -}}
+{{- if not (kindIs "bool" $a.enabled) -}}
+{{- fail (printf "alerts.enabled must be true or false, got %v" $a.enabled) -}}
+{{- end -}}
+{{- $labels := default dict $a.labels -}}
+{{- if not (kindIs "map" $labels) -}}
+{{- fail (printf "alerts.labels must be a map of labels, got %s" (kindOf $labels)) -}}
+{{- end -}}
+{{- range $k, $v := $labels -}}
+{{- if or (hasPrefix "app.kubernetes.io/" $k) (eq $k "helm.sh/chart") -}}
+{{- fail (printf "alerts.labels: %q is a label the chart sets" $k) -}}
+{{- end -}}
+{{- if not (kindIs "string" $v) -}}
+{{- fail (printf "alerts.labels: the value of %q must be a string, got %v" $k $v) -}}
+{{- end -}}
+{{- end -}}
+{{- include "agentic.checkRatio" (dict "name" "alerts.dispatcherSlots.threshold" "value" $a.dispatcherSlots.threshold) -}}
+{{- include "agentic.checkRatio" (dict "name" "alerts.dbPool.threshold" "value" $a.dbPool.threshold) -}}
+{{- include "agentic.checkRatio" (dict "name" "alerts.runPodQuota.threshold" "value" $a.runPodQuota.threshold) -}}
+{{- include "agentic.checkWhole" (dict "name" "alerts.outboxAge.seconds" "value" $a.outboxAge.seconds "min" 1 "max" 86400) -}}
+{{- range $name := list "dispatcherSlots" "outboxAge" "dbPool" "runPodQuota" -}}
+{{- $for := (get $a $name).for -}}
+{{- if or (not (kindIs "string" $for)) (not (regexMatch "^[0-9]+(s|m|h)$" $for)) (regexMatch "^0+[a-z]$" $for) -}}
+{{- fail (printf "alerts.%s.for must be a whole number above zero and a unit (s, m or h), for example 5m, got %v" $name $for) -}}
+{{- end -}}
+{{- end -}}
+{{- $q := $a.runPodQuota -}}
+{{- if not (kindIs "bool" $q.enabled) -}}
+{{- fail (printf "alerts.runPodQuota.enabled must be true or false, got %v" $q.enabled) -}}
+{{- end -}}
+{{- if and $q.enabled (not $a.enabled) -}}
+{{- fail "alerts.runPodQuota.enabled needs alerts.enabled: the rule is part of the chart's PrometheusRule, which is not rendered" -}}
+{{- end -}}
+{{- if and $q.enabled (not $q.namespace) -}}
+{{- fail "alerts.runPodQuota.enabled needs alerts.runPodQuota.namespace: the namespace of the run pods' ResourceQuota (without it the rule would watch every quota of the cluster)" -}}
+{{- end -}}
+{{- /* Both are written inside a PromQL string: a quote or a brace would change the expression. */ -}}
+{{- if and $q.namespace (not (and (kindIs "string" $q.namespace) (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (toString $q.namespace)))) -}}
+{{- fail (printf "alerts.runPodQuota.namespace must be a Kubernetes namespace name, got %v" $q.namespace) -}}
+{{- end -}}
+{{- if not (and (kindIs "string" $q.resource) (regexMatch "^[a-z0-9]([-a-z0-9./]*[a-z0-9])?$" (toString $q.resource))) -}}
+{{- fail (printf "alerts.runPodQuota.resource must be a ResourceQuota resource name such as pods or requests.cpu, got %v" $q.resource) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* A share above 0 and at most 1, or the render fails: call with (dict "name" "a.b" "value" $v). At 0 a rule always fires; above 1 (90 for 90 %) it never does. */}}
+{{- define "agentic.checkRatio" -}}
+{{- $v := .value -}}
+{{- if not (or (kindIs "float64" $v) (kindIs "int64" $v) (kindIs "int" $v)) -}}
+{{- fail (printf "%s must be a number above 0 and at most 1 (0.9 is 90 percent), got %v" .name $v) -}}
+{{- end -}}
+{{- if or (le (float64 $v) (float64 0)) (gt (float64 $v) (float64 1)) -}}
+{{- fail (printf "%s must be a number above 0 and at most 1 (0.9 is 90 percent), got %v" .name $v) -}}
 {{- end -}}
 {{- end -}}

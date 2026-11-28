@@ -1,7 +1,7 @@
 //! ADR 0087, decision 3, on the REST fork route (ANR-1375): a fork that writes the person's words —
 //! its first message (`after` with `text`) or the replacement an edit makes (`replace` with
 //! `text`) — is a prompt, and a signing client's must carry `promptSignature`. The check is the
-//! AG-UI run's own (`orch_api::signature::check`), it runs before anything is written, and the
+//! AG-UI run's own (`orch_api::check_prompt_signature`), it runs before anything is written, and the
 //! envelope reaches the delegation byte for byte and is in no event and no export.
 //!
 //! A fork with no message writes no words and is never refused for a missing signature; a client
@@ -124,12 +124,10 @@ impl Harness {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let cfg = ApiConfig {
-            signing_clients: Arc::from(
-                signing_clients
-                    .iter()
-                    .map(|client| (*client).to_owned())
-                    .collect::<Vec<String>>(),
-            ),
+            signing_clients: signing_clients
+                .iter()
+                .map(|client| (*client).to_owned())
+                .collect::<Vec<String>>(),
             ..ApiConfig::default()
         };
         let router = orch_api::router_with_surfaces(Arc::clone(&app), cfg, Vec::new());

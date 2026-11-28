@@ -103,6 +103,7 @@ fn start(request: &str) -> Input {
         keep_open: true,
         tier: Some(AccessTier::Edits),
         tier_cap: None,
+        prompt_signature: None,
     }
 }
 
@@ -455,6 +456,7 @@ fn a_start_is_asked_in_the_parents_log_without_the_text_and_ordered() {
                 keep_open: true,
                 tier: Some(AccessTier::Edits),
                 tier_cap: None,
+                prompt_signature: None,
             }
         );
         assert_eq!(
@@ -520,6 +522,7 @@ fn a_start_with_a_bad_description_or_request_is_refused_and_writes_nothing() {
         keep_open: false,
         tier: None,
         tier_cap: None,
+        prompt_signature: None,
     };
     let long = "d".repeat(81);
     for input in [
@@ -863,6 +866,7 @@ fn a_start_says_whether_the_session_is_kept_open_to_the_log_and_to_the_order() {
             keep_open,
             tier: None,
             tier_cap: None,
+            prompt_signature: None,
         };
         let (_, cmds) = transition(&Snapshot::new(Done), &input).unwrap();
         match &bodies(&cmds)[0] {

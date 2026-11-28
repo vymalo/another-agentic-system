@@ -193,7 +193,16 @@ fn the_ui_section_has_no_secret_reference() {
             .unwrap()
             .keys()
             .collect::<Vec<_>>(),
-        ["history", "showDescriptions"]
+        ["history", "languages", "showDescriptions"]
+    );
+    // the list's bounds are the constants' (the schema attribute carries a literal)
+    assert_eq!(
+        schema["$defs"]["Ui"]["properties"]["languages"]["maxItems"],
+        orch_config::MAX_UI_LANGUAGES
+    );
+    assert_eq!(
+        schema["$defs"]["Ui"]["properties"]["languages"]["minItems"],
+        1
     );
     // and what `ui.history` holds is counts and a flag
     assert_eq!(

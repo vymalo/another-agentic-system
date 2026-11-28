@@ -477,3 +477,237 @@ async fn a_credential_that_names_no_client_at_all_is_never_checked() {
     assert_eq!(frames.last().unwrap().kind(), "RUN_FINISHED");
     assert_eq!(h.state(ALICE, &thread).await, "done");
 }
+
+// --- `startChildSession` (ANR-1383): the helper's first round is the person's words ------------
+
+/// A thread of `client`'s on an agent that offers the helper `planner`, answered, so that it has a
+/// context a session can be started in.
+async fn parent_with_helpers(h: &Harness, client: &str) -> String {
+    h.agent.set_child_sessions(
+        "plain",
+        Some(
+            orch_core::ChildSessionsOffer::from_params(&json!({
+                "agents": [{"name": "planner", "description": "Plans"}],
+                "maxOpen": 16
+            }))
+            .unwrap(),
+        ),
+    );
+    let thread = new_thread_id();
+    let frames = h
+        .run_as_client(
+            "plain",
+            ALICE,
+            client,
+            // an envelope of its own, so the helper's cannot be mistaken for the parent's
+            &signed(&thread, "r", "m", "echo hi", "cGFyZW50..cGFyZW50"),
+        )
+        .await
+        .all()
+        .await;
+    assert_eq!(frames.last().unwrap().kind(), "RUN_FINISHED");
+    h.wait_state(ALICE, &thread, "done").await;
+    thread
+}
+
+const HELPER_PROMPT: &str = "echo list every banana";
+
+fn helper_start(metadata: Option<Value>) -> Value {
+    let mut body = json!({
+        "id": "0190bbbb-0000-7000-8000-000000001383",
+        "agent": "planner",
+        "description": "Find the writers",
+        "text": HELPER_PROMPT,
+    });
+    if let Some(metadata) = metadata {
+        body["metadata"] = metadata;
+    }
+    body
+}
+
+/// The envelopes of the requests that carried the helper's prompt: one per start sent.
+fn helper_sends(h: &Harness) -> Vec<Option<String>> {
+    h.agent
+        .sends()
+        .into_iter()
+        .filter_map(|call| match call {
+            orch_ports::memory::Call::Send(call) if call.text == HELPER_PROMPT => {
+                Some(call.prompt_signature.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The `child_session_start_ended` of `parent`, once there is one.
+async fn start_ended(h: &Harness, parent: &str) -> Value {
+    let deadline = tokio::time::Instant::now() + T;
+    loop {
+        let events = h.events(ALICE, parent).await;
+        if let Some(e) = events
+            .into_iter()
+            .find(|e| e["kind"] == "child_session_start_ended")
+        {
+            return e;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the start did not end"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_signing_clients_unsigned_helper_start_is_refused_and_nothing_is_written() {
+    let h = Harness::start_signing(&["desktop"]).await;
+    let parent = parent_with_helpers(&h, "desktop").await;
+    let events = h.events(ALICE, &parent).await;
+    let sends = h.agent.sends().len();
+    for (why, metadata) in [
+        ("no metadata", None),
+        ("an empty metadata", Some(json!({}))),
+        ("two parts", Some(json!({"vymalo.promptSignature": "a.b"}))),
+        ("not text", Some(json!({"vymalo.promptSignature": 5}))),
+    ] {
+        let p = h
+            .api_post_as_client(
+                &format!("/api/threads/{parent}/sessions"),
+                ALICE,
+                "desktop",
+                &helper_start(metadata),
+            )
+            .await
+            .problem(403);
+        assert_eq!(p["code"], "prompt_signature_invalid", "{why}: {p}");
+        assert_eq!(p["reason"], "invalid", "{why}: {p}");
+    }
+    // and a token that names no client at all is a signing client's (fail closed)
+    let p = h
+        .api_post_as_client(
+            &format!("/api/threads/{parent}/sessions"),
+            ALICE,
+            NO_CLIENT,
+            &helper_start(None),
+        )
+        .await
+        .problem(403);
+    assert_eq!(p["code"], "prompt_signature_invalid", "{p}");
+    // no `child_session_start_asked`, so no row to send and no helper
+    assert_eq!(h.events(ALICE, &parent).await, events);
+    assert_eq!(h.agent.sends().len(), sends);
+}
+
+#[tokio::test]
+async fn an_unsigned_helper_start_is_refused_before_the_thread_or_the_card_is_looked_at() {
+    // Each of these has an answer of its own for a signed request (404, 422 `unknown_helper`).
+    // The 403 instead says the check runs before the application looks either of them up.
+    let h = Harness::start_signing(&["desktop"]).await;
+    let parent = parent_with_helpers(&h, "desktop").await;
+    let events = h.events(ALICE, &parent).await;
+    let sends = h.agent.sends().len();
+    let mut unknown_helper = helper_start(None);
+    unknown_helper["agent"] = json!("nobody");
+    for (why, thread, body) in [
+        (
+            "a thread that does not exist",
+            new_thread_id(),
+            helper_start(None),
+        ),
+        (
+            "a helper the card does not list",
+            parent.clone(),
+            unknown_helper,
+        ),
+    ] {
+        let p = h
+            .api_post_as_client(
+                &format!("/api/threads/{thread}/sessions"),
+                ALICE,
+                "desktop",
+                &body,
+            )
+            .await
+            .problem(403);
+        assert_eq!(p["code"], "prompt_signature_invalid", "{why}: {p}");
+        assert_eq!(p["reason"], "invalid", "{why}: {p}");
+    }
+    assert_eq!(h.events(ALICE, &parent).await, events);
+    assert_eq!(h.agent.sends().len(), sends);
+}
+
+#[tokio::test]
+async fn a_signed_helper_start_opens_the_session_with_the_same_bytes_and_logs_none_of_them() {
+    let h = Harness::start_signing(&["desktop"]).await;
+    let parent = parent_with_helpers(&h, "desktop").await;
+    let r = h
+        .api_post_as_client(
+            &format!("/api/threads/{parent}/sessions"),
+            ALICE,
+            "desktop",
+            &helper_start(Some(json!({"vymalo.promptSignature": ENVELOPE}))),
+        )
+        .await;
+    assert_eq!(r.status, 202, "{}", String::from_utf8_lossy(&r.body));
+    let ended = start_ended(&h, &parent).await;
+    assert_eq!(ended["data"]["outcome"], "opened", "{ended}");
+    assert_eq!(helper_sends(&h), [Some(ENVELOPE.to_owned())]);
+
+    // neither the parent's export nor the helper's, whose log holds the person's message
+    let child = ended["data"]["thread"].as_str().unwrap().to_owned();
+    h.wait_state(ALICE, &child, "done").await;
+    for thread in [&parent, &child] {
+        let export = h
+            .get(&format!("/api/threads/{thread}/export"), Some(ALICE))
+            .await;
+        assert_eq!(export.status, 200);
+        let export = String::from_utf8_lossy(&export.body).to_string();
+        assert!(!export.contains(ENVELOPE), "the envelope is in an export");
+        assert!(
+            !export.contains("promptSignature") && !export.contains("prompt_signature"),
+            "an export names the envelope"
+        );
+        let events = h.events(ALICE, thread).await;
+        // the positive control: the absences below are not of empty answers. The prompt is the
+        // helper's log alone.
+        if thread == &child {
+            assert!(export.contains(HELPER_PROMPT), "the export has no prompt");
+            assert!(
+                events
+                    .iter()
+                    .any(|e| e["kind"] == "user_message" && e["data"]["text"] == HELPER_PROMPT),
+                "the events have no prompt: {events:?}"
+            );
+        }
+        let events = serde_json::to_string(&events).unwrap();
+        assert!(!events.contains(ENVELOPE), "the envelope is in an event");
+        // the frames every viewer of the thread is sent, folded from the whole log
+        let history = h
+            .get(&format!("/agui/threads/{thread}/history"), Some(ALICE))
+            .await;
+        assert_eq!(history.status, 200);
+        let history = String::from_utf8_lossy(&history.body).to_string();
+        if thread == &child {
+            assert!(history.contains(HELPER_PROMPT), "the history has no prompt");
+        }
+        assert!(!history.contains(ENVELOPE), "the envelope is in a frame");
+    }
+}
+
+#[tokio::test]
+async fn a_client_that_is_not_listed_starts_a_helper_unsigned() {
+    let h = Harness::start_signing(&["desktop"]).await;
+    let parent = parent_with_helpers(&h, "web-client").await;
+    let r = h
+        .api_post_as_client(
+            &format!("/api/threads/{parent}/sessions"),
+            ALICE,
+            "web-client",
+            &helper_start(None),
+        )
+        .await;
+    assert_eq!(r.status, 202, "{}", String::from_utf8_lossy(&r.body));
+    let ended = start_ended(&h, &parent).await;
+    assert_eq!(ended["data"]["outcome"], "opened", "{ended}");
+    assert_eq!(helper_sends(&h), [None]);
+}

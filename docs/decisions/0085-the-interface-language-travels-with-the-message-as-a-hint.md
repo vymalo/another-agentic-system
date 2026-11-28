@@ -15,6 +15,11 @@ sidebarTitle: "0085 · Interface language as a hint"
   message that carries the person's words (`web/src/features/locale`, `web/e2e/locale.spec.ts`), which is the owner's ruling of
   2026-11-26 (option b); the interface language a person **picks** is ANR-957. `dev/locale-real-e2e.sh` builds its run body with the
   web's own builder (`web/scripts/run-forwarded-props.mjs`), so the real-chat proof carries the browser's shape.
+  **Amended 2026-11-28:** the picker of decision 2 is built (ANR-957): the deployment names the interface languages it offers
+  under `ui.languages` of `GET /api/config` (ADR 0085's four when it names none), the web draws a picker for exactly those in
+  the account menu, the choice is kept per browser (local storage, not keyed by identity), and `<html lang>` follows it before the first paint — so the
+  tag each message carries is the person's choice. **No interface string is translated** by this: a person who picks `gsw-CH`
+  gets a Swiss German tag on an English screen, which is what the extension asks for and what the card's scope covers.
 - **Contract:** [`docs/api/locale-v1.md`](../api/locale-v1.md). **Pattern:** [ADR 0008](0008-platform-integration-via-a2a-extension.md).
   **The extension this one is deliberately *not* shaped like:** [ADR 0061](0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md).
 

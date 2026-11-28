@@ -257,17 +257,28 @@ empty `auth.signingClients`.
 run on the reviewing host (owner ANR-Q79), so CI and the compose build are the compiler. Unverified: the five new
 route tests and the `azp` test have not been executed locally.*
 
-*Added 2026-11-28 (ANR-1375, after the note above; the first bullet of "recorded, not built" is built now):* the REST
+*Added 2026-11-28 (ANR-1383): the helper-session start is checked.* The second gap above is closed.
+`POST /api/threads/{id}/sessions` takes the envelope in its body's `metadata["vymalo.promptSignature"]` and runs the
+run route's check, now one function for both (`orch_api::check_prompt_signature`), with the same list
+(`auth.signingClients`) and the same `403`. It runs after the body is read and before the application reads the
+thread or the card, makes an agent ready or writes anything. The envelope goes from the body to the start's outbox
+row (`OutboxPayload::SessionStart`) and round 1's `SendRequest`; it is not in the job ledger, and the child's logged
+`user_message` has no place for it. As on the run route, nothing reads it off `SendRequest` yet (ANR-903). A later
+message **in** a helper's thread is a run, so the run route's check already covers it.
+
+**Two gaps remain:** the REST fork and edit (**ANR-1375**) and a Stop & send's held text (**ANR-1376**).
+
+*Verified 2026-11-28 by reading the code; the new tests have not been built or run.*
+*Added 2026-11-28 (ANR-1375, after the note above; the first of the two remaining gaps is closed):* the REST
 fork and edit route is checked. `POST /api/threads/{id}/fork` reads the envelope from the **`promptSignature` of its
 body** — the member the body had no room for until now — and refuses a signing client's missing or malformed one with
 the same `403 prompt_signature_invalid` (reason `invalid`, the finer one logged) as the AG-UI run, **before anything is
 written**: for `after` with `text` (the fork's first message) and for `replace` with `text` (the edit). A fork with no
 `text` writes no words and is never checked, and `promptSignature` without `text` is a `400`. The check is **one
-function**, `orch_api::signature::check` (moved out of the AG-UI run, which calls it too), and the list reaches the
-resource API as `ApiConfig.signing_clients`, filled by the composition root from the same `auth.signingClients` it
-gives the AG-UI surface. The edit's envelope rides `ForkAt::Replace.prompt_signature` → `Replacement::edit` →
+function**, `orch_api::check_prompt_signature` (the one the AG-UI run and `startChildSession` already call), and the list
+is `ApiConfig.signing_clients`, the same `auth.signingClients` the AG-UI surface is given. The edit's envelope rides `ForkAt::Replace.prompt_signature` → `Replacement::edit` →
 `Input::UserMessage` → the delegation's outbox row, as a first message's does, and it is in no event, frame or export.
-The helper-session start (ANR-1383) and a Stop & send's held text (ANR-1376) are still open.
+A Stop & send's held text (ANR-1376) is the one gap still open.
 
 *Verified 2026-11-28 by reading the code of this change; nothing was compiled or run on this host (owner ANR-Q79), so
 CI is the compiler. Unverified: `crates/api/tests/fork_signature.rs`, the core test of an edit's envelope, and the

@@ -152,7 +152,7 @@ fn unhex(text: &str) -> Option<[u8; 32]> {
         _ => None,
     };
     let mut out = [0u8; 32];
-    for (slot, pair) in out.iter_mut().zip(digits.chunks_exact(2)) {
+    for (slot, pair) in out.iter_mut().zip(digits.as_chunks::<2>().0) {
         *slot = value(pair[0])? << 4 | value(pair[1])?;
     }
     Some(out)

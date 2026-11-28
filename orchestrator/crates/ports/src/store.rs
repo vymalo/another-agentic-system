@@ -485,6 +485,11 @@ pub enum OutboxPayload {
         /// The cap that goes with `tier`, as for [`OutboxPayload::Delegate`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tier_cap: Option<orch_core::AccessTier>,
+        /// The person's prompt signature of `text`, as for [`OutboxPayload::Delegate`]: kept here
+        /// byte for byte and put on round 1's request. A row written before the field existed has
+        /// none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_signature: Option<String>,
     },
     /// Close the session this child thread is (`orch_core::Command::CloseSession`, ADR 0072): on
     /// the `steer` lane, so a close with `cancel` reaches a working round now. As

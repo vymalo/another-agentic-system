@@ -13,7 +13,7 @@ use orch_agui_projection::{
 };
 use orch_agui_proto::RunAgentInput;
 use orch_api::sse::{bounded, hold, keep_alive, stream_budget, stream_headers};
-use orch_api::{ApiError, Problem};
+use orch_api::{ApiError, Problem, check_prompt_signature};
 use orch_app::{
     App, AppError, ApplyOutcome, Creation, FirstMessage, GateLayer, Inbound, NewThread,
     THREAD_GATE_KEY, THREAD_LOCALE_KEY, THREAD_MENTIONS_KEY, THREAD_MODEL_KEY,
@@ -533,7 +533,7 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
 /// mentions, the access tier of the message, the model and reasoning pick, and the thread to make
 /// the thread a fork of; and, from the **new message's metadata**, the person's prompt signature
 /// (ADR 0087), which the projection reads into the input it builds (the presence check is
-/// `orch_api::signature::check`'s, on that input).
+/// `check_prompt_signature`'s, on that input).
 struct Requested<'a> {
     gate: Option<&'a GateLayer>,
     catalog: Option<&'a UiCatalogData>,
@@ -666,7 +666,7 @@ async fn attempt<P: Ports>(
         _ => None,
     });
     if let Some(envelope) = prompt {
-        orch_api::signature::check(principal, signing_clients, envelope)?;
+        check_prompt_signature(principal, signing_clients, envelope)?;
     }
     let held = held_message_ids(input);
 
