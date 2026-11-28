@@ -215,6 +215,15 @@ auth:
     # users of `mcp.tokensFile` must then be subs too: dev/compose.provisioner.yaml mounts dev/mcp-tokens.provisioner.yaml.
     userClaim: sub
 # provisioner:end
+  # The signing clients (ADR 0087, decision 1): a token whose `azp` (or `client_id`) is one of these is a signing client, and a
+  # prompt from it must carry the person's envelope in the new message's `metadata["vymalo.promptSignature"]` — a compact JWS
+  # with a detached payload, three base64url parts. One that carries none, or one of another shape, is a 403
+  # `prompt_signature_invalid` (`reason: invalid`) before anything is written and before any agent is asked; no cryptography
+  # happens here (the verifier behind the model gateway checks the signature). The mock issuer's client is `dev-chat`, which no
+  # entry names, so every other scenario is a client that is never asked; `dev-signing` is a name no client of the issuer has,
+  # minted for a script by the mock's dev-only `azp` extension (`OIDC_AZP` of dev/auth-header.sh, dev/prompt-signature-e2e.sh).
+  # The rule that a production profile refuses an empty list is not built yet.
+  signingClients: [dev-signing]
   defaultRole: user
   roles:
     user: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read], scope: own, agents: ["*"] }
