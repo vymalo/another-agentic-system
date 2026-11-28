@@ -138,7 +138,9 @@ pub use platform_credentials::{
     PlatformCertificateFuture, PlatformClientCertificate, PlatformClientCertificates,
     PlatformCredentials, PlatformCredentialsError, PlatformToken, PlatformTokenFuture,
 };
-pub use prompt_signer::{AttestedPayload, PromptSigner, SignedStatement, SignerError, SignerState};
+pub use prompt_signer::{
+    AttestedPayload, NoPromptSigner, PromptSigner, SignedStatement, SignerError, SignerState,
+};
 pub use prompts::{
     MAX_PROMPTS, PROMPT_PAGE, PromptPage, PromptRevision, PromptScope, PromptStore,
     PromptStoreError, PromptSummary, PromptViewer, StoredPrompt,

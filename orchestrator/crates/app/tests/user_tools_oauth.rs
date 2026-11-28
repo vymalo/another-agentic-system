@@ -492,6 +492,7 @@ struct Rig {
 fn app_over(bundle: Bundle, clock: &FixedClock, redirect: Option<&str>) -> App<Stack> {
     App::new(
         PortSet {
+            prompt_signer: orch_ports::NoPromptSigner,
             store: MemoryStore::new(),
             wakeup: MemoryWakeup::new(),
             agents: ScriptedAgent::new(),

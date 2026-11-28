@@ -317,6 +317,7 @@ impl World {
         let app = Arc::new(
             App::new(
                 PortSet {
+                    prompt_signer: orch_ports::NoPromptSigner,
                     store: MemoryStore::new(),
                     wakeup: MemoryWakeup::new(),
                     agents: ScriptedAgent::new(),

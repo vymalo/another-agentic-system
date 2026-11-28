@@ -1146,6 +1146,7 @@ fn file_app(w: &World, store: &MemoryArtifacts, public: PublicView) -> Arc<App<F
     Arc::new(
         App::<FilePorts>::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: store.clone(),
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),
@@ -1389,6 +1390,7 @@ fn app_on<R: orch_ports::AgentRegistry>(
     Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: orch_ports::NoArtifacts,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),

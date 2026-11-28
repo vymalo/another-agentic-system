@@ -37,6 +37,7 @@ fn app(w: &World) -> Arc<TestApp> {
     Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: orch_ports::NoArtifacts,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),
@@ -177,6 +178,7 @@ async fn a_thread_created_before_the_rename_keeps_working() {
     let old_app = Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: orch_ports::NoArtifacts,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),
@@ -244,6 +246,7 @@ async fn a_role_and_a_tool_server_that_name_an_alias_are_about_the_agent() {
     let policy = Policy::new(BTreeMap::from([(Role::new("clerk"), grant)]), None).unwrap();
     let app = App::new(
         PortSet {
+            prompt_signer: orch_ports::NoPromptSigner,
             artifacts: orch_ports::NoArtifacts,
             store: w.store.clone(),
             wakeup: w.wakeup.clone(),

@@ -325,6 +325,7 @@ async fn a_port_set_that_names_no_user_tools_has_them_off() {
         ports.user_tools().mode()
     }
     let ports = orch_ports::PortSet {
+        prompt_signer: orch_ports::NoPromptSigner,
         store: orch_ports::memory::MemoryStore::new(),
         wakeup: orch_ports::memory::MemoryWakeup::new(),
         agents: orch_ports::memory::ScriptedAgent::new(),
@@ -339,4 +340,29 @@ async fn a_port_set_that_names_no_user_tools_has_them_off() {
     assert_eq!(off(&ports), UserToolsMode::Off);
     let lease = ports.user_tools().broker().lease(&owner(), &id()).await;
     assert!(lease.is_err());
+}
+
+#[test]
+fn a_port_set_with_no_prompt_signer_has_signing_off() {
+    // ADR 0087: the bundle's default signer is `NoPromptSigner`, which is always `Unavailable`:
+    // a caller sends no statement, and nothing signs one. The first caller is ANR-1431.
+    use orch_ports::{NoPromptSigner, PromptSigner as _, SignerState};
+    fn state<P: Ports>(ports: &P) -> SignerState {
+        ports.prompt_signer().state()
+    }
+    let ports = orch_ports::PortSet {
+        prompt_signer: NoPromptSigner,
+        store: orch_ports::memory::MemoryStore::new(),
+        wakeup: orch_ports::memory::MemoryWakeup::new(),
+        agents: orch_ports::memory::ScriptedAgent::new(),
+        clock: orch_ports::SystemClock,
+        ids: orch_ports::UuidV7Ids,
+        model: orch_ports::NoModel,
+        auth: orch_ports::RefuseAll,
+        registry: orch_ports::FixedRegistry::default(),
+        artifacts: orch_ports::NoArtifacts,
+        user_tools: NoUserTools::off(),
+    };
+    assert_eq!(state(&ports), SignerState::Unavailable);
+    assert_eq!(NoPromptSigner.state(), SignerState::Unavailable);
 }

@@ -204,6 +204,7 @@ fn app<S: ThreadStore, W: Wakeup>(
     Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: orch_ports::NoArtifacts,
                 store,
                 wakeup,

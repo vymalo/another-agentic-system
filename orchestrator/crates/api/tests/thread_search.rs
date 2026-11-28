@@ -186,6 +186,7 @@ impl Harness {
         let app = Arc::new(
             App::new(
                 PortSet {
+                    prompt_signer: orch_ports::NoPromptSigner,
                     artifacts: MemoryArtifacts::new(),
                     store: MemoryStore::new(),
                     wakeup: MemoryWakeup::new(),

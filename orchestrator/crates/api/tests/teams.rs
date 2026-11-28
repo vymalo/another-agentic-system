@@ -149,6 +149,7 @@ async fn start() -> Api {
     let app: Arc<App<Stack>> = Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: orch_ports::NoArtifacts,
                 store: MemoryStore::new(),
                 wakeup: MemoryWakeup::new(),

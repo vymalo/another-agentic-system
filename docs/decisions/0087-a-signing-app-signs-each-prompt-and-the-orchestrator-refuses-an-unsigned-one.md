@@ -403,3 +403,31 @@ route passes `body.agent` to the card's `agents` as an exact string (`orchestrat
 
 *Unverified: nothing of this change was built or run where it was written; CI is the first build. The shared vectors
 have no resume case; the test of one compares with a hash computed outside the orchestrator's code.*
+
+*Added 2026-11-28 (ANR-1430: the statement's `aud` and the signer are configuration):* the two values the statement
+needs are keys of the configuration file, not constants, because both are a deployment's: `promptStatement.aud` is the
+**model gateway's origin** the statement is for (written in `server.publicOrigin`'s normal form, and `production` takes
+`http://` only for the loopback), and `promptStatement.signer` selects the signer, with `promptStatement.static { key,
+chain }` for the only kind built. **An absent section is signing off**: the process starts, and **no statement metadata
+goes with an agent's messages**, even to an agent whose card lists `prompt-statement/v1`; a verifier must then refuse
+those calls. Nothing sends a statement yet (ANR-1431 is its first caller), so today the absence is observable only as
+the port set's signer being `NoPromptSigner`.
+
+- **The static signer is not a deployment's.** It is behind the binary's **off-by-default** Cargo feature
+  `prompt-signer-static`; a build without it refuses a file that selects it (exit 78, naming the feature) rather than
+  signing nothing, and a `production` file is refused by the file's rules (exit 78, naming the key) whatever the build,
+  because the signer never renews or revokes its certificate. The PKI signer is its own change.
+- **The bundle carries it, statically.** `PortSet` gained `prompt_signer: P = NoPromptSigner` and `Ports` gained
+  `type Signer: PromptSigner` / `prompt_signer()`, like every other port: `PromptSigner::sign` returns an `impl Future`,
+  so the trait is **not dyn-compatible** and no `Arc<dyn PromptSigner>` is possible. `NoPromptSigner` is always
+  `Unavailable`, so a caller asks `state()` and sends no statement; the binary's `ConfiguredSigner` is `None` or the
+  static signer.
+- **The key is the twenty-second secret of the schema** (`promptStatement.static.key`, a reference, resolved at startup
+  and never printed); the chain is a file path read through the same resolver and must hold a certificate. A key that is
+  not a PKCS#8 Ed25519 one, or a leaf that certifies another key, stops startup naming the key and never its text.
+- **Not built:** the PKI signer, the statement on the agent's messages, and the verifier's refusal of a call whose agent
+  lists the extension while this deployment signs nothing.
+
+*Verified 2026-11-28 on this branch: `cargo test -p orch-config` (the section, its rules, the schema) and
+`cargo test -p orchestrator` pass without and with the feature, and the production refusal and the missing-feature
+refusal were each seen to fail when their guard was removed.*

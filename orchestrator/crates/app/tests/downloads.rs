@@ -73,6 +73,7 @@ fn app_with_policy<X: ArtifactStore>(
     Arc::new(
         App::new(
             PortSet {
+                prompt_signer: orch_ports::NoPromptSigner,
                 artifacts: store,
                 store: w.store.clone(),
                 wakeup: w.wakeup.clone(),
