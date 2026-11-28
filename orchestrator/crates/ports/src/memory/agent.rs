@@ -122,7 +122,7 @@ pub struct SendCall {
     pub pick: Option<orch_core::ModelPick>,
     /// The person's prompt signature the request carried (ADR 0087): what an adapter would pass on
     /// to the agent's message, byte for byte.
-    pub prompt_signature: Option<orch_core::PromptSignature>,
+    pub signed_prompt: Option<orch_core::SignedPrompt>,
     /// What the adapter was told to build and sign the message's prompt statement for (ADR 0087,
     /// the cloud path): the thread, the person, the token's client and what started the run.
     pub prompt: Option<crate::PromptRequest>,
@@ -1798,7 +1798,7 @@ impl AgentClient for ScriptedAgent {
                 tier: req.tier,
                 locale: req.locale.clone(),
                 pick: req.pick.clone(),
-                prompt_signature: req.prompt_signature.clone().map(Into::into),
+                signed_prompt: req.signed_prompt.clone(),
                 prompt: req.prompt.clone(),
             })));
             if let Some(hook) = st.on_send.take() {

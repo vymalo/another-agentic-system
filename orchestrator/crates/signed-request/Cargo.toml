@@ -5,17 +5,18 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "The signed requests to a tool server (docs/api/signed-tool-requests-v1.md): a COSE_Sign1 claim object, Ed25519, that binds one HTTP request, its thread and its owner. Pure: no I/O, no clock, no async. The reference verifier is behind the feature `verify`."
+description = "The signed requests to a tool server (docs/api/signed-tool-requests-v1.md): a COSE_Sign1 claim object, Ed25519, that binds one HTTP request, its thread and its owner. Written and opened with cratestack-cose. Pure: no I/O, no clock. The reference verifier is behind the feature `verify`."
 readme = "README.md"
 
 [features]
-# The receiving side, as the contract describes it: for the tests of the orchestrator and for a Rust tool server that does
-# not use cratestack. The orchestrator itself never verifies, so the default build leaves it out.
+# The receiving side, as the contract describes it: for the tests of the orchestrator and for a Rust tool server. The
+# orchestrator itself never verifies, so the default build leaves it out.
 verify = ["dep:subtle"]
 
 [dependencies]
 aws-lc-rs.workspace = true
 base64.workspace = true
+cratestack-cose.workspace = true
 getrandom.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -30,6 +31,7 @@ zeroize.workspace = true
 # whole suite.
 orch-signed-request = { path = ".", features = ["verify"] }
 proptest.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

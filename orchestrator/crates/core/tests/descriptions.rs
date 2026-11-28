@@ -29,7 +29,7 @@ fn message(text: &str) -> Input {
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
         client: None,
         user: user(),
         text: text.into(),

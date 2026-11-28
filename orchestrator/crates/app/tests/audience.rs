@@ -555,7 +555,7 @@ async fn a_thread_whose_agent_the_person_may_no_longer_use_is_read_only_not_hidd
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
         client: None,
     };
     refused(app.submit(&holder, t.id, input, None).await.unwrap_err());
@@ -573,7 +573,7 @@ async fn a_thread_whose_agent_the_person_may_no_longer_use_is_read_only_not_hidd
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
         client: None,
     };
     refused(app.submit(&holder, t.id, input, None).await.unwrap_err());
@@ -813,7 +813,7 @@ async fn a_mention_in_a_message_to_an_existing_thread_is_judged_the_same_way() {
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
         client: None,
     };
     let said = unprocessable(app.submit(&user(), t.id, input, None).await.unwrap_err());

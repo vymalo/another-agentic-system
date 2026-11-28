@@ -33,7 +33,7 @@ fn said(text: &str, tier: Option<AccessTier>, cap: Option<AccessTier>) -> Input 
         tier_cap: cap,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
         client: None,
     }
 }
@@ -50,7 +50,7 @@ fn stop(text: &str, tier: Option<AccessTier>, cap: Option<AccessTier>) -> Input 
         tier_cap: cap,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
         client: None,
     }
 }
@@ -310,7 +310,7 @@ fn a_redelivered_message_carries_the_cap_its_row_held() {
                 tier_cap: Some(Plan),
                 locale: None,
                 pick: None,
-                prompt_signature: None,
+                signed_prompt: None,
                 client: None,
             },
         );
@@ -327,7 +327,7 @@ fn a_redelivered_message_carries_the_cap_its_row_held() {
                 tier_cap: Some(Edits),
                 locale: None,
                 pick: None,
-                prompt_signature: None,
+                signed_prompt: None,
                 client: None,
             },
         );
@@ -350,7 +350,7 @@ fn a_redelivery_of_a_message_already_sent_gives_the_job_the_cap_it_went_out_unde
                 tier_cap: Some(Plan),
                 locale: None,
                 pick: None,
-                prompt_signature: None,
+                signed_prompt: None,
                 client: None,
             },
         );
@@ -463,7 +463,7 @@ fn mentioning(text: &str, mentions: Vec<Mention>) -> Input {
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
         client: None,
     }
 }

@@ -268,7 +268,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
             prompt: None,
         };
         self.app.record_agent_build(v.thread, &v.endpoint).await;

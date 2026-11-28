@@ -46,7 +46,7 @@ fn start(request: &str, text: &str, keep_open: bool) -> StartChildSession {
         text: text.into(),
         keep_open,
         tier: None,
-        prompt_signature: None,
+        signed_prompt: None,
     }
 }
 
@@ -629,7 +629,7 @@ async fn a_helper_thread_takes_no_mentions() {
                 tier_cap: None,
                 locale: None,
                 pick: None,
-                prompt_signature: None,
+                signed_prompt: None,
                 client: None,
             },
             None,

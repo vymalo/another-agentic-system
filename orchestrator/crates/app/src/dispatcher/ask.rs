@@ -693,7 +693,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             tier_cap: plain_cap(tier, a.tier_cap),
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
             prompt: None,
         };
         self.app

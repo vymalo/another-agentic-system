@@ -84,7 +84,7 @@ async fn send(client: &A2aAgentClient, fake: &FakeAgent, delivery: Option<UiDeli
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
         prompt: None,
     };
     drain(client.send_stream(request).await.unwrap()).await;

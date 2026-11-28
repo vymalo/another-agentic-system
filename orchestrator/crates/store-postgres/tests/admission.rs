@@ -87,6 +87,7 @@ fn a_job(owner: &UserId) -> Commit {
             tier_cap: None,
             locale: None,
             pick: None,
+            signed_prompt: None,
             client: None,
         },
     };

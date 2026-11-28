@@ -53,7 +53,7 @@ fn request(text: &str, message_id: &str, context_id: &str) -> SendRequest {
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
         prompt: None,
     }
 }

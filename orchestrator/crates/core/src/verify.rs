@@ -359,7 +359,7 @@ pub(crate) fn conclude(
                 locale: None,
                 pick: None,
                 // the core's own words, not the person's: no envelope goes with them
-                prompt_signature: None,
+                signed_prompt: None,
                 // and no client: a rework names none
                 client: None,
             });

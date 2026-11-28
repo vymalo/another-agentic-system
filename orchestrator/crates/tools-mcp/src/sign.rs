@@ -88,7 +88,7 @@ impl Signing {
     }
 
     /// The header for a request to `uri` with `body`: signed now, with a `cti` of its own.
-    pub(crate) fn header(
+    pub(crate) async fn header(
         &self,
         method: Method,
         uri: &str,
@@ -99,6 +99,7 @@ impl Signing {
         let value = self
             .signer
             .sign(&self.request(method, &path, body), iat)
+            .await
             .map_err(|_| SigningFailed)?;
         let mut value = HeaderValue::from_str(&value).map_err(|_| SigningFailed)?;
         // a credential for one request: never in a log line

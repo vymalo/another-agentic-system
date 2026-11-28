@@ -18,7 +18,7 @@ fn said(text: &str, tier: Option<AccessTier>) -> Input {
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
         client: None,
         user: user(),
         text: text.into(),
@@ -35,7 +35,7 @@ fn stop(text: &str, tier: Option<AccessTier>) -> Input {
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
         client: None,
         user: user(),
         text: text.into(),
@@ -273,7 +273,7 @@ fn a_redelivered_message_carries_the_tier_its_row_held() {
                 tier: Some(Plan),
                 locale: None,
                 pick: None,
-                prompt_signature: None,
+                signed_prompt: None,
                 client: None,
             },
         );
@@ -290,7 +290,7 @@ fn a_redelivered_message_carries_the_tier_its_row_held() {
                 tier: Some(Auto),
                 locale: None,
                 pick: None,
-                prompt_signature: None,
+                signed_prompt: None,
                 client: None,
             },
         );
@@ -313,7 +313,7 @@ fn a_redelivery_of_a_message_already_sent_gives_the_job_the_tier_it_went_out_und
                 tier: Some(Edits),
                 locale: None,
                 pick: None,
-                prompt_signature: None,
+                signed_prompt: None,
                 client: None,
             },
         );
@@ -342,7 +342,7 @@ fn a_redelivery_of_a_message_already_sent_gives_the_job_the_tier_it_went_out_und
             tier: None,
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
             client: None,
         },
     );
@@ -404,7 +404,7 @@ fn the_rework_after_a_redelivery_of_a_sent_message_is_under_its_tier() {
             tier: Some(Plan),
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
             client: None,
         },
     );

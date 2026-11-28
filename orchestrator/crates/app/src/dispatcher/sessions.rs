@@ -142,7 +142,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             keep_open,
             tier,
             tier_cap,
-            prompt_signature,
+            signed_prompt,
         } = row.payload.clone()
         else {
             return self
@@ -195,7 +195,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             pick: None,
             // the bytes the person's app sent with the start (ADR 0087); `PersonPrompt`, which
             // becomes the child's logged message, has no place for them
-            prompt_signature: prompt_signature.map(orch_core::PromptSignature::into_string),
+            signed_prompt,
             prompt: None,
         };
         let answer = match tokio::time::timeout(ANSWER_TIMEOUT, self.read_answer(req)).await {
@@ -308,7 +308,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt: None,
             prompt: None,
         };
         let answer = match tokio::time::timeout(ANSWER_TIMEOUT, self.read_answer(req)).await {

@@ -41,7 +41,7 @@ fn said(text: &str, pick: Option<ModelPick>) -> Input {
         tier_cap: None,
         locale: None,
         pick,
-        prompt_signature: None,
+        signed_prompt: None,
         client: None,
     }
 }
@@ -59,7 +59,7 @@ fn stop(text: &str, pick: Option<ModelPick>) -> Input {
         tier_cap: None,
         locale: None,
         pick,
-        prompt_signature: None,
+        signed_prompt: None,
         client: None,
     }
 }
@@ -159,7 +159,7 @@ fn a_redelivery_carries_the_pick_its_message_recorded() {
         tier_cap: None,
         locale: None,
         pick,
-        prompt_signature: None,
+        signed_prompt: None,
         client: None,
     };
     let (_, cmds) = step(&Snapshot::new(Done), &redeliver(Some(deep())));

@@ -1598,6 +1598,12 @@ fn project(
             .map(|cors| cors.allowed_origins.clone())
             .unwrap_or_default(),
         min_client_version: c.server.min_client_version.clone(),
+        // an empty value is none; the file's rules have refused it where one is needed
+        public_origin: c
+            .server
+            .public_origin
+            .clone()
+            .filter(|origin| !origin.is_empty()),
         // The run routes' own listener (ADR 0084 decision 5), only when the file has the section.
         internal: internal_settings(valid)?,
         #[cfg(feature = "surface-webhook")]

@@ -1293,6 +1293,10 @@
           "description": "The lowest application version this deployment serves: one to four dotted decimal numbers (`1.4.0`). A client states its version in the request header `X-Client-Version`; a request of the resource API from a lower version, or from a client that states none or an unreadable one, is refused with the problem `client_update_required` (status 426), which the application shows as \"update the application\" (`docs/api/client-version.md`). Absent: no client is refused. A hard cutover raises it.",
           "type": "string"
         },
+        "publicOrigin": {
+          "description": "The deployment's canonical API origin, the `aud` a person's signed prompt is for (ADR 0087, decision 2). It is taken from here and **never** from a request (`Host` and `X-Forwarded-*` included); a signing app takes it from its own configuration. Written in its normal form: `http` or `https`, a lower-case host (an international name as punycode), a port only when it is not the scheme's default, and nothing after it, not even a slash, for example `https://chat.example.com`; a `production` process takes `http` only for the loopback. **Required when `auth.signingClients` lists a client** (absent or empty, the process does not start); with none listed it may be absent.",
+          "type": "string"
+        },
         "publicUrl": {
           "description": "The public origin of the chat, for example `https://chat.example.com`: the MCP surface gives `start_job` a `web_url` from it. Replaces `ORCH_PUBLIC_URL`.",
           "type": "string"

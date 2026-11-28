@@ -238,7 +238,7 @@ struct Adopt {
     pick: Option<orch_core::ModelPick>,
     /// The person's prompt signature, as the row holds it (ADR 0087): the adopted message keeps it,
     /// as it keeps its locale.
-    prompt_signature: Option<orch_core::PromptSignature>,
+    signed_prompt: Option<orch_core::SignedPrompt>,
     /// The client the person's token was issued to, as the row holds it (ADR 0087): the adopted
     /// message keeps it, so that a later send signs the same `azp`.
     client: Option<String>,
@@ -1111,7 +1111,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             tier_cap,
             locale,
             pick,
-            prompt_signature,
+            signed_prompt,
             client,
         ) = match row.payload.clone() {
             OutboxPayload::Delegate {
@@ -1124,7 +1124,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 tier_cap,
                 locale,
                 pick,
-                prompt_signature,
+                signed_prompt,
                 client,
             } => (
                 SendContent::Text(text),
@@ -1136,7 +1136,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 tier_cap,
                 locale,
                 pick,
-                prompt_signature,
+                signed_prompt,
                 client,
             ),
             OutboxPayload::Action {
@@ -1222,7 +1222,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 tier_cap,
                 locale,
                 pick,
-                prompt_signature,
+                signed_prompt,
                 client,
                 ..
             } = &row.payload
@@ -1245,7 +1245,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                             pick: pick.clone(),
                             // the row holds the person's envelope (ADR 0087): the redelivery sends
                             // the same bytes, and the log still holds none of it
-                            prompt_signature: prompt_signature.clone(),
+                            signed_prompt: signed_prompt.clone(),
                             // and the client its token named, so the statement is the same
                             client: client.clone(),
                         },
@@ -1393,9 +1393,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             pick,
             // the person's envelope, as the row holds it (ADR 0087): byte for byte, never decoded.
             // Cloned because the row's copy is what an adoption hands the core.
-            prompt_signature: prompt_signature
-                .clone()
-                .map(orch_core::PromptSignature::into_string),
+            signed_prompt: signed_prompt.clone(),
             prompt,
         };
         // A message that starts a task of its own while the thread has meanwhile ended is adopted
@@ -1419,7 +1417,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
                 pick: pick.clone(),
-                prompt_signature: prompt_signature.clone(),
+                signed_prompt: signed_prompt.clone(),
                 client: client.clone(),
                 previous: binding.task_id.clone(),
             }),
@@ -1670,7 +1668,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             tier_cap: adopt.tier_cap,
             locale: adopt.locale.clone(),
             pick: adopt.pick.clone(),
-            prompt_signature: adopt.prompt_signature.clone(),
+            signed_prompt: adopt.signed_prompt.clone(),
             client: adopt.client.clone(),
         };
         match self
@@ -1709,7 +1707,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             tier_cap,
             locale,
             pick,
-            prompt_signature,
+            signed_prompt,
             client,
             ..
         } = row.payload.clone()
@@ -1802,7 +1800,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             locale,
             pick,
             // the person's envelope, as the row holds it (ADR 0087): byte for byte
-            prompt_signature: prompt_signature.map(orch_core::PromptSignature::into_string),
+            signed_prompt,
             prompt,
         };
         let answer = tokio::time::timeout(STEER_ANSWER_TIMEOUT, async {

@@ -587,7 +587,7 @@ fn message(text: &str, id: &str) -> Input {
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
         client: None,
     }
 }
@@ -745,7 +745,7 @@ async fn a_repeated_fork_with_its_message_is_not_a_reason_to_ask_the_platform() 
         tier: None,
         locale: None,
         pick: None,
-        prompt_signature: None,
+        signed_prompt: None,
     };
     let made = ready
         .fork_and_send(&alice(), parent.id, thread_n(43), 1, None, first())
@@ -789,7 +789,7 @@ async fn a_helper_session_waits_for_the_persons_agent_and_a_repeat_does_not_ask(
         text: "look".into(),
         keep_open: false,
         tier: None,
-        prompt_signature: None,
+        signed_prompt: None,
     };
     let asked = || async {
         w.store
@@ -923,7 +923,7 @@ async fn a_fork_message_is_stamped_when_the_agent_is_ready_and_not_before_the_wa
                 tier: None,
                 locale: None,
                 pick: None,
-                prompt_signature: None,
+                signed_prompt: None,
             },
         )
         .await
@@ -1040,7 +1040,7 @@ async fn two_people_reach_two_agents_and_a_fork_keeps_the_agent() {
                 tier: None,
                 locale: None,
                 pick: None,
-                prompt_signature: None,
+                signed_prompt: None,
             },
         )
         .await
@@ -2811,7 +2811,7 @@ async fn session_row_beside_a_working_job(
                     text: "echo x".to_owned(),
                     keep_open: false,
                     tier: None,
-                    prompt_signature: None,
+                    signed_prompt: None,
                 },
             )
             .await

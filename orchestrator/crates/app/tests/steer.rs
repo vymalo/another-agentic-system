@@ -504,7 +504,7 @@ async fn mention_coder(app: &TestApp, id: ThreadId) {
                 tier_cap: None,
                 locale: None,
                 pick: None,
-                prompt_signature: None,
+                signed_prompt: None,
                 client: None,
                 user: alice(),
                 text: "echo @coder later".to_owned(),

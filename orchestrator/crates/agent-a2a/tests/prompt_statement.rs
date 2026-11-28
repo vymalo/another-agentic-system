@@ -107,7 +107,7 @@ fn request(ep: &AgentEndpoint, envelope: Option<&str>) -> SendRequest {
         tier_cap: None,
         locale: None,
         pick: None,
-        prompt_signature: envelope.map(str::to_owned),
+        signed_prompt: envelope.map(|e| orch_core::SignedPrompt::envelope_only(e.to_owned())),
         prompt: Some(prompt()),
     }
 }

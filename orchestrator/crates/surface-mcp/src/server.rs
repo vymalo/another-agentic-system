@@ -569,7 +569,7 @@ impl<P: Ports> McpServer<P> {
             // no tier from the MCP surface (ADR 0061): the person's composer sets one, nothing else
             tier: None,
             // an MCP static token names no OAuth client, so its prompt is never signed (ADR 0087)
-            prompt_signature: None,
+            signed_prompt: None,
             // and there is no client to name in a statement
             client: None,
         };

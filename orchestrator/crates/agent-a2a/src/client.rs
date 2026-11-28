@@ -1013,7 +1013,9 @@ impl AgentClient for A2aAgentClient {
                 prompt,
                 &req.endpoint.id.to_string(),
                 &message,
-                req.prompt_signature.as_deref(),
+                req.signed_prompt
+                    .as_ref()
+                    .map(|signed| signed.envelope.as_str()),
             )
             .await?;
             message
