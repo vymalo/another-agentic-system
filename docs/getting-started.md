@@ -104,7 +104,7 @@ a dead one, and `docker compose --profile app logs coder` says why. Under emulat
 ## Next steps
 
 - **Write an agent**: an agent is a folder — [`dev/README.md`](../dev/README.md#add-a-fourth-agent-by-writing-a-folder), "Add a fourth agent by writing a folder".
-- **Deploy it**: the Helm chart — [`deploy/chart/README.md`](../deploy/chart/README.md).
+- **Deploy it**: the [Guides → Deploy page](guides/deploy.md) walks an empty cluster to a signed-in person; the chart's own reference is [`deploy/chart/README.md`](../deploy/chart/README.md).
 - **Drive it from a program**: the API contracts — [`api/README.md`](api/README.md).
 - Read [the vision](vision.md) for what the system is meant to be and [the MVP](mvp.md) for the build order.
 
