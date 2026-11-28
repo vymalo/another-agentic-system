@@ -254,3 +254,226 @@ async fn no_word_of_the_envelope_is_in_the_log_or_in_a_tracing_line() {
     );
     assert!(!log.contains(ENVELOPE), "the envelope is in a log line");
 }
+
+/// A body of the transcript `messages` plus `resume` entries, as a consumer sends them.
+fn with_resume(thread: &str, run: &str, messages: &[(&str, &str)], resume: Value) -> Value {
+    input_with(thread, run, messages, json!({"resume": resume}))
+}
+
+/// A thread the agent has asked a question on (`blocked`, interrupt `int-3`), started with a
+/// **signed** first message: `Ok(thread)` as the signing client, `Err(problem)` when the run was
+/// refused.
+async fn blocked(h: &Harness, thread: &str) -> Stream {
+    let stream = h
+        .run_as_client(
+            "plain",
+            ALICE,
+            "desktop",
+            &signed(thread, "run-1", "m-1", "ask about branches", ENVELOPE),
+        )
+        .await;
+    stream.all().await;
+    assert_eq!(h.state(ALICE, thread).await, "blocked");
+    // an attach of that run, which is not a prompt: no messages at all
+    h.run_as_client(
+        "plain",
+        ALICE,
+        "desktop",
+        &json!({
+            "threadId": thread, "runId": "run-1", "messages": []
+        }),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_signing_clients_attach_and_cancel_are_never_refused() {
+    // B1 (the security review of 2026-11-28): a run that writes nothing the person said is not a
+    // prompt, so it is never refused for a missing signature.
+    let h = Harness::start_signing(&["desktop"]).await;
+    let thread = new_thread_id();
+    // the attach is inside `blocked`: its stream ends at the run's terminal event
+    let mut attach = blocked(&h, &thread).await;
+    let frames = attach
+        .until(|f| matches!(f.kind(), "RUN_FINISHED" | "RUN_ERROR"))
+        .await;
+    assert_eq!(frames.last().unwrap().kind(), "RUN_FINISHED");
+
+    // a cancel (a `resume` that is `cancelled`) writes no user message either
+    let cancel = h
+        .post_as_client(
+            "plain",
+            ALICE,
+            "desktop",
+            &with_resume(
+                &thread,
+                "run-2",
+                &[("m-1", "ask about branches")],
+                json!([{"interruptId": "int-3", "status": "cancelled"}]),
+            ),
+        )
+        .await;
+    assert_eq!(
+        cancel.status().as_u16(),
+        200,
+        "a signing client's cancel is served"
+    );
+    let frames = Stream::new(cancel)
+        .until(|f| matches!(f.kind(), "RUN_FINISHED" | "RUN_ERROR"))
+        .await;
+    assert_eq!(frames.last().unwrap().kind(), "RUN_FINISHED");
+}
+
+#[tokio::test]
+async fn a_signing_clients_resolved_resume_is_checked_at_its_entry() {
+    // ADR 0087, decision 3: the envelope of an answer rides the `resume` entry, not the transcript.
+    let h = Harness::start_signing(&["desktop"]).await;
+
+    // with it: served, and the agent is sent the answer
+    let thread = new_thread_id();
+    let mut attach = blocked(&h, &thread).await;
+    let _ = attach
+        .until(|f| matches!(f.kind(), "RUN_FINISHED" | "RUN_ERROR"))
+        .await;
+    let answer = h
+        .post_as_client(
+            "plain",
+            ALICE,
+            "desktop",
+            &with_resume(
+                &thread,
+                "run-2",
+                &[("m-1", "ask about branches")],
+                json!([{
+                    "interruptId": "int-3",
+                    "status": "resolved",
+                    "payload": {"text": "main"},
+                    "metadata": {"vymalo.promptSignature": ENVELOPE},
+                }]),
+            ),
+        )
+        .await;
+    assert_eq!(
+        answer.status().as_u16(),
+        200,
+        "an answer that carries its entry's envelope is served"
+    );
+    let frames = Stream::new(answer)
+        .until(|f| matches!(f.kind(), "RUN_FINISHED" | "RUN_ERROR"))
+        .await;
+    assert_eq!(frames.last().unwrap().kind(), "RUN_FINISHED");
+    // the answer reached the agent with the envelope of its entry, byte for byte
+    let sent: Vec<Option<String>> = h
+        .agent
+        .sends()
+        .into_iter()
+        .filter_map(|call| match call {
+            orch_ports::memory::Call::Send(call) => Some(call.prompt_signature.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sent.last(), Some(&Some(ENVELOPE.to_owned())));
+
+    // without it: refused before anything is written, and the thread stays blocked
+    let other = new_thread_id();
+    let mut attach = blocked(&h, &other).await;
+    let _ = attach
+        .until(|f| matches!(f.kind(), "RUN_FINISHED" | "RUN_ERROR"))
+        .await;
+    let refused = h
+        .refused_as_client(
+            "plain",
+            ALICE,
+            "desktop",
+            &with_resume(
+                &other,
+                "run-2",
+                &[("m-1", "ask about branches")],
+                json!([{"interruptId": "int-3", "status": "resolved", "payload": {"text": "main"}}]),
+            ),
+        )
+        .await;
+    let p = refused.problem(403);
+    assert_eq!(p["code"], "prompt_signature_invalid", "{p}");
+    assert_eq!(p["reason"], "invalid", "{p}");
+    assert_eq!(
+        h.state(ALICE, &other).await,
+        "blocked",
+        "nothing was written"
+    );
+}
+
+#[tokio::test]
+async fn a_signing_clients_surface_action_is_never_refused() {
+    // An answer to a surface is open question 3 of ADR 0087: until the owner rules, it is accepted
+    // unsigned, and it writes no message of the person's.
+    let h = Harness::start_signing(&["desktop"]).await;
+    let thread = new_thread_id();
+    let frames = h
+        .run_as_client(
+            "plain",
+            ALICE,
+            "desktop",
+            &signed(&thread, "run-1", "m-1", "ui pick one", ENVELOPE),
+        )
+        .await
+        .all()
+        .await;
+    assert_eq!(frames.last().unwrap().event["outcome"]["type"], "interrupt");
+
+    let action = h
+        .post_as_client(
+            "plain",
+            ALICE,
+            "desktop",
+            &input_with(
+                &thread,
+                "run-2",
+                &[],
+                json!({"forwardedProps": {"a2uiAction": {"userAction": {
+                    "name": "go", "surfaceId": "s1", "sourceComponentId": "go",
+                    "context": {"choice": "a"}, "timestamp": "2026-09-29T10:00:00Z"
+                }}}}),
+            ),
+        )
+        .await;
+    assert_eq!(action.status().as_u16(), 200, "a surface action is served");
+    let frames = Stream::new(action)
+        .until(|f| matches!(f.kind(), "RUN_FINISHED" | "RUN_ERROR"))
+        .await;
+    assert_eq!(frames.last().unwrap().kind(), "RUN_FINISHED");
+}
+
+#[tokio::test]
+async fn a_token_that_names_no_client_is_a_signing_clients() {
+    // ADR 0087, decision 1 fails closed: a token of the issuer that names neither `azp` nor
+    // `client_id` (the `Some("")` sentinel) is treated as a signing client's.
+    let h = Harness::start_signing(&["desktop"]).await;
+    let thread = new_thread_id();
+    let r = h
+        .refused_as_client(
+            "plain",
+            ALICE,
+            NO_CLIENT,
+            &input(&thread, "r", &[("m", "echo hi")]),
+        )
+        .await;
+    let p = r.problem(403);
+    assert_eq!(p["code"], "prompt_signature_invalid", "{p}");
+    no_thread(&h, &thread).await;
+    assert!(h.agent.sends().is_empty());
+}
+
+#[tokio::test]
+async fn a_credential_that_names_no_client_at_all_is_never_checked() {
+    // The proxy header names no OAuth client (`Principal::client_id` is `None`): a signing deployment
+    // asks it for nothing.
+    let h = Harness::start_signing(&["desktop"]).await;
+    let thread = new_thread_id();
+    let stream = h
+        .run("plain", ALICE, &input(&thread, "r", &[("m", "echo hi")]))
+        .await;
+    let frames = stream.all().await;
+    assert_eq!(frames.last().unwrap().kind(), "RUN_FINISHED");
+    assert_eq!(h.state(ALICE, &thread).await, "done");
+}

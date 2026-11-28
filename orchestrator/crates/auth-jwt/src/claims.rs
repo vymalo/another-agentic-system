@@ -123,14 +123,20 @@ pub(crate) fn principal(
 
 /// The client a token was issued to (ADR 0087, decision 1): its `azp`, else its `client_id`, else
 /// the **token-with-no-client sentinel** `""` — a token this issuer signed that names no client is
-/// treated as a signing client's, which is what failing closed means. A value that is not text, or
-/// is blank, names no client either. Never `None`: that is a credential with no token at all.
+/// treated as a signing client's, which is what failing closed means. Never `None`: that is a
+/// credential with no token at all.
+///
+/// The choice is by **presence, not readability**: an `azp` that is there but is not usable text (a
+/// list, a number, blank) is the sentinel, and `client_id` is consulted only when `azp` is absent.
+/// Falling through to `client_id` would let `{"azp": ["desktop"], "client_id": "web-client"}` pass as
+/// the web's client, which is exactly the token a signing app's issuer would not mint.
 fn client_of(claims: &Map<String, Value>) -> String {
-    [AUTHORIZED_PARTY, CLIENT_ID]
-        .iter()
-        .find_map(|claim| text(claims, claim))
-        .unwrap_or_default()
-        .to_owned()
+    for claim in [AUTHORIZED_PARTY, CLIENT_ID] {
+        if claims.get(claim).is_some() {
+            return text(claims, claim).unwrap_or_default().to_owned();
+        }
+    }
+    String::new()
 }
 
 #[cfg(test)]

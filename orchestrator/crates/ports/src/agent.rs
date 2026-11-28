@@ -209,7 +209,7 @@ impl SendContent {
 }
 
 /// One message to deliver to the agent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SendRequest {
     /// Target agent.
     pub endpoint: AgentEndpoint,
@@ -304,6 +304,46 @@ pub struct SendRequest {
     /// the log. `None` for a message that carries none and for the orchestrator's own messages
     /// (a rework, an ask, the verifier).
     pub prompt_signature: Option<String>,
+}
+
+impl fmt::Debug for SendRequest {
+    /// Every member, except the person's prompt signature, which shows as its **length** and never
+    /// its value: a credential-shaped string must not reach a log line through a `{:?}` of a request
+    /// (ADR 0087). [`AgentEndpoint`](Self::endpoint) redacts its bearer the same way.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SendRequest")
+            .field("endpoint", &self.endpoint)
+            .field("message_id", &self.message_id)
+            .field("context_id", &self.context_id)
+            .field("task_id", &self.task_id)
+            .field("reference_task_ids", &self.reference_task_ids)
+            .field("content", &self.content)
+            .field("release", &self.release)
+            .field("ui_catalog", &self.ui_catalog)
+            .field("thread_tools", &self.thread_tools)
+            .field("history", &self.history)
+            .field("steer", &self.steer)
+            .field("mentions", &self.mentions)
+            .field("tier", &self.tier)
+            .field("tier_cap", &self.tier_cap)
+            .field("locale", &self.locale)
+            .field("pick", &self.pick)
+            .field("prompt_signature", &Envelope(&self.prompt_signature))
+            .finish()
+    }
+}
+
+/// The person's prompt signature as [`SendRequest`]'s `Debug` shows it: its length, never its
+/// value.
+struct Envelope<'a>(&'a Option<String>);
+
+impl fmt::Debug for Envelope<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(envelope) => write!(f, "Some(<{} bytes>)", envelope.len()),
+            None => f.write_str("None"),
+        }
+    }
 }
 
 /// One mentioned agent as the addressed agent is told of it (`mentions/v1`,
@@ -619,6 +659,45 @@ mod tests {
         assert!(
             !format!("{:?}", AgentEndpoint::a2a(AgentId::new("a"), "u", None)).contains("redacted")
         );
+    }
+
+    #[test]
+    fn debug_never_prints_the_prompt_signature() {
+        let envelope = "eyJhbGciOiJFZERTQSJ9..c2lnbmF0dXJl";
+        let request = SendRequest {
+            endpoint: AgentEndpoint::a2a(
+                AgentId::new("coder"),
+                "https://coder.example.com/card.json",
+                None,
+            ),
+            message_id: "row-1".into(),
+            context_id: None,
+            task_id: None,
+            reference_task_ids: Vec::new(),
+            content: SendContent::Text("hi".into()),
+            release: None,
+            ui_catalog: None,
+            thread_tools: None,
+            history: None,
+            steer: false,
+            mentions: Vec::new(),
+            tier: None,
+            tier_cap: None,
+            locale: None,
+            pick: None,
+            prompt_signature: Some(envelope.into()),
+        };
+        let text = format!("{request:?}");
+        assert!(!text.contains(envelope), "{text}");
+        assert!(
+            text.contains("Some(<") && text.contains(" bytes>)"),
+            "{text}"
+        );
+        let none = SendRequest {
+            prompt_signature: None,
+            ..request
+        };
+        assert!(format!("{none:?}").contains("prompt_signature: None"));
     }
 
     #[test]

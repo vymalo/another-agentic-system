@@ -30,8 +30,13 @@ pub struct Problem {
     pub ext: Option<Box<ProblemExt>>,
 }
 
-/// The extension members of a problem of the prompt library (RFC 9457 allows them): where a save is
-/// refused, or which answer and which rule. Names positions and ids, never a word of a prompt.
+/// The extension members of a problem (RFC 9457 allows them), boxed beside `Problem::ext`: where a
+/// save of the prompt library is refused, or which answer and which rule (`at`, `offset`,
+/// `question`, `rule`); which models or levels an agent offers (`offered`); the lowest client
+/// version a deployment serves (`minClientVersion`); the limit a person reached and its usage
+/// (`limit`, `inUse`, `max`); and why a client should not retry (`reason`, `prompt_signature_invalid`).
+/// They name positions, ids, counts and codes, never a word of a prompt, an answer, a credential or
+/// a signature.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ProblemExt {
     /// Where a save is refused (`createPrompt`, `updatePrompt`): `name`, `body`,

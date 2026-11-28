@@ -11,7 +11,7 @@ use orch_agui_projection::{
     InputError, ThreadMeta, ThreadView, Translation, held_message_ids, release_selector,
     thread_id_of, translate_with_warnings,
 };
-use orch_agui_proto::{Message, RunAgentInput};
+use orch_agui_proto::RunAgentInput;
 use orch_api::sse::{bounded, hold, keep_alive, stream_budget, stream_headers};
 use orch_api::{ApiError, Problem};
 use orch_app::{
@@ -32,11 +32,6 @@ use crate::{MAX_BODY_BYTES, State as SurfaceState};
 
 /// `forwardedProps["vymalo.fork"]` (ADR 0042): the run creates its thread as a fork.
 const THREAD_FORK_KEY: &str = "vymalo.fork";
-/// `metadata["vymalo.promptSignature"]` of the run's new user message (ADR 0087, decision 2, and the
-/// owner's ruling of 2026-11-27): the person's envelope, read from the message's **`metadata`**
-/// member and never from `forwardedProps`, which the statement hashes whole as `props_sha256` (the
-/// statement would then hash itself).
-const PROMPT_SIGNATURE_KEY: &str = "vymalo.promptSignature";
 /// Longest `runId` or message id we record in the log.
 const MAX_ID_BYTES: usize = 256;
 /// Events per page when the log is read.
@@ -66,11 +61,6 @@ pub(crate) async fn run<P: Ports>(
     }
     let input = parsed.input;
     check_ids(&input)?;
-    // ADR 0087, decisions 1 and 7: a prompt from a signing client is checked for its envelope
-    // before anything is written and before any agent is called. The envelope is the run's new
-    // message's own, and it is passed on byte for byte, never decoded and re-encoded.
-    let signature = signature_request(&input);
-    check_signature(&principal, &state.signing_clients, signature)?;
     let gate = gate_request(&input)?;
     let catalog = catalog_request(&input)?;
     let tools = tools_request(&input)?;
@@ -100,6 +90,7 @@ pub(crate) async fn run<P: Ports>(
             &agent,
             thread,
             &input,
+            &state.signing_clients,
             &Requested {
                 gate: gate.as_ref(),
                 catalog: catalog.as_ref(),
@@ -108,7 +99,6 @@ pub(crate) async fn run<P: Ports>(
                 tier: tiered,
                 locale: locale.as_ref(),
                 pick: picked.as_ref(),
-                signature,
                 fork,
             },
         )
@@ -142,33 +132,16 @@ async fn continues_own_thread<P: Ports>(
     }
 }
 
-/// The person's prompt signature, `metadata["vymalo.promptSignature"]` of the run's **last user
-/// message** (ADR 0087, decision 2; the new message, for a run that carries one): the envelope the
-/// client signed its prompt with, read as it arrived. `None` when the run carries no user message,
-/// or that message names none; a member that is not a string names none either (the presence check
-/// refuses it for a signing client, which is what failing closed means). Nothing is decoded here:
-/// the bytes go to the agent unchanged.
-fn signature_request(input: &RunAgentInput) -> Option<&str> {
-    let last = input
-        .messages
-        .iter()
-        .rev()
-        .find(|message| matches!(message, Message::User(_)))?;
-    let Message::User(user) = last else {
-        return None;
-    };
-    user.metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get(PROMPT_SIGNATURE_KEY))
-        .and_then(serde_json::Value::as_str)
-}
-
 /// ADR 0087, decision 1 and 7: a prompt from a **signing client** (`auth.signingClients`) that
 /// carries no envelope, or one that is not a compact JWS, is refused with `403
 /// prompt_signature_invalid`, reason `invalid`, before anything is written or any agent is called.
 /// No cryptography happens here (the verifier behind the model gateway checks the signature); the
 /// finer reason (`missing`, `malformed`) is logged and never sent. A client that is not listed, and
 /// a deployment that lists none, is never checked.
+///
+/// It is called only for an input that writes the person's words (a message or a Stop & send), and
+/// before the rate limit and the allowance: a message that is both unsigned and over the limit is
+/// the 403, and nothing is counted.
 fn check_signature(
     principal: &Principal,
     signing_clients: &[String],
@@ -429,24 +402,6 @@ fn picking(mut input: Input, picked: &mut Option<ModelPick>) -> Input {
     input
 }
 
-/// Gives the person's prompt signature of the run to the first input that is a message (a stop
-/// included), once: it is the message's own (ADR 0087), and it rides the delegation's outbox row
-/// and never the log. Every other input is left as it is.
-fn signing(mut input: Input, signature: &mut Option<String>) -> Input {
-    if let Input::UserMessage {
-        prompt_signature: own,
-        ..
-    }
-    | Input::StopAndSend {
-        prompt_signature: own,
-        ..
-    } = &mut input
-    {
-        *own = signature.take();
-    }
-    input
-}
-
 /// Gives the first input that is a message or an action the catalog the run carried, once. Every
 /// variant is listed, so that a new input must be decided here.
 fn carrying(mut input: Input, catalog: &mut Option<UiCatalogData>) -> Input {
@@ -607,9 +562,12 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
     }
 }
 
-/// What a run asks for beside its messages, read from its `forwardedProps` before anything is
-/// written: the gate, the UI catalog, the MCP servers to attach, the agents the message
-/// mentions, the access tier of the message and the thread to make the thread a fork of.
+/// What a run asks for beside its messages, read before anything is written: from its
+/// `forwardedProps`, the gate, the UI catalog, the MCP servers to attach, the agents the message
+/// mentions, the access tier of the message, the model and reasoning pick, and the thread to make
+/// the thread a fork of; and, from the **new message's metadata**, the person's prompt signature
+/// (ADR 0087), which the projection reads into the input it builds (the presence check is
+/// `check_signature`'s, on that input).
 struct Requested<'a> {
     gate: Option<&'a GateLayer>,
     catalog: Option<&'a UiCatalogData>,
@@ -618,10 +576,6 @@ struct Requested<'a> {
     tier: Option<AccessTier>,
     locale: Option<&'a LocaleHint>,
     pick: Option<&'a ModelPick>,
-    /// `metadata["vymalo.promptSignature"]` of the new message (ADR 0087), checked before anything
-    /// was written and passed on byte for byte: it rides the outbox row of the delegation and never
-    /// the log.
-    signature: Option<&'a str>,
     fork: Option<ForkRun>,
 }
 
@@ -634,6 +588,7 @@ async fn attempt<P: Ports>(
     agent: &AgentId,
     thread: ThreadId,
     input: &RunAgentInput,
+    signing_clients: &[String],
     requested: &Requested<'_>,
 ) -> Result<Option<Feed>, ApiError> {
     let Requested {
@@ -644,7 +599,6 @@ async fn attempt<P: Ports>(
         tier,
         locale,
         pick,
-        signature,
         fork,
     } = *requested;
     let user = &principal.user;
@@ -729,6 +683,25 @@ async fn attempt<P: Ports>(
     for warning in &warnings {
         tracing::warn!(%thread, %warning, "part of the run input was ignored");
     }
+    // ADR 0087, decisions 1 and 7: a prompt from a signing client must carry its envelope, and it
+    // is checked here — after the thread, the agent and the translation are known, and before
+    // `create_thread_as`, `fork_and_send` or `submit` writes anything. **Only an input that writes
+    // the person's words is a prompt**: an attach, a cancel and a surface action are not, and are
+    // never refused for a missing signature. The envelope is the one the projection read from the
+    // raw source (the new message's `metadata`, or an answer's `resume` entry), passed on as it
+    // arrived.
+    let prompt = inputs.iter().find_map(|input| match input {
+        Input::UserMessage {
+            prompt_signature, ..
+        }
+        | Input::StopAndSend {
+            prompt_signature, ..
+        } => Some(prompt_signature.as_deref()),
+        _ => None,
+    });
+    if let Some(envelope) = prompt {
+        check_signature(principal, signing_clients, envelope)?;
+    }
     let held = held_message_ids(input);
 
     let last_seq = known
@@ -772,6 +745,7 @@ async fn attempt<P: Ports>(
                     text,
                     message_id,
                     run_id,
+                    prompt_signature,
                     ..
                 },
             ] = inputs.as_slice()
@@ -802,7 +776,7 @@ async fn attempt<P: Ports>(
                         tier,
                         locale: locale.cloned(),
                         pick: pick.cloned(),
-                        prompt_signature: signature.map(str::to_owned),
+                        prompt_signature: prompt_signature.clone(),
                     },
                     held,
                 )
@@ -825,7 +799,7 @@ async fn attempt<P: Ports>(
                 tier,
                 locale: locale.cloned(),
                 pick: pick.cloned(),
-                prompt_signature: signature.map(str::to_owned),
+                prompt_signature: prompt_signature.clone(),
             };
             match app
                 .create_thread_as(principal, thread, new, inbound)
@@ -868,8 +842,6 @@ async fn attempt<P: Ports>(
             let mut located = locale.cloned();
             // and the model pick
             let mut picked = pick.cloned();
-            // and the person's prompt signature, which the new message carries to its delegation
-            let mut signature = signature.map(str::to_owned);
             for next in inputs {
                 let key = key_of(thread, &next);
                 let next = carrying(next, &mut carried);
@@ -877,7 +849,6 @@ async fn attempt<P: Ports>(
                 let next = tiering(next, &mut tiered);
                 let next = localizing(next, &mut located);
                 let next = picking(next, &mut picked);
-                let next = signing(next, &mut signature);
                 match app.submit(principal, thread, next, key).await? {
                     ApplyOutcome::Applied { events, .. } => {
                         start = start.or_else(|| events.first().map(|e| e.seq));
@@ -901,9 +872,6 @@ async fn attempt<P: Ports>(
             }
             if picked.is_some() {
                 tracing::warn!(%thread, "{THREAD_MODEL_KEY} or {THREAD_REASONING_KEY} on a run with no message to carry it was ignored");
-            }
-            if signature.is_some() {
-                tracing::warn!(%thread, "{PROMPT_SIGNATURE_KEY} on a run with no message to carry it was ignored");
             }
             // An input that writes no event (a cancel) is answered by whatever the log says next.
             let start = if opens_run {

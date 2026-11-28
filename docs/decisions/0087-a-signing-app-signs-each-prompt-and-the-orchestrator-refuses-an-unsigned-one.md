@@ -222,12 +222,37 @@ its rules, and the presence check of a signing client's envelope as a pure funct
 (`orchestrator/crates/prompt-statement/src/presence.rs`). Nothing calls that check at intake yet, there is no PKI
 signer, and no statement goes with an agent's messages: no prompt is refused or attested today.
 
-*Added 2026-11-28 (ANR-1338, slices 1 and 2):* the check is called at intake. `Principal.client_id` carries the
-token's `azp`/`client_id` (with `Some("")` for a token that names neither), `requires_signature` decides from
-`auth.signingClients`, and the AG-UI run route refuses a signing client's unsigned or malformed prompt with the
-`403` of decision 7 before anything is written. The envelope is read from the **new message's
-`metadata["vymalo.promptSignature"]`** and not from `forwardedProps` (which the statement hashes whole as
-`props_sha256`); it rides the delegation's outbox row and the dispatcher's `SendRequest` byte for byte, and it is in
-no event, frame, step, export or log line. A Stop & send that holds its text for the next job holds no envelope.
+*Added 2026-11-28 (ANR-1338, slices 1 and 2; the ordering and the gaps below as of the security review of the same
+day):* the check is called at intake. `Principal.client_id` carries the token's `azp`, else its `client_id`, else
+`Some("")` for a token that names neither — **by presence, not readability**, so an `azp` that is there and unusable
+is the sentinel and `client_id` is not consulted — and `requires_signature` decides from `auth.signingClients`.
+
+On the AG-UI run route the check runs **after the translation and before any write**, and only for an input that
+writes the person's words (`Input::UserMessage`, `Input::StopAndSend`): an attach, a cancel and an A2UI action write
+none and are never refused for a missing signature, and an unlisted agent answers its 404 before the check. The
+envelope is read from the **new message's `metadata["vymalo.promptSignature"]`**, and for an answer from the
+**`resume` entry's `metadata`** (decision 3) — not from `forwardedProps`, which the statement hashes whole as
+`props_sha256`. It is passed on as it arrived to `Input::UserMessage.prompt_signature`, the delegation's outbox row
+and the dispatcher's `SendRequest`, and it is in no event, frame, step, export or log line. **Nothing reads it off
+`SendRequest` yet**: the statement and the A2A wire are ANR-903, so today the bytes are kept for the send path and
+nothing more. The presence check runs before the message rate limit and the allowance, so an unsigned message that is
+also over the limit is the `403` and is not counted; the client-version refusal is a layer in front of the whole API
+and comes first.
+
+**Recorded, not built — every route that still writes a person's words unsigned** (the AG-UI run route is the only
+one that checks, and an answer on it is checked from its `resume` entry since the B1 fix):
+
+- **The REST fork and edit** (`POST /api/threads/{id}/fork`, both `after` with `text` and `replace`) writes and
+  delegates the person's words without an envelope, and the body has no metadata member to carry one: **ANR-1375**.
+- **The helper-session start** (`POST /api/threads/{id}/sessions`) writes the person's first round to a helper with
+  no envelope, and its body has no metadata member either: **ANR-1383**.
+- **A Stop & send's held text** (`Job.after_stop`) is unsigned: the job ledger is part of the export, so the
+  envelope is not stored there, and the next job's delegation — and a stop the agent refuses that becomes a steer —
+  carry none: **ANR-1376**.
+
 Still not built: the PKI signer, the statement on an agent's messages, and the `production` rule that refuses an
-empty `auth.signingClients`; a `resume` that becomes a user message is not checked yet either.
+empty `auth.signingClients`.
+
+*Verified 2026-11-28 by reading the code of this change (`23c667ee` plus the review's fixes); nothing was built or
+run on the reviewing host (owner ANR-Q79), so CI and the compose build are the compiler. Unverified: the five new
+route tests and the `azp` test have not been executed locally.*

@@ -225,6 +225,22 @@ async fn the_client_is_the_tokens_azp_its_client_id_or_the_sentinel() {
         let principal = assert_accepted(rig.check(&claims).await, &format!("azp {blank}"));
         assert_eq!(principal.client_id.as_deref(), Some(""), "azp {blank}");
     }
+
+    // The choice is by presence, not readability (security review of 2026-11-28, S1): an `azp` that
+    // is there and unusable is the sentinel, and `client_id` is not consulted. A fall-through would
+    // make `{"azp": ["desktop"], "client_id": "web-client"}` pass as the web's client — not a
+    // signing client — which fails open.
+    for unusable in [json!(["desktop"]), json!(5), json!("  "), json!(null)] {
+        let mut claims = rig.claims();
+        claims.insert("azp".into(), unusable.clone());
+        claims.insert("client_id".into(), json!("web-client"));
+        let principal = assert_accepted(rig.check(&claims).await, &format!("azp {unusable}"));
+        assert_eq!(
+            principal.client_id.as_deref(),
+            Some(""),
+            "azp {unusable} beside client_id"
+        );
+    }
 }
 
 // ---- the order of the reasons ------------------------------------------------------------------------------------

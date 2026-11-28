@@ -1178,11 +1178,9 @@ impl AuthSettings {
                 client_id: browser.client_id.clone(),
                 scope: browser.scope.clone(),
             }),
-            signing_clients: auth
-                .signing_clients
-                .iter()
-                .map(|client| client.trim().to_owned())
-                .collect(),
+            // The file's rules have already refused a client with a space, so the ids are taken as
+            // written (ADR 0087: an id is compared exactly).
+            signing_clients: auth.signing_clients.clone(),
         }
     }
 

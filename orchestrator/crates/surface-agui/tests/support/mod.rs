@@ -59,10 +59,20 @@ impl TestAuth {
     }
 }
 
+/// The bearer value that names **no client**: ADR 0087's token-with-no-client sentinel, `Some("")`,
+/// which a deployment that lists signing clients treats as a signing client's (fail closed). No real
+/// credential spells it; the JWT adapter reads it from a token that carries neither `azp` nor
+/// `client_id`.
+pub const NO_CLIENT: &str = "test:no-client";
+
 impl Authenticator for TestAuth {
     async fn authenticate(&self, credentials: &Credentials<'_>) -> Result<Principal, AuthError> {
         let mut principal = self.inner.authenticate(credentials).await?;
-        principal.client_id = credentials.bearer.map(str::to_owned);
+        principal.client_id = match credentials.bearer {
+            Some(token) if token == NO_CLIENT => Some(String::new()),
+            Some(token) => Some(token.to_owned()),
+            None => None,
+        };
         Ok(principal)
     }
 }

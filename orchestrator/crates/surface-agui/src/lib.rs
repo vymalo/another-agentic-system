@@ -114,7 +114,9 @@ impl<P: Ports> Clone for State<P> {
 ///
 /// `signing_clients` is the deployment's `auth.signingClients` (ADR 0087, decision 1): the clients
 /// whose prompts must carry `vymalo.promptSignature`. Empty (the default of a deployment that lists
-/// none) asks nobody, and a request from a client that names no client at all is never checked.
+/// none) asks nobody. A token that names no client at all — the `Some("")` sentinel — **is** a
+/// signing client's (fail closed); only a credential with no token (`None`: the proxy header, an
+/// MCP static token) is never checked.
 pub fn routes<P: Ports>(
     app: Arc<App<P>>,
     sse_keepalive: Duration,
