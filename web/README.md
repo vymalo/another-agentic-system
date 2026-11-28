@@ -3244,14 +3244,18 @@ Playwright already pins (no other tool needed), and commit the result.
 locked dependencies, plus Playwright's Chromium and the fonts it installs). `sh scripts/screens-docker.sh write` regenerates the
 set there and `sh scripts/screens-docker.sh check` compares (the CI job `screens` of `web.yml` runs it).
 **The comparison is bounded, not byte for byte** (owner's decision ANR-Q133, 2026-11-27): a still passes when **at most 0.05 % of
-its pixels differ by more than 8/255** (`compare -metric AE -fuzz`, ImageMagick installed in the `screens` target and run there,
-never on a host: `scripts/screens-compare.sh`). A still that is missing on either side, or whose dimensions differ, fails, and no
+its pixels differ by more than 8/255** by default (`compare -metric AE -fuzz`, ImageMagick installed in the `screens` target and
+run there, never on a host: `scripts/screens-compare.sh`). **Both numbers are configuration** (the owner's rule of 2026-11-28: a
+policy number is a setting with a documented default, never a constant to ask for): `SCREENS_LIMIT_PPM` (default 500, i.e.
+0.05 %) and `SCREENS_FUZZ_Q` (default 8) are read by the comparison, the log names the bound it used, and a deployment or a job
+overrides them without touching the script. A still that is missing on either side, or whose dimensions differ, fails, and no
 still is skipped. The failure message names each failing still with its pixel count, its percentage and the limits. **Why a
 bound:** Chromium's sub-pixel rasterisation differs between processes, so two CI draws of one commit in one image differed on
 about 14 of 64 stills, by 15 to about 500 pixels, each by at most 32/255 (*measured* on two CI runs, 2026-11-27; the mock share
 token and the settling of `shot` already removed the other causes). A byte comparison fails on that noise and hides nothing a
-person can see; a changed layout, text or colour moves far more than 0.05 % of a still. The bound is the owner's to change, not
-an agent's. A host's own `pnpm screens` is for looking, not for committing: its fonts and browser build differ and move
+person can see; a changed layout, text or colour moves far more than 0.05 % of a still. The **default** is 0.05 % / 8/255 and it
+is the value to keep unless a measurement says otherwise: change it in configuration, not in the script, and say so where the
+deployment sets it. A host's own `pnpm screens` is for looking, not for committing: its fonts and browser build differ and move
 images nobody changed. **A still that passes but spends more than half of the bound is named in the log** (`near the limit …,
 N % of the bound`, and a count under the summary; ANR-1351): a green run does not say the next one will be green, and this is
 what names the still one benign change away from red. It changes no exit code. **A re-baseline is a workflow, not a hand**: Actions → *Update screens* (`update-screens.yml`) draws the set
