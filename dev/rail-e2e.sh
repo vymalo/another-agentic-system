@@ -146,7 +146,12 @@ order_of() { # order_of QUERY: the ids among ours, in the order of the listing Q
     _ids=$(printf '%s' "$_page" | jq -r --argjson ours "$mine" \
       '[.[].id | select(. as $i | $ours | index($i))] | join(",")')
     [ -n "$_ids" ] && _found="${_found:+$_found,}$_ids"
-    _last=$(printf '%s' "$_page" | jq -r 'if length == 100 then .[-1].id else "" end')
+    # With `rail` a page ends on the last nested thread of a block, and `before` must name a thread of the list's own
+    # level (a nested one has no page after it); with `recent` any row's id is the cursor.
+    _last=$(printf '%s' "$_page" | jq -r --arg q "$1" '
+      if length < 100 then ""
+      elif ($q | contains("order=rail")) then ([.[] | select(.nestedUnder == null)] | last | .id) // ""
+      else .[-1].id end')
     [ -n "$_last" ] || break
     _before=$_last
     _pages=$((_pages + 1))
