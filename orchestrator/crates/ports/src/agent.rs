@@ -297,18 +297,18 @@ pub struct SendRequest {
     pub locale: Option<orch_core::LocaleHint>,
     /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
     pub pick: Option<orch_core::ModelPick>,
-    /// The person's prompt signature for the message (ADR 0087, decision 2): the compact JWS their
+    /// The person's signed prompt for the message (ADR 0087, decision 2): the compact JWS their
     /// app sent, checked for presence at intake and passed on **byte for byte** — never decoded,
-    /// re-encoded or verified here. It is the adapter's to put on the message (the cloud path's
-    /// statement, ANR-903, is what a verifier checks it against), and nothing of it is stored in
-    /// the log. `None` for a message that carries none and for the orchestrator's own messages
-    /// (a rework, an ask, the verifier).
-    pub prompt_signature: Option<String>,
+    /// re-encoded or verified here — with the claims computed at intake, when the route could say
+    /// them ([`SignedPrompt::claims`](orch_core::SignedPrompt::claims)). The cloud path's statement
+    /// (ANR-903) is made from it, and nothing of it is stored in the log. `None` for a message that
+    /// carries none and for the orchestrator's own messages (a rework, an ask, the verifier).
+    pub prompt_signature: Option<orch_core::SignedPrompt>,
 }
 
 impl fmt::Debug for SendRequest {
-    /// Every member, except the person's prompt signature, which shows as its **length** and never
-    /// its value: a credential-shaped string must not reach a log line through a `{:?}` of a request
+    /// Every member. The person's signed prompt shows as the **lengths** of its strings, by its own
+    /// `Debug`: a credential-shaped string must not reach a log line through a `{:?}` of a request
     /// (ADR 0087). [`AgentEndpoint`](Self::endpoint) redacts its bearer the same way.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SendRequest")
@@ -328,21 +328,8 @@ impl fmt::Debug for SendRequest {
             .field("tier_cap", &self.tier_cap)
             .field("locale", &self.locale)
             .field("pick", &self.pick)
-            .field("prompt_signature", &Envelope(&self.prompt_signature))
+            .field("prompt_signature", &self.prompt_signature)
             .finish()
-    }
-}
-
-/// The person's prompt signature as [`SendRequest`]'s `Debug` shows it: its length, never its
-/// value.
-struct Envelope<'a>(&'a Option<String>);
-
-impl fmt::Debug for Envelope<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            Some(envelope) => write!(f, "Some(<{} bytes>)", envelope.len()),
-            None => f.write_str("None"),
-        }
     }
 }
 
@@ -685,12 +672,33 @@ mod tests {
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: Some(envelope.into()),
+            prompt_signature: Some(orch_core::SignedPrompt {
+                envelope: envelope.to_owned().into(),
+                claims: Some(orch_core::PromptClaims {
+                    aud: "https://aud.test.invalid".into(),
+                    thread: "thread-as-sent".into(),
+                    agent: "agent-as-sent".into(),
+                    msg: "message-id-as-sent".into(),
+                    content_sha256: "content-hash".into(),
+                    props_sha256: "props-hash".into(),
+                }),
+            }),
         };
         let text = format!("{request:?}");
-        assert!(!text.contains(envelope), "{text}");
+        for value in [
+            envelope,
+            "https://aud.test.invalid",
+            "thread-as-sent",
+            "agent-as-sent",
+            "message-id-as-sent",
+            "content-hash",
+            "props-hash",
+        ] {
+            assert!(!text.contains(value), "{value}: {text}");
+        }
         assert!(
-            text.contains("Some(<") && text.contains(" bytes>)"),
+            text.contains(&format!("envelope: <{} bytes>", envelope.len()))
+                && text.contains("content_sha256: <12 bytes>"),
             "{text}"
         );
         let none = SendRequest {

@@ -789,7 +789,10 @@ pub(crate) async fn start_child_session<P: Ports>(
         &state.signing_clients,
         prompt_signature.as_deref(),
     )?
-    .map(str::to_owned);
+    // No claims: the contract does not say what a helper start signs (no message id, no
+    // `content`, no `forwardedProps`), so none is made up (ADR 0087). It is signed and not
+    // verifiable until it does.
+    .map(|envelope| orch_core::SignedPrompt::envelope_only(envelope.to_owned()));
     state
         .app
         .start_child_session(

@@ -81,8 +81,9 @@ pub use oauth::{
     CALLBACK_PATH as OAUTH_CALLBACK_PATH, ClientMetadata, ClientMetadataError,
     RESERVED_PATHS as CLIENT_METADATA_RESERVED_PATHS,
 };
+pub use orch_prompt_statement::Received;
 pub use problem::{ApiError, Problem};
-pub use prompt_signature::check_prompt_signature;
+pub use prompt_signature::{check_prompt_signature, prompt_claims};
 pub use public_auth::BrowserAuth;
 pub use routes::parse_thread_id;
 pub use shared::too_many_streams;

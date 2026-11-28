@@ -391,6 +391,7 @@ fn nothing_new_and_a_run_that_exists_attaches() {
             inputs: vec![],
             warnings: vec![],
             attach: None,
+            signed_source: None,
         }
     );
 }

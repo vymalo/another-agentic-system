@@ -2939,6 +2939,22 @@ pub async fn steer_rows_claim_beside_an_inflight_delegate<S: ThreadStore>(store:
     );
 }
 
+/// A signed prompt with every claim, so that a store that dropped one would be seen. (A helper
+/// start has no claims; a store does not know that, and keeps what it is given.)
+fn signed_prompt(envelope: &str) -> orch_core::SignedPrompt {
+    orch_core::SignedPrompt {
+        envelope: envelope.to_owned().into(),
+        claims: Some(orch_core::PromptClaims {
+            aud: "https://api.test.invalid".to_owned(),
+            thread: "thread-as-sent".to_owned(),
+            agent: "agent-as-sent".to_owned(),
+            msg: "message-id-as-sent".to_owned(),
+            content_sha256: "K8rpkPgbh7xKFEA3Gls76MNqPvNQeKp1OnLWUgCDNj4".to_owned(),
+            props_sha256: "RBNvo1WzZ4oRRq0W9-hknpT7T8If536DEMBg9hyq_4o".to_owned(),
+        }),
+    }
+}
+
 fn session_start_row(n: u128) -> NewOutbox {
     NewOutbox {
         id: outbox_id(n),
@@ -2951,7 +2967,7 @@ fn session_start_row(n: u128) -> NewOutbox {
             tier: Some(orch_core::AccessTier::Edits),
             tier_cap: None,
             // a store keeps the envelope byte for byte (ADR 0087)
-            prompt_signature: Some("eyJhbGciOiJFZERTQSJ9..c2ln-_x".to_owned().into()),
+            prompt_signature: Some(signed_prompt("eyJhbGciOiJFZERTQSJ9..c2ln-_x")),
         },
     }
 }
@@ -3481,7 +3497,7 @@ fn busy_job() -> Job {
         // ADR 0036: the text a job being stopped holds for the next one
         after_stop: Some("do X instead".to_owned()),
         // ADR 0087: and its prompt signature, which survives a restart with the text
-        after_stop_prompt_signature: Some("eyJhbGciOiJFZERTQSJ9..aGVsZA-_x".to_owned().into()),
+        after_stop_prompt_signature: Some(signed_prompt("eyJhbGciOiJFZERTQSJ9..aGVsZA-_x")),
         // ADR 0026: the agents the job's messages mentioned, and the mentions of the held text
         mentioned: [AgentId::new("researcher"), AgentId::new("coder")].into(),
         // ADR 0061: the cap of the person's role on a mentioned agent, pinned by the mention

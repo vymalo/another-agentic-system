@@ -304,7 +304,7 @@ pub enum OutboxPayload {
         /// would be a migration and a new store operation for one field. The thread export takes
         /// it out of the ledger, and `Debug` shows its length.)*
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        prompt_signature: Option<orch_core::PromptSignature>,
+        prompt_signature: Option<orch_core::SignedPrompt>,
     },
     /// Delegate the user's action on an A2UI surface (ADR 0013), with the time it happened. It is
     /// a `delegate` row like a message: the same claim, resume and retry rules apply.
@@ -409,7 +409,7 @@ pub enum OutboxPayload {
         /// [`OutboxPayload::Delegate`]: a steer carries it into the running task, and the delegation
         /// it becomes keeps it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        prompt_signature: Option<orch_core::PromptSignature>,
+        prompt_signature: Option<orch_core::SignedPrompt>,
     },
     /// Ask `agent` to do `text` for the job's agent (`orch_core::Command::Ask`, ADR 0026). `job` and
     /// `ask` say which ask of which job this is: a row whose ask has ended (its deadline, a stop,
@@ -494,7 +494,7 @@ pub enum OutboxPayload {
         /// byte for byte and put on round 1's request. A row written before the field existed has
         /// none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        prompt_signature: Option<orch_core::PromptSignature>,
+        prompt_signature: Option<orch_core::SignedPrompt>,
     },
     /// Close the session this child thread is (`orch_core::Command::CloseSession`, ADR 0072): on
     /// the `steer` lane, so a close with `cancel` reaches a working round now. As

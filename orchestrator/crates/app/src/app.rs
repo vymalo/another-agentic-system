@@ -371,7 +371,7 @@ pub struct Inbound {
     pub pick: Option<ModelPick>,
     /// The person's prompt signature for the first message (ADR 0087, decision 2), already checked
     /// for presence at intake: it rides the delegation's outbox row and never the log.
-    pub prompt_signature: Option<String>,
+    pub prompt_signature: Option<orch_core::SignedPrompt>,
 }
 
 /// Result of [`App::create_thread_as`].
@@ -451,7 +451,7 @@ pub struct FirstMessage {
     pub pick: Option<ModelPick>,
     /// The person's prompt signature for the fork's first message (ADR 0087), as for
     /// [`Inbound::prompt_signature`].
-    pub prompt_signature: Option<String>,
+    pub prompt_signature: Option<orch_core::SignedPrompt>,
 }
 
 /// What a person asks of [`App::fork_thread`].
@@ -1316,9 +1316,7 @@ impl<P: Ports> App<P> {
                 tier_cap: tier.cap,
                 locale: inbound.locale,
                 pick,
-                prompt_signature: inbound
-                    .prompt_signature
-                    .map(orch_core::PromptSignature::from),
+                prompt_signature: inbound.prompt_signature,
             },
         )?;
         // the route is recorded with the thread: where every message of it is sent from now on
@@ -1833,9 +1831,7 @@ impl<P: Ports> App<P> {
                         tier_cap: None,
                         locale: first.locale,
                         pick: first.pick,
-                        prompt_signature: first
-                            .prompt_signature
-                            .map(orch_core::PromptSignature::from),
+                        prompt_signature: first.prompt_signature,
                         run_id: first.run_id,
                         origin: first.origin,
                     }),

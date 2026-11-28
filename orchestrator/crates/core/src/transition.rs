@@ -36,7 +36,7 @@ use crate::ids::{AgentId, ThreadId, UserId};
 use crate::locale::LocaleHint;
 use crate::mention::{MAX_MENTIONS, Mention, utf16_len};
 use crate::pick::ModelPick;
-use crate::prompt_signature::PromptSignature;
+use crate::prompt_signature::SignedPrompt;
 use crate::reasoning::{AgentReasoningData, bound_reasoning};
 use crate::share::{ShareLevel, ShareNonce, ThreadSharedData, ThreadUnsharedData};
 use crate::step::{StepReport, StepSource, record_step};
@@ -101,7 +101,7 @@ pub enum Input {
         /// it is never written to the log (no event, no frame, no step, no export), and it rides
         /// the delegation's outbox row and then the agent's request. `None` for a message that
         /// carries none.
-        prompt_signature: Option<PromptSignature>,
+        prompt_signature: Option<SignedPrompt>,
     },
     /// The user sent a message with "Stop & send" (ADR 0036): the same fields as
     /// [`Input::UserMessage`], and a different decision while a job runs. On a thread that is
@@ -142,7 +142,7 @@ pub enum Input {
         /// ([`Job::after_stop_prompt_signature`]) and goes to the next job's delegation, or to the
         /// steer of a stop the agent refuses. A held message and a second one are never joined if
         /// either is signed ([`TransitionError::StopPending`]).
-        prompt_signature: Option<PromptSignature>,
+        prompt_signature: Option<SignedPrompt>,
     },
     /// The user acted on an A2UI surface (a button with an event action). Like a message, it
     /// answers a blocked thread and is delegated to the agent; unlike one it carries no text.
@@ -195,7 +195,7 @@ pub enum Input {
         pick: Option<ModelPick>,
         /// The person's prompt signature the message was written with (ADR 0087), as the
         /// delegation's outbox row holds it (never the log): the redelivery carries it to the agent.
-        prompt_signature: Option<PromptSignature>,
+        prompt_signature: Option<SignedPrompt>,
     },
     /// The user asked to cancel.
     Cancel {
@@ -530,7 +530,7 @@ pub enum Input {
         tier_cap: Option<AccessTier>,
         /// The person's prompt signature of `text` (ADR 0087), as for [`Input::UserMessage`]: it
         /// goes to [`Command::StartSession`] and is written in no event and held in no ledger.
-        prompt_signature: Option<PromptSignature>,
+        prompt_signature: Option<SignedPrompt>,
     },
     /// A start a person asked for ended (ADR 0072, S3): the session opened and its child thread
     /// exists, or it did not. Drops the pending start and writes `child_session_start_ended`; a
@@ -667,7 +667,7 @@ pub enum Command {
         /// and the dispatcher puts it on the agent's request byte for byte, so that the verifier
         /// behind the model gateway can check it. `None` for a message that carries none and for a
         /// rework, which is the core's own words.
-        prompt_signature: Option<PromptSignature>,
+        prompt_signature: Option<SignedPrompt>,
     },
     /// Send this text to the agent's **running task** (ADR 0036): a message written while a job
     /// runs, with no stop on its way. The application writes a `steer` outbox row, and the
@@ -693,7 +693,7 @@ pub enum Command {
         pick: Option<ModelPick>,
         /// The person's prompt signature, as for [`Command::Delegate`]: a steer carries it into the
         /// running task, and the delegation it becomes keeps it.
-        prompt_signature: Option<PromptSignature>,
+        prompt_signature: Option<SignedPrompt>,
     },
     /// Follow a round of the thread's child session without sending anything (ADR 0072): the
     /// application writes an `observe` row, and the dispatcher answers with
@@ -730,7 +730,7 @@ pub enum Command {
         tier_cap: Option<AccessTier>,
         /// The person's prompt signature of `text`, as for [`Command::Delegate`]: the bytes
         /// received, for round 1's request.
-        prompt_signature: Option<PromptSignature>,
+        prompt_signature: Option<SignedPrompt>,
     },
     /// Close the session this child thread is (ADR 0072, S3): the application writes a `steer`
     /// row, so a close with `cancel` reaches a working round now.
@@ -1071,7 +1071,7 @@ struct Said<'a> {
     locale: Option<LocaleHint>,
     pick: Option<ModelPick>,
     /// The person's prompt signature (ADR 0087): carried to the delegation, never to the event.
-    prompt_signature: Option<&'a PromptSignature>,
+    prompt_signature: Option<&'a SignedPrompt>,
 }
 
 /// The `user_message` event for `said`, with how it reached the running job (ADR 0036).
@@ -1255,7 +1255,7 @@ fn redelegate(
     tier_cap: Option<AccessTier>,
     locale: Option<LocaleHint>,
     pick: Option<ModelPick>,
-    prompt_signature: Option<&PromptSignature>,
+    prompt_signature: Option<&SignedPrompt>,
 ) -> Command {
     job.answer.reset();
     job.tier = tier;
@@ -1285,7 +1285,7 @@ fn redelegation(
     tier_cap: Option<AccessTier>,
     locale: Option<LocaleHint>,
     pick: Option<ModelPick>,
-    prompt_signature: Option<&PromptSignature>,
+    prompt_signature: Option<&SignedPrompt>,
 ) -> Vec<Command> {
     if sent {
         job.answer.reset();

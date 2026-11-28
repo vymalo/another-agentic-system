@@ -1,19 +1,19 @@
 //! `POST /agui/agents/{agentId}`.
 
 use axum::Extension;
-use axum::body::to_bytes;
+use axum::body::{Bytes, to_bytes};
 use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
 use axum::response::sse::Sse;
 use axum::response::{IntoResponse, Response};
 use orch_agui_projection::{Audience, Projector};
 use orch_agui_projection::{
-    InputError, ThreadMeta, ThreadView, Translation, held_message_ids, release_selector,
-    thread_id_of, translate_with_warnings,
+    InputError, SignedSource, ThreadMeta, ThreadView, Translation, held_message_ids,
+    release_selector, thread_id_of, translate_with_warnings,
 };
 use orch_agui_proto::RunAgentInput;
 use orch_api::sse::{bounded, hold, keep_alive, stream_budget, stream_headers};
-use orch_api::{ApiError, Problem, check_prompt_signature};
+use orch_api::{ApiError, Problem, Received, check_prompt_signature, prompt_claims};
 use orch_app::{
     App, AppError, ApplyOutcome, Creation, FirstMessage, GateLayer, Inbound, NewThread,
     THREAD_GATE_KEY, THREAD_LOCALE_KEY, THREAD_MENTIONS_KEY, THREAD_MODEL_KEY,
@@ -22,7 +22,7 @@ use orch_app::{
 };
 use orch_core::{
     AccessTier, AgentId, AgentTarget, Event, Input, LocaleHint, Mention, ModelPick, Origin,
-    PromptSignature, ThreadId, ThreadRecord, UiCatalogData, fork_message, is_fork_at, report,
+    PromptClaims, ThreadId, ThreadRecord, UiCatalogData, fork_message, is_fork_at, report,
 };
 use orch_ports::{Clock, Ports, Principal};
 
@@ -71,7 +71,14 @@ pub(crate) async fn run<P: Ports>(
     let fork = fork_request(&input, gate.is_some(), &tools)?;
     let thread = thread_id_of(&input).map_err(|e| input_error(&e))?;
     // A request that names an agent by an alias is about the agent (ADR 0049).
-    let agent = state.app.canonical_agent(&AgentId::new(agent_id));
+    let agent = state.app.canonical_agent(&AgentId::new(agent_id.as_str()));
+    // What a signature covers is what was sent (ADR 0087): the segment before the alias, and the
+    // body's own bytes.
+    let arrived = Arrived {
+        body: &bytes,
+        agent: &agent_id,
+        public_origin: state.intake.public_origin.as_deref(),
+    };
     // Read from the registry now (ADR 0022): an agent the platform removed is "no such agent",
     // and a registry that cannot say is a 503, never a 404. So is an agent whose audience leaves
     // the person out (ADR 0045): what they may not read is, to them, not there. The one exception
@@ -90,7 +97,8 @@ pub(crate) async fn run<P: Ports>(
             &agent,
             thread,
             &input,
-            &state.signing_clients,
+            &state.intake.signing_clients,
+            &arrived,
             &Requested {
                 gate: gate.as_ref(),
                 catalog: catalog.as_ref(),
@@ -545,6 +553,56 @@ struct Requested<'a> {
     fork: Option<ForkRun>,
 }
 
+/// The request as it arrived, for what a prompt signature covers (ADR 0087).
+struct Arrived<'a> {
+    /// The body's bytes.
+    body: &'a Bytes,
+    /// The `agentId` path segment, percent-decoded once (by the router), alias and all.
+    agent: &'a str,
+    /// `server.publicOrigin`: the `aud` of the claims. Never read from the request.
+    public_origin: Option<&'a str>,
+}
+
+/// The claims of the person's signed message (ADR 0087, decision 2), made from the part of the
+/// request `source` names, **as it arrived**.
+///
+/// **The body is read again as plain JSON, and nothing here is hashed from the typed
+/// [`RunAgentInput`].** [`RunAgentInput::parse`] drops every member AG-UI does not define, inside a
+/// content part too (and inside a `resume` entry), so `content` serialised from the typed view can
+/// differ from what the person's app hashed, and the verifier would refuse a message nobody
+/// touched. The raw `forwardedProps` is read the same way.
+fn claims_of(
+    arrived: &Arrived<'_>,
+    aud: &str,
+    thread: &str,
+    source: &SignedSource,
+    envelope: &str,
+) -> Result<PromptClaims, ApiError> {
+    // the same bytes the typed view was parsed from, so none of this can fail
+    let unreadable = || AppError::internal("the signed part of a parsed request is not there");
+    let body: serde_json::Value = serde_json::from_slice(arrived.body).map_err(|_| unreadable())?;
+    let (array, index, member) = match source {
+        SignedSource::Message { index, .. } => ("messages", *index, "content"),
+        SignedSource::Resume { index, .. } => ("resume", *index, "payload"),
+    };
+    let content = body
+        .get(array)
+        .and_then(|entries| entries.get(index))
+        .and_then(|entry| entry.get(member))
+        .ok_or_else(unreadable)?;
+    Ok(prompt_claims(
+        aud,
+        &Received {
+            thread,
+            agent: arrived.agent,
+            msg: source.msg(),
+            content,
+            forwarded_props: body.get("forwardedProps"),
+        },
+        envelope,
+    ))
+}
+
 /// One look at the thread and one try at doing what the request asks. `None` means "look
 /// again": a concurrent request with the same ids got there first, and this one is now a retry
 /// of it (an attach).
@@ -555,6 +613,7 @@ async fn attempt<P: Ports>(
     thread: ThreadId,
     input: &RunAgentInput,
     signing_clients: &[String],
+    arrived: &Arrived<'_>,
     requested: &Requested<'_>,
 ) -> Result<Option<Feed>, ApiError> {
     let Requested {
@@ -645,6 +704,7 @@ async fn attempt<P: Ports>(
         mut inputs,
         warnings,
         attach,
+        signed_source,
     } = translate_with_warnings(input, &view).map_err(|e| input_error(&e))?;
     for warning in &warnings {
         tracing::warn!(%thread, %warning, "part of the run input was ignored");
@@ -666,10 +726,25 @@ async fn attempt<P: Ports>(
         _ => None,
     });
     if let Some(prompt_signature) = prompt {
-        let received = prompt_signature.as_ref().map(PromptSignature::as_str);
+        let received = prompt_signature.as_ref().map(|p| p.envelope.as_str());
         // an empty or over-long value of a client that is not asked for one is not carried
         if check_prompt_signature(principal, signing_clients, received)?.is_none() {
             *prompt_signature = None;
+        }
+        // What a verifier needs beside the envelope is computed here, where the request is still
+        // in hand. Without a public origin there is no `aud`, and none is taken from the request:
+        // the envelope then goes alone (a deployment that lists a signing client has one).
+        if let Some(signed) = prompt_signature
+            && let Some(aud) = arrived.public_origin
+            && let Some(source) = &signed_source
+        {
+            signed.claims = Some(claims_of(
+                arrived,
+                aud,
+                input.thread_id.as_str(),
+                source,
+                signed.envelope.as_str(),
+            )?);
         }
     }
     let held = held_message_ids(input);
@@ -746,9 +821,7 @@ async fn attempt<P: Ports>(
                         tier,
                         locale: locale.cloned(),
                         pick: pick.cloned(),
-                        prompt_signature: prompt_signature
-                            .clone()
-                            .map(PromptSignature::into_string),
+                        prompt_signature: prompt_signature.clone(),
                     },
                     held,
                 )
@@ -771,7 +844,7 @@ async fn attempt<P: Ports>(
                 tier,
                 locale: locale.cloned(),
                 pick: pick.cloned(),
-                prompt_signature: prompt_signature.clone().map(PromptSignature::into_string),
+                prompt_signature: prompt_signature.clone(),
             };
             match app
                 .create_thread_as(principal, thread, new, inbound)
