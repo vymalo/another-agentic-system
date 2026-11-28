@@ -77,8 +77,11 @@ them. There is no shared state and no configuration for one.
 
 The limit is only as good as the address it counts, and **with the wrong address it throttles everybody together** — which is
 worse than no limit, because the site goes down for every person at the rate one client could use. There are two ways to get
-it wrong, and the end-to-end reproduces both:
+it wrong, and the end-to-end reproduces both: **depth 0 behind a proxy**, where every client shares the proxy's address, and
+**depth 1 or more with a proxy Traefik does not trust**, where the forwarded header is deleted and every client shares one
+bucket.
 
+::: in-depth The two ways the address can be wrong, in detail
 - **Depth 0 behind a proxy.** The peer that connects to Traefik is then the load balancer's or the node's address — a
   Service with `externalTrafficPolicy: Cluster` hides the client's address behind the node's — and it is the same for every
   client: one bucket for all of them.
@@ -86,6 +89,7 @@ it wrong, and the end-to-end reproduces both:
   `forwardedHeaders.trustedIPs` has its `X-Forwarded-*` headers deleted before any middleware runs, so no request has a
   source, and every request without one shares a single bucket. The same happens when the header has fewer entries than
   `sourceDepth`.
+:::
 
 Nothing in this repository can say which case your provider's ingress is — that is
 [open question 51](../../open-questions.md), still open — so the chart leaves the limit off and the decision is yours.
@@ -119,7 +123,7 @@ Write down both addresses. If `ClientAddr` is the same for two different network
    trust — an entry further left is written by the client, so a client could pick its own bucket.
 2. **Tell Traefik to trust that proxy**, for any depth above 0: the entrypoints' `forwardedHeaders.trustedIPs` (in Traefik's
    own chart, `ports.websecure.forwardedHeaders.trustedIPs`) must hold the proxy's addresses. Without it you get the second
-   failure above, not a limit.
+   failure of §2, not a limit.
 
 ## 5. Check the Traefik itself before you turn it on
 
@@ -178,10 +182,12 @@ read Traefik's log.
 
 To take the limit off again, set `enabled: false`: the `Middleware` goes, and the annotation with it.
 
-**Measure before you tighten it.** A page load of the web asks for the shell, a few dozen static files, the thread list and
+::: in-depth Why the default is generous
+A page load of the web asks for the shell, a few dozen static files, the thread list and
 a stream; the default burst is meant to hold one, and the default rate is meant to be far above what a person does and far
 below what a script does. The orchestrator's own limit — per process, per share link — is the other layer, and it stays: it
 does not depend on the address.
+:::
 
 ## 8. What CI proves, and what it does not
 

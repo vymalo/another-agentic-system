@@ -76,13 +76,15 @@ kubectl -n another-agentic-system annotate externalsecret another-agentic-orches
 kubectl -n another-agentic-system rollout restart deploy/another-agentic-orchestrator
 ```
 
-***Unverified*: no cluster.** The `force-sync` annotation is the chart README's own
-([one database cluster](../../../deploy/chart/README.md#one-database-cluster));
-the `rollout restart` line is this page's.
-
 **Where to read more.** [The AWS secret](../../../deploy/chart/README.md#the-aws-secret) for the name,
 length and format of every property, and [the secrets](../deploy.md#3-the-secrets) for which
 `ExternalSecret` reads which.
+
+::: in-depth Where these two commands come from
+***Unverified*: no cluster.** The `force-sync` annotation is the chart README's own
+([one database cluster](../../../deploy/chart/README.md#one-database-cluster));
+the `rollout restart` line is this page's.
+:::
 
 ## 2. The chart refuses a value, or the orchestrator refuses the configuration
 
@@ -162,9 +164,11 @@ exists is a `404`.
 | `403` | the orchestrator | signed in, but a role or a permission is missing |
 | `404` | the orchestrator | the thread is another person's — for every role, the administrator's included |
 
-The header is the tell: the orchestrator sets `WWW-Authenticate: Bearer` when a bearer token is a
+::: in-depth The two 401s, and the header that tells them apart
+The orchestrator sets `WWW-Authenticate: Bearer` when a bearer token is a
 credential it reads ([`lib.rs`](../../../orchestrator/crates/api/src/lib.rs),
 [ADR 0039](../../decisions/0039-nobody-reads-another-persons-thread.md)).
+:::
 
 The `403` is the one to look at twice: a person reaches only the agents their roles name, and a role
 `auth.roles` does not list grants nothing
