@@ -11,10 +11,14 @@
 
 mod support;
 
-use orch_app::{AppError, ApplyOutcome, Creation, Inbound, NewThread};
-use orch_core::{Input, KnownExtension, Origin, PromptClaims, SignedPrompt, ThreadId, ThreadState};
+use orch_app::{AppError, ApplyOutcome, Creation, Inbound, NewThread, StartChildSession};
+use orch_core::{
+    ChildSessionsOffer, Input, KnownExtension, Origin, PromptClaims, SignedPrompt, ThreadId,
+    ThreadState,
+};
 use orch_ports::memory::Call;
 use orch_ports::{AgentError, OutboxPayload, ThreadStore};
+use serde_json::json;
 use support::*;
 
 /// A compact JWS of three base64url parts with a detached payload: what a signing app sends.
@@ -346,4 +350,117 @@ async fn a_repeat_of_a_signed_stop_is_a_duplicate_and_another_message_is_a_confl
     );
     let after = w.store.get_thread(None, thread).await.unwrap().unwrap();
     assert_eq!(after, before, "nothing was written");
+}
+
+/// A helper start's signed prompt (ANR-1441): the envelope **and** the claims ADR 0087 decided for
+/// it (the note of 2026-11-28) reach round 1's outbox row and the dispatcher's request unchanged,
+/// and neither is in the log. The claims are what the route builds; the application only carries
+/// them, so this pins the seam between the two.
+#[tokio::test]
+async fn a_helper_starts_signed_prompt_rides_the_row_and_the_send_with_its_claims() {
+    let w = World::new();
+    w.agent.set_child_sessions(
+        "plain",
+        Some(
+            ChildSessionsOffer::from_params(&json!({
+                "agents": [{"name": "planner", "description": "Plans"}],
+                "maxOpen": 16
+            }))
+            .unwrap(),
+        ),
+    );
+    let app = w.app();
+    // the parent answers once, so the agent has assigned it the context a session starts in
+    let run = spawn_dispatcher(&app, fast(), "d1");
+    let parent = create(&app, &alice(), "plain", "echo hi").await;
+    wait_state(&app, &alice(), parent.id, ThreadState::Done).await;
+    eventually("the context a session starts in", || async {
+        w.store
+            .get_binding(parent.id)
+            .await
+            .unwrap()
+            .and_then(|binding| binding.context_id)
+    })
+    .await;
+    run.shutdown().await;
+
+    const HELPER_PROMPT: &str = "echo list every banana";
+    app.start_child_session(
+        &alice(),
+        parent.id,
+        StartChildSession {
+            request: "req-claims".to_owned(),
+            agent: "planner".to_owned(),
+            description: Some("Find the writers".to_owned()),
+            text: HELPER_PROMPT.to_owned(),
+            keep_open: false,
+            tier: None,
+            signed_prompt: Some(signed(ENVELOPE)),
+        },
+    )
+    .await
+    .unwrap();
+
+    // The row carries the value, envelope and every claim, byte for byte.
+    let rows = w.store.list_open_outbox(parent.id).await.unwrap();
+    let row = rows
+        .iter()
+        .find(|row| matches!(&row.payload, OutboxPayload::SessionStart { .. }))
+        .expect("the start's row");
+    let OutboxPayload::SessionStart { signed_prompt, .. } = &row.payload else {
+        unreachable!("found above")
+    };
+    assert_eq!(*signed_prompt, Some(signed(ENVELOPE)));
+    let shown = format!("{:?}", row.payload);
+    assert!(!shown.contains(ENVELOPE), "{shown}");
+
+    // The dispatcher puts it on round 1's request, unchanged.
+    let run = spawn_dispatcher(&app, fast(), "d2");
+    let sent = eventually("round 1 of the helper", || async {
+        let sent: Vec<Option<SignedPrompt>> = w
+            .agent
+            .sends()
+            .into_iter()
+            .filter_map(|call| match call {
+                Call::Send(call) if call.text == HELPER_PROMPT => Some(call.signed_prompt.clone()),
+                _ => None,
+            })
+            .collect();
+        (!sent.is_empty()).then_some(sent)
+    })
+    .await;
+    let child = eventually("the helper's thread", || async {
+        w.store
+            .child_threads(&alice(), parent.id)
+            .await
+            .unwrap()
+            .first()
+            .map(|record| record.id)
+    })
+    .await;
+    run.shutdown().await;
+    assert_eq!(sent, [Some(signed(ENVELOPE))], "the send carries it");
+
+    // The log holds neither: no event, and so no frame and no export, for the parent or the child.
+    for thread in [parent.id, child] {
+        let export = exported(&w, thread).await;
+        assert!(
+            !export.contains(ENVELOPE),
+            "the envelope is in the log: {export}"
+        );
+        assert!(
+            !export.to_lowercase().contains("signedprompt") && !export.contains("signed_prompt"),
+            "the log names the envelope: {export}"
+        );
+        for value in [
+            "aud.test.invalid",
+            "thread-as-sent",
+            "agent-as-sent",
+            "message-id-as-sent",
+            "content-hash",
+            "props-hash",
+        ] {
+            assert!(!export.contains(value), "a claim is in the log: {value}");
+        }
+    }
 }

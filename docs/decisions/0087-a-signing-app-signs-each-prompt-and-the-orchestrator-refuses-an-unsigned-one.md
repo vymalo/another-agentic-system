@@ -373,10 +373,11 @@ now `ForkAt::Replace.signed_prompt`.
   both were computed outside the orchestrator's code, as the other vectors are. The **signed payload** is not this
   object: it is decision 2's `{typ, aud, thread, agent, msg, content_sha256, props_sha256, nonce, iat}`, canonicalised,
   of which these six members are the part this route supplies.) **This is the contract for what a client signs. The
-  route does not build the claims yet** — it keeps the envelope **alone** (`SignedPrompt::envelope_only`,
-  `orchestrator/crates/api/src/routes.rs`, and `ApiConfig` carries no `server.publicOrigin`) — so a start is still
-  **signed and not yet verifiable**, and ANR-903 must refuse one from a signing client until **ANR-1441** keeps them. The
-  intake behaviour of ANR-1383 is unchanged.
+  route did not build the claims when this was written** — it kept the envelope **alone**
+  (`SignedPrompt::envelope_only`, `orchestrator/crates/api/src/routes.rs`, and `ApiConfig` carried no
+  `server.publicOrigin`) — so a start was **signed and not verifiable**, and ANR-903 had to refuse one from a signing
+  client until **ANR-1441** kept them. *ANR-1441 does now: the note at the end of this section.* The intake behaviour
+  of ANR-1383 is unchanged.
 - **The same holds for the REST fork and edit** (`POST /api/threads/{id}/fork`, ANR-1375): its body has no AG-UI
   `content`, `forwardedProps` or `agentId` segment, and its `messageId` is optional, so it carries the envelope
   **only**. **It is signed and not yet verifiable, and the verifier (ANR-903) must refuse it from a signing client
@@ -399,7 +400,8 @@ now `ForkAt::Replace.signed_prompt`.
 *Verified 2026-11-28 by reading `main`'s code: `ChildSessionStart`'s `id` is required (`docs/api/chat-api.yaml`), the
 route passes `body.agent` to the card's `agents` as an exact string (`orchestrator/crates/api/src/routes.rs`,
 `core/src/child_sessions.rs`), `text` is not trimmed (`crates/app/src/app.rs`), the body has no `forwardedProps`
-(`deny_unknown_fields`), and the route keeps `SignedPrompt::envelope_only` with no `public_origin` on `ApiConfig`.*
+(`deny_unknown_fields`), and the route kept `SignedPrompt::envelope_only` with no `public_origin` on `ApiConfig`
+*(superseded by ANR-1441, the note at the end of this section).*
 
 *Unverified: nothing of this change was built or run where it was written; CI is the first build. The shared vectors
 have no resume case; the test of one compares with a hash computed outside the orchestrator's code.*
@@ -431,3 +433,28 @@ the port set's signer being `NoPromptSigner`.
 *Verified 2026-11-28 on this branch: `cargo test -p orch-config` (the section, its rules, the schema) and
 `cargo test -p orchestrator` pass without and with the feature, and the production refusal was seen to fail when its
 guard was removed. The missing-feature refusal is a unit test of the binary (`a_static_prompt_signer_without_its_feature_stops_startup`).*
+
+*Added 2026-11-28 (ANR-1441: the helper-session start keeps its claims).* The gap the ANR-1422 note above recorded is
+closed: `POST /api/threads/{threadId}/sessions` builds the six members decided there, from the body and the path, and
+keeps them beside the envelope as `SignedPrompt { envelope, claims }`, exactly as a run does.
+
+- **`server.publicOrigin` reaches the resource API.** The key already existed (decision 2, and `docs/api/config.md`); only
+  the wiring was missing. `orch_api::ApiConfig` gains `public_origin: Option<Arc<str>>`, the binary fills it from
+  `cfg.public_origin` as it already does for the AG-UI surface's `Intake`, and `ApiState` carries it to the route. It is
+  the `aud` and is **never** taken from the request. With none configured the envelope goes alone, as before; a
+  deployment that lists a signing client cannot reach that state (the file refuses to start without the key).
+- **Each member, from what the route has:** `aud` is the configured public origin; `thread` is the parent of the path;
+  `agent` is the body's `agent`, the helper's exact name; `msg` is the body's `id`; `content` is the body's `text` as one
+  JSON string, so `content_sha256` is `base64url(SHA-256(JCS(text)))`; `props_sha256` is the hash of `{}`. `thread` and
+  `msg` are parsed into a UUID and printed again, so they are in their **normal form** — an upper-case `id` in the
+  request signs the lower-case `msg`. The builder is `orch_api::prompt_claims` over `Received`, the same one the run
+  route uses, so the two cannot hash differently.
+- **Where they ride:** round 1's outbox row (`OutboxPayload::SessionStart.signed_prompt`) and the dispatcher's
+  `SendRequest`, unchanged, as a run's do. No event, frame, step, export or log line holds the envelope or a hash; the
+  request id the parent's `child_session_start_asked` records is the same value as `msg`, as it was before, and is not
+  the claim.
+- **The REST fork and edit** (`forkThread`) still keeps the envelope alone: that part of the ANR-1422 note stands.
+
+*Verified 2026-11-28 by reading `main`'s code and the change; nothing was compiled or run on this host (owner ANR-Q79),
+so CI is the compiler. Unverified: the flipped `crates/surface-agui/tests/prompt_signature.rs` and the new
+`crates/app/tests/prompt_signature.rs` case have not been executed.*

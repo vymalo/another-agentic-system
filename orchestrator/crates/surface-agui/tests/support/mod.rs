@@ -348,11 +348,12 @@ impl Harness {
 
     /// A deployment whose public origin is [`PUBLIC_ORIGIN`] and that lists `clients` as signing clients (ADR 0087, decision 1): a request whose
     /// token names one of them must carry `vymalo.promptSignature` in its last user message's metadata.
-    /// The resource API gets the same list, as the binary gives it.
+    /// The resource API gets the same list and origin, as the binary gives it.
     pub async fn start_signing(clients: &[&str]) -> Self {
         let api = ApiConfig {
             sse_keepalive: Duration::from_millis(150),
             signing_clients: clients.iter().map(|c| (*c).to_owned()).collect(),
+            public_origin: Some(PUBLIC_ORIGIN.into()),
             ..ApiConfig::default()
         };
         Self::start_full(

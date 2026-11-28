@@ -17,6 +17,7 @@ use crate::ApiState;
 use crate::check_prompt_signature;
 use crate::extract::{ApiJson, ApiQuery};
 use crate::problem::{ApiError, Problem};
+use crate::{Received, prompt_claims};
 
 type ApiResult<T> = Result<T, ApiError>;
 
@@ -784,12 +785,38 @@ pub(crate) async fn start_child_session<P: Ports>(
     // ADR 0087, decision 3: `text` is the person's words, so a signing client's start is signed or
     // refused, here, before the application reads, makes or writes anything.
     // what is carried on is what the check answers: bounded, and never empty
-    let signed_prompt =
-        check_prompt_signature(&principal, &state.signing_clients, signed_prompt.as_deref())?
-            // No claims: the contract does not say what a helper start signs (no message id, no
-            // `content`, no `forwardedProps`), so none is made up (ADR 0087). It is signed and not
-            // verifiable until it does.
-            .map(|envelope| orch_core::SignedPrompt::envelope_only(envelope.to_owned()));
+    let envelope =
+        check_prompt_signature(&principal, &state.signing_clients, signed_prompt.as_deref())?;
+    // The claims a verifier needs (ADR 0087, decision 2 and the note of 2026-11-28). The route has
+    // no AG-UI `content`, `forwardedProps` or `agentId` segment, so each member comes from what it
+    // does carry: `thread` is the parent of the path, `agent` the helper's exact name, `msg` the
+    // body's `id`, `content` the body's `text` as one JSON string, and there is no `forwardedProps`.
+    // `thread` and `msg` are printed in their normal form (lower-case, hyphenated): both are parsed
+    // into a UUID and printed again, so an upper-case id in the request signs a different payload.
+    // Without a configured public origin there is no `aud`, and none is taken from the request: the
+    // envelope then goes alone (a deployment that lists a signing client has one).
+    let signed_prompt = envelope.map(|envelope| {
+        let thread = parent.to_string();
+        let msg = body.id.to_string();
+        let content = serde_json::Value::String(body.text.clone());
+        let claims = state.public_origin.as_deref().map(|aud| {
+            prompt_claims(
+                aud,
+                &Received {
+                    thread: thread.as_str(),
+                    agent: body.agent.as_str(),
+                    msg: msg.as_str(),
+                    content: &content,
+                    forwarded_props: None,
+                },
+                envelope,
+            )
+        });
+        orch_core::SignedPrompt {
+            envelope: envelope.to_owned().into(),
+            claims,
+        }
+    });
     state
         .app
         .start_child_session(
