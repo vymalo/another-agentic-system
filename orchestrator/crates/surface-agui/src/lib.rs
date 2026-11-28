@@ -89,6 +89,9 @@ pub(crate) struct State<P: Ports> {
     pub(crate) app: Arc<App<P>>,
     pub(crate) keepalive: Duration,
     pub(crate) lifetime: Duration,
+    /// `auth.signingClients` (ADR 0087, decision 1): the clients whose prompts must carry
+    /// `vymalo.promptSignature`. Empty asks nobody.
+    pub(crate) signing_clients: Arc<[String]>,
 }
 
 impl<P: Ports> Clone for State<P> {
@@ -97,6 +100,7 @@ impl<P: Ports> Clone for State<P> {
             app: Arc::clone(&self.app),
             keepalive: self.keepalive,
             lifetime: self.lifetime,
+            signing_clients: Arc::clone(&self.signing_clients),
         }
     }
 }
@@ -107,15 +111,21 @@ impl<P: Ports> Clone for State<P> {
 /// `sse_lifetime` (ADR 0082), whichever credential they were opened with;
 /// `GET /agui/agents/{agentId}/capabilities` and `GET /agui/threads/{threadId}/history` (and its two
 /// shared variants) are ordinary requests.
+///
+/// `signing_clients` is the deployment's `auth.signingClients` (ADR 0087, decision 1): the clients
+/// whose prompts must carry `vymalo.promptSignature`. Empty (the default of a deployment that lists
+/// none) asks nobody, and a request from a client that names no client at all is never checked.
 pub fn routes<P: Ports>(
     app: Arc<App<P>>,
     sse_keepalive: Duration,
     sse_lifetime: Duration,
+    signing_clients: Arc<[String]>,
 ) -> SurfaceRoutes {
     let state = State {
         app,
         keepalive: sse_keepalive,
         lifetime: sse_lifetime,
+        signing_clients,
     };
     let streaming = Router::new()
         .route("/agui/agents/{agent_id}", post(run::run::<P>))

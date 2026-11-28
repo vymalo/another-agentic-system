@@ -17,6 +17,7 @@ use orch_ports::memory::{
     sample_releases,
 };
 use orch_ports::{AgentEndpoint, CompositeRegistry, FixedRegistry, PortSet, SystemClock};
+use orch_ports::{AuthError, Authenticator, Credentials, Principal};
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -30,9 +31,41 @@ pub type Ports = PortSet<
     SeqIds,
     orch_ports::NoModel,
     CompositeRegistry<FixedRegistry, MemoryRegistry>,
-    orch_auth_header::HeaderAuth,
+    TestAuth,
     MemoryArtifacts,
 >;
+
+/// The identity of the harness's requests, and the OAuth client a request claims to come from
+/// (ADR 0087, decision 1).
+///
+/// `HeaderAuth` reads `X-Auth-Request-Email` and ignores the bearer; here a **`Bearer` token names
+/// the client** the request comes from, which no real credential does: the production JWT adapter
+/// reads that from `azp`/`client_id`, and only a test can set one through this harness. A request
+/// with no bearer names no client (`None`), exactly as the proxy header does.
+#[derive(Debug, Clone, Default)]
+pub struct TestAuth {
+    inner: HeaderAuth,
+}
+
+impl TestAuth {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_dev_user(user: UserId) -> Self {
+        TestAuth {
+            inner: HeaderAuth::new().with_dev_user(user),
+        }
+    }
+}
+
+impl Authenticator for TestAuth {
+    async fn authenticate(&self, credentials: &Credentials<'_>) -> Result<Principal, AuthError> {
+        let mut principal = self.inner.authenticate(credentials).await?;
+        principal.client_id = credentials.bearer.map(str::to_owned);
+        Ok(principal)
+    }
+}
 
 pub const ALICE: &str = "alice@example.com";
 pub const BOB: &str = "bob@example.com";
@@ -288,14 +321,37 @@ impl Harness {
             ..ApiConfig::default()
         };
         let auth = match dev_user {
-            Some(user) => HeaderAuth::new().with_dev_user(UserId::new(user)),
-            None => HeaderAuth::new(),
+            Some(user) => TestAuth::with_dev_user(UserId::new(user)),
+            None => TestAuth::new(),
         };
         Self::start_with(api, auth).await
     }
 
-    pub async fn start_with(api: ApiConfig, auth: HeaderAuth) -> Self {
+    pub async fn start_with(api: ApiConfig, auth: TestAuth) -> Self {
         Self::start_configured(api, auth, orch_app::Policy::default()).await
+    }
+
+    /// A deployment that lists `clients` as signing clients (ADR 0087, decision 1): a request whose
+    /// token names one of them must carry `vymalo.promptSignature` in its last user message's metadata.
+    pub async fn start_signing(clients: &[&str]) -> Self {
+        let api = ApiConfig {
+            sse_keepalive: Duration::from_millis(150),
+            ..ApiConfig::default()
+        };
+        Self::start_full(
+            api,
+            TestAuth::new(),
+            orch_app::Policy::default(),
+            orch_app::SharingSettings::default(),
+            None,
+            Arc::from(
+                clients
+                    .iter()
+                    .map(|c| (*c).to_owned())
+                    .collect::<Vec<String>>(),
+            ),
+        )
+        .await
     }
 
     /// With the roles `policy` gives: `Policy::deny_all()` grants nobody anything.
@@ -304,10 +360,10 @@ impl Harness {
             sse_keepalive: Duration::from_millis(150),
             ..ApiConfig::default()
         };
-        Self::start_configured(api, HeaderAuth::new(), policy).await
+        Self::start_configured(api, TestAuth::new(), policy).await
     }
 
-    async fn start_configured(api: ApiConfig, auth: HeaderAuth, policy: orch_app::Policy) -> Self {
+    async fn start_configured(api: ApiConfig, auth: TestAuth, policy: orch_app::Policy) -> Self {
         Self::start_sharing(api, auth, policy, orch_app::SharingSettings::default()).await
     }
 
@@ -315,11 +371,11 @@ impl Harness {
     /// limits of the public routes.
     pub async fn start_sharing(
         api: ApiConfig,
-        auth: HeaderAuth,
+        auth: TestAuth,
         policy: orch_app::Policy,
         sharing: orch_app::SharingSettings,
     ) -> Self {
-        Self::start_full(api, auth, policy, sharing, None).await
+        Self::start_full(api, auth, policy, sharing, None, Arc::from([])).await
     }
 
     /// With a deployment that makes the person's own `coder` agent: `provisioning` is its
@@ -331,20 +387,22 @@ impl Harness {
         };
         Self::start_full(
             api,
-            HeaderAuth::new(),
+            TestAuth::new(),
             orch_app::Policy::default(),
             orch_app::SharingSettings::default(),
             Some(provisioning),
+            Arc::from([]),
         )
         .await
     }
 
     async fn start_full(
         api: ApiConfig,
-        auth: HeaderAuth,
+        auth: TestAuth,
         policy: orch_app::Policy,
         sharing: orch_app::SharingSettings,
         provisioning: Option<orch_app::Provisioning>,
+        signing_clients: Arc<[String]>,
     ) -> Self {
         let store = MemoryStore::new();
         let agent = ScriptedAgent::new().with_releases("coder", sample_releases());
@@ -408,6 +466,7 @@ impl Harness {
                 Arc::clone(&app),
                 keepalive,
                 lifetime,
+                signing_clients,
             )],
         );
         let server = tokio::spawn(async move {
@@ -441,6 +500,55 @@ impl Harness {
             req = req.header("X-Auth-Request-Email", u);
         }
         req.send().await.unwrap()
+    }
+
+    /// `POST /agui/agents/{agent}` as `user` of the OAuth client `client` (ADR 0087): the bearer
+    /// names the client to [`TestAuth`], and the identity header names the person.
+    pub async fn post_as_client(
+        &self,
+        agent: &str,
+        user: &str,
+        client: &str,
+        body: &Value,
+    ) -> reqwest::Response {
+        self.client
+            .post(self.url(&format!("/agui/agents/{agent}")))
+            .header("Accept", "text/event-stream")
+            .header("X-Auth-Request-Email", user)
+            .header("Authorization", format!("Bearer {client}"))
+            .json(body)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// A run of the client `client` that must be accepted: its stream.
+    pub async fn run_as_client(
+        &self,
+        agent: &str,
+        user: &str,
+        client: &str,
+        body: &Value,
+    ) -> Stream {
+        let resp = self.post_as_client(agent, user, client, body).await;
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "refused: {}",
+            resp.text().await.unwrap()
+        );
+        Stream::new(resp)
+    }
+
+    /// A run of the client `client` that must be refused before the stream: its problem.
+    pub async fn refused_as_client(
+        &self,
+        agent: &str,
+        user: &str,
+        client: &str,
+        body: &Value,
+    ) -> Resp {
+        resp_of(self.post_as_client(agent, user, client, body).await).await
     }
 
     /// A run that must be accepted: its stream.
@@ -701,7 +809,7 @@ impl Harness {
         };
         Self::start_sharing(
             api,
-            HeaderAuth::new(),
+            TestAuth::new(),
             orch_app::Policy::default(),
             sharing(mode),
         )

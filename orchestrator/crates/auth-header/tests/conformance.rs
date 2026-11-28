@@ -60,6 +60,9 @@ async fn the_principal_is_the_normalised_email_with_no_roles() {
     assert_eq!(p.user.as_str(), "bob@example.com");
     assert_eq!(p.email.as_deref(), Some("bob@example.com"));
     assert!(p.name.is_none() && p.roles.is_empty());
+    // The proxy header names no OAuth client (ADR 0087): `None`, not the token-with-no-client
+    // sentinel, because there is no token at all.
+    assert!(p.client_id.is_none());
 }
 
 #[tokio::test]

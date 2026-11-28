@@ -7,7 +7,6 @@ mod support;
 use std::time::Duration;
 
 use orch_api::ApiConfig;
-use orch_auth_header::HeaderAuth;
 use support::*;
 
 /// The resume points of `frames`, in the order they were written.
@@ -24,7 +23,7 @@ async fn a_stream_ends_at_its_lifetime_and_a_reopen_with_its_cursor_says_each_la
         sse_lifetime: Duration::from_millis(500),
         ..ApiConfig::default()
     };
-    let h = Harness::start_with(api, HeaderAuth::new()).await;
+    let h = Harness::start_with(api, TestAuth::new()).await;
     let thread = new_thread_id();
     // A run that parks until the gate is released: the first stream ends at its lifetime, while
     // the run is still open, so its end is the lifetime and not a run's.

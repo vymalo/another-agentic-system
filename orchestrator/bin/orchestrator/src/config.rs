@@ -1112,6 +1112,9 @@ pub struct AuthSettings {
     /// `auth.roles` and `auth.defaultRole`: what each role grants (the built-in `user` and `admin`
     /// without a file, as before roles existed everyone is a `user`).
     pub policy: Policy,
+    /// `auth.signingClients` (ADR 0087, decision 1): the clients whose prompts must carry
+    /// `vymalo.promptSignature`. Empty (no file, or a file that lists none) asks nobody.
+    pub signing_clients: Vec<String>,
 }
 
 /// `auth.jwt`: the token issuer and what is read from its tokens.
@@ -1175,6 +1178,11 @@ impl AuthSettings {
                 client_id: browser.client_id.clone(),
                 scope: browser.scope.clone(),
             }),
+            signing_clients: auth
+                .signing_clients
+                .iter()
+                .map(|client| client.trim().to_owned())
+                .collect(),
         }
     }
 

@@ -21,6 +21,11 @@ const NAME: &str = "name";
 /// The claim that says whether the issuer verified the e-mail address.
 const EMAIL_VERIFIED: &str = "email_verified";
 
+/// The claim that names the client a token was issued to (RFC 9068 `azp`), and the one some
+/// issuers use instead (`client_id`).
+const AUTHORIZED_PARTY: &str = "azp";
+const CLIENT_ID: &str = "client_id";
+
 /// A claim by its name, then, when `path` has dots and there is no claim of that exact name (a
 /// namespaced claim such as `https://example.com/roles` has dots in its name), by the path
 /// through the objects: `realm_access.roles`.
@@ -112,7 +117,20 @@ pub(crate) fn principal(
             .get("exp")
             .and_then(Value::as_i64)
             .and_then(|seconds| Timestamp::from_second(seconds).ok()),
+        client_id: Some(client_of(claims)),
     })
+}
+
+/// The client a token was issued to (ADR 0087, decision 1): its `azp`, else its `client_id`, else
+/// the **token-with-no-client sentinel** `""` — a token this issuer signed that names no client is
+/// treated as a signing client's, which is what failing closed means. A value that is not text, or
+/// is blank, names no client either. Never `None`: that is a credential with no token at all.
+fn client_of(claims: &Map<String, Value>) -> String {
+    [AUTHORIZED_PARTY, CLIENT_ID]
+        .iter()
+        .find_map(|claim| text(claims, claim))
+        .unwrap_or_default()
+        .to_owned()
 }
 
 #[cfg(test)]

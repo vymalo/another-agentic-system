@@ -3333,6 +3333,7 @@ dependencies = [
  "orch-auth-header",
  "orch-core",
  "orch-ports",
+ "orch-prompt-statement",
  "reqwest",
  "secrecy",
  "serde",
@@ -3341,6 +3342,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

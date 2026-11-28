@@ -734,7 +734,7 @@ async fn the_agui_operations_answer_what_the_contract_documents() {
     seen.problem("connectSharedThread", 401, &r);
     let denied = Harness::start_sharing(
         orch_api::ApiConfig::default(),
-        orch_auth_header::HeaderAuth::new(),
+        TestAuth::new(),
         orch_app::Policy::deny_all(),
         sharing(orch_app::SharingMode::Public),
     )

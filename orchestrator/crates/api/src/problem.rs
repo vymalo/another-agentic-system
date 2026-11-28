@@ -64,6 +64,10 @@ pub struct ProblemExt {
     /// `over_limit`: the value of the limit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max: Option<u32>,
+    /// `prompt_signature_invalid` (ADR 0087, decision 7): the reason the client sees, `invalid` today.
+    /// The finer one (`missing`, `malformed`) is in the orchestrator's log and never in the response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl Problem {
@@ -158,6 +162,17 @@ impl Problem {
     /// 403.
     pub fn forbidden(detail: impl Into<String>) -> Self {
         Self::new(StatusCode::FORBIDDEN, detail)
+    }
+
+    /// The same problem saying why a client should not retry (ADR 0087, decision 7):
+    /// `prompt_signature_invalid` carries `invalid`; the finer reason is only logged.
+    #[must_use]
+    pub fn with_reason(mut self, reason: &str) -> Self {
+        self.ext = Some(Box::new(ProblemExt {
+            reason: Some(reason.to_owned()),
+            ..self.ext.map(|ext| *ext).unwrap_or_default()
+        }));
+        self
     }
 }
 

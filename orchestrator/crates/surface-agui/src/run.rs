@@ -11,7 +11,7 @@ use orch_agui_projection::{
     InputError, ThreadMeta, ThreadView, Translation, held_message_ids, release_selector,
     thread_id_of, translate_with_warnings,
 };
-use orch_agui_proto::RunAgentInput;
+use orch_agui_proto::{Message, RunAgentInput};
 use orch_api::sse::{bounded, hold, keep_alive, stream_budget, stream_headers};
 use orch_api::{ApiError, Problem};
 use orch_app::{
@@ -32,6 +32,11 @@ use crate::{MAX_BODY_BYTES, State as SurfaceState};
 
 /// `forwardedProps["vymalo.fork"]` (ADR 0042): the run creates its thread as a fork.
 const THREAD_FORK_KEY: &str = "vymalo.fork";
+/// `metadata["vymalo.promptSignature"]` of the run's new user message (ADR 0087, decision 2, and the
+/// owner's ruling of 2026-11-27): the person's envelope, read from the message's **`metadata`**
+/// member and never from `forwardedProps`, which the statement hashes whole as `props_sha256` (the
+/// statement would then hash itself).
+const PROMPT_SIGNATURE_KEY: &str = "vymalo.promptSignature";
 /// Longest `runId` or message id we record in the log.
 const MAX_ID_BYTES: usize = 256;
 /// Events per page when the log is read.
@@ -61,6 +66,11 @@ pub(crate) async fn run<P: Ports>(
     }
     let input = parsed.input;
     check_ids(&input)?;
+    // ADR 0087, decisions 1 and 7: a prompt from a signing client is checked for its envelope
+    // before anything is written and before any agent is called. The envelope is the run's new
+    // message's own, and it is passed on byte for byte, never decoded and re-encoded.
+    let signature = signature_request(&input);
+    check_signature(&principal, &state.signing_clients, signature)?;
     let gate = gate_request(&input)?;
     let catalog = catalog_request(&input)?;
     let tools = tools_request(&input)?;
@@ -128,6 +138,57 @@ async fn continues_own_thread<P: Ports>(
         // not theirs, not there, or a person who may not write: not a continuation
         Ok(None) | Err(AppError::NotFound | AppError::Forbidden { .. }) => Ok(false),
         Err(other) => Err(other.into()),
+    }
+}
+
+/// The person's prompt signature, `metadata["vymalo.promptSignature"]` of the run's **last user
+/// message** (ADR 0087, decision 2; the new message, for a run that carries one): the envelope the
+/// client signed its prompt with, read as it arrived. `None` when the run carries no user message,
+/// or that message names none; a member that is not a string names none either (the presence check
+/// refuses it for a signing client, which is what failing closed means). Nothing is decoded here:
+/// the bytes go to the agent unchanged.
+fn signature_request(input: &RunAgentInput) -> Option<&str> {
+    let last = input
+        .messages
+        .iter()
+        .rev()
+        .find(|message| matches!(message, Message::User(_)))?;
+    let Message::User(user) = last else {
+        return None;
+    };
+    user.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get(PROMPT_SIGNATURE_KEY))
+        .and_then(serde_json::Value::as_str)
+}
+
+/// ADR 0087, decision 1 and 7: a prompt from a **signing client** (`auth.signingClients`) that
+/// carries no envelope, or one that is not a compact JWS, is refused with `403
+/// prompt_signature_invalid`, reason `invalid`, before anything is written or any agent is called.
+/// No cryptography happens here (the verifier behind the model gateway checks the signature); the
+/// finer reason (`missing`, `malformed`) is logged and never sent. A client that is not listed, and
+/// a deployment that lists none, is never checked.
+fn check_signature(
+    principal: &Principal,
+    signing_clients: &[String],
+    envelope: Option<&str>,
+) -> Result<(), Problem> {
+    if !orch_prompt_statement::requires_signature(signing_clients, principal.client_id.as_deref()) {
+        return Ok(());
+    }
+    match orch_prompt_statement::check_presence(envelope) {
+        Ok(_) => Ok(()),
+        Err(refusal) => {
+            tracing::warn!(
+                reason = refusal.log_reason(),
+                "a signing client's prompt was refused"
+            );
+            Err(Problem::forbidden(
+                "this message couldn't be verified as coming from your device; please try again",
+            )
+            .with_code(refusal.code())
+            .with_reason(refusal.client_reason()))
+        }
     }
 }
 
@@ -242,8 +303,9 @@ fn tier_request(input: &RunAgentInput) -> Result<Option<AccessTier>, Problem> {
 /// The interface locale of the run's message, `forwardedProps["vymalo.locale"]` (ADR 0085,
 /// [`locale-v1`](../../../../docs/api/locale-v1.md)): a BCP 47 tag, `null` or absent for none. Like
 /// the tier it is read on every run, so one that is not a tag is a **400** every time, before
-/// anything is written. Nothing else checks it: it is a hint, carried on the message to an agent
-/// whose live card lists the extension, and it is never written to the log.
+/// anything is written. Nothing else checks it: it is a hint, recorded on the `user_message` (the
+/// log is the state) and carried on the message to an agent whose live card lists the extension,
+/// and shown by no projection.
 fn locale_request(input: &RunAgentInput) -> Result<Option<LocaleHint>, Problem> {
     let Some(value) = input
         .forwarded_props
