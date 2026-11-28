@@ -16,6 +16,7 @@ Every name with `example.com` or `my-` in it is a placeholder. Replace it with y
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the deployment
   actor Op as Operator
   participant KC as Keycloak
   participant Store as Secret store
@@ -39,6 +40,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the deployment
   [*] --> Prepared: cluster, realm and secrets are ready
   Prepared --> Installed: helm install
   Installed --> Waiting: pods wait for Secrets, the database and the issuer
