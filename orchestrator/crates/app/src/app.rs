@@ -3282,6 +3282,7 @@ impl<P: Ports> App<P> {
                     keep_open,
                     tier,
                     tier_cap,
+                    prompt_signature,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::SessionStart {
@@ -3292,6 +3293,7 @@ impl<P: Ports> App<P> {
                         keep_open,
                         tier,
                         tier_cap,
+                        prompt_signature,
                     },
                 }),
                 Command::CloseSession { cancel } => outbox.push(NewOutbox {

@@ -250,6 +250,19 @@ one that checks, and an answer on it is checked from its `resume` entry since th
   envelope is not stored there, and the next job's delegation — and a stop the agent refuses that becomes a steer —
   carry none: **ANR-1376**.
 
+*Added 2026-11-28 (ANR-1383): the helper-session start is checked.* The second gap above is closed.
+`POST /api/threads/{id}/sessions` takes the envelope in its body's `metadata["vymalo.promptSignature"]` and runs the
+run route's check, now one function for both (`orch_api::check_prompt_signature`), with the same list
+(`auth.signingClients`) and the same `403`. It runs after the body is read and before the application reads the
+thread or the card, makes an agent ready or writes anything. The envelope goes from the body to the start's outbox
+row (`OutboxPayload::SessionStart`) and round 1's `SendRequest`; it is not in the job ledger, and the child's logged
+`user_message` has no place for it. As on the run route, nothing reads it off `SendRequest` yet (ANR-903). A later
+message **in** a helper's thread is a run, so the run route's check already covers it.
+
+**Two gaps remain:** the REST fork and edit (**ANR-1375**) and a Stop & send's held text (**ANR-1376**).
+
+*Verified 2026-11-28 by reading the code; the new tests have not been built or run.*
+
 Still not built: the PKI signer, the statement on an agent's messages, and the `production` rule that refuses an
 empty `auth.signingClients`.
 

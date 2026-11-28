@@ -46,6 +46,7 @@ fn start(request: &str, text: &str, keep_open: bool) -> StartChildSession {
         text: text.into(),
         keep_open,
         tier: None,
+        prompt_signature: None,
     }
 }
 

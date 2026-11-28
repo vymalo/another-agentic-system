@@ -526,6 +526,9 @@ pub enum Input {
         tier: Option<AccessTier>,
         /// The cap that goes with `tier`, as for [`Input::UserMessage`].
         tier_cap: Option<AccessTier>,
+        /// The person's prompt signature of `text` (ADR 0087), as for [`Input::UserMessage`]: it
+        /// goes to [`Command::StartSession`] and is written in no event and held in no ledger.
+        prompt_signature: Option<String>,
     },
     /// A start a person asked for ended (ADR 0072, S3): the session opened and its child thread
     /// exists, or it did not. Drops the pending start and writes `child_session_start_ended`; a
@@ -723,6 +726,9 @@ pub enum Command {
         tier: Option<AccessTier>,
         /// The cap that goes with `tier`, as for [`Command::Delegate`].
         tier_cap: Option<AccessTier>,
+        /// The person's prompt signature of `text`, as for [`Command::Delegate`]: the bytes
+        /// received, for round 1's request.
+        prompt_signature: Option<String>,
     },
     /// Close the session this child thread is (ADR 0072, S3): the application writes a `steer`
     /// row, so a close with `cancel` reaches a working round now.
@@ -2118,6 +2124,7 @@ fn decide(
             keep_open,
             tier,
             tier_cap,
+            prompt_signature,
         } => Ok((
             state,
             child_sessions::start_session(
@@ -2131,6 +2138,7 @@ fn decide(
                     keep_open: *keep_open,
                     tier: *tier,
                     tier_cap: *tier_cap,
+                    prompt_signature: prompt_signature.as_deref(),
                 },
             )?,
         )),
