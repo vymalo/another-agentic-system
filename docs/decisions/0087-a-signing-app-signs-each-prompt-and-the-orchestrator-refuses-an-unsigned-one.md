@@ -317,7 +317,7 @@ written**: for `after` with `text` (the fork's first message) and for `replace` 
 function**, `orch_api::check_prompt_signature` (the one the AG-UI run and `startChildSession` already call), and the list
 is `ApiConfig.signing_clients`, the same `auth.signingClients` the AG-UI surface is given. The edit's envelope rides `ForkAt::Replace.prompt_signature` → `Replacement::edit` →
 `Input::UserMessage` → the delegation's outbox row, as a first message's does, and it is in no event, frame or export.
-A Stop & send's held text (ANR-1376) is the one gap still open.
+A Stop & send's held text (ANR-1376) is the one gap still open at this note; *(2026-11-28, later: ANR-1376's own note above closed it — **both gaps the 2026-11-28 note named are now closed**.)*
 
 *Verified 2026-11-28 by reading the code of this change; nothing was compiled or run on this host (owner ANR-Q79), so
 CI is the compiler. Unverified: `crates/api/tests/fork_signature.rs`, the core test of an edit's envelope, and the

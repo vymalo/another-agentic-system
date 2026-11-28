@@ -1046,18 +1046,21 @@ pub(crate) async fn fork_thread<P: Ports>(
     ApiJson(body): ApiJson<serde_json::Map<String, serde_json::Value>>,
 ) -> ApiResult<Response> {
     let id = parse_thread_id(&id)?;
-    let body: ForkBody = serde_json::from_value(serde_json::Value::Object(body))
+    let mut body: ForkBody = serde_json::from_value(serde_json::Value::Object(body))
         .map_err(|e| Problem::bad_request(format!("invalid body: {e}")))?;
     // ADR 0087, decision 3: a fork that writes the person's words — its first message, or the
     // replacement an edit makes — is a prompt, and a signing client's must carry its envelope. A
     // fork with no message writes no words and is never refused for one. The check is the AG-UI
-    // run's own (`orch_api::signature`), and it runs before `fork_thread` writes anything.
+    // run's own (`orch_api::check_prompt_signature`), and it runs before `fork_thread` writes
+    // anything. What is carried on is **what the check answers**, not what the body held: bounded,
+    // and empty (or too long) from a client that is not a signing one dropped rather than passed on.
     if body.text.is_some() {
-        crate::check_prompt_signature(
+        body.prompt_signature = crate::check_prompt_signature(
             &principal,
             &state.signing_clients,
             body.prompt_signature.as_deref(),
-        )?;
+        )?
+        .map(str::to_owned);
     }
     let forked = state
         .app

@@ -2790,8 +2790,7 @@ components:
           description: "The reasoning effort of the message the fork carries (with `text`; ADR 0086): checked against the agent's live card (422 `reasoning_not_offered`)"
         promptSignature:
           type: string
-          maxLength: 16384
-          description: "The person's prompt signature for the message the fork writes (with `text`; [ADR 0087](../decisions/0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md), decision 3): a compact JWS of three base64url parts separated by two dots. Required when the caller's token was issued to one of `auth.signingClients`; a missing or malformed one is a 403 `code: prompt_signature_invalid`, `reason: invalid`, and nothing is written. Never verified here, passed to the agent's delegation byte for byte, and in no event, frame or export"
+          description: "The person's prompt signature for the message the fork writes (with `text`; [ADR 0087](../decisions/0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md), decision 3): a compact JWS of three base64url parts separated by two dots. Required when the caller's token was issued to one of `auth.signingClients` — or names no client at all, which is a signing client's (fail closed); a missing or malformed one is a 403 `code: prompt_signature_invalid`, `reason: invalid`, and nothing is written. From a client that is not a signing one, an empty value or one over 16 KiB is **dropped**, never passed on and never a 400. Never verified here, passed to the agent's delegation byte for byte, and in no event, frame or export"
     ChildSessionClose:
       type: object
       additionalProperties: false

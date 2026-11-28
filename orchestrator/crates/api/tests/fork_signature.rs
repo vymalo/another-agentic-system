@@ -98,6 +98,8 @@ impl Harness {
         auth.allow("desktop", principal(ALICE, &["user"], Some("desktop")));
         auth.allow("web", principal(ALICE, &["user"], Some("web-client")));
         auth.allow("alice", principal(ALICE, &["user"], None));
+        // a token that names no client at all (an empty `azp`): a signing client's, fail closed
+        auth.allow("anon-client", principal(ALICE, &["user"], Some("")));
         let app = Arc::new(
             App::new(
                 PortSet {
@@ -219,6 +221,21 @@ impl Harness {
         id
     }
 
+    /// How many threads the person holds: the "writes nothing" claim is about *any* thread, not
+    /// only the id the caller chose.
+    async fn thread_count(&self) -> usize {
+        self.app
+            .ports()
+            .store
+            .list_threads(
+                Some(&orch_core::UserId::new(ALICE)),
+                orch_ports::ThreadListing::default(),
+            )
+            .await
+            .unwrap()
+            .len()
+    }
+
     async fn events(&self, id: ThreadId) -> usize {
         self.app
             .list_events(&orch_core::UserId::new(ALICE), id, 0, 1000)
@@ -285,6 +302,7 @@ async fn a_signing_clients_unsigned_fork_with_text_is_refused_and_writes_nothing
     let h = Harness::start(&["desktop"]).await;
     let parent = h.parent().await;
     let events = h.events(parent).await;
+    let threads = h.thread_count().await;
     let fork = new_id();
     let resp = h
         .post(
@@ -294,6 +312,11 @@ async fn a_signing_clients_unsigned_fork_with_text_is_refused_and_writes_nothing
         )
         .await;
     refused(&resp);
+    assert_eq!(
+        h.thread_count().await,
+        threads,
+        "the refused fork wrote a thread"
+    );
     // nothing was written: no thread with the id the caller chose, and the parent's log is as it was
     let read = h.get(&format!("/api/threads/{fork}"), "desktop").await;
     assert_eq!(read.status, 404, "the refused fork wrote a thread");
@@ -312,6 +335,7 @@ async fn a_signing_clients_unsigned_edit_is_refused_and_writes_nothing() {
     let h = Harness::start(&["desktop"]).await;
     let parent = h.parent().await;
     let events = h.events(parent).await;
+    let threads = h.thread_count().await;
     let fork = new_id();
     let resp = h
         .post(
@@ -321,6 +345,11 @@ async fn a_signing_clients_unsigned_edit_is_refused_and_writes_nothing() {
         )
         .await;
     refused(&resp);
+    assert_eq!(
+        h.thread_count().await,
+        threads,
+        "the refused edit wrote a thread"
+    );
     let read = h.get(&format!("/api/threads/{fork}"), "desktop").await;
     assert_eq!(read.status, 404, "the refused edit wrote a thread");
     assert_eq!(h.events(parent).await, events, "the parent's log changed");
@@ -457,4 +486,39 @@ async fn a_deployment_that_lists_no_signing_client_asks_nobody() {
         )
         .await;
     assert_eq!(resp.status, 201, "{}", String::from_utf8_lossy(&resp.body));
+}
+
+#[tokio::test]
+async fn a_token_that_names_no_client_is_a_signing_client_and_is_refused_unsigned() {
+    // `Some("")` is the token-with-no-client sentinel: a signing client's, fail closed.
+    let h = Harness::start(&["desktop"]).await;
+    let parent = h.parent().await;
+    let fork = new_id();
+    let resp = h
+        .post(
+            &format!("/api/threads/{parent}/fork"),
+            "anon-client",
+            &json!({"after": 1, "text": "hello from a thief", "id": fork.as_str()}),
+        )
+        .await;
+    refused(&resp);
+    let read = h.get(&format!("/api/threads/{fork}"), "anon-client").await;
+    assert_eq!(read.status, 404, "the refused fork wrote a thread");
+}
+
+#[tokio::test]
+async fn a_signing_clients_empty_text_is_still_the_persons_words() {
+    let h = Harness::start(&["desktop"]).await;
+    let parent = h.parent().await;
+    let fork = new_id();
+    let resp = h
+        .post(
+            &format!("/api/threads/{parent}/fork"),
+            "desktop",
+            &json!({"after": 1, "text": "", "id": fork.as_str()}),
+        )
+        .await;
+    refused(&resp);
+    let read = h.get(&format!("/api/threads/{fork}"), "desktop").await;
+    assert_eq!(read.status, 404, "the refused fork wrote a thread");
 }
