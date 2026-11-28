@@ -182,7 +182,7 @@ stays free of async and I/O so the compiler enforces purity.
 
 ```sh
 npm --prefix tools/docs-check ci          # once per clone
-node tools/docs-check/check-docs.mjs      # every diagram parses, every relative link and image resolves
+node tools/docs-check/check-docs.mjs      # every diagram parses, every relative link and image resolves, no conflict marker
 npm --prefix tools/agui-conformance ci    # once per clone, for the next line
 node tools/agui-conformance/check.mjs     # every AG-UI golden reads cleanly through the reference client
 node tools/agents/sync.mjs                # after editing .agents/agents: writes the links and adapters

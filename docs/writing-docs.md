@@ -17,7 +17,8 @@ A change updates its docs in the same pull request.
 - **Open questions are never deleted.** They move between Open, Closed and Moved in
   [Open questions](open-questions.md).
 
-The gate is `tools/docs-check`: every diagram parses, and every relative link and image resolves. Its commands are in
+The gate is `tools/docs-check`: every diagram parses, every relative link and image resolves, and no committed merge conflict
+(`<<<<<<<`, `=======`, `>>>>>>>`) is left in a Markdown file. Its commands are in
 [CONTRIBUTING.md](../CONTRIBUTING.md#set-up-build-and-test).
 
 ## Run the site
