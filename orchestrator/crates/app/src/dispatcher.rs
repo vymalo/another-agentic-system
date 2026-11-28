@@ -234,6 +234,9 @@ struct Adopt {
     locale: Option<orch_core::LocaleHint>,
     /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
     pick: Option<orch_core::ModelPick>,
+    /// The person's prompt signature, as the row holds it (ADR 0087): the adopted message keeps it,
+    /// as it keeps its locale.
+    prompt_signature: Option<String>,
     /// The task the binding had when the message was sent, if any.
     previous: Option<String>,
 }
@@ -1092,78 +1095,92 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
     }
 
     async fn delegate(&self, row: OutboxItem) -> Done {
-        let (content, release, new_job, ui_catalog, mentions, tier, tier_cap, locale, pick) =
-            match row.payload.clone() {
-                OutboxPayload::Delegate {
-                    text,
-                    release,
-                    new_job,
-                    ui_catalog,
-                    mentions,
-                    tier,
-                    tier_cap,
-                    locale,
-                    pick,
-                } => (
-                    SendContent::Text(text),
-                    release,
-                    new_job,
-                    ui_catalog,
-                    mentions,
-                    tier,
-                    tier_cap,
-                    locale,
-                    pick,
-                ),
-                OutboxPayload::Action {
-                    action,
-                    at,
-                    release,
-                    ui_catalog,
-                    tier,
-                    tier_cap,
-                } => (
-                    SendContent::UiAction { action, at },
-                    release,
-                    false,
-                    ui_catalog,
-                    Vec::new(),
-                    tier,
-                    tier_cap,
-                    // an action is the person's act on a surface, not a message of a screen with a
-                    // language (ADR 0085), and names no model (ADR 0086)
-                    None,
-                    None,
-                ),
-                // taken before this function (`process`): it is followed, never sent
-                OutboxPayload::Observe { .. } => {
-                    return self
-                        .finish(
-                            &row,
-                            OutboxFinal::Dead {
-                                error: "payload does not match kind".to_owned(),
-                            },
-                        )
-                        .await;
-                }
-                OutboxPayload::Steer { .. }
-                | OutboxPayload::SessionStart { .. }
-                | OutboxPayload::SessionClose { .. }
-                | OutboxPayload::Cancel { .. }
-                | OutboxPayload::Verify { .. }
-                | OutboxPayload::Title { .. }
-                | OutboxPayload::Description { .. }
-                | OutboxPayload::Ask { .. } => {
-                    return self
-                        .finish(
-                            &row,
-                            OutboxFinal::Dead {
-                                error: "payload does not match kind".to_owned(),
-                            },
-                        )
-                        .await;
-                }
-            };
+        let (
+            content,
+            release,
+            new_job,
+            ui_catalog,
+            mentions,
+            tier,
+            tier_cap,
+            locale,
+            pick,
+            prompt_signature,
+        ) = match row.payload.clone() {
+            OutboxPayload::Delegate {
+                text,
+                release,
+                new_job,
+                ui_catalog,
+                mentions,
+                tier,
+                tier_cap,
+                locale,
+                pick,
+                prompt_signature,
+            } => (
+                SendContent::Text(text),
+                release,
+                new_job,
+                ui_catalog,
+                mentions,
+                tier,
+                tier_cap,
+                locale,
+                pick,
+                prompt_signature,
+            ),
+            OutboxPayload::Action {
+                action,
+                at,
+                release,
+                ui_catalog,
+                tier,
+                tier_cap,
+            } => (
+                SendContent::UiAction { action, at },
+                release,
+                false,
+                ui_catalog,
+                Vec::new(),
+                tier,
+                tier_cap,
+                // an action is the person's act on a surface, not a message of a screen with a
+                // language (ADR 0085), names no model (ADR 0086), and carries no prompt
+                // signature (ADR 0087: an action is not a prompt yet, open question 3)
+                None,
+                None,
+                None,
+            ),
+            // taken before this function (`process`): it is followed, never sent
+            OutboxPayload::Observe { .. } => {
+                return self
+                    .finish(
+                        &row,
+                        OutboxFinal::Dead {
+                            error: "payload does not match kind".to_owned(),
+                        },
+                    )
+                    .await;
+            }
+            OutboxPayload::Steer { .. }
+            | OutboxPayload::SessionStart { .. }
+            | OutboxPayload::SessionClose { .. }
+            | OutboxPayload::Cancel { .. }
+            | OutboxPayload::Verify { .. }
+            | OutboxPayload::Title { .. }
+            | OutboxPayload::Description { .. }
+            | OutboxPayload::Ask { .. } => {
+                return self
+                    .finish(
+                        &row,
+                        OutboxFinal::Dead {
+                            error: "payload does not match kind".to_owned(),
+                        },
+                    )
+                    .await;
+            }
+        };
         let Some(Loaded {
             ctx,
             state,
@@ -1193,6 +1210,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 tier_cap,
                 locale,
                 pick,
+                prompt_signature,
                 ..
             } = &row.payload
                 && state != ThreadState::Cancelled
@@ -1212,6 +1230,9 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                             tier_cap: *tier_cap,
                             locale: locale.clone(),
                             pick: pick.clone(),
+                            // the row holds the person's envelope (ADR 0087): the redelivery sends
+                            // the same bytes, and the log still holds none of it
+                            prompt_signature: prompt_signature.clone(),
                         },
                         format!("redeliver:{}", row.id),
                         &lease,
@@ -1345,6 +1366,9 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             // plain message
             locale,
             pick,
+            // the person's envelope, as the row holds it (ADR 0087): byte for byte, never decoded.
+            // Cloned because the row's copy is what an adoption hands the core.
+            prompt_signature: prompt_signature.clone(),
         };
         // A message that starts a task of its own while the thread has meanwhile ended is adopted
         // (open question 33): `consume` tells the core, from the first event.
@@ -1367,6 +1391,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
                 pick: pick.clone(),
+                prompt_signature: prompt_signature.clone(),
                 previous: binding.task_id.clone(),
             }),
             _ => None,
@@ -1616,6 +1641,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             tier_cap: adopt.tier_cap,
             locale: adopt.locale.clone(),
             pick: adopt.pick.clone(),
+            prompt_signature: adopt.prompt_signature.clone(),
         };
         match self
             .app
@@ -1653,6 +1679,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             tier_cap,
             locale,
             pick,
+            prompt_signature,
             ..
         } = row.payload.clone()
         else {
@@ -1736,6 +1763,8 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             // the language of the screen the message came from, as the row holds it (ADR 0085)
             locale,
             pick,
+            // the person's envelope, as the row holds it (ADR 0087): byte for byte
+            prompt_signature,
         };
         let answer = tokio::time::timeout(STEER_ANSWER_TIMEOUT, async {
             let mut stream = self.app.ports().agents().send_stream(req).await?;

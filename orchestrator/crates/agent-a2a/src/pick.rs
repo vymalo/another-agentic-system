@@ -161,6 +161,7 @@ mod tests {
             tier_cap: None,
             locale: None,
             pick,
+            prompt_signature: None,
         }
     }
 

@@ -94,11 +94,14 @@ fn surface_routes<P: orch_ports::Ports>(
     match surface {
         #[cfg(feature = "surface-agui")]
         Surface::Agui => {
-            let _ = cfg;
+            // The clients whose prompts must be signed (ADR 0087, decision 1): the deployment's
+            // `auth.signingClients`, read once here. Empty asks nobody.
+            let signing_clients: Arc<[String]> = Arc::from(cfg.auth.signing_clients.clone());
             Ok(orch_surface_agui::routes(
                 Arc::clone(app),
                 sse_keepalive,
                 sse_lifetime,
+                signing_clients,
             ))
         }
         #[cfg(not(feature = "surface-agui"))]

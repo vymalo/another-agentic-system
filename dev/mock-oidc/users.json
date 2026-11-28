@@ -96,6 +96,12 @@
       "roles": [
         "user"
       ]
+    },
+    "prompt-signature@example.com": {
+      "name": "Prompt Signature",
+      "roles": [
+        "user"
+      ]
     }
   }
 }

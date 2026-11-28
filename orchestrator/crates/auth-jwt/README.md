@@ -90,7 +90,8 @@ stateDiagram-v2
   `iat` present; `email_verified` is not `false` (a boolean or the text); the user claim (`userClaim`, default
   `email`) is text that is **not blank and has no control character (Unicode Cc: U+0000–U+001F, U+007F–U+009F)**, trimmed and lower-cased by `UserId::new`.
   Format characters (Cf, such as U+200B or U+202E) and the line and paragraph separators U+2028 and U+2029 are not refused. Only the issuer can put them in a token.
-  The e-mail and the name are `Principal.email` and `.name`, and the token's `exp` is `Principal.expires_at` (it bounds the streams opened with the token, ADR 0033). The roles are the texts at
+  The e-mail and the name are `Principal.email` and `.name`, and the token's `exp` is `Principal.expires_at` (it bounds the streams opened with the token, ADR 0033).
+  The client the token was issued to is `Principal.client_id` (ADR 0087, decision 1): its `azp`, else its `client_id`, else **`Some("")`** — the token-with-no-client sentinel, which a deployment that lists signing clients treats as a signing client's (fail closed); a claim that is not text, or is blank, names no client either. Never `None`, which is a credential with no token at all (the proxy header, a static token). The roles are the texts at
   the dotted path `rolesClaim` (`realm_access.roles`, `groups`): a claim whose own name has dots is found by that
   name first; a list gives its texts, a text is one role, anything else is none, and a bad roles claim never
   refuses a token. (`jsonwebtoken` checks `exp` and `nbf`; `iss` and `aud` are checked here, because the library

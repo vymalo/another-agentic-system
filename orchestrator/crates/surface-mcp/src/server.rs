@@ -568,6 +568,8 @@ impl<P: Ports> McpServer<P> {
             mentions: Vec::new(),
             // no tier from the MCP surface (ADR 0061): the person's composer sets one, nothing else
             tier: None,
+            // an MCP static token names no OAuth client, so its prompt is never signed (ADR 0087)
+            prompt_signature: None,
         };
         // No idempotency key: an `answer` is not made safe to retry (ADR 0019).
         match self.app.submit(who, id, input, None).await {

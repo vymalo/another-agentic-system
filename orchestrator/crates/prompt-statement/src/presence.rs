@@ -74,6 +74,27 @@ pub fn check_presence(envelope: Option<&str>) -> Result<&str, PresenceError> {
     Ok(envelope)
 }
 
+/// Whether a request from `client_id` must carry a prompt signature (ADR 0087, decision 1): its token was issued to
+/// one of the deployment's `signing_clients`.
+///
+/// - No list (the default) asks nobody: nothing changes for a deployment that lists no client.
+/// - `None` is a credential that names no client at all (the proxy header, an MCP static token, a test principal):
+///   it is not a signing client's, so its prompts are never checked.
+/// - `Some("")` is the **token-with-no-client sentinel** (the `client_id` of a [`Principal`] in `orch-ports`):
+///   a token this deployment's issuer signed that names neither `azp` nor `client_id`. Decision 1 fails closed, so
+///   such a token is a signing client's.
+/// - `Some(id)` is a signing client's when the list names it, compared exactly.
+pub fn requires_signature(signing_clients: &[String], client_id: Option<&str>) -> bool {
+    if signing_clients.is_empty() {
+        return false;
+    }
+    match client_id {
+        None => false,
+        Some("") => true,
+        Some(id) => signing_clients.iter().any(|client| client == id),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -123,5 +144,25 @@ mod tests {
         }
         assert_eq!(PresenceError::Missing.log_reason(), "missing");
         assert_eq!(PresenceError::Malformed.log_reason(), "malformed");
+    }
+
+    #[test]
+    fn a_signing_client_is_the_tokens_client_and_an_empty_list_asks_nobody() {
+        let list = vec!["desktop".to_owned(), "ios".to_owned()];
+        // no list: nobody signs, whatever the token names
+        assert!(!requires_signature(&[], Some("desktop")));
+        assert!(!requires_signature(&[], Some("")));
+        // a listed client, and only a listed one
+        assert!(requires_signature(&list, Some("desktop")));
+        assert!(requires_signature(&list, Some("ios")));
+        assert!(!requires_signature(&list, Some("web-client")));
+        // a credential that names no client at all is never asked (the proxy header, an MCP token)
+        assert!(!requires_signature(&list, None));
+        // the token-with-no-client sentinel is a signing client's, which is what failing closed means
+        assert!(requires_signature(&list, Some("")));
+        // compared exactly: no prefix, no case folding, no trimming
+        for other in ["Desktop", "deskto", " desktop", "desktop ", "desktop,ios"] {
+            assert!(!requires_signature(&list, Some(other)), "{other:?}");
+        }
     }
 }

@@ -177,7 +177,12 @@ impl WireRig {
             Arc::clone(&app),
             ApiConfig::default(),
             vec![
-                orch_surface_agui::routes(Arc::clone(&app), sse_keepalive, sse_lifetime),
+                orch_surface_agui::routes(
+                    Arc::clone(&app),
+                    sse_keepalive,
+                    sse_lifetime,
+                    Arc::from(Vec::<String>::new()),
+                ),
                 orch_surface_thread_tools::routes(Arc::clone(&app), config),
             ],
         );

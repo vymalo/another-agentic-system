@@ -2292,9 +2292,17 @@ render
 golden_chat() { sh "$chart/tests/golden/chat-objects.sh" < "$out" | cmp -s - "$chart/tests/golden/chat-default.yaml"; }
 check "everything off: the chat's folder and its checksum/agent are the golden's, byte for byte (the chat does not restart)" golden_chat
 check "files/chat/instructions.md is dev/agents/chat/agent/instructions.md" cmp -s "$chart/files/chat/instructions.md" "$repo/dev/agents/chat/agent/instructions.md"
-for f in subagents/planner.md subagents/writer.md subagents/researcher/instructions.md; do
+for f in subagents/planner.md subagents/writer.md subagents/researcher/instructions.md modes/direct.md modes/plan.md; do
   check "files/chat/$f is dev/agents/chat/agent/$f" cmp -s "$chart/files/chat/$f" "$repo/dev/agents/chat/agent/$f"
 done
+# The modes a person picks (`agent-mode/v1`, ADR 0109): the ConfigMap carries both and the volume mounts them at `modes/`.
+doc ConfigMap another-agentic-chat-agent > "$sec2"
+check "the chat's folder has its two modes, exactly one of them the default" sh -c "
+  grep -Eq '^  mode-direct.md: [|]\$' '$sec2' && grep -Eq '^  mode-plan.md: [|]\$' '$sec2' &&
+  [ \"\$(grep -c '^    default: true\$' '$sec2')\" = 1 ]"
+check "the chat mounts its modes at modes/ (direct, plan)" sh -c "
+  grep -Fq '{ key: mode-direct.md, path: modes/direct.md }' '$out' &&
+  grep -Fq '{ key: mode-plan.md, path: modes/plan.md }' '$out'"
 # Without the search pod the researcher has no search to name: its `tools:` line is dropped (a pattern that matches nothing is refused by
 # adam-agent at startup), it has no mcp.json, and the chat is not let into a pod that is not there.
 render

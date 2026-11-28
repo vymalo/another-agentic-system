@@ -122,6 +122,7 @@ async fn a_crash_between_send_and_recording_is_recovered_by_message_id() {
             tier_cap: None,
             locale: None,
             pick: None,
+            prompt_signature: None,
         },
     )
     .await

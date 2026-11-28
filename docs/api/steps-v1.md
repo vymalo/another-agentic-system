@@ -1,7 +1,7 @@
 # A2A extension: steps (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/steps/v1`
-- **Status:** **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side is built (MVP
+- **Status:** ✅ built · **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side is built (MVP
   slice 5: the `agent_step` event and its coalescing, the AG-UI projection as nested subagents and `vymalo.step`
   activities, and the A2A adapter that reads the extension).** The web's step tree and the right-hand panel are the
   web's slice; the adam-rs side (an agent that reports its tool calls and its sub-agent's as steps) is that

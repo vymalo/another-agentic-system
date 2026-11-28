@@ -361,11 +361,15 @@ pub struct Inbound {
     pub tier: Option<AccessTier>,
     /// The interface locale the first message names (AG-UI `forwardedProps["vymalo.locale"]`,
     /// ADR 0085), already read and checked by a surface ([`locale::parse`](crate::locale::parse)).
-    /// A hint: it is carried on the delegation to an agent whose live card lists `locale/v1`, and it
-    /// is **never written to the log** (nothing of it is projected or exported).
+    /// A hint: it is recorded on the `user_message` (the log is the state, so a redelivery and a
+    /// fork's first message carry it), carried on the delegation to an agent whose live card lists
+    /// `locale/v1`, and shown by no projection.
     pub locale: Option<LocaleHint>,
     /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
     pub pick: Option<ModelPick>,
+    /// The person's prompt signature for the first message (ADR 0087, decision 2), already checked
+    /// for presence at intake: it rides the delegation's outbox row and never the log.
+    pub prompt_signature: Option<String>,
 }
 
 /// Result of [`App::create_thread_as`].
@@ -443,6 +447,9 @@ pub struct FirstMessage {
     pub locale: Option<LocaleHint>,
     /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
     pub pick: Option<ModelPick>,
+    /// The person's prompt signature for the fork's first message (ADR 0087), as for
+    /// [`Inbound::prompt_signature`].
+    pub prompt_signature: Option<String>,
 }
 
 /// What a person asks of [`App::fork_thread`].
@@ -1307,6 +1314,7 @@ impl<P: Ports> App<P> {
                 tier_cap: tier.cap,
                 locale: inbound.locale,
                 pick,
+                prompt_signature: inbound.prompt_signature,
             },
         )?;
         // the route is recorded with the thread: where every message of it is sent from now on
@@ -1821,6 +1829,7 @@ impl<P: Ports> App<P> {
                         tier_cap: None,
                         locale: first.locale,
                         pick: first.pick,
+                        prompt_signature: first.prompt_signature,
                         run_id: first.run_id,
                         origin: first.origin,
                     }),
@@ -2535,6 +2544,7 @@ impl<P: Ports> App<P> {
                 tier_cap: None,
                 locale: None,
                 pick: None,
+                prompt_signature: None,
             }
         } else {
             Input::UserMessage {
@@ -2549,6 +2559,7 @@ impl<P: Ports> App<P> {
                 tier_cap: None,
                 locale: None,
                 pick: None,
+                prompt_signature: None,
             }
         };
         // like any message of a person: the checks, the mentions and the access tier (ADR 0061)
@@ -3178,6 +3189,7 @@ impl<P: Ports> App<P> {
                     tier_cap,
                     locale,
                     pick,
+                    prompt_signature,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Delegate {
@@ -3190,6 +3202,9 @@ impl<P: Ports> App<P> {
                         tier_cap,
                         locale,
                         pick,
+                        // The person's envelope rides the row, never the log (ADR 0087): the
+                        // dispatcher puts it on the agent's request, byte for byte.
+                        prompt_signature,
                     },
                 }),
                 // A message to a running job (ADR 0036): the dispatcher sends it into the agent's
@@ -3206,6 +3221,7 @@ impl<P: Ports> App<P> {
                     tier_cap,
                     locale,
                     pick,
+                    prompt_signature,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Steer {
@@ -3217,6 +3233,7 @@ impl<P: Ports> App<P> {
                         tier_cap,
                         locale,
                         pick,
+                        prompt_signature,
                     },
                 }),
                 Command::DelegateAction {

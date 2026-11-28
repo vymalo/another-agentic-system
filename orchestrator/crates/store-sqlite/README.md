@@ -201,7 +201,7 @@ statement that can hit one, because what it means depends on the index.
 ## The bundled SQLite
 
 `rusqlite` is pinned to **0.41.1** with `bundled`, which is the minor adam-rs's `adam-store-sqlite`
-takes at our pin `7ac3281` (`libsqlite3-sys` 0.39.1, adam ADR 0053 decision 2), so an application
+takes at our pin `5883708` (`libsqlite3-sys` 0.39.1, adam ADR 0053 decision 2), so an application
 that links both has **one `sqlite3` and one version of it**. That build bundles **SQLite 3.54.1**,
 which is at or after 3.35, the version `DELETE … RETURNING` needs (`PendingAuthorizations::take`)
 and that this store's `UPDATE … RETURNING` and `AS MATERIALIZED` already run on.

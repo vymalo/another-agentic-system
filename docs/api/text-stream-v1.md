@@ -1,7 +1,7 @@
 # A2A extension: text stream (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/text-stream/v1`
-- **Status:** **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side is built (MVP
+- **Status:** ✅ built · **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side is built (MVP
   slice 6: the A2A adapter that reads it, the relay between processes, and the AG-UI live frames), and so is the
   web's (the words growing on screen, [`web/README.md`](../../web/README.md#live-text)).** The adam-rs side (an agent
   that streams the model's answer) is that repository's slice; see [`mvp.md`](../mvp.md#the-new-build-order). The owner may revisit anything here.
