@@ -50,7 +50,7 @@
 #   TIMEOUT          120    seconds to wait for a run to end
 #
 # It EMPTIES the request journal of `mock-openai` first, so run it on a stack you are not in the middle of another
-# scenario on. Needs curl, jq and sha256sum (or shasum), and /proc or uuidgen for a UUID. Verified by CI only, in
+# scenario on. Needs curl, jq and sha256sum (or shasum), and python3 for a v7 UUID; /proc or uuidgen, which make a v4, are the fallback. Verified by CI only, in
 # .github/workflows/coder-e2e.yml.
 set -eu
 
@@ -92,7 +92,7 @@ api() { # api METHOD PATH: the body on stdout, non-zero when the status is not 2
   curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "$id_header"
 }
 
-uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || { echo 'uuid: python3 is missing, so this is a v4 id and `recent` will not be creation order' >&2; cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }; }
 
 sse_events() { # sse_events FILE: the AG-UI events of a saved SSE response, one JSON per line
   sed -n 's/^data: *//p' "$1"
