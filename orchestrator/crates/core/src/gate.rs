@@ -23,6 +23,7 @@ use crate::ids::{AgentId, ThreadId};
 use crate::locale::LocaleHint;
 use crate::mention::Mention;
 use crate::pick::ModelPick;
+use crate::prompt_signature::PromptSignature;
 use crate::step::StepLedger;
 use crate::thread::ThreadState;
 use crate::title::TitleLedger;
@@ -383,6 +384,17 @@ pub struct Job {
     /// the field existed has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after_stop: Option<String>,
+    /// The person's prompt signature of the text [`Job::after_stop`] holds (ADR 0087, ADR 0036),
+    /// byte for byte: set only while the held text is **one** signed message, because a signature
+    /// covers one message and never a joined text (a second message is refused while either is
+    /// signed, [`TransitionError::StopPending`](crate::TransitionError::StopPending)). It goes to
+    /// the next job's delegation, or to the steer of a stop the agent refuses, and is cleared with
+    /// the text. It is here, and not only in an outbox row, so that it is saved with the text under
+    /// the same version check and survives a restart with it. It is **not** conversation content:
+    /// the thread export takes it out, and `Debug` shows its length. A ledger stored before the
+    /// field existed has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_stop_prompt_signature: Option<PromptSignature>,
     /// The agents the person's messages of **this job** mentioned (ADR 0026, `mentions/v1`): the
     /// agents the addressed agent may ask in this job. The union of the mentions of every message
     /// that reached the job (the first, those sent while it ran, an answer to a blocked job);
@@ -512,6 +524,7 @@ impl Default for Job {
             tools: Vec::new(),
             builds: Vec::new(),
             after_stop: None,
+            after_stop_prompt_signature: None,
             mentioned: BTreeSet::new(),
             mentioned_caps: BTreeMap::new(),
             after_stop_mentions: Vec::new(),
@@ -566,8 +579,8 @@ impl Job {
     /// verdict or a `verify` row of an earlier job names a verification the new job has not
     /// reached and is stale by the comparison the core already makes.
     ///
-    /// `after_stop` is **cleared**: it is the text this job exists to start, and the job it
-    /// started has it as its first message (ADR 0036).
+    /// `after_stop` is **cleared**, and its signature with it: it is the text this job exists to
+    /// start, and the job it started has it as its first message (ADR 0036).
     ///
     /// `asks` is **forgotten**: no ask outlives its job's task ([`crate::ask`]), so a new job
     /// starts with none and numbers its own from 1.

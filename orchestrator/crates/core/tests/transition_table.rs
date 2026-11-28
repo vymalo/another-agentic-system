@@ -370,6 +370,10 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
             state: s,
             job: Job {
                 after_stop: None,
+                // ADR 0087: the signature of a held message is the job's: the next job has none
+                after_stop_prompt_signature: Some(PromptSignature::from(
+                    "eyJhbGciOiJFZERTQSJ9..c2ln".to_owned(),
+                )),
                 route: None,
                 after_stop_locale: None,
                 after_stop_pick: None,
