@@ -928,6 +928,13 @@ struct ForkBody {
     /// The reasoning effort of the fork's message or of the edit (ADR 0086), or `null`; read as
     /// `forwardedProps["vymalo.reasoningEffort"]` is.
     reasoning_effort: Option<serde_json::Value>,
+    /// The person's prompt signature for the fork's message or for the edit (ADR 0087, decision 3):
+    /// a compact JWS, read as the AG-UI run reads `metadata["vymalo.promptSignature"]`. Required for
+    /// a signing client (`auth.signingClients`) when the body writes the person's words, never
+    /// logged, and in no event. Kept as a [`SignedPrompt`](orch_core::SignedPrompt) with **no
+    /// claims**: this body does not say what an AG-UI message's signature covers, so it is signed
+    /// and not verifiable yet.
+    prompt_signature: Option<String>,
 }
 
 impl ForkBody {
@@ -976,6 +983,10 @@ impl ForkBody {
                         "`model` and `reasoningEffort` go with `text`",
                     ));
                 }
+                // a signature is a message's too (ADR 0087): a fork that writes no words carries none
+                if self.prompt_signature.is_some() && self.text.is_none() {
+                    return Err(Problem::bad_request("`promptSignature` goes with `text`"));
+                }
                 orch_app::ForkAt::AfterTurn {
                     seq,
                     first: self.text.map(|text| orch_app::FirstMessage {
@@ -988,7 +999,9 @@ impl ForkBody {
                         tier,
                         locale,
                         pick,
-                        signed_prompt: None,
+                        signed_prompt: self
+                            .prompt_signature
+                            .map(orch_core::SignedPrompt::envelope_only),
                     }),
                 }
             }
@@ -1001,6 +1014,9 @@ impl ForkBody {
                 tier,
                 locale,
                 pick,
+                signed_prompt: self
+                    .prompt_signature
+                    .map(orch_core::SignedPrompt::envelope_only),
             },
             (Some(_), Some(_)) => {
                 return Err(Problem::bad_request("give `after` or `replace`, not both"));
@@ -1022,6 +1038,11 @@ impl ForkBody {
 /// agent their roles do not allow, 404 for a thread that is not the caller's, 409 while the turn is going on (`turn_open`) or for an id
 /// another thread has, 422 for a point that is not in the log or not a person's message.
 ///
+/// A fork with `text` (its first message, or the replacement an edit makes) writes and delegates
+/// the person's words, so it is a prompt (ADR 0087, decision 3): a signing client's body must carry
+/// `promptSignature`, checked here — before anything is written — with the same 403
+/// `prompt_signature_invalid` as the AG-UI run.
+///
 /// The body is read as an object first, so that an array or a member this API does not know is
 /// refused, not skipped.
 pub(crate) async fn fork_thread<P: Ports>(
@@ -1031,8 +1052,22 @@ pub(crate) async fn fork_thread<P: Ports>(
     ApiJson(body): ApiJson<serde_json::Map<String, serde_json::Value>>,
 ) -> ApiResult<Response> {
     let id = parse_thread_id(&id)?;
-    let body: ForkBody = serde_json::from_value(serde_json::Value::Object(body))
+    let mut body: ForkBody = serde_json::from_value(serde_json::Value::Object(body))
         .map_err(|e| Problem::bad_request(format!("invalid body: {e}")))?;
+    // ADR 0087, decision 3: a fork that writes the person's words — its first message, or the
+    // replacement an edit makes — is a prompt, and a signing client's must carry its envelope. A
+    // fork with no message writes no words and is never refused for one. The check is the AG-UI
+    // run's own (`orch_api::check_prompt_signature`), and it runs before `fork_thread` writes
+    // anything. What is carried on is **what the check answers**, not what the body held: bounded,
+    // and empty (or too long) from a client that is not a signing one dropped rather than passed on.
+    if body.text.is_some() {
+        body.prompt_signature = crate::check_prompt_signature(
+            &principal,
+            &state.signing_clients,
+            body.prompt_signature.as_deref(),
+        )?
+        .map(str::to_owned);
+    }
     let forked = state
         .app
         .fork_thread(&principal, id, body.into_request()?)

@@ -62,9 +62,10 @@ pub struct SignedPrompt {
     /// The compact JWS, byte for byte.
     pub envelope: PromptSignature,
     /// What a verifier needs beside the envelope to rebuild what was signed. **Optional as a
-    /// whole.** A run (a message or a resumed answer) fills it; a helper-session start has none,
-    /// because the contract does not yet say what such a start signs, so it is signed and **not
-    /// verifiable** (ADR 0087). So does a deployment that configures no public origin.
+    /// whole.** A run (a message or a resumed answer, a fork made by one included) fills it. A
+    /// helper-session start and a REST fork or edit have none, because the contract does not yet
+    /// say what they sign, so they are signed and **not verifiable** (ADR 0087). A deployment that
+    /// configures no public origin keeps none either.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claims: Option<PromptClaims>,
 }

@@ -1,5 +1,6 @@
 //! The presence check of a signing client's prompt (ADR 0087, decisions 1 and 7), one for every
-//! route that writes a person's words: the AG-UI run (`orch-surface-agui`) and `startChildSession`.
+//! route that writes a person's words: the AG-UI run (`orch-surface-agui`), `startChildSession` and
+//! `forkThread`.
 
 use orch_core::PromptClaims;
 use orch_ports::Principal;

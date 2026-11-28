@@ -694,6 +694,7 @@ async fn an_edit_fork_opens_the_files_before_the_message_it_replaces() {
                     tier: None,
                     locale: None,
                     pick: None,
+                    signed_prompt: None,
                 },
                 target: None,
                 id: None,

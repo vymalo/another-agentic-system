@@ -130,8 +130,8 @@ pub struct ApiConfig {
     /// one or none gets the problem of [`client_version`]. `None` (the default): no client is refused.
     pub min_client_version: Option<client_version::ClientVersion>,
     /// `auth.signingClients` (ADR 0087, decision 1): the clients whose prompts must carry
-    /// `vymalo.promptSignature` on the resource API's route that writes a person's words,
-    /// `startChildSession`. Empty (the default) asks nobody. A composer that mounts the AG-UI
+    /// `vymalo.promptSignature` on the resource API's routes that write a person's words,
+    /// `startChildSession` and `forkThread`. Empty (the default) asks nobody. A composer that mounts the AG-UI
     /// surface gives it the same list.
     pub signing_clients: Vec<String>,
 }

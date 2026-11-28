@@ -398,6 +398,7 @@ async fn the_verifier_is_not_told_the_conversation_a_fork_of_the_authors_thread_
                     tier: None,
                     locale: None,
                     pick: None,
+                    signed_prompt: None,
                 },
                 target: None,
                 id: None,

@@ -78,8 +78,8 @@
 #   ORCH_SERVICE      orchestrator, the compose service whose metrics tell the purge is over (needs docker compose; without it the script waits 5 s)
 #   TIMEOUT           120    seconds to wait for a thread to stop
 #
-# It does not touch the request journals of the mocks, so it can run beside the other scenarios. Needs curl and jq (and /proc or uuidgen
-# for a UUID). CI runs it in .github/workflows/coder-e2e.yml (dev/e2e-all.sh); the ledger and the route are also proven by the
+# It does not touch the request journals of the mocks, so it can run beside the other scenarios. Needs curl and jq (and python3, or
+# /proc, uuidgen for a v7 UUID). CI runs it in .github/workflows/coder-e2e.yml (dev/e2e-all.sh); the ledger and the route are also proven by the
 # Rust tests (orchestrator/crates/store-postgres, orchestrator/crates/api/tests/usage.rs).
 set -eu
 
@@ -113,7 +113,7 @@ expect() { # expect DESCRIPTION ACTUAL EXPECTED
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || { echo 'uuid: python3 is missing, so this is a v4 id and `recent` will not be creation order' >&2; cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }; }
 
 # fetch HEADER PATH: GET PATH as the person HEADER names (an empty HEADER sends no token). Prints the HTTP status; the body is $tmp/body,
 # the response headers $tmp/headers.

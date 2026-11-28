@@ -420,6 +420,10 @@ pub enum ForkAt {
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The person's signed prompt for the replacement (ADR 0087, decision 3): an edit writes
+        /// the person's words too. Checked for presence by the route that edits, carried to the
+        /// delegation, and never recorded in the log.
+        signed_prompt: Option<orch_core::SignedPrompt>,
     },
 }
 
@@ -1844,9 +1848,10 @@ impl<P: Ports> App<P> {
                 tier,
                 locale,
                 pick,
+                signed_prompt,
             } => {
                 validate_text(&text)?;
-                let mut edit = Replacement::edit(text, message_id, None);
+                let mut edit = Replacement::edit(text, message_id, None, signed_prompt);
                 edit.tier = tier;
                 edit.locale = locale;
                 edit.pick = pick;
