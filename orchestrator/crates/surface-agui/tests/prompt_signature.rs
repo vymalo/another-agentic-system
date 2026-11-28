@@ -11,8 +11,9 @@
 mod support;
 
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
+use orch_ports::{AgentError, ThreadStore};
 use serde_json::{Value, json};
 use support::*;
 use tracing_subscriber::fmt::MakeWriter;
@@ -58,6 +59,26 @@ impl<'a> MakeWriter<'a> for Capture {
     fn make_writer(&'a self) -> Capture {
         self.clone()
     }
+}
+
+/// The lines of this process: one subscriber for the whole test binary (a second global one
+/// cannot be set), shared by the tests that read it. It sees the other tests' lines too, which an
+/// assertion that something is **absent** can only gain from.
+fn captured() -> Capture {
+    static CAPTURE: OnceLock<Capture> = OnceLock::new();
+    CAPTURE
+        .get_or_init(|| {
+            let capture = Capture::default();
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(capture.clone())
+                .with_max_level(tracing::Level::TRACE)
+                .with_ansi(false)
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("no other global subscriber");
+            capture
+        })
+        .clone()
 }
 
 #[tokio::test]
@@ -150,7 +171,11 @@ async fn a_signed_prompt_is_accepted_and_reaches_the_agent_byte_for_byte() {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            orch_ports::memory::Call::Send(call) => Some(call.prompt_signature.clone()),
+            orch_ports::memory::Call::Send(call) => Some(
+                call.prompt_signature
+                    .clone()
+                    .map(orch_core::PromptSignature::into_string),
+            ),
             _ => None,
         })
         .collect();
@@ -179,7 +204,11 @@ async fn a_client_that_is_not_listed_is_never_checked() {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            orch_ports::memory::Call::Send(call) => Some(call.prompt_signature.clone()),
+            orch_ports::memory::Call::Send(call) => Some(
+                call.prompt_signature
+                    .clone()
+                    .map(orch_core::PromptSignature::into_string),
+            ),
             _ => None,
         })
         .collect();
@@ -209,13 +238,7 @@ async fn no_word_of_the_envelope_is_in_the_log_or_in_a_tracing_line() {
     // The decisive one (ADR 0087, decision 2 and the card): the envelope goes to the agent and is
     // nowhere else. A subscriber of its own catches every line of this process, the export is the
     // document a person downloads, and the events are what every frame is folded from.
-    let capture = Capture::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(capture.clone())
-        .with_max_level(tracing::Level::TRACE)
-        .with_ansi(false)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber).expect("no other global subscriber");
+    let capture = captured();
 
     let h = Harness::start_signing(&["desktop"]).await;
     let thread = new_thread_id();
@@ -368,7 +391,11 @@ async fn a_signing_clients_resolved_resume_is_checked_at_its_entry() {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            orch_ports::memory::Call::Send(call) => Some(call.prompt_signature.clone()),
+            orch_ports::memory::Call::Send(call) => Some(
+                call.prompt_signature
+                    .clone()
+                    .map(orch_core::PromptSignature::into_string),
+            ),
             _ => None,
         })
         .collect();
@@ -478,6 +505,243 @@ async fn a_credential_that_names_no_client_at_all_is_never_checked() {
     assert_eq!(h.state(ALICE, &thread).await, "done");
 }
 
+// --- Stop & send (ANR-1376): the held message keeps its envelope, and no export has it ------
+
+/// A run of one new message `m2` that stops the job of a thread whose first message was `m1`.
+fn stopping_run(thread: &str, run: &str, new: &[(&str, &str, &str)], send: &str) -> Value {
+    let mut messages = vec![json!({"id": "m1", "role": "user", "content": "gate wait"})];
+    messages.extend(new.iter().map(|(id, text, envelope)| {
+        json!({"id": id, "role": "user", "content": text,
+               "metadata": {"vymalo.promptSignature": envelope}})
+    }));
+    json!({"threadId": thread, "runId": run, "messages": messages,
+           "forwardedProps": {"vymalo.send": send}})
+}
+
+async fn user_message_count(h: &Harness, thread: &str) -> usize {
+    h.events(ALICE, thread)
+        .await
+        .iter()
+        .filter(|e| e["kind"] == "user_message")
+        .count()
+}
+
+#[tokio::test]
+async fn a_stop_and_sends_envelope_waits_in_the_ledger_and_no_export_has_it() {
+    /// This test's own envelopes, so that no other test's bytes can pass for them.
+    const FIRST: &str = "eyJhbGciOiJFZERTQSJ9..Zmlyc3Q";
+    const HELD: &str = "eyJhbGciOiJFZERTQSJ9..aGVsZC1ieS1hLXN0b3A";
+    let capture = captured();
+    let h = Harness::start_signing(&["desktop"]).await;
+    let thread = new_thread_id();
+    let mut open = h
+        .run_as_client(
+            "plain",
+            ALICE,
+            "desktop",
+            &signed(&thread, "r1", "m1", "gate wait", FIRST),
+        )
+        .await;
+    assert_eq!(open.next(T).await.unwrap().kind(), "RUN_STARTED");
+    h.wait_state(ALICE, &thread, "working").await;
+    // The agent cannot be asked to stop for now, so the stop stays pending until the gate is
+    // released and the task ends.
+    h.agent
+        .fail_next_cancels(100, || AgentError::unreachable("the agent is busy"));
+    let second = h
+        .run_as_client(
+            "plain",
+            ALICE,
+            "desktop",
+            &stopping_run(
+                &thread,
+                "r2",
+                &[("m2", "echo do X instead", HELD)],
+                "interrupt",
+            ),
+        )
+        .await;
+
+    // **During** the stop: afterwards the ledger's member is empty, and an export would be clean
+    // without any redaction.
+    let id = orch_core::ThreadId(thread.parse().unwrap());
+    let stored = h.store.get_thread(None, id).await.unwrap().unwrap();
+    assert_eq!(
+        stored
+            .job
+            .after_stop_prompt_signature
+            .as_ref()
+            .map(orch_core::PromptSignature::as_str),
+        Some(HELD),
+        "the ledger holds it"
+    );
+    let export = h
+        .get(&format!("/api/threads/{thread}/export"), Some(ALICE))
+        .await;
+    assert_eq!(export.status, 200);
+    let document = export.json();
+    assert_eq!(
+        document["job"]["afterStop"], "echo do X instead",
+        "the export is of a thread that is stopping: {document}"
+    );
+    assert!(
+        document["job"].get("afterStopPromptSignature").is_none(),
+        "the export has the member"
+    );
+    let export = String::from_utf8_lossy(&export.body).to_string();
+    assert!(!export.contains(HELD), "the envelope is in the export");
+    // whatever the member were called: `afterStopPromptSignature` has a capital P
+    assert!(
+        !export.to_lowercase().contains("promptsignature") && !export.contains("prompt_signature"),
+        "the export names the envelope"
+    );
+    let thread_resource = h.thread(ALICE, &thread).await.to_string();
+    assert!(!thread_resource.contains(HELD), "{thread_resource}");
+
+    // A second message while one is held: 409, signed like the first, as a Send or a Stop & send,
+    // and nothing is written.
+    let written = user_message_count(&h, &thread).await;
+    for send in ["interrupt", "steer"] {
+        let p = h
+            .refused_as_client(
+                "plain",
+                ALICE,
+                "desktop",
+                &stopping_run(
+                    &thread,
+                    "r3",
+                    &[("m3", "echo and Y", "eyJhbGciOiJFZERTQSJ9..dGhpcmQ")],
+                    send,
+                ),
+            )
+            .await
+            .problem(409);
+        assert_eq!(p["code"], "stop_pending", "{send}: {p}");
+        assert!(!p.to_string().contains(HELD), "{p}");
+    }
+    assert_eq!(user_message_count(&h, &thread).await, written);
+    let unchanged = h.store.get_thread(None, id).await.unwrap().unwrap();
+    assert_eq!(unchanged.job.after_stop, stored.job.after_stop);
+    assert_eq!(
+        unchanged.job.after_stop_prompt_signature,
+        stored.job.after_stop_prompt_signature
+    );
+
+    // The task ends: the held message starts the next job, with its own bytes.
+    h.agent.release_gate();
+    let mut frames = second.all().await;
+    frames.extend(open.all().await);
+    h.wait_state(ALICE, &thread, "done").await;
+    let sent: Vec<(String, Option<String>)> = h
+        .agent
+        .sends()
+        .into_iter()
+        .filter_map(|call| match call {
+            orch_ports::memory::Call::Send(call) => Some((
+                call.text.clone(),
+                call.prompt_signature
+                    .clone()
+                    .map(orch_core::PromptSignature::into_string),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        [
+            ("gate wait".to_owned(), Some(FIRST.to_owned())),
+            ("echo do X instead".to_owned(), Some(HELD.to_owned())),
+        ]
+    );
+    let frames: Vec<Value> = frames.into_iter().map(|frame| frame.event).collect();
+    let frames = serde_json::to_string(&frames).unwrap();
+    assert!(frames.contains("RUN_FINISHED"), "no frames: {frames}");
+    assert!(!frames.contains(HELD), "the envelope is in a frame");
+    let events = serde_json::to_string(&h.events(ALICE, &thread).await).unwrap();
+    assert!(events.contains("echo do X instead"), "no message: {events}");
+    assert!(!events.contains(HELD), "the envelope is in an event");
+    let log = capture.text();
+    assert!(
+        log.contains(&thread),
+        "this thread's lines were not captured: the test proves nothing"
+    );
+    assert!(!log.contains(HELD), "the envelope is in a log line");
+}
+
+/// A Stop & send of a client that is **not listed**, with a value that is no envelope to carry
+/// (`junk`: empty, or over the bound). The client is served, and the intake drops the value: the
+/// job ledger never holds it, so the next message is joined to the held one and not refused.
+async fn an_unlisted_clients_value_is_not_held(junk: &str) {
+    let h = Harness::start_signing(&["desktop"]).await;
+    let thread = new_thread_id();
+    let mut open = h
+        .run_as_client(
+            "plain",
+            ALICE,
+            "web-client",
+            &input(&thread, "r1", &[("m1", "gate wait")]),
+        )
+        .await;
+    assert_eq!(open.next(T).await.unwrap().kind(), "RUN_STARTED");
+    h.wait_state(ALICE, &thread, "working").await;
+    // the stop stays pending: the agent cannot be asked to stop for now
+    h.agent
+        .fail_next_cancels(100, || AgentError::unreachable("the agent is busy"));
+    let _held = h
+        .run_as_client(
+            "plain",
+            ALICE,
+            "web-client",
+            &stopping_run(
+                &thread,
+                "r2",
+                &[("m2", "echo do X instead", junk)],
+                "interrupt",
+            ),
+        )
+        .await;
+
+    let id = orch_core::ThreadId(thread.parse().unwrap());
+    let stored = h.store.get_thread(None, id).await.unwrap().unwrap();
+    // the positive control: a message is held, so the empty member below says something
+    assert_eq!(stored.job.after_stop.as_deref(), Some("echo do X instead"));
+    // not `assert_eq!`: a failure must not print 16 KiB
+    assert!(
+        stored.job.after_stop_prompt_signature.is_none(),
+        "the ledger holds an unlisted client's value"
+    );
+
+    // a second message, with such a value too: served (`run_as_client` wants a 200) and joined
+    let _joined = h
+        .run_as_client(
+            "plain",
+            ALICE,
+            "web-client",
+            &stopping_run(&thread, "r3", &[("m3", "echo and Y", junk)], "interrupt"),
+        )
+        .await;
+    let joined = h.store.get_thread(None, id).await.unwrap().unwrap();
+    assert_eq!(
+        joined.job.after_stop.as_deref(),
+        Some("echo do X instead\n\necho and Y")
+    );
+    assert!(
+        joined.job.after_stop_prompt_signature.is_none(),
+        "the ledger holds an unlisted client's value"
+    );
+}
+
+#[tokio::test]
+async fn an_unlisted_clients_empty_value_is_not_held_by_a_stop_and_send() {
+    an_unlisted_clients_value_is_not_held("").await;
+}
+
+#[tokio::test]
+async fn an_unlisted_clients_oversized_value_is_not_held_by_a_stop_and_send() {
+    // one byte over the 16 KiB bound
+    an_unlisted_clients_value_is_not_held(&"c".repeat(16 * 1024 + 1)).await;
+}
+
 // --- `startChildSession` (ANR-1383): the helper's first round is the person's words ------------
 
 /// A thread of `client`'s on an agent that offers the helper `planner`, answered, so that it has a
@@ -531,9 +795,11 @@ fn helper_sends(h: &Harness) -> Vec<Option<String>> {
         .sends()
         .into_iter()
         .filter_map(|call| match call {
-            orch_ports::memory::Call::Send(call) if call.text == HELPER_PROMPT => {
-                Some(call.prompt_signature.clone())
-            }
+            orch_ports::memory::Call::Send(call) if call.text == HELPER_PROMPT => Some(
+                call.prompt_signature
+                    .clone()
+                    .map(orch_core::PromptSignature::into_string),
+            ),
             _ => None,
         })
         .collect()

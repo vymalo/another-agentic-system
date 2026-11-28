@@ -2951,7 +2951,7 @@ fn session_start_row(n: u128) -> NewOutbox {
             tier: Some(orch_core::AccessTier::Edits),
             tier_cap: None,
             // a store keeps the envelope byte for byte (ADR 0087)
-            prompt_signature: Some("eyJhbGciOiJFZERTQSJ9..c2ln-_x".to_owned()),
+            prompt_signature: Some("eyJhbGciOiJFZERTQSJ9..c2ln-_x".to_owned().into()),
         },
     }
 }
@@ -3480,6 +3480,8 @@ fn busy_job() -> Job {
         tools: vec!["docs".to_owned(), "websearch".to_owned()],
         // ADR 0036: the text a job being stopped holds for the next one
         after_stop: Some("do X instead".to_owned()),
+        // ADR 0087: and its prompt signature, which survives a restart with the text
+        after_stop_prompt_signature: Some("eyJhbGciOiJFZERTQSJ9..aGVsZA-_x".to_owned().into()),
         // ADR 0026: the agents the job's messages mentioned, and the mentions of the held text
         mentioned: [AgentId::new("researcher"), AgentId::new("coder")].into(),
         // ADR 0061: the cap of the person's role on a mentioned agent, pinned by the mention
@@ -3770,12 +3772,15 @@ pub async fn job_roundtrip<S: ThreadStore>(store: S) {
     next.attempt = 3;
     next.results.clear();
     next.hold = None;
+    // ADR 0087: a cleared signature stays cleared, and is not left behind by the earlier write
+    next.after_stop_prompt_signature = None;
     let mut c = commit(ThreadState::Verifying, vec![user_event("x", None)], vec![]);
     c.job = Some(next.clone());
     let (record, _) = applied(store.commit(thread_id(2), 1, c).await.unwrap());
     assert_eq!((record.state, &record.job), (ThreadState::Verifying, &next));
     let got = store.get_thread(None, thread_id(2)).await.unwrap().unwrap();
     assert_eq!(got, record);
+    assert_eq!(got.job.after_stop_prompt_signature, None);
 
     // A commit with no job changes the state and leaves the job.
     let (record, _) = applied(

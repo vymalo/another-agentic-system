@@ -505,3 +505,9 @@ feature are at the same commit. So the stack's `chat` and the coder (`adam-agent
 a worker claims the run. *Unverified where this was written*: that `dev/steer-e2e.sh` can now steer during the first model call (the stack was
 not started; the script still sends after its first words and tool call, which is what it proves, and the Coder E2E workflow of the pull request
 that pins the image is the first run).
+
+*Status note, 2026-11-28 (ANR-1376): row 2 has one exception.* When the held message or the new one carries a prompt
+signature, the two are not joined: the new one is refused with `409`, `code: stop_pending`, and nothing is written. The
+held message keeps its signature for the next job
+([ADR 0087](0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md), the amendment of the
+same date). Unsigned messages are joined as the table says.

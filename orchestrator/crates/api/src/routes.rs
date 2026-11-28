@@ -783,11 +783,13 @@ pub(crate) async fn start_child_session<P: Ports>(
         .map(str::to_owned);
     // ADR 0087, decision 3: `text` is the person's words, so a signing client's start is signed or
     // refused, here, before the application reads, makes or writes anything.
-    check_prompt_signature(
+    // what is carried on is what the check answers: bounded, and never empty
+    let prompt_signature = check_prompt_signature(
         &principal,
         &state.signing_clients,
         prompt_signature.as_deref(),
-    )?;
+    )?
+    .map(str::to_owned);
     state
         .app
         .start_child_session(

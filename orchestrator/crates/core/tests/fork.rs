@@ -585,7 +585,7 @@ fn an_edit_carries_the_persons_envelope_to_the_delegation_and_to_no_event() {
             "and the docs?".into(),
             Some("m-edit".into()),
             None,
-            Some(ENVELOPE.to_owned()),
+            Some(ENVELOPE.to_owned().into()),
         )),
     )
     .unwrap();

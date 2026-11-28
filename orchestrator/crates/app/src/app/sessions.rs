@@ -187,7 +187,7 @@ impl<P: Ports> App<P> {
             keep_open: start.keep_open,
             tier: pin.tier,
             tier_cap: pin.cap,
-            prompt_signature: start.prompt_signature,
+            prompt_signature: start.prompt_signature.map(orch_core::PromptSignature::from),
         };
         match self.apply(parent, input, Some(key), None, None).await? {
             ApplyOutcome::Applied { .. } | ApplyOutcome::Duplicate => Ok(()),

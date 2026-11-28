@@ -12,7 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use orch_agui_proto::{ContentPart, Message, MessageContent, ResumeStatus, RunAgentInput};
 use orch_core::{
-    AgentId, Delivery, Input, Origin, ThreadId, ThreadState, UiActionData, UiVersion, UserId,
+    AgentId, Delivery, Input, Origin, PromptSignature, ThreadId, ThreadState, UiActionData,
+    UiVersion, UserId,
 };
 use serde_json::{Map, Value};
 
@@ -551,6 +552,7 @@ pub fn translate_with_warnings(
         }
     }
 
+    let prompt_signature = prompt_signature.map(PromptSignature::from);
     let user = thread.user().clone();
     let run_id = Some(input.run_id.to_string());
     if let Some(mut action) = action {
