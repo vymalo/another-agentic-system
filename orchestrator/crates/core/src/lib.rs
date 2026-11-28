@@ -31,6 +31,7 @@ mod notify;
 mod pick;
 mod pricing;
 pub mod prompt;
+mod prompt_signature;
 mod rank;
 mod reasoning;
 mod redact;
@@ -153,6 +154,7 @@ pub use pricing::{
     Micros, ModelKey, ModelPrice, PriceTable, PriceTableError, PriceTableId, PricedModel,
     PricedMonth, PricedSandbox, PricedTotal, SandboxPrice, Unpriced, UnpricedSummary, price_month,
 };
+pub use prompt_signature::PromptSignature;
 pub use rank::{MAX_RANK_LEN, RankError, between, is_valid_rank, spread};
 pub use reasoning::{AgentReasoningData, MAX_REASONING_BYTES, bound_reasoning};
 pub use redact::{REDACTED, is_secret_key, redact_text, redact_value};
