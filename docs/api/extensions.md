@@ -13,7 +13,7 @@ An extension is optional, capability-detected from the agent's live card, never 
 "Defined by" is who writes the contract and serves what it needs; "used by" is who lists it in a card. Statuses are the pages' own: read the page before relying on one.
 
 Each status starts with an icon and a word, as in [the legend](README.md#status-icons), and the text after it is unchanged. The contract page a row links starts its `Status` line with the same icon and word (A2UI: the line under
-its heading in [`agui.md`](agui.md#a2ui-generative-ui)); `tools/docs-check` fails when the two differ, so change both together. Here the three that carry a judgement mean:
+its heading in [`agui.md`](agui.md#a2ui-generative-ui)), and so does the page's row in [`README.md`](README.md); `tools/docs-check` fails when a copy differs from this table, so change them together. Here the three that carry a judgement mean:
 
 - ✅ built: every side named is built, and a `dev/` scenario ran it against the pinned real agent image (a scripted model is fine);
 - 🧪 experimental: every side is built, but the halves have met only mocks;

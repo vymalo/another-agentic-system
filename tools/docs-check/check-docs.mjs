@@ -8,13 +8,14 @@
 //      names a heading (slugged as GitHub and the docs site do, github-slugger, -1, -2 for repeats) or an `id="..."` of an HTML tag of that file, and
 //   6. every Rust crate (a directory with a Cargo.toml under orchestrator/crates/ or
 //      orchestrator/bin/) has a README.md next to it, and
-//   7. every extension contract page of docs/api says the status that its row of extensions.md says, both ways.
+//   7. every extension contract page of docs/api says the status that its row of extensions.md says, both ways, and so
+//      does the page's row in the contract table of docs/api/README.md.
 // Usage (from the repo root):  npm --prefix tools/docs-check ci && node tools/docs-check/check-docs.mjs
 // Exits 1 on any failure, listing file:line for each.
 import fs from 'node:fs';
 import path from 'node:path';
 import { JSDOM } from 'jsdom';
-import { readExtensionIndex, STATUS_PATTERN } from '../../docs/.vitepress/extension-index.mjs';
+import { readContractTable, readExtensionIndex, STATUS_PATTERN } from '../../docs/.vitepress/extension-index.mjs';
 
 const root = process.cwd();
 // dist: the site's build output, which holds a generated .md per page (vitepress-plugin-llms), not sources.
@@ -227,6 +228,20 @@ if (fs.existsSync(path.join(root, indexRel))) {
     const says = lines[found[0]].slice('- **Status:** '.length).match(STATUS_PATTERN)?.[0];
     if (!says) failures.push(`${rel}:${found[0] + 1} status line does not start with an icon and word of the legend; ${at} says ${row.status}`);
     else if (row.status && says !== row.status) failures.push(`${rel}:${found[0] + 1} status is ${says}, but ${at} says ${row.status}`);
+  }
+  // The third copy: the contract table of api/README.md. A row of the index that links a section (A2UI) is not compared:
+  // the README's row for that file is the whole page's, which is not the extension.
+  const readmeRel = path.join('docs', 'api', 'README.md');
+  const readme = fs.existsSync(path.join(root, readmeRel)) ? readContractTable(fs.readFileSync(path.join(root, readmeRel), 'utf8')) : [];
+  if (!readme.length) failures.push(`${readmeRel}:1 no contract table (| Page | What it is | Status |) found`);
+  for (const row of readme.length ? rows.filter((r) => r.page && !r.page.anchor) : []) {
+    const copies = readme.filter((c) => c.file === row.page.file);
+    const at = `${indexRel}:${row.line}`;
+    if (!copies.length) failures.push(`${readmeRel}:1 no row for ${row.page.file}; ${at} says ${row.status}`);
+    for (const copy of copies) {
+      if (!copy.status) failures.push(`${readmeRel}:${copy.line} status does not start with an icon and word of the legend; ${at} says ${row.status}`);
+      else if (row.status && copy.status !== row.status) failures.push(`${readmeRel}:${copy.line} status is ${copy.status}, but ${at} says ${row.status}`);
+    }
   }
   for (const name of fs.readdirSync(apiDir).filter((f) => f.endsWith('.md') && f !== 'README.md' && f !== 'extensions.md')) {
     const head = fs.readFileSync(path.join(apiDir, name), 'utf8').split(/^## /m)[0];
