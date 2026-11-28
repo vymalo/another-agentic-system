@@ -68,6 +68,7 @@ fn request(fake: &FakeAgent, pick: Option<ModelPick>) -> SendRequest {
         tier_cap: None,
         locale: None,
         pick,
+        signed_prompt: None,
     }
 }
 

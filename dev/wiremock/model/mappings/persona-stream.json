@@ -38,6 +38,9 @@
             "doesNotContain": "[mock:plan-sub]"
           },
           {
+            "doesNotContain": "[mock:plan-session]"
+          },
+          {
             "doesNotContain": "[mock:browse]"
           },
           {
@@ -94,6 +97,9 @@
           },
           {
             "doesNotContain": "[mock:plan-sub]"
+          },
+          {
+            "doesNotContain": "[mock:plan-session]"
           },
           {
             "doesNotContain": "[mock:browse]"

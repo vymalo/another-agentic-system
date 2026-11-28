@@ -11,7 +11,9 @@
 #
 #   greeting          "hi" gets a greeting that says the coder's name, not a task    greeting-e2e.sh
 #   agents            three agents (coder, chat, researcher); each answers in its     agents-e2e.sh
-#                     role on the mocks, the researcher with a source it searched for
+#                     role on the mocks, the researcher with a source it searched for;
+#                     the chat starts its planner once as a tool and once as a
+#                     kept-open child session on the real adam
 #   choices           the coder asks three questions as one form drawn from the web's  choices-e2e.sh
 #                     catalog, one action answers them, a newer catalog is recorded too
 #   cards             the researcher searches and answers with one surface of cards    cards-e2e.sh
@@ -61,8 +63,11 @@
 #                     `vymalo.usage`, `vymalo.usage_total` and RUN_FINISHED.usage;
 #                     mock-coder, whose card does not list it, is asked for none and
 #                     its thread has none
-#   usage-ledger      the usage ledger of the people (ADR 0065): two threads of       usage-ledger-e2e.sh
-#                     mock-usage, each run to its end, by a user no other scenario
+#   usage-ledger      the usage ledger of the people (ADR 0065): first, a child     usage-ledger-e2e.sh
+#                     round of mock-sessions that outlives its parent's task is
+#                     counted once in the difference of a month (one task, the
+#                     helper's tokens once; this part runs on every run); then
+#                     two threads of mock-usage, each run to its end, by a user no other scenario
 #                     uses; GET /api/me/usage answers tasks 2, per model the sum of the
 #                     two tasks' totals priced by the table of orchestrator.yaml
 #                     (glm-5.3 priced by hand, glm-5.3-mini unpriced: price null,
@@ -105,7 +110,10 @@
 #                     card lists locale/v1 with the deployment's tag (DEFAULT_LOCALE of
 #                     compose.yaml), a message naming de-DE reaches the model as one more turn
 #                     after the history and never in `system`, a thread that names none gets no
-#                     line, and a tag for the researcher (whose card lists nothing) changes nothing
+#                     line, and a tag for the researcher (whose card lists nothing) changes nothing;
+#                     the run body is the web's own (web/scripts/run-forwarded-props.mjs), which puts an
+#                     interface tag under vymalo.locale and refuses one it would not send, and
+#                     GET /api/config carries ui.languages, the list the web's picker offers (ANR-957)
 #   commands          commands/v1 on the REAL coder (ADR 0079): the capabilities            commands-e2e.sh
 #                     of adam list the folder's three commands, chat lists none, the
 #                     coder's first model request holds `/explain acme/app` expanded,
@@ -169,6 +177,14 @@
 #                     a person without the permission is 403 for sharing and can still
 #                     unshare; the limit of 100; a delete with a stale revision is 409;
 #                     no word of a prompt is in the orchestrator's log
+#   prompt-signature  a signing client's prompt (ADR 0087): a token whose azp is   prompt-signature-e2e.sh
+#                     dev-signing, the one client auth.signingClients names, must carry
+#                     its envelope in the new message's metadata; one with none, or a
+#                     malformed one (a.b, a..b.c, over 16 KiB), is a 403
+#                     prompt_signature_invalid, reason invalid, with no thread written and
+#                     nothing sent; a well-formed detached JWS is accepted, the thread ends
+#                     done and the envelope is in no export and no frame; a token whose azp
+#                     is dev-chat sends no envelope and is accepted (the negative control)
 #   delete            deleting a thread erases it (ADR 0043): a thread that works is   delete-e2e.sh
 #                     refused (409 thread_active), a cancelled one is deleted (204);
 #                     another person's delete is a 404 that changes nothing; the owner's
@@ -255,7 +271,7 @@
 # `ci` passes once per database (a commit belongs to the first job that pushed it): on a second run it is
 # SKIPPED, not failed, and the summary says how to reset (`docker compose --profile app down -v`).
 # `usage-ledger` counts exactly its own two tasks of a user no other scenario uses, and the ledger is durable: on a second run on the same database it is
-# SKIPPED too, with the same reset.
+# SKIPPED too, with the same reset (its child round, which counts a difference, has run and passed by then).
 # `folder` restarts the coder (it runs last, and puts the coder back on its folder when it ends) and needs
 # `docker compose` on the machine that runs the stack: without it, it is SKIPPED too.
 # `share` restarts the orchestrator, and only it, twice: once on a copy of dev/orchestrator.yaml whose `sharing.mode` says `public`, once on the stack's
@@ -284,7 +300,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier tier-real pick pick-real commands locale locale-real child-sessions title description fork rail search prompts delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier tier-real pick pick-real commands locale locale-real child-sessions title description fork rail search prompts prompt-signature delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -379,10 +395,12 @@ for s in "$@"; do
         esac
       done ;;
     usage-ledger)
-      case " $agents " in
-        *" mock-usage "*) ;;
-        *) echo "scenario usage-ledger needs the agent 'mock-usage', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
-      esac ;;
+      for a in mock-usage mock-sessions; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario usage-ledger needs the agents mock-usage and mock-sessions; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
     usage)
       for a in mock-usage mock-coder; do
         case " $agents " in
@@ -449,6 +467,11 @@ for s in "$@"; do
           *) echo "scenario tools needs the agents chat and mock-coder; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
+    prompt-signature)
+      case " $agents " in
+        *" mock-coder "*) ;;
+        *) echo "scenario prompt-signature needs the agent 'mock-coder', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+      esac ;;
     cards | share)
       case " $agents " in
         *" researcher "*) ;;
@@ -534,6 +557,7 @@ for s in "$@"; do
     rail) run rail sh "$here/rail-e2e.sh" ;;
     search) run search sh "$here/search-e2e.sh" ;;
     prompts) run prompts sh "$here/prompts-e2e.sh" ;;
+    prompt-signature) run prompt-signature sh "$here/prompt-signature-e2e.sh" ;;
     delete) run delete sh "$here/delete-e2e.sh" ;;
     share) run share sh "$here/share-e2e.sh" ;;
     registry) run registry sh "$here/registry-e2e.sh" ;;

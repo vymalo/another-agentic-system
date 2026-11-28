@@ -10,6 +10,9 @@ sidebarTitle: "0080 · Signed requests to a tool server"
   `orch-signed-request`, the MCP client, the relay and `toolServers[].protocol` and `toolServers[].signing`. **Proposed**, for the
   maintainers to confirm: every name, limit and default below. No tool server verifies the signature yet; the first one, vaam's, is
   written against the contract page.
+  **Amended 2026-11-28 (ANR-1342):** decision 6 is replaced: `orch-signed-request` depends on `cratestack-cose` 0.17.2 and calls it,
+  and the interoperability crate and its CI job are gone ([the note under decision 6](#amendment-2026-11-28-anr-1342)). The wire format,
+  decisions 1 to 5 and what a tool server accepts are unchanged.
   Builds on [ADR 0024](0024-mcp-tools-attached-per-conversation.md) (the relay and the servers a deployment lists),
   [ADR 0033](0033-the-orchestrator-is-an-oauth2-resource-server.md) (the orchestrator knows who the person is) and
   [ADR 0034](0034-one-yaml-configuration-secrets-by-reference.md) (a key is a reference).
@@ -28,7 +31,7 @@ cratestack at the tag `v0.17.2` (`ec92825`):*
 | The relay forwarded `ToolCall::new(tool).with_arguments(args)` and nothing else, with one static bearer and static headers for every thread and person: the server could learn who *the orchestrator* was, never the person | `orchestrator/crates/surface-thread-tools/src/relay.rs` (`relay`), `crates/tools-mcp/src/lib.rs` (`transport_config`) |
 | The relay *has* the person: `ToolCtx.owner` is the thread's owner and `ToolCtx.claims.thread` its id | `crates/surface-thread-tools/src/provider.rs` |
 | A cratestack MCP guard hands an `AuthProvider` the method, the resource's path, the query and the **exact body bytes**, and, with `CredentialPresence::ask_provider()`, asks the provider whether a request carries its credential before it reads the body | `crates/cratestack-mcp/src/streamable_http/{guard,auth,credential,presence}.rs` |
-| `cratestack-cose` 0.17.2 has `rust-version = "1.98.0"`; this workspace builds on 1.94.1 (`rust-toolchain.toml`, `Cargo.toml`, `Dockerfile`, six workflows) | `cargo info cratestack-cose`, `orchestrator/rust-toolchain.toml` |
+| `cratestack-cose` 0.17.2 has `rust-version = "1.98.0"`; this workspace built on 1.94.1 at the time (`rust-toolchain.toml`, `Cargo.toml`, `Dockerfile`, six workflows) — **the workspace moved to 1.98 on 2026-11-27 (ANR-1328)**, so the separate writer may now be replaced by the real crate in a change of its own | `cargo info cratestack-cose`, `orchestrator/rust-toolchain.toml` |
 
 Invariants (`CLAUDE.md`), checked first. **1, protocols only:** MCP over streamable HTTP and COSE (RFC 9052), both standards; no host SDK.
 **2, optional extensions:** a server that is not configured for it is called exactly as before; the new keys are optional. **3, stateless:**
@@ -68,6 +71,28 @@ a request is signed when it is sent and nothing is kept; the replay record is th
    the adam-rs pin, not part of this one; when the toolchain moves, the writer can be replaced by the crate and the interoperability crate
    becomes an ordinary test.*
 
+### Amendment 2026-11-28 (ANR-1342)
+
+Decision 6, as written above, said that the writer lives in this repository and **not** behind a dependency on `cratestack-cose`.
+That held while the workspace was on Rust 1.94.1. It moved to 1.98 on 2026-11-27 (ANR-1328), and from this date:
+
+- **The crate writes and opens the claim object.** `Signer` calls `cratestack_cose::sign_claims`; the reference verifier (feature
+  `verify`) does check 2 with `open_claims` over the pinned keys, and checks 1 and 3 to 5 itself. The CBOR writer and reader of
+  our own are deleted, and the `kid` comes from the library's thumbprint functions.
+- **The key stays where it was.** `aws-lc-rs` reads the PKCS#8 PEM and signs, behind `cratestack_cose::ExternalSigner::ed25519`
+  (the library's seam for a key it does not hold). The adapter also verifies each signature it is handed against the public key
+  before it returns it. *Rejected: hand the seed to the library's `Ed25519Signer`: a second copy of the private key, and a second
+  signing implementation in the binary, for no change of the bytes (Ed25519 is deterministic).*
+- **`sign` and `verify` are `async`**, because `sign_claims` and `open_claims` are. Neither does I/O here.
+- **The interoperability crate is `orchestrator/crates/signed-request/tests/cratestack.rs`**, run with the workspace's tests; its
+  toolchain file, its `Cargo.lock` and the CI job `signed-request-interop` are deleted. The known-answer vector stays what catches a
+  version of the library that writes other bytes.
+- **Cost:** the binary built with `tool-relay` now links `cratestack-cose`, `cratestack-core` and what they bring (among them
+  `ed25519-dalek` for the check above and `p256`, which this use does not exercise). It is a library of a wire format, not an agent
+  host, a gateway or a host SDK (invariant 1).
+- The wire contract and the worked example are unchanged, byte for byte. *Verified 2026-11-28 by reading the library's published
+  source; unverified by a run when written.*
+
 ## What is not decided here (follow-ups)
 
 - **A listener per surface** (`/agui` and `/thread-tools` on separate ports or hosts, the family of vaam's EXT-19) and, behind it, allowing
@@ -86,7 +111,9 @@ a request is signed when it is sent and nothing is kept; the replay record is th
   authorises the owner itself; its clock agrees with the orchestrator's within 30 seconds. A deployment that turns `signing` on creates a key
   and gives the public half to the tool server's operator.
 - **Harder:** a second place writes the bytes of a format whose reference is another repository's. The known-answer vector and the
-  interoperability job are what keep the two honest, and the job needs a second toolchain in CI until the workspace moves to 1.98.
+  interoperability job are what keep the two honest, and the job needs a second toolchain in CI until the workspace moves to 1.98 (*met 2026-11-27, ANR-1328*).
+  *No longer applies (2026-11-28, ANR-1342): there is one writer, `cratestack-cose` itself, so no second place and no interoperability job; the
+  known-answer vector and the worked example are the anchor, and they did not move.*
 - **Risk:** the key holder can name any owner on its server. The contract says so; the key is one per server, held by reference, and rotated
   by the steps on the contract page.
 

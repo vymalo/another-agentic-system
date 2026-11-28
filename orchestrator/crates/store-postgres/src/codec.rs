@@ -259,7 +259,7 @@ pub(crate) fn inbox_from_row(row: &PgRow) -> Result<InboxItem, StoreError> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use bytes::BytesMut;
-    use tokio_postgres::types::{FromSql as _, ToSql as _, Type};
+    use tokio_postgres::types::{ToSql as _, Type};
 
     use super::*;
 

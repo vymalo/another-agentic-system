@@ -9,7 +9,7 @@ sidebarTitle: "0108 · A run is charged to the sub"
   hours; the run id the meter sends is the annotation, not the hash.* Amends [ADR 0084](0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md)
   (decision 6 and the two status notes of 2026-11-24 on `accountId`). **Open: ANR-Q139** (the owner's, on the board): whether the account
   is to be the `sub` exactly as the provider issues it rather than the orchestrator's trimmed, lower-cased `UserId`; this record
-  states what holds today. **Amended (2026-11-27, ANR-1163):** the MCP surface's known gap (below) is closed. **Amended (2026-11-27, ANR-1186):** under a claim other than `email` and `sub` an MCP user is what that claim yields.
+  states what holds today. **Amended (2026-11-27, ANR-1163):** the MCP surface's known gap (below) is closed. **Amended (2026-11-27, ANR-1186):** under a claim other than `email` and `sub` an MCP user is what that claim yields. **Amended (2026-11-28, ANR-1321):** the same `sub` is the account of a person's own agent (the platform's `AgentService.spec.account`), and a `provisioner` section is held to the meter's startup rule of decision 1, `auth.mode: jwt` with `auth.jwt.userClaim: sub` ([ADR 0103](0103-a-persons-own-agent-is-made-and-kept-ready-before-their-message-is-accepted.md), amended the same day).
 - **Numbering (2026-11-27):** written as 0106, renumbered to 0107 because an open pull request (#616) took 0106, and to 0108 because #620 (the SQL adapters' ADR) landed 0107.
 
 ## Context
@@ -77,6 +77,7 @@ idle after it and the meter backfills up to 24 hours, so the pod's last minutes 
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a run is charged to the identity provider's sub
     participant O as Orchestrator
     participant B as Broker
     participant M as Meter (the platform)
@@ -92,6 +93,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a run is charged to the identity provider's sub
     [*] --> Live: bind
     Live --> Live: bind again (same binding)
     Live --> Ended: unbind (ended_at = now)

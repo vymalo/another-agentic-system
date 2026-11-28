@@ -1,7 +1,7 @@
 # Roadmap to launch
 
 The front door for all four repositories of the another-agentic family: where the project is going, what is left,
-and where you can help. *Checked 2026-11-21; agent-team recounted 2026-11-27.*
+and where you can help. *Checked 2026-11-21; agent-team recounted 2026-11-27; per-repository gaps read 2026-11-28.*
 
 ## What this is
 
@@ -76,6 +76,129 @@ M3 is not in these repositories. A closed ticket is built and proven on mocks, k
 - **adam, embedded:** the SQLite store ([adam#245](https://github.com/vymalo/another-adam-rs/pull/245)) and the engine, with kill and resume ([adam#286](https://github.com/vymalo/another-adam-rs/pull/286), [#290](https://github.com/vymalo/another-adam-rs/pull/290), [#295](https://github.com/vymalo/another-adam-rs/pull/295)); the parity matrix ([adam#271](https://github.com/vymalo/another-adam-rs/pull/271), [#285](https://github.com/vymalo/another-adam-rs/pull/285)).
 - **adam decisions:** [adam ADR 0060](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0060-schedules-are-parked-runs.md) (schedules), [0061](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0061-a-step-names-its-retry-policy.md) (a step names its retry policy), [0062](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0062-a-race-of-steps-records-its-winner.md) (a race records its winner), [0063](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0063-a-reasoning-effort-is-one-setting.md) (a reasoning effort per model, no default) and [0064](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0064-model-profiles-reasoning-effort-and-output-cap-follow-the-model.md) (the output cap and presets per model, a fallback of 128,000 tokens).
 - **plat:** the tool catalogue's kind end-to-end (K10, [plat#70](https://github.com/vymalo/another-agentic-platform/pull/70)) and the model's extra body, echo and context window as form fields ([plat#77](https://github.com/vymalo/another-agentic-platform/pull/77)).
+
+## What is missing, incomplete and long, repository by repository
+
+*Read on 2026-11-28 from each repository's `main`: [`docs/vision.md`](docs/vision.md), [`docs/mvp.md`](docs/mvp.md) and the
+[README features table](README.md#features) for sys; adam's own [`docs/roadmap.md`](https://github.com/vymalo/another-adam-rs/blob/main/docs/roadmap.md);
+plat's [§59c](https://github.com/vymalo/another-agentic-platform/blob/main/docs/architecture/10-control-plane-and-crds.md#59c-operator-increments-kagent-grade-minimum),
+[§60a](https://github.com/vymalo/another-agentic-platform/blob/main/docs/architecture/10-control-plane-and-crds.md#60a-admin-dashboard-v0)
+and its [status log](https://github.com/vymalo/another-agentic-platform/blob/main/.agents/docs/status.md); and img's README and CLAUDE.md. Open issues that day: sys 72, adam 17, plat 7, img 1.
+The counts in [Progress](#progress) are from 2026-11-21 and are not recounted here.* A row says what proves it, or what has never run.
+
+**Where it stands (2026-11-28).**
+
+- Every repository builds and passes its own CI. **Nothing has run against a live model, GitHub.com, a real identity provider or a real cluster.**
+- Releases: sys `v0.10.0` is tagged and its release run (images and chart) was still queued at 00:30Z, so no sys release is published yet; plat `v0.2.0` is released (2026-11-27); img has no release-please, on purpose, and publishes `<version>-<sha7>` tags from `main`.
+- The long pieces are the same in all four: a first live run, isolation of one person's work from another's (M1), and a real cluster to prove plat's sandbox and wake paths on.
+
+### sys: the orchestrator and the chat
+
+**Built and proven.** The log, dispatcher, A2A client, share, delete, usage ledger, secret stores, artifact stores, the chart, backups on kind, and the 37 scenarios of `dev/e2e-all.sh` (green in CI on 2026-11-27): the [features table](README.md#features) has every row.
+
+| Missing: not started | What it is | Card |
+|---|---|---|
+| The agent knows who the person is, and a linked GitHub account | [ADR 0064](docs/decisions/0064-the-person-reaches-the-agent-and-links-their-github.md), accepted 2026-11-24; nothing built | [sys#278](https://github.com/vymalo/another-agentic-system/issues/278), [#279](https://github.com/vymalo/another-agentic-system/issues/279) |
+| A network tier per message | [ADR 0062](docs/decisions/0062-the-person-picks-a-network-tier-for-each-message-the-agent-keeps-to-it.md), accepted 2026-11-26; nothing built | ANR-1290 (the ADR) |
+| A model endpoint per thread, for agents that do not sign their calls | [ADR 0063](docs/decisions/0063-an-openai-compatible-model-endpoint-per-thread-on-the-orchestrator.md); shape still proposed; nothing built | ANR-994 (the ADR) |
+| The admin dashboard in the web | [ADR 0045](docs/decisions/0045-admin-dashboard-in-the-web-and-agent-access-from-the-registry.md): only its first decision (who may use an agent) is built | no card yet |
+| The credential broker's first part and the injector | The Layer 2 rows above; the injector needs a spike first | [sys#334](https://github.com/vymalo/another-agentic-system/issues/334) |
+| Temporary chats, tags, import, an artifacts panel, French; the components List, Stepper and Web view; trusted components | [ADR 0067](docs/decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md), [ADR 0083](docs/decisions/0083-trusted-components-the-agent-names-and-the-client-draws.md); the chat slices not about agents are paused | [sys#335](https://github.com/vymalo/another-agentic-system/issues/335) |
+| Schedules, projects, missions, an inspector, a terminal client, cold threads, regions | Decided or proposed, nothing built | [sys#342](https://github.com/vymalo/another-agentic-system/issues/342) (missions); [sys#402](https://github.com/vymalo/another-agentic-system/issues/402) to [#407](https://github.com/vymalo/another-agentic-system/issues/407) (M6 to M11) |
+
+| Incomplete: started, or built but unproven | What proves it, or what has never run | Card |
+|---|---|---|
+| Almost every chat, agent and tool row | Proven on mocks only: WireMock agents, scripted models, a mock GitHub, a mock sign-in. No live model or web page was used | [README features](README.md#features) |
+| Sign-in and roles | `dev/rbac-e2e.sh` through the real oauth2-proxy, with a mock issuer; a real identity provider has never been used | [sys#294](https://github.com/vymalo/another-agentic-system/issues/294) |
+| Limits per person before a run | Per-role limits and a messages-per-minute refusal only; the rest of the record is not built ([ADR 0081](docs/decisions/0081-limits-per-person-before-a-run-starts.md)) | [sys#282](https://github.com/vymalo/another-agentic-system/issues/282) |
+| Signed prompts; delete my account | Ports, a statement builder and a test signer; no signing app and no delete route ([ADR 0087](docs/decisions/0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md), [0098](docs/decisions/0098-deleting-an-account-erases-what-a-person-owns-and-keeps-only-counts-for-a-set-time.md)) | [sys#294](https://github.com/vymalo/another-agentic-system/issues/294) |
+| Agent-team | The core's ledger, its hand-off gate and the presets API; the web draws no team | [sys#377](https://github.com/vymalo/another-agentic-system/issues/377) |
+| Push notifications | The core folds the intents from the log; no devices, routes or delivery | [sys#384](https://github.com/vymalo/another-agentic-system/issues/384) |
+| Attachments; memory | Attachments: the server half, no control in the web. Memory: the core's types and rules only | [sys#335](https://github.com/vymalo/another-agentic-system/issues/335) |
+| The orchestrator embedded in an application, on SQLite | The SQLite store and a killed application resuming, in CI; local agents and the target builds are not finished (E5) | [sys#382](https://github.com/vymalo/another-agentic-system/issues/382) |
+| The SQL adapters keep their rules in the database | Slices P0 and P1 merged on 2026-11-27; the rest of [ADR 0107](docs/decisions/0107-the-sql-adapters-keep-their-rules-in-the-database.md) is open | ANR-1149 |
+| Retention | Idle threads are erased after 90 days; files, the local journal and the inbox are not swept ([ADR 0094](docs/decisions/0094-retention-is-a-sweep-per-class-with-a-key-each-and-a-default-of-90-days.md)) | no card yet |
+| Backups | Passed on kind (base backup, WAL, restore); never restored on a real deployment | [sys#151](https://github.com/vymalo/another-agentic-system/issues/151) |
+| Releases | `v0.10.0` is tagged, its run is queued; no tag has yet run `release.yml` to the end ([ADR 0106](docs/decisions/0106-a-release-tag-publishes-the-images-and-the-chart-at-one-version.md)) | no card yet |
+| Desktop and mobile apps | An unsigned Linux bundle is built in CI; the mobile release has not succeeded | no card yet |
+| Windows: a view onto what a run makes | The port, its URL guard and a fake; no real adapter | [sys#339](https://github.com/vymalo/another-agentic-system/issues/339) |
+
+| Needs more time | Why it is big | Card |
+|---|---|---|
+| The first live run: a real model, GitHub.com, an identity provider, the owner trying it | Needs credentials and a person to watch; Layer 2's exit criteria are 0 of 11 and the owner has not accepted this state ([ADR 0037](docs/decisions/0037-the-mvp-is-complete-against-its-build-order.md)) | [sys#202](https://github.com/vymalo/another-agentic-system/issues/202), [#205](https://github.com/vymalo/another-agentic-system/issues/205) |
+| M1: a coder safe for many people | Needs ADR 0064, adam's run-pod work and plat's sandbox on real nodes: three repositories and a cluster | [sys#273](https://github.com/vymalo/another-agentic-system/issues/273) |
+| Scale: the load test, pooler, capacity metrics | Needs a real cluster and a named first bottleneck | [sys#290](https://github.com/vymalo/another-agentic-system/issues/290), [#291](https://github.com/vymalo/another-agentic-system/issues/291), [#292](https://github.com/vymalo/another-agentic-system/issues/292) |
+| The injector in front of the model gateway | Third parties (Agent Router, Authorino); that the added header reaches the endpoint is *unverified* | [sys#334](https://github.com/vymalo/another-agentic-system/issues/334) |
+| Abuse controls: miner detection, a kill switch per person | Not started; needs run pods on a real cluster to test | [sys#295](https://github.com/vymalo/another-agentic-system/issues/295) |
+
+### adam: the agent framework and the coder
+
+adam keeps its own roadmap: [`docs/roadmap.md`](https://github.com/vymalo/another-adam-rs/blob/main/docs/roadmap.md) in another-adam-rs, written by its maintainers. This page keeps adam's rows in the tables above and in [R2](#r2-agents-on-the-persons-computer), [R3](#r3-agents-in-the-cloud-safe-for-many-people) and the milestones; the detail of what is missing, incomplete and long is there, not here. Open there on 2026-11-28: 17 issues.
+
+### plat: the operator and the Platform API
+
+**Built and proven.** The operator, the Platform API, `aapctl`, tool discovery, several namespaces, two replicas with a leader, traces, metrics, the tool catalogue and a bring-your-own A2A image: 13 of the 16 increments of §59c, each on a fake API server, a bare kube-apiserver or kind in CI (v0.2.0 is released). The status log has the evidence per slice.
+
+| Missing: not started | What it is | Card |
+|---|---|---|
+| `requireApproval` per tool | Waits for an adam-rs decision on approvals and the system's (K12) | [sys#344](https://github.com/vymalo/another-agentic-system/issues/344) |
+| The first real agent on a real cluster, and the dashboard on it | On hold: there is no cluster to prove it on (K13, D14) | [sys#344](https://github.com/vymalo/another-agentic-system/issues/344) |
+| The agents' own pods under gVisor | Planned after run pods (K14c, K14d) | [plat#54](https://github.com/vymalo/another-agentic-platform/issues/54) |
+| A revocation list for workload certificates | The workload-certificate decision asks for one; it is not built | ANR-1011 |
+| The drain controller of release channels | The CRD shape is in an open pull request; the controller that computes `status.revisions` is not started | [plat#198](https://github.com/vymalo/another-agentic-platform/pull/198), ANR-965 |
+| The activator's binary, image, chart and Kubernetes adapters | The library exists; nothing wakes a real agent. Nothing writes the wake annotation | ANR-1068 |
+| Typed fields the adam-rs chart has and the CRDs do not | Worker settings, MCP `when` and `files`, a repository's own image, A2A push and signed cards, `ADAM_REFERENCES_FILE` | [plat#72](https://github.com/vymalo/another-agentic-platform/issues/72) to [#76](https://github.com/vymalo/another-agentic-platform/issues/76) |
+
+| Incomplete: started, or built but unproven | What proves it, or what has never run | Card |
+|---|---|---|
+| The whole operator | Proven on kind, never on a real cluster; a real Keycloak, a browser sign-in with a real browser, a Prometheus scrape and TLS to a collector behind a private CA have not run | [sys#344](https://github.com/vymalo/another-agentic-system/issues/344) |
+| gVisor for run pods | Rendering and admission refusals proven. A start under `runsc` ran only on a container node (a local k3d, and a hosted runner), where memory and CPU limits were not enforced; a real node is unproven (K14b, closed as the admission half) | [plat#54](https://github.com/vymalo/another-agentic-platform/issues/54) |
+| Sleep and wake | The operator stores sleep and wakes by annotation or schedule; it puts an adam agent to sleep only once a coder image has the activity listener, and no real cluster has run it | ANR-1030b, ANR-1067, ANR-1200 |
+| The workload-certificate listener | 26 socket tests; no kind end-to-end and no real PKI | ANR-1011 |
+| Pod-minute metering | Built behind a flag, off by default; tested on a test logs collector, not a real one | ANR-673, ANR-1103 |
+| Run pods' egress proxy and git sandbox | Need a coder image that has `adam-egress` and `adam-git-sandbox`; the operator's default agent image lacks them: documented, not refused | no card yet |
+| The coder pin and the default agent image | The operator's default agent image is of 2026-10-05 | no card yet |
+| CloudNativePG | The store job runs a preview release, `1.31.0-rc1`, until a GA 1.31 | ANR-1081 |
+| Reading a deployed platform from sys | The registry is read in plat's kind CI by an older sys pin; no deployed platform | [sys#344](https://github.com/vymalo/another-agentic-system/issues/344) |
+
+| Needs more time | Why it is big | Card |
+|---|---|---|
+| A real cluster for K13, K14 and the chain | An unknown: a cluster with gVisor on real nodes and a real issuer; the owner's | [plat#54](https://github.com/vymalo/another-agentic-platform/issues/54) |
+| Release channels and rolling upgrades | Four slices (R1 to R4) over the CRDs, the controller and runs in flight | ANR-965 |
+| Scale to zero end to end | Needs the activator, the coder's listener (adam), a writer of the wake annotation and a real cluster | ANR-1068, ANR-1200 |
+| The dashboard's remaining slices | Design only apart from those built; depends on a real issuer (D14) | [§60a](https://github.com/vymalo/another-agentic-platform/blob/main/docs/architecture/10-control-plane-and-crds.md#60a-admin-dashboard-v0) |
+
+### img: the toolchain images
+
+**Built and proven.** The three images build, pass their smoke test as uid 10001 and answer the language-server and dev-container checks in CI; the last runs on `main` passed (2026-11-26 and 2026-11-27). All three pull anonymously (*verified 2026-11-28* with a manifest request to `ghcr.io`: `agent-canvas`, `workspace` and the third image answered 200). img has no release-please on purpose: tags are `<version>-<sha7>`.
+
+| Missing: not started | What it is | Card |
+|---|---|---|
+| linux/arm64 | Flutter and several release tarballs are x86_64 only (the README's statement, *unverified* here) | no card yet |
+| A Python interpreter | In no image; `pyright` runs on Node | no card yet |
+| `workspace` as the default dev container for a repository without a `devcontainer.json` | adam's planned slice 7b; the image is ready as a base, the consumer is not | adam ADR 0052 |
+
+| Incomplete: started, or built but unproven | What proves it, or what has never run | Card |
+|---|---|---|
+| The three CLIs (Claude Code, Codex, OpenCode) | Run only against WireMock stand-ins; never against a real model | no card yet |
+| The obscura browser | In the smoke tests; a page rendered by it is not checked in CI | no card yet |
+| The shared `/cache` volume | Proven on the image; sharing it across pods is a deployment's own test | no card yet |
+| Local compose | Pins `workspace` and `agent-canvas` at `bc97d51`, older than `main` | no card yet |
+| GitHub Actions on Node 20 | Workflows still to move | [img#13](https://github.com/vymalo/another-agentic-images/issues/13) |
+
+| Needs more time | Why it is big | Card |
+|---|---|---|
+| arm64 for every tool | Each upstream tool needs an arm64 build; Flutter may have none | no card yet |
+| Proving a pin bump on real work | The smoke test proves tools start; only real tasks in a run pod prove they work, and that waits for R3 | [sys#359](https://github.com/vymalo/another-agentic-system/issues/359) |
+
+### Next
+
+1. Finish the open work that needs no cluster: agent-team's web and push notifications (sys#377, sys#384), `v0.10.0`'s release run, release channels R1 (plat#198).
+2. Run the first live loop: one real model, GitHub.com and an identity provider through the chat, then the coder to a pull request (sys#202, sys#203, sys#205).
+3. Get a real cluster, and prove on it: the chain, gVisor on a real node (plat#54), a restore (sys#151), then the load test (sys#290).
+4. Build M1's cross-repository pieces in order: ADR 0064 (sys#278), the coder's access check, no key in run pods (adam#119).
+5. Then scale to zero end to end (ANR-1068, ANR-1200) and release channels R2 to R4.
+
 
 ## Production in two layers, then two releases
 

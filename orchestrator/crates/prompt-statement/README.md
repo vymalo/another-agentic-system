@@ -22,7 +22,8 @@ its `jws` module.
 | `UserClaims::from_request(aud, &Received, envelope)` | the `user` of a request: every member from it, `aud` from the configuration, `env_sha256` from the envelope's exact bytes. `.check_against(&Received)` is the rule alone |
 | `StatementError::{Mismatch(Field), Unbound, Lifetime}` | `Mismatch` and `Unbound` are ADR 0087's refusal: `.is_prompt_signature_invalid()`, `.code()` = `prompt_signature_invalid`, `.client_reason()` = `invalid`, `.log_reason()` = `mismatch` (for the log, never the response). `Lifetime` (`exp` not after `iat`, or more than `MAX_LIFETIME_SECS`, a day, after it) is the orchestrator's own mistake and has no code. No variant holds a value of the request |
 | `AttestedPayload` | the bytes, `.as_bytes()`; made only by `attest`; `Debug` shows the length (the payload names the person) |
-| `check_presence(Option<&str>)` | the presence check of a signing client's envelope (ADR 0087, decision 1): present, at most `MAX_ENVELOPE_LEN` bytes, three dot-separated base64url parts (the middle one may be empty: a detached payload). Returns the received `&str` itself, never a re-encoded copy, or a `PresenceError` (`Missing`, `Malformed`), refused as `403 prompt_signature_invalid`, reason `invalid`. No cryptography |
+| `check_presence(Option<&str>)` | the presence check of a signing client's envelope (ADR 0087, decision 1): present, at most `MAX_ENVELOPE_LEN` bytes, three base64url parts separated by two dots, the middle one (the detached payload) may be empty — `header..signature`. Returns the received `&str` itself, never a re-encoded copy, or a `PresenceError` (`Missing`, `Malformed`), refused as `403 prompt_signature_invalid`, reason `invalid`. No cryptography |
+| `requires_signature(&[String], Option<&str>)` | **who must sign** (ADR 0087, decision 1), from the deployment's `auth.signingClients` and the token's client: an empty list asks nobody; `None` (the proxy header, an MCP static token) is never a signing client's; `Some("")` is the token-with-no-client sentinel and **is** one; another id is one only when the list names it, compared exactly |
 | `statement_exp(iat, leaf_not_after)` | `min(iat + 24 h, notAfter)` |
 | `canonical(&Value)`, `hash_of(&Value)`, `props_hash(Option<&Value>)`, `sha256_b64u(&[u8])` | RFC 8785 (members by UTF-16 code units, §3.2.2.2 escapes, ECMAScript numbers), and `base64url(SHA-256(...))` without padding; `props_hash` of none is the hash of `{}` |
 | `jws::protected_header(&x5c)`, `jws::signing_input(&header, &payload)`, `jws::compact(&input, &signature)` | the statement's compact JWS: header `{"alg":"EdDSA","typ":"prompt-statement/v1","x5c":[...]}` in RFC 8785 form, the certificates' DER in standard base64 |
@@ -42,4 +43,6 @@ its `jws` module.
   payload holds exactly the contract's members; `Debug` does not show the person.
 * `tests/jcs.rs`: members sorted by UTF-16 and not by code point, the escapes, nesting, the number samples of RFC 8785
   appendix B and numbers as a request parses them, and the hash form.
+* `src/presence.rs`: the shape of an envelope (a detached or attached compact JWS, a bad one of every kind), and who
+  must sign: an empty list, a listed client, a client that is not listed, the sentinel, and no client at all.
 * The doctest of `src/lib.rs`: a statement attested, and refused once its content is changed.

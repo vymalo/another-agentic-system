@@ -1,24 +1,22 @@
 //! The receiving side, as `docs/api/signed-tool-requests-v1.md` ("What a tool server must check") describes it, checks 1 to 5.
 //!
 //! The orchestrator never verifies. This is the reference of the contract: the tests of the orchestrator's client verify what it
-//! sends with it, and a Rust tool server that does not use `cratestack-cose` can use it. It is **not** a second implementation
-//! of `cratestack_cose::open_claims` to trust in its place: the interoperability crate (`interop/`) runs the real one against
-//! the same bytes.
+//! sends with it, and a Rust tool server can use it. Check 2 is the real `cratestack_cose::open_claims` with the pinned keys;
+//! checks 1, 3, 4 and 5 are this module's.
 //!
 //! What it leaves to the caller, because it needs state or policy: check 6, that the `cti` was not seen (it returns the pair to
 //! record and the time to keep it until), and check 7, that the owner may do what the call asks.
 
-use aws_lc_rs::signature::{ED25519, UnparsedPublicKey};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use cratestack_cose::{ClaimsError, CoseVerifyKey, StaticVerifierResolver, open_claims};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
 use uuid::Uuid;
 
-use crate::cbor::{self, Reader, Reject};
-use crate::key::{KID_LEN, hex, kid_of};
-use crate::sign::{CTI_LEN, MAX_HEADER_BYTES, MAX_TTL_SECS, TYP, to_be_signed};
+use crate::key::{KID_LEN, hex};
+use crate::sign::{CTI_LEN, MAX_HEADER_BYTES, MAX_TTL_SECS, TYP};
 
 /// The most public keys a verifier pins: the current one and the next (a rotation).
 pub const MAX_PINNED_KEYS: usize = 2;
@@ -82,11 +80,12 @@ pub enum Shape {
 #[non_exhaustive]
 pub enum Object {
     /// Not the claim-object profile: wrong tag, a head that is not the shortest, an entry out of order or unknown, a
-    /// non-empty unprotected header, trailing bytes, an algorithm other than Ed25519.
+    /// non-empty unprotected header, trailing bytes, an algorithm `cratestack-cose` does not accept in a claim object.
     Malformed,
     /// A well-formed object of another `typ`.
     WrongType,
-    /// No pinned key has the `kid`, or no key with it verifies the signature (the two are not told apart).
+    /// No pinned key has the `kid` and the object's algorithm (the pinned keys are Ed25519 only), or none of them
+    /// verifies the signature (these are not told apart).
     Unverified,
 }
 
@@ -140,6 +139,9 @@ pub enum VerifyError {
     /// More than [`MAX_PINNED_KEYS`] keys were pinned.
     #[error("at most two keys are pinned")]
     TooManyKeys,
+    /// The bytes to pin are not an Ed25519 public key.
+    #[error("the pinned key is not an Ed25519 public key")]
+    InvalidKey,
 }
 
 impl VerifyError {
@@ -151,7 +153,7 @@ impl VerifyError {
             VerifyError::Audience => 3,
             VerifyError::Time(_) => 4,
             VerifyError::Request(_) => 5,
-            VerifyError::TooManyKeys => 0,
+            VerifyError::TooManyKeys | VerifyError::InvalidKey => 0,
         }
     }
 }
@@ -161,7 +163,8 @@ impl VerifyError {
 pub struct Verifier {
     audience: String,
     skew_secs: u64,
-    keys: Vec<([u8; KID_LEN], [u8; 32])>,
+    resolver: StaticVerifierResolver,
+    pinned: usize,
 }
 
 impl Verifier {
@@ -171,19 +174,22 @@ impl Verifier {
         Verifier {
             audience: audience.into(),
             skew_secs,
-            keys: Vec::new(),
+            resolver: StaticVerifierResolver::new(),
+            pinned: 0,
         }
     }
 
     /// Pins an Ed25519 public key.
     ///
     /// # Errors
-    /// [`VerifyError::TooManyKeys`] past [`MAX_PINNED_KEYS`].
+    /// [`VerifyError::TooManyKeys`] past [`MAX_PINNED_KEYS`]; [`VerifyError::InvalidKey`] for bytes that are not a key.
     pub fn pin(mut self, public_key: [u8; 32]) -> Result<Self, VerifyError> {
-        if self.keys.len() >= MAX_PINNED_KEYS {
+        if self.pinned >= MAX_PINNED_KEYS {
             return Err(VerifyError::TooManyKeys);
         }
-        self.keys.push((kid_of(&public_key), public_key));
+        let key = CoseVerifyKey::ed25519(&public_key).map_err(|_| VerifyError::InvalidKey)?;
+        self.resolver = self.resolver.with_key(key);
+        self.pinned += 1;
         Ok(self)
     }
 
@@ -192,7 +198,7 @@ impl Verifier {
     ///
     /// # Errors
     /// The first check that fails.
-    pub fn verify(
+    pub async fn verify(
         &self,
         headers: &[&str],
         request: &Incoming<'_>,
@@ -216,31 +222,24 @@ impl Verifier {
         let bytes = URL_SAFE_NO_PAD
             .decode(value)
             .map_err(|_| VerifyError::Header(Shape::NotBase64Url))?;
-        // 2
-        let object = parse(&bytes).map_err(|_| VerifyError::Object(Object::Malformed))?;
-        if object.typ != TYP {
-            return Err(VerifyError::Object(Object::WrongType));
-        }
-        let message = to_be_signed(object.protected, object.payload);
-        let verified = self
-            .keys
-            .iter()
-            .filter(|(kid, _)| *kid == object.kid)
-            .any(|(_, public)| {
-                UnparsedPublicKey::new(&ED25519, public)
-                    .verify(&message, object.signature)
-                    .is_ok()
-            });
-        if !verified {
-            return Err(VerifyError::Object(Object::Unverified));
-        }
+        // 2: the strict parse, the `typ`, the `kid` among the pinned keys, the signature; `external_aad` is empty
+        let opened = open_claims(&self.resolver, &bytes, TYP, b"")
+            .await
+            .map_err(|error| {
+                VerifyError::Object(match error {
+                    ClaimsError::Malformed => Object::Malformed,
+                    ClaimsError::WrongType => Object::WrongType,
+                    // `Unverified`. The resolver is a list in memory, so nothing else happens; refused all the same
+                    _ => Object::Unverified,
+                })
+            })?;
         // 3
-        if object.claims.aud.as_deref() != Some(self.audience.as_str()) {
+        if opened.claims.aud.as_deref() != Some(self.audience.as_str()) {
             return Err(VerifyError::Audience);
         }
         // 4
         let (Some(iat), Some(exp), Some(cti)) =
-            (object.claims.iat, object.claims.exp, object.claims.cti)
+            (opened.claims.iat, opened.claims.exp, opened.claims.cti)
         else {
             return Err(VerifyError::Time(Time::Missing));
         };
@@ -257,7 +256,7 @@ impl Verifier {
             return Err(VerifyError::Time(Time::Expired));
         }
         // 5
-        let binding: Binding = serde_json::from_slice(object.payload)
+        let binding: Binding = serde_json::from_slice(&opened.payload)
             .map_err(|_| VerifyError::Request(Mismatch::Payload))?;
         let thread = Uuid::parse_str(&binding.thread)
             .ok()
@@ -279,7 +278,7 @@ impl Verifier {
             return Err(VerifyError::Request(Mismatch::Body));
         }
         Ok(Verified {
-            kid: object.kid,
+            kid: opened.kid,
             cti,
             iat,
             exp,
@@ -299,106 +298,4 @@ struct Binding {
     body_sha256: String,
     thread: String,
     owner: String,
-}
-
-/// The CWT claims of the protected header, those that are present.
-#[derive(Default)]
-struct Claims {
-    aud: Option<String>,
-    exp: Option<u64>,
-    iat: Option<u64>,
-    cti: Option<Vec<u8>>,
-}
-
-/// A parsed object: slices into the bytes it was read from.
-struct Parsed<'a> {
-    protected: &'a [u8],
-    payload: &'a [u8],
-    signature: &'a [u8],
-    kid: [u8; KID_LEN],
-    claims: Claims,
-    typ: String,
-}
-
-/// The profile of `cratestack_cose::open_claims`, strictly: `#6.18([protected, {}, payload, signature])`, the protected header
-/// `{1: -19, 4: kid, ? 15: {claims, ascending}, 16: typ}`.
-fn parse(bytes: &[u8]) -> Result<Parsed<'_>, Reject> {
-    let mut outer = Reader::new(bytes);
-    if outer.expect(cbor::MAJOR_TAG)? != 18 || outer.expect(cbor::MAJOR_ARRAY)? != 4 {
-        return Err(Reject);
-    }
-    let protected = outer.bstr()?;
-    outer.exact(cbor::EMPTY_MAP)?;
-    let payload = outer.bstr()?;
-    let signature = outer.bstr()?;
-    if !outer.is_at_end() || signature.len() != 64 {
-        return Err(Reject);
-    }
-
-    let mut header = Reader::new(protected);
-    let entries = header.expect(cbor::MAJOR_MAP)?;
-    if entries != 3 && entries != 4 {
-        return Err(Reject);
-    }
-    // 1: -19
-    if header.uint()? != 1 || header.nint()? != 18 {
-        return Err(Reject);
-    }
-    if header.uint()? != 4 {
-        return Err(Reject);
-    }
-    let kid: [u8; KID_LEN] = header.bstr()?.try_into().map_err(|_| Reject)?;
-    let claims = if entries == 4 {
-        if header.uint()? != 15 {
-            return Err(Reject);
-        }
-        claims(&mut header)?
-    } else {
-        Claims::default()
-    };
-    if header.uint()? != 16 {
-        return Err(Reject);
-    }
-    let typ = header.tstr()?.to_owned();
-    if !header.is_at_end() {
-        return Err(Reject);
-    }
-    Ok(Parsed {
-        protected,
-        payload,
-        signature,
-        kid,
-        claims,
-        typ,
-    })
-}
-
-fn claims(reader: &mut Reader<'_>) -> Result<Claims, Reject> {
-    let entries = reader.expect(cbor::MAJOR_MAP)?;
-    if !(1..=4).contains(&entries) {
-        return Err(Reject);
-    }
-    let mut claims = Claims::default();
-    let mut previous = 0;
-    for _ in 0..entries {
-        let label = reader.uint()?;
-        if label <= previous {
-            return Err(Reject);
-        }
-        previous = label;
-        match label {
-            3 => claims.aud = Some(reader.tstr()?.to_owned()),
-            4 => claims.exp = Some(reader.uint()?),
-            6 => claims.iat = Some(reader.uint()?),
-            7 => {
-                let cti = reader.bstr()?;
-                if cti.is_empty() || cti.len() > 64 {
-                    return Err(Reject);
-                }
-                claims.cti = Some(cti.to_vec());
-            }
-            _ => return Err(Reject),
-        }
-    }
-    Ok(claims)
 }

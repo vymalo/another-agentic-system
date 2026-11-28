@@ -1,7 +1,7 @@
 # A2A extension: usage (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/usage/v1`
-- **Status:** **built on both sides (2026-10-09)**: the orchestrator's and the web's, [ADR 0056](../decisions/0056-token-usage-per-model-call.md),
+- **Status:** ✅ built · **built on both sides (2026-10-09)**: the orchestrator's and the web's, [ADR 0056](../decisions/0056-token-usage-per-model-call.md),
   proven on a fake A2A agent, the goldens, the web's mock server and a WireMock agent; and the agent's, adam-rs ADR 0032 (adam-rs `09291a6`),
   pinned here since 2026-10-09 ([ADR 0014](../decisions/0014-adam-coder-default-agent-over-a2a.md), its note of that day), so the coder, the chat
   and the researcher of the stack list the extension, and `dev/greeting-e2e.sh` asserts the coder's greeting call and totals (Coder E2E only).
@@ -39,6 +39,8 @@ An agent that does not list the extension reports nothing, and the screen shows 
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram, between Orchestrator, Agent (card lists usage/v1), Model, Event log, Screen.
   autonumber
   participant O as Orchestrator
   participant A as Agent (card lists usage/v1)

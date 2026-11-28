@@ -254,6 +254,7 @@ impl TestInstance {
             Arc::clone(&app),
             keepalive,
             lifetime,
+            orch_surface_agui::Intake::default(),
         )];
         surfaces.extend(extra);
         let router =

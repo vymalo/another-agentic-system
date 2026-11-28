@@ -89,8 +89,8 @@ dependencies = [
 
 [[package]]
 name = "adam-a2a"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "a2a-lf",
  "a2a-server-lf",
@@ -121,8 +121,8 @@ dependencies = [
 
 [[package]]
 name = "adam-a2a-runtime"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "a2a-lf",
  "adam-a2a",
@@ -145,8 +145,8 @@ dependencies = [
 
 [[package]]
 name = "adam-agent-fs"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-budget",
  "adam-error",
@@ -161,8 +161,8 @@ dependencies = [
 
 [[package]]
 name = "adam-assembly"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-a2a",
  "adam-a2a-runtime",
@@ -172,6 +172,7 @@ dependencies = [
  "adam-error",
  "adam-llm-agent",
  "adam-model",
+ "adam-plugin",
  "adam-runtime",
  "async-trait",
  "jiff",
@@ -185,8 +186,8 @@ dependencies = [
 
 [[package]]
 name = "adam-budget"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-device-state",
  "adam-error",
@@ -197,8 +198,8 @@ dependencies = [
 
 [[package]]
 name = "adam-core"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-error",
  "async-trait",
@@ -218,13 +219,13 @@ dependencies = [
 
 [[package]]
 name = "adam-device-state"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 
 [[package]]
 name = "adam-engine"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "a2a-lf",
  "adam-a2a",
@@ -251,13 +252,13 @@ dependencies = [
 
 [[package]]
 name = "adam-error"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 
 [[package]]
 name = "adam-host"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-error",
  "thiserror",
@@ -268,8 +269,8 @@ dependencies = [
 
 [[package]]
 name = "adam-llm-agent"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-budget",
  "adam-core",
@@ -292,11 +293,13 @@ dependencies = [
 
 [[package]]
 name = "adam-model"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
+ "adam-core",
  "adam-error",
  "async-trait",
+ "base64 0.22.1",
  "futures",
  "secrecy",
  "serde",
@@ -306,8 +309,8 @@ dependencies = [
 
 [[package]]
 name = "adam-notify-postgres"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -327,17 +330,18 @@ dependencies = [
 
 [[package]]
 name = "adam-plugin"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-error",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
 name = "adam-postgres"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -355,12 +359,13 @@ dependencies = [
 
 [[package]]
 name = "adam-runtime"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-core",
  "adam-error",
  "adam-model",
+ "adam-plugin",
  "async-trait",
  "base64 0.22.1",
  "futures",
@@ -376,8 +381,8 @@ dependencies = [
 
 [[package]]
 name = "adam-schedule"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-agent-fs",
  "adam-core",
@@ -396,8 +401,8 @@ dependencies = [
 
 [[package]]
 name = "adam-store-postgres"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -412,8 +417,8 @@ dependencies = [
 
 [[package]]
 name = "adam-store-sqlite"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "adam-core",
  "adam-error",
@@ -428,8 +433,8 @@ dependencies = [
 
 [[package]]
 name = "adam-ui"
-version = "0.1.0"
-source = "git+https://github.com/vymalo/another-adam-rs?rev=9f90f1e67b00c5cc7235acce738bced83f2ebd46#9f90f1e67b00c5cc7235acce738bced83f2ebd46"
+version = "0.6.0"
+source = "git+https://github.com/vymalo/another-adam-rs?rev=588370857dd8f1db3ab878e7ab41631d8e43f8ca#588370857dd8f1db3ab878e7ab41631d8e43f8ca"
 dependencies = [
  "a2a-lf",
  "adam-a2a",
@@ -790,6 +795,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "base16ct"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd307490d624467aa6f74b0eabb77633d1f758a7b25f12bceb0b22e08d9726f6"
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1118,6 +1129,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "cratestack-core"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "166467f874af309e2796b39d60752a23cee8aa2d53381b9d995f506d4058a459"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "bytes",
+ "chrono",
+ "futures-core",
+ "hmac 0.13.0",
+ "http",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "subtle",
+ "thiserror",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "cratestack-cose"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9edc96aa23e5826d67101f0faedd5f11ca891895c56700077b8728f03050573e"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "bytes",
+ "chrono",
+ "cratestack-core",
+ "curve25519-dalek",
+ "ed25519-dalek",
+ "getrandom 0.4.3",
+ "hmac 0.13.0",
+ "p256",
+ "serde",
+ "sha2 0.11.0",
+ "subtle",
+ "thiserror",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "crc"
 version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1158,6 +1215,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
+name = "crypto-bigint"
+version = "0.7.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "914c195c4d7fbc5ed7f88d14cbf85914d5c664967658d43404b263913a477e82"
+dependencies = [
+ "cpubits",
+ "ctutils",
+ "hybrid-array",
+ "num-traits",
+ "rand_core 0.10.1",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "crypto-common"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1174,6 +1246,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453"
 dependencies = [
  "hybrid-array",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -1187,11 +1260,12 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.6"
+version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe3e9d21d39e6f39ff46e03d5b621424f88ee23d8a1672c6bfc9ccc7f2da4f6a"
+checksum = "261af4dc7a06ea8a527a8717d8cbba3417530d6ea14e1edb3de6b67806be474f"
 dependencies = [
  "cmov",
+ "subtle",
 ]
 
 [[package]]
@@ -1304,6 +1378,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "der"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a996a108feb8b427a6e12fcf6af4aa83409b79d72c15337d7741368131ee004"
+dependencies = [
+ "const-oid 0.10.3",
+ "zeroize",
+]
+
+[[package]]
 name = "der-parser"
 version = "10.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1381,6 +1465,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "ecdsa"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0681a4fc24c767085329728d8dfba959af91228aa4610cca4f8ce317ba46ae0"
+dependencies = [
+ "der 0.8.3",
+ "digest 0.11.3",
+ "elliptic-curve",
+ "rfc6979",
+ "signature 3.0.0",
+ "zeroize",
+]
+
+[[package]]
 name = "ed25519"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1407,6 +1505,25 @@ name = "either"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
+
+[[package]]
+name = "elliptic-curve"
+version = "0.14.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "900f37e7e18d74a2347389af6cd69e3a30d5cc9e697f40004865679aa75e9c7c"
+dependencies = [
+ "base16ct",
+ "crypto-bigint",
+ "crypto-common 0.2.2",
+ "digest 0.11.3",
+ "ff",
+ "group",
+ "hybrid-array",
+ "rand_core 0.10.1",
+ "sec1",
+ "subtle",
+ "zeroize",
+]
 
 [[package]]
 name = "email_address"
@@ -1490,6 +1607,16 @@ name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+
+[[package]]
+name = "ff"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1f686ab92a9fb0eaf188f6c6c87b89490baa6fdb0db4544ba4dc47f7942489f"
+dependencies = [
+ "rand_core 0.10.1",
+ "subtle",
+]
 
 [[package]]
 name = "fiat-crypto"
@@ -1748,6 +1875,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "group"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7fd1a1c7a5206c5b7a3f5a0d7ccd3ff85d0c8f5133d62a02680255b0004af5f4"
+dependencies = [
+ "ff",
+ "rand_core 0.10.1",
+ "subtle",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1878,7 +2016,9 @@ version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27f864f10dfb56725ce5ce5472bc52252c8f93a4ab86327122cebf62c5f59a17"
 dependencies = [
+ "subtle",
  "typenum",
+ "zeroize",
 ]
 
 [[package]]
@@ -2794,13 +2934,17 @@ dependencies = [
  "futures",
  "jiff",
  "jsonschema",
+ "orch-agui-proto",
  "orch-app",
  "orch-artifacts-fs",
  "orch-auth-header",
  "orch-auth-jwt",
+ "orch-chat-kit",
  "orch-core",
  "orch-credential-broker",
  "orch-ports",
+ "orch-prompt-statement",
+ "orch-surface-agui",
  "orch-svg-clean",
  "reqwest",
  "secrecy",
@@ -2921,6 +3065,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-chat-kit"
+version = "0.1.0"
+dependencies = [
+ "orch-agui-proto",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "orch-config"
 version = "0.1.0"
 dependencies = [
@@ -3024,6 +3178,7 @@ dependencies = [
  "orch-agui-projection",
  "orch-agui-proto",
  "orch-app",
+ "orch-chat-kit",
  "orch-core",
  "orch-ports",
  "orch-store-sqlite",
@@ -3248,6 +3403,7 @@ version = "0.1.0"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
+ "cratestack-cose",
  "getrandom 0.3.4",
  "orch-signed-request",
  "proptest",
@@ -3256,6 +3412,7 @@ dependencies = [
  "sha2 0.10.9",
  "subtle",
  "thiserror",
+ "tokio",
  "uuid",
  "zeroize",
 ]
@@ -3327,6 +3484,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -3571,6 +3729,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
 
 [[package]]
+name = "p256"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2c9239b2dbc807adbbe147e8cf72ea7450c3a0aabe62cb8e75ff4ec22e1f72a"
+dependencies = [
+ "ecdsa",
+ "elliptic-curve",
+ "primefield",
+ "primeorder",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3806,6 +3977,31 @@ checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
 dependencies = [
  "proc-macro2",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "primefield"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c555a6e4eb7d4e158fcb028c835c3b8642206ddc279b5c6b202ef9a8bdb592f4"
+dependencies = [
+ "crypto-bigint",
+ "crypto-common 0.2.2",
+ "ff",
+ "rand_core 0.10.1",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "primeorder"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c9f42978c78a00e3d68f69fc03e57a234debae69da4020a4fb588fcdcd07b06"
+dependencies = [
+ "elliptic-curve",
+ "primefield",
+ "wnaf",
 ]
 
 [[package]]
@@ -4274,6 +4470,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rfc6979"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4a459cddafb3fe76b31fd8f1108007566c40301feb64dc7b54656eb7388172b"
+dependencies = [
+ "crypto-bigint",
+ "hmac 0.13.0",
+]
+
+[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4526,6 +4732,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "sec1"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d56d437c2f19203ce5f7122e507831de96f3d2d4d3be5af44a0b0a09d8a80e4d"
+dependencies = [
+ "base16ct",
+ "ctutils",
+ "der 0.8.3",
+ "hybrid-array",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "secrecy"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4728,6 +4948,10 @@ name = "signature"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5"
+dependencies = [
+ "digest 0.11.3",
+ "rand_core 0.10.1",
+]
 
 [[package]]
 name = "simd-adler32"
@@ -4792,7 +5016,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
 dependencies = [
  "base64ct",
- "der",
+ "der 0.7.10",
 ]
 
 [[package]]
@@ -5920,6 +6144,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
+name = "wnaf"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "795ca18b3fdb5e62bf982199278341ddcf7ebf7d32e25e212ad05d496e95f6fa"
+dependencies = [
+ "ff",
+ "group",
+ "hybrid-array",
+ "primefield",
+]
+
+[[package]]
 name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5932,7 +6168,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1301e935010a701ae5f8655edc0ad17c44bad3ac5ce8c39185f75453b720ae94"
 dependencies = [
  "const-oid 0.9.6",
- "der",
+ "der 0.7.10",
  "spki",
  "tls_codec",
 ]

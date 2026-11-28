@@ -536,6 +536,29 @@ impl Checker<'_> {
             }
         }
 
+        // ui.languages (ADR 0085): the interface languages the screens offer. The list is the web's
+        // picker, so a tag is held to the shape the client sends (a language, an optional script and
+        // an optional region), not to the wider grammar a message may carry. Its size is the
+        // schema's (`minItems` 1, `maxItems` MAX_UI_LANGUAGES); the grammar and the case-insensitive
+        // uniqueness the schema cannot say are checked here.
+        for (i, tag) in cfg.ui.languages.iter().enumerate() {
+            if !is_locale_tag(tag) {
+                self.invalid(
+                    format!("ui.languages[{i}]"),
+                    "not a language tag an interface offers (a language, an optional script and an optional region), like en-GB",
+                );
+            }
+            if cfg.ui.languages[..i]
+                .iter()
+                .any(|earlier| earlier.eq_ignore_ascii_case(tag))
+            {
+                self.invalid(
+                    format!("ui.languages[{i}]"),
+                    "a language is listed more than once",
+                );
+            }
+        }
+
         // agents
         let registry_url = cfg.agents.registry.as_ref().map(|r| r.url.as_str());
         if cfg.agents.file.is_none() && registry_url.is_none() {
@@ -621,6 +644,16 @@ impl Checker<'_> {
         // provisioner
         if let Some(section) = &cfg.provisioner {
             self.provisioner(section);
+            // ADR 0108: a person's own agent carries their account, and the account is the `sub`.
+            // The alphabet alone cannot tell: a user name or another claim passes it.
+            if !reads_sub(&cfg.auth) {
+                self.invalid(
+                    "provisioner",
+                    "needs auth.mode jwt with auth.jwt.userClaim: sub: a person's own agent is \
+                     charged to the identity provider's sub, never an e-mail address or another \
+                     claim (ADR 0108)",
+                );
+            }
         }
 
         // userToolServers
@@ -761,21 +794,12 @@ impl Checker<'_> {
         // ADR 0108: the meter is answered the person's `sub`, and only a deployment that reads `sub`
         // has one. An e-mail is not an account id (the platform's alphabet has no `@`), so a meter
         // token with any other claim could only ever be refused at the route: it is refused here.
-        if internal.meter.is_some() {
-            // A mode that also reads the identity header gives some people an e-mail for an id.
-            let reads_sub = !cfg.auth.mode.reads_header()
-                && cfg
-                    .auth
-                    .jwt
-                    .as_ref()
-                    .is_some_and(|jwt| jwt.user_claim.trim() == "sub");
-            if !reads_sub {
-                self.invalid(
-                    "server.internal.meter",
-                    "needs auth.mode jwt with auth.jwt.userClaim: sub: the meter is answered the \
-                     identity provider's sub, never an e-mail address (ADR 0108)",
-                );
-            }
+        if internal.meter.is_some() && !reads_sub(&cfg.auth) {
+            self.invalid(
+                "server.internal.meter",
+                "needs auth.mode jwt with auth.jwt.userClaim: sub: the meter is answered the \
+                 identity provider's sub, never an e-mail address (ADR 0108)",
+            );
         }
         for agent in internal.agents.keys() {
             if !is_agent_id(agent) {
@@ -972,6 +996,7 @@ impl Checker<'_> {
         }
         self.roles(auth);
         self.signing_clients(auth);
+        self.public_origin(cfg);
         match (&auth.jwt, auth.mode.reads_tokens()) {
             (None, true) => self.invalid(
                 "auth.jwt",
@@ -1228,6 +1253,41 @@ impl Checker<'_> {
                 "expected scope tokens separated by single spaces, like \"openid email profile\" \
                  (RFC 6749 section 3.3)",
             );
+        }
+    }
+
+    /// `server.publicOrigin` (ADR 0087): there, in its normal form, whenever a signing client is
+    /// listed, because the `aud` of a signed prompt is never read from a request. An empty value is
+    /// no value (fail closed). With no signing client the key may be absent, and a value that is
+    /// given is checked all the same.
+    fn public_origin(&mut self, cfg: &Config) {
+        const KEY: &str = "server.publicOrigin";
+        let given = cfg.server.public_origin.as_deref();
+        match given.filter(|origin| !origin.is_empty()) {
+            None if cfg.auth.signing_clients.is_empty() => {}
+            None => self.invalid(
+                KEY,
+                "required when auth.signingClients lists a client: it is the aud of a signed \
+                 prompt, which is never taken from a request",
+            ),
+            Some(origin) if !is_normal_origin(origin) => self.invalid(
+                KEY,
+                "expected an origin in its normal form, like https://chat.example.com: http or \
+                 https, a lower-case host (an international name as punycode), no default port, \
+                 credentials, path, query, fragment or trailing slash",
+            ),
+            Some(origin)
+                if cfg.server.environment == Environment::Production
+                    && is_plain_http_origin(origin)
+                    && !is_loopback_origin(origin) =>
+            {
+                self.invalid(
+                    KEY,
+                    "an https:// origin when server.environment is production (http:// only for \
+                     localhost, 127.0.0.1 and [::1])",
+                );
+            }
+            Some(_) => {}
         }
     }
 
@@ -1880,13 +1940,13 @@ impl Checker<'_> {
                     "a kind that is provisioned needs its agent form",
                 ),
                 Some(form) => {
-                    if let Some(key) = ["name", "owner", "suspend"]
+                    if let Some(key) = ["name", "owner", "account", "suspend"]
                         .into_iter()
                         .find(|key| form.contains_key(*key))
                     {
                         self.invalid(
                             format!("provisioner.forms.{}.{key}", kind.as_str()),
-                            "the orchestrator sets name, owner and suspend: leave it out",
+                            "the orchestrator sets name, owner, account and suspend: leave it out",
                         );
                     }
                 }
@@ -2514,6 +2574,48 @@ fn is_host_pattern(text: &str) -> bool {
     matches!(Host::parse(text), Ok(Host::Domain(name)) if is_name(&name))
 }
 
+/// The longest interface language tag `ui.languages` accepts, in bytes: the bound BCP 47 (RFC
+/// 5646 section 4.4.1) asks an implementation to accept, the same as the core's `MAX_LOCALE_LEN`.
+const MAX_LOCALE_TAG_LEN: usize = 35;
+
+/// Whether `tag` is a language tag the **interface** can offer: a language of two to eight ASCII
+/// letters, an optional script of four letters, an optional region of two letters or three digits,
+/// and nothing else, at most [`MAX_LOCALE_TAG_LEN`] bytes.
+///
+/// This is deliberately **narrower** than `orch_core`'s `locale::well_formed`, which stays the source
+/// of truth for the tag a **message** carries (`locale/v1`, ADR 0085) and also takes extlangs,
+/// variants, extensions and a private-use part. `ui.languages` is the list the **web's picker
+/// offers**, and the client sends only the narrower shape (a tag it would not send would be a 400
+/// that holds the person's message back: `web/src/features/locale/lib/locale.ts`). Holding the list
+/// to the client's rule means an operator who names `de-CH-1901` is refused at startup, rather than
+/// offering a language the picker cannot send.
+fn is_locale_tag(tag: &str) -> bool {
+    if tag.is_empty() || tag.len() > MAX_LOCALE_TAG_LEN {
+        return false;
+    }
+    let parts: Vec<&str> = tag.split('-').collect();
+    let alpha = |p: &str| p.bytes().all(|b| b.is_ascii_alphabetic());
+    // language: 2 to 8 ASCII letters
+    if !(2..=8).contains(&parts[0].len()) || !alpha(parts[0]) {
+        return false;
+    }
+    let mut i = 1;
+    // script: 4ALPHA
+    if i < parts.len() && parts[i].len() == 4 && alpha(parts[i]) {
+        i += 1;
+    }
+    // region: 2ALPHA or 3DIGIT
+    if i < parts.len() {
+        let p = parts[i];
+        let region =
+            (p.len() == 2 && alpha(p)) || (p.len() == 3 && p.bytes().all(|b| b.is_ascii_digit()));
+        if region {
+            i += 1;
+        }
+    }
+    i == parts.len()
+}
+
 /// The URL of the Client ID Metadata Document, as the broker takes it: `https`, a host, a path that
 /// is not just `/` (the draft: the client identifier "MUST contain a path component"), no
 /// fragment, no user information, at most 2 KiB.
@@ -2673,6 +2775,17 @@ fn is_slug(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
+/// Whether every person's id is the identity provider's `sub` (ADR 0108): a mode that reads tokens
+/// only, and `auth.jwt.userClaim: sub`. A mode that also reads the identity header gives some
+/// people an e-mail for an id. What the meter and a `provisioner` section are held to.
+fn reads_sub(auth: &Auth) -> bool {
+    !auth.mode.reads_header()
+        && auth
+            .jwt
+            .as_ref()
+            .is_some_and(|jwt| jwt.user_claim.trim() == "sub")
+}
+
 /// An agent id, the rule of `orch_core::is_valid_agent_id` (this crate depends on no core crate):
 /// lower-case letters, digits and `-`, at most 63 bytes, starting with a letter or a digit.
 fn is_agent_id(id: &str) -> bool {
@@ -2732,6 +2845,14 @@ fn is_origin(raw: &str) -> bool {
             && u.path() == "/"
             && u.query().is_none()
             && u.fragment().is_none()
+    })
+}
+
+/// An `http(s)` origin written as it is compared: exactly its own ASCII serialisation (RFC 6454),
+/// so lower case, no default port, no credentials, path, query, fragment or trailing slash.
+fn is_normal_origin(raw: &str) -> bool {
+    Url::parse(raw).is_ok_and(|u| {
+        matches!(u.scheme(), "http" | "https") && raw == u.origin().ascii_serialization()
     })
 }
 
@@ -2829,5 +2950,73 @@ fn is_authority(host: &str) -> bool {
     match port {
         None => true,
         Some(port) => !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_LOCALE_TAG_LEN, is_locale_tag};
+
+    /// The tags an interface may offer: a language, an optional script and an optional region, the
+    /// shape the web sends (`web/src/features/locale/lib/locale.ts`). Narrower than the core's
+    /// `locale::well_formed` on purpose: a tag outside it would never be sent by the picker, so it is
+    /// refused here rather than offered to nobody.
+    #[test]
+    fn a_language_tag_is_the_one_the_interface_sends() {
+        for tag in [
+            // the deployment's own, from day 0 (ADR 0085)
+            "en-GB",
+            "fr-FR",
+            "gsw-CH",
+            "fur-IT",
+            // the plain language, the script, the region, and the case a page may write
+            "en",
+            "fr",
+            "de-DE",
+            "en-US",
+            "es-419",
+            "zh-Hant-TW",
+            "sr-Latn-RS",
+            "EN-gb",
+            "abcd",
+            "abcdefgh",
+            "ab-Latn",
+        ] {
+            assert!(is_locale_tag(tag), "{tag:?}");
+        }
+        for tag in [
+            "",
+            "e",
+            "en_CM",
+            "en CM",
+            "en--CM",
+            "-en",
+            "en-",
+            "en-GB-",
+            "1234",
+            "en-12",
+            "en-GB-abcdefghi",
+            "fr-é",
+            "en-GB-x",
+            "en-a-bbb-a-ccc",
+            "en-GB-CM-CM",
+            "i-klingon",
+            "en-GB-oed",
+            "en-GB;q=1",
+            " en-GB",
+            "en-GB ",
+            // the shapes the core accepts and an interface does not offer: a variant, a private-use
+            // part, an extension, a grandfathered tag
+            "de-CH-1901",
+            "sl-rozaj-biske",
+            "x-twain",
+            "en-x-twain",
+        ] {
+            assert!(!is_locale_tag(tag), "{tag:?}");
+        }
+        // the bound is the one the constant names, in bytes
+        let long = format!("en-GB-{}", "a".repeat(MAX_LOCALE_TAG_LEN));
+        assert!(!is_locale_tag(&long));
+        assert!(!is_locale_tag(&"a".repeat(MAX_LOCALE_TAG_LEN)));
     }
 }

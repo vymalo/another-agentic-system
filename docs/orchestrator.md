@@ -84,6 +84,7 @@ has the same map with one line per crate.
 
 ```mermaid
 flowchart TB
+  accTitle: Flow: crate layout
   subgraph G_CORE["Core: pure, no async, no I/O"]
     core["<b>orch-core</b><br/>ThreadState, Event, Input, Command,<br/>transition(), error classes"]
   end
@@ -138,6 +139,7 @@ flowchart TB
   end
   subgraph G_TEST["Test support: publish = false"]
     ts["<b>orch-testsupport</b><br/>fake A2A agent, test instance, clients"]
+    chatkit["<b>orch-chat-kit</b><br/>ChatHome conformance: replay, message id,<br/>402 limit event, 426 version gate"]
     e2e["<b>orch-e2e</b><br/>end-to-end tests, memory and Postgres"]
   end
 
@@ -210,6 +212,9 @@ flowchart TB
   e2e -.-> adam
   e2e -.-> api
   a2a -.-> ts
+  chatkit --> proto
+  embed -.-> chatkit
+  api -.-> chatkit
 
   classDef planned stroke-dasharray: 5 5,fill:none
 ```
@@ -324,13 +329,14 @@ Rules the graph enforces, each checkable in the manifests:
 | `orch-surface-a2a` | A2A inbound | **Planned** (ADR 0012) |
 | `orch-surface-webhook` (`crates/surface-webhook`) | `POST /webhooks/ci` (slice 6) and `POST /webhooks/github` (slice 9): HMAC on the raw body, normalise to a `CiReport`, `App::receive`; machine routes; feature `surface-webhook`, on by default | **Built** ([ADR 0017](decisions/0017-ci-results-by-webhook.md)) |
 | `orch-surface-mcp` (`crates/surface-mcp`) | The MCP server at `/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind static bearer tokens): `list_agents`, `start_job`, `get_job`, `wait_for_job`, `answer`, `cancel_job` | **Built** ([ADR 0019](decisions/0019-mcp-server-over-streamable-http.md)), slices 11 and 12 |
-| `orch-signed-request` (`crates/signed-request`) | The signed requests to a tool server ([`api/signed-tool-requests-v1.md`](api/signed-tool-requests-v1.md), [ADR 0080](decisions/0080-requests-to-a-tool-server-are-signed-for-the-person.md)): `Signer` writes the header `Tool-Request-Claims` for one HTTP request, a tagged `COSE_Sign1` (Ed25519) in the claim-object profile of `cratestack-cose` 0.17.2 whose payload binds the method, the path, the SHA-256 of the exact body bytes, the thread and its owner; `SigningKey` reads a PKCS#8 PEM and derives the `kid`; with the feature `verify`, the reference of the receiving side (checks 1 to 5). Pure, no clock, a known-answer vector made by the real `sign_claims`; `interop/` runs the real `open_claims` on its bytes | **Built** (proven on mocks; no tool server verifies it yet) |
-| `orch-prompt-statement` (`crates/prompt-statement`) | **ADR 0087, the note of 2026-11-25:** pure. The prompt statement the orchestrator signs on the cloud path (`Statement`, `UserClaims`), RFC 8785, the integrity rule (`attest`: `user` against the AG-UI request, else `403 prompt_signature_invalid` and no `AttestedPayload`) and the JWS with `x5c`; never verifies a signature. The PKI signer, the intake check and the carriage to the agent are not built | **Built** |
+| `orch-signed-request` (`crates/signed-request`) | The signed requests to a tool server ([`api/signed-tool-requests-v1.md`](api/signed-tool-requests-v1.md), [ADR 0080](decisions/0080-requests-to-a-tool-server-are-signed-for-the-person.md)): `Signer` writes the header `Tool-Request-Claims` for one HTTP request, a tagged `COSE_Sign1` (Ed25519) in the claim-object profile of `cratestack-cose` 0.17.2 whose payload binds the method, the path, the SHA-256 of the exact body bytes, the thread and its owner; `SigningKey` reads a PKCS#8 PEM and derives the `kid`; with the feature `verify`, the reference of the receiving side (checks 1 to 5). Written by the real `sign_claims` and opened by the real `open_claims` (ANR-1342). Pure, no clock, a known-answer vector; `tests/cratestack.rs` uses the library directly on its bytes | **Built** (proven on mocks; no tool server verifies it yet) |
+| `orch-prompt-statement` (`crates/prompt-statement`) | **ADR 0087, the note of 2026-11-25:** pure. The prompt statement the orchestrator signs on the cloud path (`Statement`, `UserClaims`), RFC 8785, the integrity rule (`attest`: `user` against the AG-UI request, else `403 prompt_signature_invalid` and no `AttestedPayload`) and the JWS with `x5c`; never verifies a signature. The intake check (`requires_signature`, `check_presence`) and the carriage of the envelope to the dispatcher's `SendRequest` are built (ANR-1338; `startChildSession`, ANR-1383); the PKI signer and the statement on an agent's messages are not | **Built** |
 | `orch-prompt-signer-static` (`crates/prompt-signer-static`) | **ADR 0087, the note of 2026-11-25:** a `PromptSigner` for tests: an Ed25519 key and its leaf's chain from PEM files, never renewed, `set_unavailable` as the stand-in of an expired certificate; held to `prompt_signer_conformance!` and to the shared vector V2. Not for a deployment | **Built** (test-only) |
 | `orch-thread-token` (`crates/thread-token`) | The token of the thread tools: an HS256 JWS with ten claims (the caller a closed `main` \| `ask:<n>`), the current and the previous key, `mint`, `verify`, the issuer that gives an agent `{url, token, expiresAt}`; the id of an upload slot (`mint_upload_id`, `verify_upload_id`: a MAC over the thread, job, hash, size, type and expiry, with its own domain line); pure, no clock, known-answer vectors | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md)) |
 | `orch-config` (`crates/config`) | The configuration file of the binary ([ADR 0034](decisions/0034-one-yaml-configuration-secrets-by-reference.md), keys in [`api/config.md`](api/config.md)): the typed keys (`version: 1`, closed), the JSON Schema generated from them and committed at [`api/config.schema.json`](api/config.schema.json) (a test fails on drift), the three passes (syntax, shape, rules) that list every error naming a key path and never a value, reserved keys named by the change that brings them, and secrets only as `{ env }` or `{ file }` references resolved through a `Resolve` the caller passes; pure, no file, no environment. Configuration is the composition root's input, not a port: no trait, no testkit. **ADR 0046, slice 4a:** the `userToolServers` section (`enabled`, `egress.allow`, `egress.deny`, `egress.allowHttp`, `oauth.clientName`, `oauth.clientMetadataUrl`; absent is off, `allowHttp` is refused in production, and with the feature on a `toolServers[].id` may not start with `u-`) and the permission `tools.user.add`; **slice 4c:** `oauth.callbackUrl` (an `https` address, or `http` on a loopback IP literal outside production; by default `server.publicUrl` and the callback's path; required when the sealed store is kept), and the rule that `clientMetadataUrl` is on the callback's origin and under none of the reserved paths | **Built** (S9) |
 | `orch-surface-thread-tools` (`crates/surface-thread-tools`) | The per-thread MCP endpoint `/thread-tools/{threadId}/mcp` (`rmcp`, streamable HTTP, stateless, a machine route behind that token and a check that the thread is the token's): the built-in `get_ui_catalog` and `turn_output` (an agent announces its answer: `App::record_answer`, [ADR 0031](decisions/0031-working-text-and-the-turns-answer.md)), and the `ThreadToolProvider` seam later slices add their tools through, with its first provider, the **relay** `RelayTools` (the tools of the MCP servers attached to the thread, `<server>__<tool>`, each call one step with the server's icon, through the `ToolServerClient` port: [architecture](architecture.md#the-relay-of-an-attached-mcp-servers-tools); **ADR 0046, slice 5a (built 2026-10-15):** also the thread owner's own `u-` servers, `RelayTools::with_user_servers`, a fresh `CredentialBroker::lease` for every list and every call, through the guarded client, a server whose credential cannot be had left out and failing a call as a step, a 401 or 403 marking the definition `needs_reauth`); the tool `request_upload` as a provider (`UploadTools`, [ADR 0058](decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)); feature `surface-thread-tools`, on by default | **Built** ([`api/thread-tools-v1.md`](api/thread-tools-v1.md), [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) |
 | Slack adapters | The Slack rows of the table above | **Planned**, not designed |
+| `orch-chat-kit` (`crates/chat-kit`) | **ANR-758:** the executable form of the chat contract of an application client ([`api/agui.md`](api/agui.md)): the `ChatHome` trait (`send`, `replay`, `user_messages`, `limit_rule`), four cases (replay from a seq, the client message id, the 402 limit event, the 426 version gate) and `chat_conformance!`, which writes one `#[tokio::test]` per case. Run against an HTTP home and the embed home; `double::RepeatedReplay` and `double::GappedReplay` prove a broken replay fails it. `publish = false`, no transport dependency | **Built** |
 | `orch-testsupport`, `orch-e2e` (`crates/testsupport`, `crates/e2e`) | Test-only | **Built** |
 | `orchestrator` (`bin/orchestrator`) | The composition root: reads the configuration file (`ORCH_CONFIG_FILE`) and the variables over it, `--print-config`; and one command, `artifacts migrate` ([below](#moving-the-directory-store-into-the-bucket)), which reads the store of the file and nothing else. **ADR 0046, slice 4a:** `src/user_tools.rs` composes people's own MCP servers when `userToolServers.enabled`: the definitions in Postgres, the sealed secret store in a pool of its own and the credential broker over both (or, with no `secrets` section, a broker and a store that refuse every call, so only servers that need no authentication can be added), the refusing bundle and nothing opened when it is off; **slice 4c:** the pending-authorization store (Postgres, in the thread store's pool), the callback address and the Client ID Metadata Document handed to the router | **Built** (the command: ADR 0058 step 6d) |
 
@@ -370,6 +376,8 @@ chat API) keeps its idempotency key on the event, and **MCP goes straight to `Ap
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: event flow
+  accDescr: A sequence diagram, between Inbound adapters (webhooks · timers), Postgres, Core (pure fn, no I/O), Dispatcher, Outbound adapters (A2A · MCP · chat · Slack · GitHub · webhooks).
   participant In as Inbound adapters<br/>(webhooks · timers)
   participant DB as Postgres
   participant C as Core (pure fn, no I/O)
@@ -419,6 +427,8 @@ adds the watch re-arms it:
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: inbox, timers and watches
+  accDescr: A sequence diagram, between A surface (the webhook), Postgres, InboxWorker, App and transition (pure).
   participant S as A surface (the webhook)
   participant DB as Postgres
   participant W as InboxWorker
@@ -440,6 +450,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: inbox, timers and watches
+  accDescr: A state diagram with 6 states: Pending, Inflight, Applied, Parked, Expired, Dead.
   [*] --> Pending: received, or a timer armed (available_at = commit time + after)
   Pending --> Inflight: claimed when due (SKIP LOCKED), lease
   Inflight --> Inflight: lease lapsed, claimed again (attempts + 1, counted)
@@ -468,11 +480,13 @@ What the diagrams do not say:
   lease, whose row another worker took over, is refused and writes nothing. The event the input
   produces carries the key `inbox:<row id>`, so a repeat could add no second event.
 - **Parking is race-free.** A worker that found no watch and a commit that adds it at the same time
-  take one advisory lock per watch key in Postgres; `park_inbox` looks again under it. Without the
+  take one advisory lock per watch key in Postgres (`orch_watch_arm` and `orch_inbox_park`, ADR 0107);
+  the park looks again under it, in a `READ COMMITTED` transaction. Without the
   lock the row is left parked behind its watch. Two tests hold the lock by hand in a transaction,
   start the other side (a real `park_inbox`, then a real commit), wait until `pg_locks` shows it
-  blocked on the lock, and let go, once for each order; each failed with the lock taken out
-  (verified 2026-09-30). The memory store's version of the window, between the worker's `get_watch`
+  blocked on the lock, and let go, once for each order. Each failed with the lock taken out when the
+  lock was taken in Rust (verified 2026-09-30); since migration `0040` it is taken in SQL, and no
+  such mutation has been run against the functions. The memory store's version of the window, between the worker's `get_watch`
   and its park, is tested at the application level with a store that lands a commit in it.
   This is not a proof that nothing can deadlock: a stale `park_inbox` holds a key and can wait for a
   row that the commit of the worker that took the row over holds, while that commit wants the key.
@@ -514,6 +528,8 @@ the handler parses them (400), normalises to a `CiReport` and calls `App::receiv
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the webhook surface (MVP slices 6 and 9)
+  accDescr: A sequence diagram, between CI system, Edge (no identity for /webhooks/*), Guard (machine route), Handler, App::receive, Postgres (inbox).
   participant CI as CI system
   participant E as Edge (no identity for /webhooks/*)
   participant G as Guard (machine route)
@@ -542,6 +558,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the webhook surface (MVP slices 6 and 9)
   [*] --> Arrived: POST /webhooks/ci
   Arrived --> Refused401: header missing, timestamp not digits or outside the skew, or HMAC matches no secret
   Arrived --> Refused408: the request did not arrive within 10 s
@@ -587,6 +604,7 @@ in `orch-ports`):
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: command (outbox) lifecycle
   [*] --> Pending: inserted in the same txn as the state change
   Pending --> Inflight: claimed (FOR UPDATE SKIP LOCKED), lease taken, attempts + 1
   Inflight --> Inflight: heartbeat renews the lease
@@ -674,6 +692,8 @@ agent's turn ends, and in order among the thread's other steer rows. The agent's
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: steering a running task (ADR 0036)
+  accDescr: A sequence diagram, between Dispatcher (steer row), Store, Agent (task T1 working).
   autonumber
   participant D as Dispatcher (steer row)
   participant S as Store
@@ -695,6 +715,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: steering a running task (ADR 0036)
   [*] --> Pending: written with the message (kind steer)
   Pending --> Inflight: claimed, no older open steer row of the thread
   Inflight --> Delivered: the running task answered with itself, not ended
@@ -739,6 +760,8 @@ that sends the row to the asked agent and puts its answer in the log; the tool t
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: asked agents (ADR 0026)
+  accDescr: A sequence diagram, between Addressed agent (running the job), Thread tools endpoint (next change), Core (transition), Store (one commit), Dispatcher (ask.rs), Asked agent.
   participant M as Addressed agent (running the job)
   participant E as Thread tools endpoint (next change)
   participant C as Core (transition)
@@ -765,6 +788,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: asked agents (ADR 0026)
+  accDescr: A state diagram with 8 states: Running, Completed, InputRequired, AuthRequired, Failed, Rejected, Canceled, TimedOut.
   [*] --> Running: an ask is accepted (ask_started)
   Running --> Completed: the asked agent answered
   Running --> InputRequired: it asked a question back (asking it again continues its task)
@@ -828,6 +853,8 @@ delegation: `dispatcher/ask.rs` mirrors `verify.rs`. The core decided every rule
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the dispatcher's ask path (PR-20)
+  accDescr: A sequence diagram, between Dispatcher (ask row), Store, Registry, Asked agent, Core (App::apply).
   participant D as Dispatcher (ask row)
   participant S as Store
   participant R as Registry
@@ -854,6 +881,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the dispatcher's ask path (PR-20)
   [*] --> Pending: written with ask_started
   Pending --> Inflight: claimed
   Inflight --> Pending: registry down, transport error within the budget, cancel to retry
@@ -922,6 +950,8 @@ The thread tool [`ask_agent`](api/thread-tools-v1.md#ask_agent) is what makes an
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the ask_agent tool (PR-21)
+  accDescr: A sequence diagram, between Asking agent (MCP client), AskTools (thread-tools endpoint), App::ask, Core and event log, Dispatcher (ask row), Asked agent.
   autonumber
   participant A as Asking agent (MCP client)
   participant E as AskTools (thread-tools endpoint)
@@ -945,6 +975,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the ask_agent tool (PR-21)
   [*] --> Refused: a check failed (nothing written): a result with isError and the reason
   [*] --> Waiting: the ask is on the ledger (new, or found by its call key)
   Waiting --> Waiting: a step under the ask, an ask it made, a heartbeat: progress to a client that wants it
@@ -1005,6 +1036,7 @@ dropped` and stops.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: fenced commits
   participant A as Worker A (paused)
   participant S as Store (Postgres)
   participant B as Worker B
@@ -1022,6 +1054,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: fenced commits
   [*] --> Held: claim_outbox, attempts = n
   Held --> Held: heartbeat renews
   Held --> Expired: no renewal before lease_until
@@ -1089,6 +1122,8 @@ context the message names (none for a thread's first message, ADR 0055) and the 
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: local agents
+  accDescr: A sequence diagram, between Dispatcher, ByTransport, LocalAgentClient, RuntimeTaskBackend, Runtime + worker, Postgres (orchagent*).
   participant D as Dispatcher
   participant B as ByTransport
   participant L as LocalAgentClient
@@ -1116,6 +1151,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: local agents
   [*] --> submitted: submit (run created, no worker commit yet)
   submitted --> working: a worker commits its first transition
   working --> working: Continue, or Park on a timer
@@ -1179,7 +1215,7 @@ this is the same machine as a table (`crates/core/tests/transition_table.rs` has
 | `UserMessage`, `StopAndSend` or `Redeliver` that names a `tier` ([ADR 0061](decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), [`access-tier-v1.md`](api/access-tier-v1.md)) | As the row of the input, and the `user_message` records the tier as sent (`tier`, omitted when none) and `Delegate` / `Steer` carry it, and the job keeps it (`Job.tier`, the tier of the person's newest message, named or not): the gate's rework and the delegation of an A2UI action are sent under it too (`Input::UiAction.tier` is what the application lowered it to, and the job continues under it), and the application decides the tier of every message in one place (`App::resolve_tier`): the named one checked against the cap and the live card; for an answer to a blocked job, a message from the MCP surface to an unfinished job, an action and an edit, the tier they continue, lowered to the cap and to what the card honours; and for a message that names none from a person with a role cap, the highest tier the agent offers within the lower of its default and the cap; a message to a child agent never carries the parent's tier, but carries the **cap** of the person's role on the mentioned agent (`Mention.tier_cap`, pinned when the message is accepted; `Command::Ask.tier_cap`), and the dispatcher decides its tier from the live card when it sends. When a cap applies and the agent's card offered no tier when the message was written, the message has no tier but a cap: `Input::{UserMessage, StopAndSend, Redeliver, UiAction}` carry `tier_cap`, `transition` logs it on the `user_message` (`tier_cap`) and keeps it in the job (`Job.tier_cap`, `Job.after_stop_tier_cap`), and every command that sends for the message (`Delegate`, `Steer`, `DelegateAction`, a rework) carries it, so the dispatcher decides again from the live card at every send (`App::tier_for_send`). A `Redeliver` that was sent already sets the job's tier too, and so does a cancel the agent refused. A Stop & send holds the tier, or the cap, of the **newest** message that was given one (`Job.after_stop_tier`, `Job.after_stop_tier_cap`; a message that was given neither leaves the held ones) for the job it starts, and `Cancel` forgets it. The core checks nothing about a tier: its shape, the role's cap and the live card are the application's | The same | The same |
 | `UserMessage` or `StopAndSend` that names a `locale` ([ADR 0085](decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md), [`locale-v1.md`](api/locale-v1.md)) | As the row of the input, and `Delegate` / `Steer` carry the tag (`Command.locale`) so the dispatcher can send it; a Stop & send holds the newest one for the job it starts (`Job.after_stop_locale`), a refused cancel steers with it, and a `Redeliver` carries what its `user_message` recorded. **The `user_message` records it** (`locale`, omitted when none: the log is the state, so the hint is replayable), and **no projection shows it** and no activity is emitted for it. The core validates its shape (`LocaleHint::parse`, a **400** in the application) and nothing else: the card is read by the adapter, and a card that does not list the extension gets the plain message | The same | The same |
 | `UserMessage` | State kept; append `user_message { delivery: steer }`, `Steer { text, mentions }` (**steer**, [ADR 0036](decisions/0036-sending-while-an-agent-works.md); the application writes a `steer` outbox row, which the dispatcher sends into the running task when the agent lists `steer/v1` and otherwise turns into the delegation it stands for; the row keeps the mentions, so a steer tells the agent whom the person mentioned as a delegation does, and the delegation it becomes carries them). With `after_stop` set: joined to it, `delivery: interrupt`, no command ([Stop & send](#steering-a-running-task-adr-0036)) | → `queued`; append `user_message`, `Delegate` | → `queued`, **job *n+1*** ([ADR 0020](decisions/0020-a-thread-is-a-conversation.md)): `Job::next()`, append `user_message`, `job_started`, `Delegate` |
-| `StopAndSend` (ADR 0036) | Append `user_message { delivery: interrupt }`, `RequestCancel { job }`, `after_stop = text`; state kept. With `after_stop` set: joined, no command | Exactly `UserMessage` (nothing runs, so nothing to stop; `delivery` absent) |
+| `StopAndSend` (ADR 0036) | Append `user_message { delivery: interrupt }`, `RequestCancel { job }`, `after_stop = text`; state kept. With `after_stop` set: joined, no command, unless the held message or the new one carries a prompt signature (ADR 0087): `StopPending`, 409 `stop_pending`, nothing written | Exactly `UserMessage` (nothing runs, so nothing to stop; `delivery` absent) |
 | `Redeliver` (a message already in the log whose delegation never reached the agent; the dispatcher's input) | Same as `UserMessage` without the `user_message` event; dropped while `after_stop` is set | → `queued`; `Delegate` | `done`, `failed`: → `queued`, job *n+1*; `job_started`, `Delegate`. `cancelled`: No-op |
 | `UserMessage` or `UiAction` that **carries a catalog** (`catalog: Some`, [ADR 0023](decisions/0023-ui-component-catalog-as-an-a2a-extension.md)) | As the row of the input, and `ui_catalog` is appended **first**, before `user_message` / `ui_action`, when the thread has not recorded that digest; the delegation carries the catalog **inline** when this input made it current, else a reference | The same | The same for a message (the catalog goes before `job_started`); an action is `Err(Finished)` and records nothing |
 | `Cancel` | State kept; `RequestCancel { job }` (the current job's number); `after_stop` cleared | State kept; `RequestCancel { job }` | No-op |
@@ -1226,7 +1262,7 @@ cancel the running task and keeps the text in `Job.after_stop`; a thread that ha
 
 | Input | Result |
 |---|---|
-| `StopAndSend` or `UserMessage` | `user_message { delivery: interrupt }`; the text is joined to `after_stop` after a blank line, no command (a joined text over 64 KiB is `TextTooLong`, 422) |
+| `StopAndSend` or `UserMessage` | `user_message { delivery: interrupt }`; the text is joined to `after_stop` after a blank line, no command (a joined text over 64 KiB is `TextTooLong`, 422). If the held message or the new one carries a prompt signature (ADR 0087, held in `after_stop_signed_prompt` and passed on with the text), nothing is joined: `StopPending`, 409 `stop_pending` |
 | the task ends (`completed`, `failed`, `canceled`, `rejected`) or the delegation is dead-lettered | the agent's event is logged, **the job is not judged** (no gate, no verification, no rework, no attempt, no `thread_state`), then `Job::next()`, `job_started`, `DropQueued { job }`, `Delegate { after_stop }`; state `queued` |
 | `input_required`, `auth_required` | `agent_status` is logged; the thread stays as it is (no `blocked`) |
 | `CancelRejected`, not retryable | an `error` "<agent> could not be stopped; your message was sent to it instead", `Steer { after_stop }`, `after_stop` cleared; a retryable one logs the error and keeps waiting |
@@ -1404,6 +1440,7 @@ for a request, so the same thing is refused in the same words everywhere.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the gate's configuration and its projection (MVP slice 3)
   participant B as Binary (startup)
   participant S as Surface (a run)
   participant A as App
@@ -1419,6 +1456,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the gate's configuration and its projection (MVP slice 3)
   [*] --> Layer: a layer arrives (env, file entry or request)
   Layer --> Refused: names a source or setting this build cannot honour (none by default)
   Layer --> Refused: leaves out a source the layer above requires
@@ -1465,6 +1503,8 @@ behind the same `AgentClient` port: there is no new port.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the verifier's dispatch (MVP slice 10)
+  accDescr: A sequence diagram, between Worker agent (A2A), Dispatcher, App and core (transition, pure), Store (outbox, inbox), Verifier agent (A2A), Chat.
   participant W as Worker agent (A2A)
   participant D as Dispatcher
   participant O as App and core (transition, pure)
@@ -1491,6 +1531,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the verifier's dispatch (MVP slice 10)
   [*] --> Pending: RequestVerification (the commit of Verifying)
   Pending --> Inflight: claimed (unordered)
   Inflight --> Skipped: the verification is no longer the one in progress (a timeout, a cancel, a user message or another source failed), the verifier is told to stop
@@ -1551,6 +1592,8 @@ asked, which ask was answered, whether the reply that is going on has asked):
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: thread titles (MVP slice 6)
+  accDescr: A sequence diagram, between Person, App / core, Dispatcher (title worker), ChatModel (OpenAI-compatible).
   participant P as Person
   participant A as App / core
   participant D as Dispatcher (title worker)
@@ -1569,6 +1612,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: thread titles (MVP slice 6)
   [*] --> FirstMessage: the thread is created
   FirstMessage --> FirstMessage: the model said NONE, failed, or is not configured (the next reply asks again, 2 asks at most)
   FirstMessage --> Model: Titled (thread_titled, source model)
@@ -1634,6 +1678,8 @@ and endpoint map, the same worker pattern, the same ledger shape, one more event
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: thread descriptions (ADR 0035)
+  accDescr: A sequence diagram, between Person, App / core, Dispatcher (description worker), ChatModel (endpoint of tasks.description).
   participant P as Person
   participant A as App / core
   participant D as Dispatcher (description worker)
@@ -1657,6 +1703,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: thread descriptions (ADR 0035)
   [*] --> None: the thread is created
   None --> None: declined (too few messages, NONE, no model, a failure)
   None --> Model: Described (thread_described, source model)
@@ -1743,6 +1790,8 @@ application from S2d. `ThreadRecord.child_of` (`ChildOf { thread, session }`, se
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: child sessions: the core's half and the application's (ADR 0072, slices S2a to S2d)
+  accDescr: A sequence diagram, between Application, Parent thread (core), Child thread (core).
   autonumber
   participant A as Application
   participant P as Parent thread (core)
@@ -1763,6 +1812,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: child sessions: the core's half and the application's (ADR 0072, slices S2a to S2d)
   [*] --> Queued: start_child
   Queued --> Working: RoundStarted on a fresh thread
   Working --> Working: ChildSessionSaid, a newer round is ordered once
@@ -1801,6 +1851,8 @@ restart, writes nothing twice.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: child sessions: the application's half (slice S2d)
+  accDescr: A sequence diagram, between Agent (A2A), Dispatcher, Store, Parent thread, Child thread.
   autonumber
   participant A as Agent (A2A)
   participant D as Dispatcher
@@ -1822,6 +1874,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: child sessions: the application's half (slice S2d)
   [*] --> Open: Command Observe in the child's commit
   Open --> Claimed: the dispatcher claims it in the thread's order
   Claimed --> Open: the registry is unreachable, the child still works on an earlier round, or the parent's rounds are all followed (retry with backoff)
@@ -1935,6 +1988,8 @@ where they want it, and eject a fork from the thread it is nested under. The sta
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the owner's list: pin, archive, order and nesting (ADR 0042)
+  accDescr: A sequence diagram, between Person, API (PATCH /api/threads/{id}/rail), App (arrange_thread), Store (arrange_thread), orch_core::rank.
   autonumber
   actor Person
   participant API as API (PATCH /api/threads/{id}/rail)
@@ -1961,6 +2016,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the owner's list: pin, archive, order and nesting (ADR 0042)
   [*] --> Top: created (on top of the list)
   [*] --> Nested: a fork, under the row the person sees
   Top --> Pinned: pin (on top of the pinned)
@@ -2043,6 +2099,8 @@ bucket) under `threads/<thread>/<sha256>`; the log holds only the reference, and
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: files from agents
+  accDescr: A sequence diagram, between Agent, A2A adapter (orch-agent-a2a, orch-a2a-mapping), Dispatcher (the ingest), ArtifactStore, Core + log, API.
   participant A as Agent
   participant M as A2A adapter (orch-agent-a2a, orch-a2a-mapping)
   participant D as Dispatcher (the ingest)
@@ -2062,6 +2120,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: files from agents
   [*] --> Reported: the adapter reports a file
   Reported --> Refused: over the file cap, or the job's files or bytes are used up
   Reported --> NotKept: no store, or the put failed
@@ -2109,6 +2168,8 @@ receives the bytes. A deployment sets `artifacts.upload` (and an S3 store with `
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: uploads (ADR 0058)
+  accDescr: A sequence diagram, between Dispatcher (delegate, steer), A2A adapter, Agent, requestupload (UploadTools, App::requestupload), ArtifactStore (S3, public endpoint), Dispatcher (the ingest), Core + log.
   autonumber
   participant D as Dispatcher (delegate, steer)
   participant M as A2A adapter
@@ -2136,6 +2197,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: uploads (ADR 0058)
+  accDescr: A state diagram with 9 states: Refused, Issued, Expired, Put, Named, Unnamed, Kept, NotKept, Deleted.
   [*] --> Refused: request_upload says a code (too_large, over_limit, not_activated, unsupported, bad_request, caller_not_allowed, task_over, unavailable)
   [*] --> Issued: a slot, URL and id
   Issued --> Expired: no PUT before expiresAt
@@ -2180,6 +2243,8 @@ What the code does that the diagrams do not say:
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: downloads by a redirect (ADR 0058 A1)
+  accDescr: A sequence diagram, between Route (orch-api: getartifact, getsharedartifact, getpublicsharedartifact), App (readable*, redirectttl, readablemeta, presigndownload), ArtifactStore (S3: head, presign_get), Bucket at the public endpoint.
   autonumber
   participant R as Route (orch-api: get_artifact, get_shared_artifact, get_public_shared_artifact)
   participant A as App (readable_*, redirect_ttl, readable_meta, presign_download)
@@ -2201,6 +2266,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: downloads by a redirect (ADR 0058 A1)
   [*] --> Refused: refuse_subresource or a readable_* check fails
   [*] --> Readable: ReadableFile
   Readable --> Streamed: redirect_ttl is None (stream, or a store that cannot presign)
@@ -2240,6 +2306,8 @@ Job on request ([`deploy/chart/README.md`](../deploy/chart/README.md#moving-the-
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: moving the directory store into the bucket
+  accDescr: A sequence diagram, between migrate (bin/orchestrator), Config::validate_artifacts (orch-config), FsArtifacts (read-only), ConfiguredArtifacts (S3).
   autonumber
   participant C as migrate (bin/orchestrator)
   participant L as Config::validate_artifacts (orch-config)
@@ -2260,6 +2328,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: moving the directory store into the bucket
+  accDescr: A state diagram with 7 states: Scanned, Ignored, Unreadable, Failed, Skipped, Uploaded, WouldUpload.
   [*] --> Scanned: threads/uuid/sha256 with its meta
   [*] --> Ignored: a temporary file, bytes or a meta alone, a stray name
   [*] --> Unreadable: a link, or a directory where a file belongs
@@ -2291,6 +2361,8 @@ and calls `ThreadStore::delete_threads` with the version it read of each.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: deleting a thread
+  accDescr: A sequence diagram, between Person, API (DELETE /api/threads/{id}), App (delete_thread), ThreadStore (delete_threads), ArtifactStore (delete_prefix), PurgeWorker (worker role).
   autonumber
   actor Person
   participant API as API (DELETE /api/threads/{id})
@@ -2325,6 +2397,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: deleting a thread
   [*] --> Pending: inserted in transaction 1
   Pending --> Finished: the inline delete_prefix succeeds, finish_purge
   Pending --> Leased: claim_purges by the sweep
@@ -2372,6 +2445,8 @@ no new port and no new store query, because `ThreadStore::list_events` pages the
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: exporting a thread
+  accDescr: A sequence diagram, between Browser or dev/export-thread.sh, orch-api (identity layer), App::export_thread, ThreadStore.
   participant B as Browser or dev/export-thread.sh
   participant A as orch-api (identity layer)
   participant S as App::export_thread
@@ -2594,6 +2669,8 @@ dispatcher's and the streams' own polling), so a lost notification costs latency
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: process roles
+  accDescr: A sequence diagram, between Signal (SIGTERM), boot::run, adam_host::Host, HTTP server (control plane), Dispatcher and inbox worker (workers), Health router (worker role only).
   participant S as Signal (SIGTERM)
   participant B as boot::run
   participant H as adam_host::Host
@@ -2615,6 +2692,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: process roles
   [*] --> Starting: configuration valid, role known
   Starting --> Running: migrated, listener bound, components of the role started
   Starting --> [*]: database down (69), address taken (71), bad configuration (78)
@@ -2684,6 +2762,8 @@ takes `max`, never `sum` (three replicas would triple the count).
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: observability and scaling
+  accDescr: A sequence diagram, between KEDA (scaler), Prometheus, Control plane /metrics, Postgres, Worker Deployment.
   participant K as KEDA (scaler)
   participant P as Prometheus
   participant C as Control plane /metrics
@@ -2704,6 +2784,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: observability and scaling
   [*] --> Waiting: pending, next_attempt_at in the future (retry backoff)
   [*] --> Due: pending, next_attempt_at reached
   Waiting --> Due: backoff over
@@ -2797,13 +2878,15 @@ The design choices are closed enums, authentication at the edge with authorizati
 
 ## Data model
 
-*Decided 2026-11-27:* the rules of these tables move into the database, as functions for the mutations that carry one and views for such reads, with PostgreSQL 18 as the floor ([ADR 0107](decisions/0107-the-sql-adapters-keep-their-rules-in-the-database.md)); each slice updates this section with the functions and views its migration creates. *Built (slice P0, 2026-11-27):* the floor (a server below PostgreSQL 18 is refused before any DDL, and the process exits 78), the SQLSTATE class `OR` (`OR001` corrupt, `OR002` a caller's bug) read by both PostgreSQL adapters, CI on 18.7 and 19.0, and a fresh-database test per store that lists the schema's functions and views. **No `orch_` function or view exists yet**; the only function of the schema is `outbox_set_owner()`, migration 0024's trigger.
+*Decided 2026-11-27:* the rules of these tables move into the database, as functions for the mutations that carry one and views for such reads, with PostgreSQL 18 as the floor ([ADR 0107](decisions/0107-the-sql-adapters-keep-their-rules-in-the-database.md)); each slice updates this section with the functions and views its migration creates. *Built (slice P0, 2026-11-27):* the floor (a server below PostgreSQL 18 is refused before any DDL, and the process exits 78), the SQLSTATE class `OR` (`OR001` corrupt, `OR002` a caller's bug) read by both PostgreSQL adapters, CI on 18.7 and 19.0, and a fresh-database test per store that lists the schema's functions and views. *Built (slice P1, 2026-11-27):* `orch_commit_open` (migration `0037`) holds the opening of a commit: the lock order (the thread, then the claimed outbox row, then the claimed inbox row) and the outcome it answers before anything is written; `orch_usage_counted_through` (migration `0037`) holds how far the usage ledger has counted a thread's log. *Built (slice P2, 2026-11-27):* `orch_admit` (migration `0038`) holds a person's admission: their advisory lock, then the count of their unfinished jobs, in the commit's own `READ COMMITTED` transaction. *Built (slice P3, 2026-11-28), all in migration `0040`:* `orch_outbox_due_at` holds when an outbox row is due (a `pending` row once its next attempt has come, an `inflight` one once its lease has ended, at the time the caller passes), for both claims and the statistics, and is a one-expression `RETURN` body the planner inlines; `orch_watch_arm` holds a commit's watches (each key's advisory lock, in bytewise order, the first thread keeps a key, the held ones are answered for the log, and the parked inbox rows are re-armed `SKIP LOCKED`); `orch_inbox_park` holds a park (the key's lock, then the watch looked for after it, then the row moved: `lost`, `parked` or `rearmed`). Both rely on a `READ COMMITTED` transaction, which the store begins for every commit, every thread it opens and every park. The claims of the outbox and of the inbox stay single statements, which now also return their rows in order, and marking a delegation sent (the row, then the thread's binding) is now one statement too (`mark_sent`). These are the schema's `orch_` functions, and it has no view; its one other function is `outbox_set_owner()`, migration 0024's trigger.
 
-**Built.** 36 migrations of the Postgres store, `crates/store-postgres/migrations/0001_init.sql` to `0036_outbox_open_owner_due.sql` (the tables of this section carry the number of the migration that added each column; `run_leases` (the broker's bindings, `0030`) has `ended_at` from `0035`, the tombstone of an ended run that only the meter's account route reads, [ADR 0108](decisions/0108-a-run-is-charged-to-the-identity-providers-sub-and-an-ended-run-is-still-answered-to-the-meter.md); `orch-secrets-pg` keeps three of its own, and the SQLite store of an embedded application nine; *verified 2026-11-27* by counting the files of those directories), applied at boot by every
+**Built.** 39 migrations of the Postgres store, `crates/store-postgres/migrations/0001_init.sql` to `0040_orch_claims.sql`, with no `0039` here: pull request #662 holds that number (`0039_user_memories.sql`), the migrator takes the numbers with or without a gap, and whichever of the two merges second rewrites this sentence and its count (the tables of this section carry the number of the migration that added each column; `run_leases` (the broker's bindings, `0030`) has `ended_at` from `0035`, the tombstone of an ended run that only the meter's account route reads, [ADR 0108](decisions/0108-a-run-is-charged-to-the-identity-providers-sub-and-an-ended-run-is-still-answered-to-the-meter.md); `orch-secrets-pg` keeps three of its own, and the SQLite store of an embedded application nine; *verified 2026-11-28* by counting the files of those directories), applied at boot by every
 replica (`orch-pg-migrate` takes sqlx's advisory lock and keeps its history; an applied migration is never edited).
 
 ```mermaid
 erDiagram
+  accTitle: Data model: threads, events, A2A bindings and outbox
+  accDescr: An entity-relationship diagram of 4 tables: threads, events, a2a_bindings, outbox.
   threads ||--o{ events : "log, PK thread_id + seq"
   threads ||--|| a2a_bindings : "A2A context and task"
   threads ||--o{ outbox : "delegate, cancel"
@@ -2922,6 +3005,8 @@ so that parallel slices do not collide:
 
 ```mermaid
 erDiagram
+  accTitle: Data model: the inbox, watches and the usage ledger
+  accDescr: An entity-relationship diagram of 7 tables: threads, inbox, watches, outbox, usage_tasks, usage_lines, usage_sandbox.
   threads ||--o{ inbox : "correlation, through watches"
   threads ||--o{ watches : "key to thread"
   threads {
@@ -3079,6 +3164,7 @@ message marked `answer` in it**.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a reply's live text, from the agent to the browser
   participant A as Agent (A2A)
   participant W as Worker: dispatcher
   participant PG as Postgres
@@ -3096,6 +3182,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a live text from streaming to persisted or abandoned
   [*] --> Streaming: first piece (offset 0)
   Streaming --> Streaming: piece, or the refresh from offset 0
   Streaming --> Persisted: agent_message S in the log
@@ -3116,6 +3203,8 @@ input caused to the terminal event of that run.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the connect stream, its pages and its wake-ups
+  accDescr: A sequence diagram, between AG-UI client, orch-surface-agui, orch-app App, PgWakeup (one LISTEN per replica), Postgres, orch-agui-projection (pure: Connect, Projector).
   participant C as AG-UI client
   participant S as orch-surface-agui
   participant A as orch-app App
@@ -3142,6 +3231,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a reader's loop, reading pages and waiting for a wake-up
   [*] --> Reading: subscribe, then read the events after the cursor
   Reading --> Reading: a page of events (up to 500): hand them on
   Reading --> Waiting: caught up
@@ -3202,6 +3292,7 @@ the table of what uses which, the requirements on the pooler and what was and wa
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the database behind a pooler (issue 290)
   participant B as orchestrator boot
   participant D as Postgres (directUrl)
   participant P as pooler (url)
@@ -3216,6 +3307,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the database behind a pooler (issue 290)
   [*] --> Migrating: boot
   Migrating --> Pooled: the history is applied on the direct connection
   Pooled --> Listening: the wakeup listener attaches (direct)

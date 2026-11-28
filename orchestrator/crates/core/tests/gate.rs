@@ -62,6 +62,7 @@ fn message(text: &str) -> Input {
         tier_cap: None,
         locale: None,
         pick: None,
+        signed_prompt: None,
         user: user(),
         text: text.into(),
         message_id: None,
@@ -3307,6 +3308,7 @@ fn a_redelivery_to_a_thread_that_moved_on_joins_the_job_it_reached() {
             tier: None,
             locale: None,
             pick: None,
+            signed_prompt: None,
         }],
     );
     assert_eq!((open.state, open.job.number), (Working, 2));

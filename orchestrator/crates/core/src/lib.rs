@@ -31,6 +31,7 @@ mod notify;
 mod pick;
 mod pricing;
 pub mod prompt;
+mod prompt_signature;
 mod rank;
 mod reasoning;
 mod redact;
@@ -50,6 +51,11 @@ mod ui_catalog;
 mod usage;
 mod usage_record;
 mod verify;
+
+/// The metadata member that holds a person's prompt signature (ADR 0087, decision 2): a compact JWS
+/// with a detached payload. One name for every route that carries a person's words: the AG-UI new
+/// message or `resume` entry, and the body of `startChildSession`.
+pub const PROMPT_SIGNATURE_KEY: &str = "vymalo.promptSignature";
 
 pub use access_tier::{ACCESS_TIER_EXTENSION, AccessTier, CapRefusal, TierListing, TierOffer};
 pub use agent::{AgentTaskState, AgentUpdate, FileRefusal};
@@ -147,6 +153,7 @@ pub use pricing::{
     Micros, ModelKey, ModelPrice, PriceTable, PriceTableError, PriceTableId, PricedModel,
     PricedMonth, PricedSandbox, PricedTotal, SandboxPrice, Unpriced, UnpricedSummary, price_month,
 };
+pub use prompt_signature::{PromptClaims, PromptSignature, SignedPrompt};
 pub use rank::{MAX_RANK_LEN, RankError, between, is_valid_rank, spread};
 pub use reasoning::{AgentReasoningData, MAX_REASONING_BYTES, bound_reasoning};
 pub use redact::{REDACTED, is_secret_key, redact_text, redact_value};

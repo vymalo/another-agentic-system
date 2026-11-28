@@ -53,6 +53,7 @@ The server **never trims** what it is given: white space at either end of a name
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: projects (v1)
   participant C as Client
   participant S as Server
   C->>S: getConfig (has "projects"?)
@@ -79,6 +80,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: projects (v1)
   [*] --> Active: createProject
   Active --> Active: updateProject
   Active --> Archived: archiveProject
@@ -181,6 +183,7 @@ read, never to write.** Moving a project between homes is not offered: the cloud
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the home
   [*] --> OnHome: the application holds the project
   OnHome --> Copy: another client of the same person reads it
   Copy --> Copy: its computer is offline: the last copy, read only

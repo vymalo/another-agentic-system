@@ -81,6 +81,7 @@ fn um(text: &str, message_id: Option<&str>, run_id: &str) -> Input {
         tier_cap: None,
         locale: None,
         pick: None,
+        signed_prompt: None,
         user: alice(),
         text: text.to_owned(),
         message_id: message_id.map(str::to_owned),
@@ -390,6 +391,7 @@ fn nothing_new_and_a_run_that_exists_attaches() {
             inputs: vec![],
             warnings: vec![],
             attach: None,
+            signed_source: None,
         }
     );
 }
@@ -542,6 +544,7 @@ fn stop(text: &str, message_id: &str, run_id: &str) -> Input {
         tier_cap: None,
         locale: None,
         pick: None,
+        signed_prompt: None,
         user: alice(),
         text: text.to_owned(),
         message_id: Some(message_id.to_owned()),

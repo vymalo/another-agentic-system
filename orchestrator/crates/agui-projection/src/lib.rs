@@ -46,8 +46,8 @@ pub use live::{LiveOverlay, MAX_LIVE_MESSAGE_BYTES};
 pub use projector::{ChildMeta, Projector, ThreadMeta};
 pub use route::{FileRoute, LinkToken};
 pub use translate::{
-    InputError, KnownThread, SurfaceDialect, ThreadView, Translation, Warning, held_message_ids,
-    release_selector, thread_id_of, translate, translate_with_warnings,
+    InputError, KnownThread, SignedSource, SurfaceDialect, ThreadView, Translation, Warning,
+    held_message_ids, release_selector, thread_id_of, translate, translate_with_warnings,
 };
 pub use vocab::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_CHECK,
@@ -55,6 +55,6 @@ pub use vocab::{
     ACTIVITY_SESSION_START, ACTIVITY_STATUS, ACTIVITY_STEP, ACTIVITY_TOOLS, ACTOR_KEY, AT_KEY,
     CHILD_THREAD_KEY, CODE_AGENT_FAILED, CODE_CHECKS_FAILED, CODE_DELIVERY_FAILED,
     CODE_SESSION_FAILED, CODE_STEP_FAILED, CODE_VERIFIER_FAILED, CUSTOM_USAGE, CUSTOM_USAGE_TOTAL,
-    DELIVERY_KEY, LIVE_KEY, MENTIONS_KEY, PROBLEM_KEY, PURPOSE_KEY, RELEASE_CHANNELS_URI, SEND_KEY,
-    SESSION_KEY, TIER_KEY, VIA_KEY, WHEN_KEY,
+    DELIVERY_KEY, LIVE_KEY, MENTIONS_KEY, PROBLEM_KEY, PROMPT_SIGNATURE_KEY, PURPOSE_KEY,
+    RELEASE_CHANNELS_URI, SEND_KEY, SESSION_KEY, TIER_KEY, VIA_KEY, WHEN_KEY,
 };

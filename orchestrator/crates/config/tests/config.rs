@@ -2713,8 +2713,75 @@ fn the_ui_section_has_its_defaults_and_is_the_only_public_part() {
         json["ui"],
         serde_json::json!({
             "showDescriptions": true,
-            "history": { "initialTurns": 12, "pageTurns": 20, "windowed": true }
+            "history": { "initialTurns": 12, "pageTurns": 20, "windowed": true },
+            "languages": ["en-GB", "fr-FR", "gsw-CH", "fur-IT"]
         })
+    );
+}
+
+/// ADR 0085: the interface languages a deployment offers, what its file may say, and what the
+/// rules refuse. The tags themselves are the core's grammar (`orch_core::locale`), mirrored in
+/// `rules.rs`; here the list is the deployment's.
+#[test]
+fn the_interface_languages_have_their_defaults_and_their_rules() {
+    let valid = load(MINIMAL, &minimal_env()).unwrap();
+    assert_eq!(valid.config.ui.languages, orch_config::DEFAULT_LANGUAGES);
+    // an operator's own list, in its order
+    let own = format!("{MINIMAL}ui: {{ languages: [fr-FR, de-DE] }}\n");
+    let set = load(&own, &minimal_env()).unwrap().config;
+    assert_eq!(set.ui.languages, ["fr-FR", "de-DE"]);
+    // the boundary the schema names: 32 is a list, 33 is not
+    let tags = |n: usize| {
+        (1..=n)
+            .map(|i| format!("en-{i:03}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let most = format!("{MINIMAL}ui: {{ languages: [{}] }}\n", tags(32));
+    assert_eq!(
+        load(&most, &minimal_env())
+            .unwrap()
+            .config
+            .ui
+            .languages
+            .len(),
+        32
+    );
+    let over = format!("{MINIMAL}ui: {{ languages: [{}] }}\n", tags(33));
+    assert_eq!(
+        lines(load(&over, &minimal_env())),
+        ["ui.languages: takes at most 32 item(s)"]
+    );
+    // an empty list is refused, and so is an entry that is not a tag
+    let empty = format!("{MINIMAL}ui: {{ languages: [] }}\n");
+    assert_eq!(
+        lines(load(&empty, &minimal_env())),
+        ["ui.languages: needs at least 1 item(s)"]
+    );
+    let bad = format!("{MINIMAL}ui: {{ languages: [en-GB, en_CM] }}\n");
+    assert_eq!(
+        lines(load(&bad, &minimal_env())),
+        [
+            "ui.languages[1]: not a language tag an interface offers (a language, an optional script and an optional region), like en-GB"
+        ]
+    );
+    // the list is the picker's, so a shape a message may carry but the picker would never send is
+    // refused at startup: a variant, a private-use part, an extension, a grandfathered tag
+    for tag in ["de-CH-1901", "x-twain", "en-a-bbb", "i-klingon"] {
+        let variant = format!("{MINIMAL}ui: {{ languages: [{tag}] }}\n");
+        assert_eq!(
+            lines(load(&variant, &minimal_env())),
+            [
+                "ui.languages[0]: not a language tag an interface offers (a language, an optional script and an optional region), like en-GB"
+            ],
+            "{tag}"
+        );
+    }
+    // subtags are case-insensitive, so `EN-gb` is `en-GB` and a list may not hold both
+    let twice = format!("{MINIMAL}ui: {{ languages: [en-GB, EN-gb] }}\n");
+    assert_eq!(
+        lines(load(&twice, &minimal_env())),
+        ["ui.languages[1]: a language is listed more than once"]
     );
 }
 
@@ -3240,7 +3307,7 @@ fn min_client_version_is_off_by_default_and_reads_dotted_numbers() {
 fn signing_clients_are_read_and_default_to_none() {
     let valid = load(MINIMAL, &minimal_env()).unwrap();
     assert!(valid.config.auth.signing_clients.is_empty());
-    let text = format!("{MINIMAL}{JWT}  signingClients: [desktop, ios, android]\n");
+    let text = format!("{MINIMAL}{ORIGIN}{JWT}  signingClients: [desktop, ios, android]\n");
     let valid = load(&text, &minimal_env()).unwrap();
     assert_eq!(
         valid.config.auth.signing_clients,
@@ -3267,6 +3334,94 @@ fn signing_client_rules_name_their_key_and_quote_nothing() {
     }
     assert!(
         errors.iter().all(|l| !l.contains("has space")),
+        "{errors:?}"
+    );
+}
+
+const ORIGIN: &str = "server: { publicOrigin: 'https://chat.example.com' }\n";
+
+#[test]
+fn signing_clients_with_no_public_origin_do_not_start() {
+    // Fail closed: the `aud` of a signed prompt is configured, never read from a request.
+    let want = "server.publicOrigin: required when auth.signingClients lists a client: it is the \
+                aud of a signed prompt, which is never taken from a request";
+    for server in ["", "server: { publicOrigin: '' }\n"] {
+        let text = format!("{MINIMAL}{server}{JWT}  signingClients: [desktop]\n");
+        let errors = lines(load(&text, &minimal_env()));
+        assert!(errors.iter().any(|l| l == want), "{server:?}: {errors:?}");
+    }
+}
+
+#[test]
+fn with_no_signing_client_the_public_origin_may_be_absent() {
+    for text in [
+        MINIMAL.to_owned(),
+        format!("{MINIMAL}{JWT}"),
+        format!("{MINIMAL}{JWT}  signingClients: []\n"),
+        format!("{MINIMAL}server: {{ publicOrigin: '' }}\n{JWT}"),
+    ] {
+        let valid = load(&text, &minimal_env()).unwrap();
+        assert!(
+            valid
+                .config
+                .server
+                .public_origin
+                .is_none_or(|origin| origin.is_empty()),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn a_public_origin_is_written_in_its_normal_form() {
+    let with = |origin: &str| format!("{MINIMAL}server: {{ publicOrigin: '{origin}' }}\n");
+    for ok in [
+        "https://chat.example.com",
+        "https://chat.example.com:8443",
+        "http://127.0.0.1:8080",
+        "http://[::1]:8080",
+        "https://xn--bcher-kva.example",
+    ] {
+        assert!(load(&with(ok), &minimal_env()).is_ok(), "{ok}");
+    }
+    for bad in [
+        "https://chat.example.com/",
+        "https://chat.example.com/api",
+        "https://chat.example.com:443",
+        "http://chat.example.com:80",
+        "https://Chat.example.com",
+        "HTTPS://chat.example.com",
+        "https://bücher.example",
+        "https://user@chat.example.com",
+        "https://chat.example.com?a=1",
+        "https://chat.example.com#a",
+        " https://chat.example.com",
+        "tauri://localhost",
+        "chat.example.com",
+    ] {
+        let errors = lines(load(&with(bad), &minimal_env()));
+        assert!(
+            errors.iter().any(
+                |l| l.starts_with("server.publicOrigin: expected an origin in its normal form")
+            ),
+            "{bad}: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn a_production_process_takes_a_plain_http_public_origin_only_for_the_loopback() {
+    let production = |origin: &str| {
+        format!("{MINIMAL}server: {{ environment: production, publicOrigin: '{origin}' }}\n{JWT}")
+    };
+    for ok in ["https://chat.example.com", "http://localhost:8080"] {
+        assert!(load(&production(ok), &minimal_env()).is_ok(), "{ok}");
+    }
+    let errors = lines(load(&production("http://chat.example.com"), &minimal_env()));
+    assert!(
+        errors.iter().any(|l| l.starts_with(
+            "server.publicOrigin: an https:// origin when server.environment is production"
+        )),
         "{errors:?}"
     );
 }

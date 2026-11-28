@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.10.0](https://github.com/vymalo/another-agentic-system/compare/v0.9.0...v0.10.0) (2026-11-27)
+
+
+### Features
+
+* **broker:** a run is charged to the IdP sub, and an ended run is still answered to the meter (ANR-1099) ([#619](https://github.com/vymalo/another-agentic-system/issues/619)) ([4e942d2](https://github.com/vymalo/another-agentic-system/commit/4e942d202a69402184f030f65ced0a93d3892959))
+* **chat-kit:** a chat conformance kit over an HTTP and an embed home (ANR-758) ([#649](https://github.com/vymalo/another-agentic-system/issues/649)) ([255a5c0](https://github.com/vymalo/another-agentic-system/commit/255a5c00fad01fe91e6d6e3a42cdc6f1cce34404))
+* **dev:** prove reasoning/v1 on the real adam (ANR-900) ([#645](https://github.com/vymalo/another-agentic-system/issues/645)) ([e26d54a](https://github.com/vymalo/another-agentic-system/commit/e26d54a793677a58254c18f1c30d2b7a433861b1))
+* **provisioner:** the orchestrator's workload certificate from OpenBao PKI (ANR-809, ADR 0110) ([#629](https://github.com/vymalo/another-agentic-system/issues/629)) ([8aef18a](https://github.com/vymalo/another-agentic-system/commit/8aef18acf4b0c3f776fc2c968ee41abc9a03f962))
+* **store:** the log's append in PostgreSQL, ADR 0107 slice P1 (ANR-1149) ([#647](https://github.com/vymalo/another-agentic-system/issues/647)) ([7fa89cd](https://github.com/vymalo/another-agentic-system/commit/7fa89cdedeaa3b836a10c7e0d285eed978a28124))
+* **store:** the PostgreSQL 18 floor and the OR error class, ADR 0107 slice P0 (ANR-1149) ([#626](https://github.com/vymalo/another-agentic-system/issues/626)) ([0b92836](https://github.com/vymalo/another-agentic-system/commit/0b928362c53c89f6eac3457de461b86eb99f81a9))
+
+
+### Bug Fixes
+
+* **ci:** a push to main is never cancelled, so a release keeps its sha image ([#633](https://github.com/vymalo/another-agentic-system/issues/633)) ([001fa33](https://github.com/vymalo/another-agentic-system/commit/001fa339dfad08ca038e8717f0fe6a0da96e57be))
+* **config:** an MCP tokens-file user is an IdP sub under userClaim sub (ANR-1163) ([#627](https://github.com/vymalo/another-agentic-system/issues/627)) ([962584d](https://github.com/vymalo/another-agentic-system/commit/962584d88a3831d1e589e83ff601cda1e2a1c9f4))
+* **config:** an MCP tokens-file user is what the deployment claim yields; no refusal prints a secret (ANR-1186) ([#631](https://github.com/vymalo/another-agentic-system/issues/631)) ([d19319f](https://github.com/vymalo/another-agentic-system/commit/d19319f9a69f2d8bb0795e979e92fa30721da0c6))
+* **dispatcher:** a claim that only waited for an agent to wake is refunded (ANR-1078) ([#618](https://github.com/vymalo/another-agentic-system/issues/618)) ([0e6d34f](https://github.com/vymalo/another-agentic-system/commit/0e6d34f0c9899e5db2b113cf0f4833460e019dbc))
+* **dispatcher:** a routed row waits for its agent between short probes, holding no slot (ANR-1078) ([#622](https://github.com/vymalo/another-agentic-system/issues/622)) ([a53a37c](https://github.com/vymalo/another-agentic-system/commit/a53a37cd9dd71e6c77cfc5fa07c3c1ef9c5540f9))
+* **dispatcher:** a wake give-up refuses a session row and does not fail the job (ANR-1176) ([#625](https://github.com/vymalo/another-agentic-system/issues/625)) ([8eb5850](https://github.com/vymalo/another-agentic-system/commit/8eb58502ab8d5b25278c48271c78bd8373510d08))
+* **docs:** put agent-mode-v1 in the extensions sidebar group (ANR-979) ([#624](https://github.com/vymalo/another-agentic-system/issues/624)) ([44ac740](https://github.com/vymalo/another-agentic-system/commit/44ac7408e8be2e1c3872fc97299d895eed9d9ebe))
+* **provisioner:** refuse a blocked agent only when waiting cannot help (ANR-1062) ([#617](https://github.com/vymalo/another-agentic-system/issues/617)) ([1ed5335](https://github.com/vymalo/another-agentic-system/commit/1ed5335f876610d35b5b753f5e4b1d9e50177d41))
+* **store:** a person due rows are claimed in the order they became due (ANR-1175) ([#628](https://github.com/vymalo/another-agentic-system/issues/628)) ([750af8d](https://github.com/vymalo/another-agentic-system/commit/750af8d6a0099b299cd4f2d0927cb54bee13d787))
+
+
+### Documentation
+
+* **adr:** 0107, the SQL adapters keep their rules in the database, PostgreSQL 18 floor (ANR-1149) ([#620](https://github.com/vymalo/another-agentic-system/issues/620)) ([6543465](https://github.com/vymalo/another-agentic-system/commit/65434650222df92c535a2c6aab03406198bb7a2f))
+* **adr:** 0109, a person picks an agent mode per thread or message (agent-mode/v1) (ANR-979) ([#623](https://github.com/vymalo/another-agentic-system/issues/623)) ([c82d335](https://github.com/vymalo/another-agentic-system/commit/c82d335aca659821af53d4ef89648bf5649f4499))
+* **adr:** ADR 0062 accepted with its two amendments (ANR-1290) ([#646](https://github.com/vymalo/another-agentic-system/issues/646)) ([e084f3a](https://github.com/vymalo/another-agentic-system/commit/e084f3ad571971466b5019981ac0c8514be25165))
+* **adr:** the run-certificate contract v1, its names, and who holds the run's key (ANR-1306) ([#644](https://github.com/vymalo/another-agentic-system/issues/644)) ([720a674](https://github.com/vymalo/another-agentic-system/commit/720a674ab2384171a3eb455bf804b8bf9968bce3))
+* **adr:** the run-certificate fixtures link to GitHub, not a page the site does not build (ANR-1336) ([#654](https://github.com/vymalo/another-agentic-system/issues/654)) ([41a771f](https://github.com/vymalo/another-agentic-system/commit/41a771f20ee7c0ad134d054567a9e57b591297af))
+* **api:** signed-turns/v1, what a client does with the rows an agent signs (ADR 0111) ([#641](https://github.com/vymalo/another-agentic-system/issues/641)) ([c333f99](https://github.com/vymalo/another-agentic-system/commit/c333f994fdcfc3231864c0e6f6899c43bef77afd))
+* **api:** uploads, locale and model-pick claims name the adam revision they hold for (ANR-1205) ([#638](https://github.com/vymalo/another-agentic-system/issues/638)) ([59c8974](https://github.com/vymalo/another-agentic-system/commit/59c8974088a7ab0b4dca3cf3f45d9468cf6f1403))
+* **decisions:** accept ADR 0063, the model relay stays for agents that do not sign (ANR-994) ([#643](https://github.com/vymalo/another-agentic-system/issues/643)) ([4189081](https://github.com/vymalo/another-agentic-system/commit/41890812998a61935495beb353d4da54ec81a88a))
+* **site:** build api/chat-api.yaml into the site, stop committing a copy (ANR-1124) ([#639](https://github.com/vymalo/another-agentic-system/issues/639)) ([b26fe8b](https://github.com/vymalo/another-agentic-system/commit/b26fe8ba231c009b3aeddfccccc7d0901cbe6d19))
+* **site:** crawl the built site for dead links; links that leave docs/ go to GitHub (ANR-1072) ([#637](https://github.com/vymalo/another-agentic-system/issues/637)) ([3940958](https://github.com/vymalo/another-agentic-system/commit/394095899a5392670832a70c65e7f29febfe4fe4))
+* **skills:** re-vendor adam-a2a-extensions with agent-mode/v1 (ANR-1184) ([#635](https://github.com/vymalo/another-agentic-system/issues/635)) ([1de380e](https://github.com/vymalo/another-agentic-system/commit/1de380e5a37af9c738ccff077a6fe58a61ea3c71))
+* withdraw the app-factory plan and ADR 0073 from this repository ([#632](https://github.com/vymalo/another-agentic-system/issues/632)) ([f41d929](https://github.com/vymalo/another-agentic-system/commit/f41d929014883b97831b7c225aee0f345f8b39a4))
+
+
+### Tests
+
+* **dev:** access-tier/v1 against the real coder (ANR-898) ([#636](https://github.com/vymalo/another-agentic-system/issues/636)) ([2b9b6ca](https://github.com/vymalo/another-agentic-system/commit/2b9b6ca5662f9d6358621afdb987e947d4f7f796))
+* **dev:** commands/v1 against the real coder (ANR-901) ([#634](https://github.com/vymalo/another-agentic-system/issues/634)) ([c82625e](https://github.com/vymalo/another-agentic-system/commit/c82625ee37f7fb00be75711540660e6cbcec2e1b))
+* **orchestrator:** a taken port may be given up more than once (ANR-1178) ([#630](https://github.com/vymalo/another-agentic-system/issues/630)) ([bcc6f89](https://github.com/vymalo/another-agentic-system/commit/bcc6f8957637730f28cdef5c81354962f22ad019))
+
+
+### Chores
+
+* **deploy:** bump orchestrator to sha-0e6d34f ([f00013f](https://github.com/vymalo/another-agentic-system/commit/f00013f232dbab15fb6b18e7ccace9d865701b4f))
+* **deploy:** bump orchestrator to sha-1ed5335 ([65ab77c](https://github.com/vymalo/another-agentic-system/commit/65ab77c453d491ccb5859719a96bbc7f5932aca9))
+* **deploy:** bump web to sha-1ed5335 ([92bb4e0](https://github.com/vymalo/another-agentic-system/commit/92bb4e0d0cc41034081b7f52607c6750225d64be))
+* **deploy:** bump web to sha-98c20b6 ([0076728](https://github.com/vymalo/another-agentic-system/commit/0076728b440b41546b154961360c78314b21f5d7))
+
 ## [0.9.0](https://github.com/vymalo/another-agentic-system/compare/v0.8.0...v0.9.0) (2026-11-27)
 
 

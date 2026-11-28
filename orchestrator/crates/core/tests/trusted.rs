@@ -24,6 +24,7 @@ fn started() -> Snapshot {
             tier_cap: None,
             locale: None,
             pick: None,
+            signed_prompt: None,
         },
     )
     .unwrap();

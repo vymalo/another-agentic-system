@@ -187,6 +187,62 @@ async fn a_user_that_is_blank_or_holds_a_control_character_is_a_missing_claim() 
     }
 }
 
+// ---- the client the token was issued to (ADR 0087, decision 1) ------------------------------------------------------
+
+#[tokio::test]
+async fn the_client_is_the_tokens_azp_its_client_id_or_the_sentinel() {
+    // `azp` first, `client_id` when there is no `azp`, and `""` — the token-with-no-client sentinel — for a token
+    // this issuer signed that names neither. Never `None`: that is a credential with no token at all.
+    let rig = Rig::new().await;
+    let with = |claims: &Map<String, Value>, client: Option<&str>| {
+        let mut claims = claims.clone();
+        match client {
+            Some(id) => {
+                claims.insert("client_id".into(), json!(id));
+                claims
+            }
+            None => claims,
+        }
+    };
+
+    let mut claims = rig.claims();
+    claims.insert("azp".into(), json!("desktop"));
+    claims.insert("client_id".into(), json!("web-client"));
+    let principal = assert_accepted(rig.check(&claims).await, "azp and client_id");
+    assert_eq!(principal.client_id.as_deref(), Some("desktop"));
+
+    let claims = with(&rig.claims(), Some("ios"));
+    let principal = assert_accepted(rig.check(&claims).await, "client_id alone");
+    assert_eq!(principal.client_id.as_deref(), Some("ios"));
+
+    let principal = assert_accepted(rig.check(&rig.claims()).await, "neither");
+    assert_eq!(principal.client_id.as_deref(), Some(""));
+
+    // A claim that is not text, or is blank, names no client either: the sentinel, not `None`.
+    for blank in [json!(5), json!(null), json!(""), json!("  "), json!(["a"])] {
+        let mut claims = rig.claims();
+        claims.insert("azp".into(), blank.clone());
+        let principal = assert_accepted(rig.check(&claims).await, &format!("azp {blank}"));
+        assert_eq!(principal.client_id.as_deref(), Some(""), "azp {blank}");
+    }
+
+    // The choice is by presence, not readability (security review of 2026-11-28, S1): an `azp` that
+    // is there and unusable is the sentinel, and `client_id` is not consulted. A fall-through would
+    // make `{"azp": ["desktop"], "client_id": "web-client"}` pass as the web's client — not a
+    // signing client — which fails open.
+    for unusable in [json!(["desktop"]), json!(5), json!("  "), json!(null)] {
+        let mut claims = rig.claims();
+        claims.insert("azp".into(), unusable.clone());
+        claims.insert("client_id".into(), json!("web-client"));
+        let principal = assert_accepted(rig.check(&claims).await, &format!("azp {unusable}"));
+        assert_eq!(
+            principal.client_id.as_deref(),
+            Some(""),
+            "azp {unusable} beside client_id"
+        );
+    }
+}
+
 // ---- the order of the reasons ------------------------------------------------------------------------------------
 
 #[tokio::test]

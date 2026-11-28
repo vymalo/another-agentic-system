@@ -263,6 +263,7 @@ memory, and speech's ledger line. This ADR amends nothing.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: where invariant 3 changes
   participant O as Owner
   participant P as Pull request
   participant A as docs/api
@@ -277,6 +278,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: where invariant 3 changes
   [*] --> Planned
   Planned --> Specified: its ADR and its contract are written
   Specified --> Built: the server, the recipe and the web

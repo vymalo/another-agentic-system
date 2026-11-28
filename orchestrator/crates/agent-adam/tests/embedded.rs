@@ -29,6 +29,7 @@ fn echo_request(text: &str) -> SendRequest {
         tier_cap: None,
         locale: None,
         pick: None,
+        signed_prompt: None,
     }
 }
 

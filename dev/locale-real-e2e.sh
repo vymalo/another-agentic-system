@@ -25,7 +25,8 @@
 #     "The person's interface language is de-DE" as one of its messages, and `de-DE` nowhere in `system`;
 #   * a second thread of the chat naming no tag sends the model no such line;
 #   * a tag for the researcher, whose card lists no extension, is accepted (a hint never holds a message back),
-#     and its model request has no line either.
+#     and its model request has no line either;
+#   * `GET /api/config` carries `ui.languages` — the list the web's picker offers (ANR-957): ADR 0085's four by default.
 # Exit status 0 when every check passed.
 #
 # Environment (defaults match compose.yaml on one machine):
@@ -39,9 +40,15 @@
 #   DEFAULT_TAG     en-GB                 the tag compose.yaml gives the chat as DEFAULT_LOCALE
 #   TIMEOUT         120    seconds to wait for a thread to stop
 #
+# The run body is **the web's own**: `forwardedProps` is built by `web/scripts/run-forwarded-props.mjs`, which
+# imports `web/src/features/locale/lib/locale.ts` as it stands (Node 24 type stripping), so the tag this scenario
+# proves on the real chat is the one the browser sends and not a hand-written copy of it. The script also checks
+# that builder directly: the four interface tags come out under `vymalo.locale`, and a tag it refuses comes out as
+# no member at all.
+#
 # It EMPTIES the request journal of `mock-model` first, so run it on a stack you are not in the middle of another
-# scenario on. Needs curl and jq (and /proc or uuidgen for a UUID). CI runs it in .github/workflows/coder-e2e.yml,
-# through dev/e2e-all.sh.
+# scenario on. Needs node, curl and jq (and python3 for a v7 UUID; /proc or uuidgen, which make a v4, are the fallback). CI runs it in .github/workflows/coder-e2e.yml,
+# through dev/e2e-all.sh, with Node 24 from `actions/setup-node`.
 set -eu
 
 base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
@@ -59,6 +66,9 @@ modeled=${modeled%/}
 default_tag=${DEFAULT_TAG:-en-GB}
 timeout=${TIMEOUT:-120}
 
+# The web's own builder of a run's `forwardedProps` (see the header): the browser's shape, imported as it stands.
+web_props=$(dirname "$0")/../web/scripts/run-forwarded-props.mjs
+
 locale_uri=https://agents.vymalo.com/a2a/extensions/locale/v1
 
 fail=0
@@ -74,25 +84,32 @@ expect() { # expect DESCRIPTION ACTUAL EXPECTED
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-for tool in curl jq; do
+for tool in node curl jq; do
   command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required and was not found" >&2; exit 2; }
 done
+# The web's builder is TypeScript, which Node loads by stripping the types (22 or newer). An older node
+# fails on its `export` with a SyntaxError, which would read as a broken scenario rather than a missing tool.
+node_major=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+[ "$node_major" -ge 22 ] || {
+  echo "node 22 or newer is required (the web's builder is loaded by type stripping); found $(node --version 2>/dev/null || echo none)" >&2
+  exit 2
+}
 
 api() { # api METHOD PATH: the body on stdout, non-zero when the status is not 2xx (the resource API)
   curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "$id_header"
 }
 
-uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || { echo 'uuid: python3 is missing, so this is a v4 id and recent will not be creation order' >&2; cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }; }
 
 card() { # card URL TOKEN: the agent's card
   curl --fail-with-body -sS --max-time 30 "$1/.well-known/agent-card.json" -H "authorization: Bearer $2"
 }
 
 # run_agui AGENT THREAD TEXT [LOCALE]: one run (one message) on THREAD, to its end, naming LOCALE when it is given.
-# Prints the HTTP status; the body is $tmp/run.out.
+# Prints the HTTP status; the body is $tmp/run.out. The props are the web's (`run-forwarded-props.mjs`).
 run_agui() {
   _props='{}'
-  if [ "${4:-}" != "" ]; then _props=$(jq -n --arg l "$4" '{"vymalo.locale": $l}'); fi
+  if [ "${4:-}" != "" ]; then _props=$(node "$web_props" locale "$4"); fi
   _input=$(jq -n --arg thread "$2" --arg run "$(uuid)" --arg msg "$(uuid)" --arg text "$3" --argjson props "$_props" '{
     threadId: $thread, runId: $run, state: {}, tools: [], context: [],
     messages: [{id: $msg, role: "user", content: $text}], forwardedProps: $props}')
@@ -129,6 +146,21 @@ has_line() {
 tag_in_system() {
   printf '%s' "$1" | jq -r --arg t "$2" '(((.system // "") | tostring) | contains($t))' 2>/dev/null || echo unknown
 }
+
+# --- the web's own body -----------------------------------------------------------------------------------------
+echo "== the web's builder of a run's forwardedProps (web/src/features/locale)"
+for tag in en-GB fr-FR gsw-CH fur-IT de-DE; do
+  expect "the web puts $tag under vymalo.locale" \
+    "$(node "$web_props" locale "$tag" | jq -r '."vymalo.locale" // "-"')" "$tag"
+done
+expect "the web sends no member for a tag it refuses (never a 400 that holds the words back)" \
+  "$(node "$web_props" locale en_CM)" "{}"
+expect "the web sends no member for a page that names no tag" "$(node "$web_props" locale "")" "{}"
+
+# --- the deployment's list -------------------------------------------------------------------------------------------
+echo "== the interface languages this deployment offers"
+expect "GET /api/config carries ui.languages, ADR 0085's four by default (the picker's source, ANR-957)" \
+  "$(api GET /api/config | jq -r '.ui.languages | join(",")')" "en-GB,fr-FR,gsw-CH,fur-IT"
 
 # --- the cards ---------------------------------------------------------------------------------------------------------
 echo "== the chat's card lists the extension with the deployment's tag"

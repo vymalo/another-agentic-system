@@ -72,6 +72,7 @@ fn user_message(text: &str) -> Input {
         tier_cap: None,
         locale: None,
         pick: None,
+        signed_prompt: None,
     }
 }
 
@@ -88,6 +89,7 @@ fn stop_and_send(text: &str) -> Input {
         tier_cap: None,
         locale: None,
         pick: None,
+        signed_prompt: None,
     }
 }
 
@@ -101,6 +103,7 @@ fn start(request: &str) -> Input {
         keep_open: true,
         tier: Some(AccessTier::Edits),
         tier_cap: None,
+        signed_prompt: None,
     }
 }
 
@@ -235,6 +238,7 @@ fn a_message_to_a_child_that_mentions_an_agent_is_refused_and_writes_nothing() {
                     tier_cap: None,
                     locale: None,
                     pick: None,
+                    signed_prompt: None,
                 }
             } else {
                 Input::UserMessage {
@@ -249,6 +253,7 @@ fn a_message_to_a_child_that_mentions_an_agent_is_refused_and_writes_nothing() {
                     tier_cap: None,
                     locale: None,
                     pick: None,
+                    signed_prompt: None,
                 }
             };
             assert_eq!(
@@ -272,6 +277,7 @@ fn a_message_to_a_child_that_mentions_an_agent_is_refused_and_writes_nothing() {
         tier_cap: None,
         locale: None,
         pick: None,
+        signed_prompt: None,
     };
     assert!(transition(&Snapshot::new(Done), &plain).is_ok());
 }
@@ -450,6 +456,7 @@ fn a_start_is_asked_in_the_parents_log_without_the_text_and_ordered() {
                 keep_open: true,
                 tier: Some(AccessTier::Edits),
                 tier_cap: None,
+                signed_prompt: None,
             }
         );
         assert_eq!(
@@ -515,6 +522,7 @@ fn a_start_with_a_bad_description_or_request_is_refused_and_writes_nothing() {
         keep_open: false,
         tier: None,
         tier_cap: None,
+        signed_prompt: None,
     };
     let long = "d".repeat(81);
     for input in [
@@ -858,6 +866,7 @@ fn a_start_says_whether_the_session_is_kept_open_to_the_log_and_to_the_order() {
             keep_open,
             tier: None,
             tier_cap: None,
+            signed_prompt: None,
         };
         let (_, cmds) = transition(&Snapshot::new(Done), &input).unwrap();
         match &bodies(&cmds)[0] {

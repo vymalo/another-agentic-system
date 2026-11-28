@@ -236,6 +236,12 @@ orchestrator:
       matchLabels: {}
   # `ui.showDescriptions`.
   showDescriptions: true
+  # `ui.languages`: the interface languages the web offers (ADR 0085, card ANR-957), each a language tag an interface
+  # offers — a language, an optional script of 4 letters and an optional region of 2 letters or 3 digits, the shape the
+  # picker sends. Empty is the orchestrator's own default (`en-GB`, `fr-FR`, `gsw-CH`, `fur-IT`) and nothing is written
+  # then, so the default render reads with an image that does not know the key; set it only once `orchestrator.image.tag`
+  # is at or after the picker's merge.
+  languages: []
   # Opening a thread from its history (ADR 0059, docs/api/history.md): the web asks for the newest turns and the older ones as the
   # person scrolls up. The orchestrator's own defaults are on and are NOT written, so the default render reads with an image that
   # does not know these keys; set one only once `orchestrator.image.tag` is at or after the history read's merge commit (README.md).
@@ -444,7 +450,7 @@ chat:
   enabled: true
   # The adam-rs image (it ships `adam-agent` beside `adam-coder`), by tag and digest, as compose.yaml pins it (`x-adam-image`: the
   # same two values). NOT moved by a workflow (bump-tag.sh knows orchestrator, web and webSearch): it moves by hand, with the pin of
-  # compose.yaml and dev/coder/UPSTREAM, in the bump of the `bump-adam` skill. sha-9f90f1e (since 2026-11-26: adam-rs 945208e plus 99 commits — model-pick/v1, reasoning/v1, prompt-statement/v1, uploads/v1 on the card, a kept-open child that asks, the session limits of `admit`, the plugin hooks of ADR 0050 and the TurnKeys port of ADR 0068 T1, ADR 0014's status note "adam-rs 9f90f1e6"; it is the last commit before adam-rs #399 raised adam's own workspace to Rust 1.98, so the next bump raises this repository's 1.94.1; sha-945208e earlier: adam-rs 7ea653f plus #347, the interface language reaching the model as one more turn after the history, never in `system`; sha-7ea653f: adam-rs 7ac3281 plus #321, #324, #327, #328, #329, #333 and #335, ADR 0014's status note "adam-rs 7ea653f2": a lean first request with tool groups and the compaction recap, a typed reasoning level on the model wire, the interface language (locale/v1 on the card from `chat.defaultLocale` -> DEFAULT_LOCALE), and fixes; sha-7ac3281 since 2026-11-21: adam-rs 8501494 plus #254, #272 and #294 to #313, ADR 0014's status note "adam-rs 7ac3281"; sha-8501494 and sha-e2bfda9 earlier the same day, sha-7418467 from 2026-11-19, sha-ddef35e from 2026-10-18, sha-8847c28 on 2026-10-17, sha-5581d40 from 2026-10-09, sha-0bfea49 and sha-09291a6 before it that day, sha-6478fbc until 2026-10-07) carries the A2UI v1.0 cutover (adam-rs #251, adam-rs ADR 0056; ADR 0075 and
+  # compose.yaml and dev/coder/UPSTREAM, in the bump of the `bump-adam` skill. sha-5883708 (since 2026-11-28: adam-rs 9f90f1e plus 150 commits — agent-mode/v1, a mode picked per message (`modes/` in the folder: this chart's chat gets `direct` (default) and `plan`, the coder's build/plan; a mode only narrows the tools the model is shown, ADR 0109), uploads/v1 served (the coder's `share_file` sends a file over the inline threshold by reference), turn signing off (TURN_SIGNING_KEY_FILE/TURN_VERIFY_KEYS_FILE, unset), the activity route on a listener of its own (ACTIVITY_LISTEN_ADDR, unset: the deprecated form stays), a session's `start.config` held to its folder's bounds (adam-rs ADR 0054), and adam-rs ADR 0082: PostgreSQL 18 is the store's floor and schema versions 7 to 9 add the claim function and the served virtual column, which the chat migrates at startup — this chart's CNPG cluster is 18.7; ADR 0014's status note "adam-rs 5883708"; sha-9f90f1e earlier, since 2026-11-26: adam-rs 945208e plus 99 commits — model-pick/v1, reasoning/v1, prompt-statement/v1, uploads/v1 on the card, a kept-open child that asks, the session limits of `admit`, the plugin hooks of ADR 0050 and the TurnKeys port of ADR 0068 T1, ADR 0014's status note "adam-rs 9f90f1e6"; it is the last commit before adam-rs #399 raised adam's own workspace to Rust 1.98; this repository moved to 1.98 on 2026-11-27 (ANR-1328), so the next bump does not need a toolchain raise; sha-945208e earlier: adam-rs 7ea653f plus #347, the interface language reaching the model as one more turn after the history, never in `system`; sha-7ea653f: adam-rs 7ac3281 plus #321, #324, #327, #328, #329, #333 and #335, ADR 0014's status note "adam-rs 7ea653f2": a lean first request with tool groups and the compaction recap, a typed reasoning level on the model wire, the interface language (locale/v1 on the card from `chat.defaultLocale` -> DEFAULT_LOCALE), and fixes; sha-7ac3281 since 2026-11-21: adam-rs 8501494 plus #254, #272 and #294 to #313, ADR 0014's status note "adam-rs 7ac3281"; sha-8501494 and sha-e2bfda9 earlier the same day, sha-7418467 from 2026-11-19, sha-ddef35e from 2026-10-18, sha-8847c28 on 2026-10-17, sha-5581d40 from 2026-10-09, sha-0bfea49 and sha-09291a6 before it that day, sha-6478fbc until 2026-10-07) carries the A2UI v1.0 cutover (adam-rs #251, adam-rs ADR 0056; ADR 0075 and
   # epic #380 here): every adam agent writes A2UI v1.0 only (`"version": "1.0"`, the URI `https://a2ui.org/a2a-extension/a2ui/v1.0`, the basic catalog of v1.0),
   # reads only `ui-catalog/v2` documents, and draws nothing in a turn whose message carries no `a2uiRendererCapabilities["1.0"]` — which the orchestrator
   # of this chart sends on every message, the chat's included. It also carries adam-rs ADR 0020
@@ -471,8 +477,8 @@ chat:
   # startup. A2UI stayed v0.9.1 there. No new variable is required.
   image:
     repository: ghcr.io/vymalo/another-adam-rs/coder
-    tag: sha-9f90f1e
-    digest: sha256:8352a52c2a7e41a00af71274b783e7d0fb5277bb1ffbd25921f3d64d50c876ea
+    tag: sha-5883708
+    digest: sha256:2c1fed0c729844fc2e7dfac45b6ba3198234385e86666604a9dbb2d6e1e7f3f8
     pullPolicy: IfNotPresent
   # The model's name at `model.baseUrl`. REQUIRED with chat.enabled.
   model: ""
@@ -824,6 +830,38 @@ ingress:
     # N-th address from the RIGHT of `X-Forwarded-For`: 1 when one trusted proxy in front appends the client's address (the proxy must be in the
     # entrypoint's `forwardedHeaders.trustedIPs`, else Traefik drops the header and every request has no source). Never more than the proxies you trust.
     sourceDepth: 0
+
+# Example alert rules for "running out" (ANR-339; README.md, "Alert rules"): a `PrometheusRule`, a custom resource of the Prometheus Operator's CRDs
+# (`monitoring.coreos.com/v1`). OFF by default: the chart assumes no monitoring stack, and on a cluster without those CRDs a sync with it on fails.
+# It adds no scrape (no ServiceMonitor) and opens no NetworkPolicy. Every threshold here is a STARTING POINT, not a measurement: nothing was load-tested
+# to choose it. The numbers are checked whether or not the rules are on.
+alerts:
+  enabled: false
+  # More labels on the PrometheusRule object, for the `ruleSelector` of your Prometheus (a kube-prometheus-stack often selects `release: <its release>`).
+  # A map of strings. The chart's own labels (`app.kubernetes.io/*`, `helm.sh/chart`) are refused here.
+  labels: {}
+  # Dispatcher slots busy, as a share of those configured, over all replicas: above 0 and at most 1, held for `for`.
+  dispatcherSlots:
+    threshold: 0.9
+    for: 10m
+  # Seconds the oldest due outbox row has waited: a whole number from 1 to 86400, held for `for`.
+  outboxAge:
+    seconds: 60
+    for: 5m
+  # Connections of the database pool in use, as a share of the most it holds, over all replicas: above 0 and at most 1, held for `for`.
+  dbPool:
+    threshold: 0.9
+    for: 10m
+  # The run pods' ResourceQuota (the coder chart's, not this one's). NOT a metric of the orchestrator: it needs an exporter of `kube_resourcequota`
+  # (kube-state-metrics; unverified here), so it has a switch of its own. `namespace` is where the run pods' quota is, required when on (without it
+  # the rule would watch every quota of the cluster). `resource` is the quota's resource name as the exporter labels it (`pods`, `requests.cpu`,
+  # `requests.memory`, `limits.cpu`, ...: unverified, it depends on what the quota sets).
+  runPodQuota:
+    enabled: false
+    namespace: ""
+    resource: pods
+    threshold: 0.8
+    for: 10m
 
 # The deployment's one Postgres (CloudNativePG): the orchestrator's database, and beside it the databases `agent` (the chat
 # agent's runs) and, with `sharedDatabase.coders` (or `sharedDatabase.coder`), one per coder, each owned by a role of its own (README.md, "One database cluster").

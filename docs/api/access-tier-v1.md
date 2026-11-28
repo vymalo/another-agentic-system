@@ -1,7 +1,7 @@
 # A2A extension: access tier (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/access-tier/v1`
-- **Status:** **proposed (2026-10-11), at the owner's request; the orchestrator's and the web's sides are built (2026-10-11, on
+- **Status:** 🧪 experimental · **proposed (2026-10-11), at the owner's request; the orchestrator's and the web's sides are built (2026-10-11, on
   mocks: [As built](#as-built-2026-10-11)); adam's side is built too (adam-rs #111: adam-coder lists it and keeps to it), and the halves meet in a scenario against the real coder (`dev/tier-real-e2e.sh`, written 2026-11-27; it has not been run by its author, no Docker daemon was available: CI's `Coder E2E` is its first run).** The owner has chosen how adam's coder maps its
   tools onto the tiers (2026-10-11, [below](#example-adams-coder)). The six open questions of the ADR were settled the same day on the
   owner's direction, as the task brief recorded it, and **await the owner's own confirmation**
@@ -40,6 +40,8 @@ before, with no header and no metadata, and the web shows no control for them. T
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram, between Person, Web (composer), Orchestrator, Event log, Agent (card lists access-tier/v1).
   autonumber
   actor P as Person
   participant W as Web (composer)
@@ -68,6 +70,8 @@ One message's tier goes through these states:
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: A2A extension
+  accDescr: A state diagram with 12 states: Hidden, Offered, Unpicked, Picked, PlainSent, Resolved, Refused, Recorded, NotSent, Sent, Applied, Declined.
   [*] --> Hidden: the card does not list the extension, or lists it badly
   [*] --> Offered: the card lists it with tiers and a default
   Offered --> Unpicked: the person picks nothing

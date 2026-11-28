@@ -19,6 +19,11 @@
 #   OIDC_ROLES          (the user's roles in dev/mock-oidc/users.json)  a comma list that replaces them in this token, empty for none:
 #                       the same person (same subject, same e-mail) with a role taken away, as dev/user-tools-relay-e2e.sh needs. A
 #                       variable that is SET and empty is "no role"; leave it unset for the user's own
+#   OIDC_AZP            (the client id)  the `azp` of the token: the client it says it was issued to. A dev-only extension of the
+#                       mock (dev/mock-oidc/server.mjs), so that a script is a *signing client* while it authenticates as `dev-chat`:
+#                       dev/orchestrator.yaml's `auth.signingClients` names `dev-signing`, and a prompt from it must carry its envelope
+#                       or is refused (ADR 0087). `OIDC_AZP=dev-signing` is how dev/prompt-signature-e2e.sh asks for it; leave it unset
+#                       and the token names the client it authenticated as, which is no signing client
 #   AUTH_BEARER         a token you already have: printed as it is, nothing is asked of the issuer (a real issuer's, say)
 #   AUTH_MODE           bearer (the default) or proxy-header: `X-Auth-Request-Email: <email>`, for an orchestrator started
 #                       by hand with `auth.mode: proxy_header` (dev/README.md, "The orchestrator on the host")
@@ -42,6 +47,7 @@ oidc=${oidc%/}
 set -- --data-urlencode grant_type=client_credentials --data-urlencode "user=$email"
 [ -z "${OIDC_AUDIENCE:-}" ] || set -- "$@" --data-urlencode "audience=$OIDC_AUDIENCE"
 [ -z "${OIDC_ROLES+set}" ] || set -- "$@" --data-urlencode "roles=$OIDC_ROLES"
+[ -z "${OIDC_AZP:-}" ] || set -- "$@" --data-urlencode "azp=$OIDC_AZP"
 
 # The secret goes by `-u`, which a process listing shows: a dummy of a mock, and nothing here is a real credential.
 if ! answer=$(curl -fsS --max-time 20 -u "${OIDC_CLIENT_ID:-dev-chat}:${OIDC_CLIENT_SECRET:-dev-client-secret}" "$@" "$oidc/token" 2>&1); then

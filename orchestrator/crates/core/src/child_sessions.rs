@@ -22,6 +22,7 @@ use crate::event::{
 };
 use crate::gate::{Job, Snapshot, truncate_to};
 use crate::ids::{ThreadId, UserId};
+use crate::prompt_signature::SignedPrompt;
 use crate::thread::ThreadState;
 use crate::title::{TitleLedger, TitleSource, check_title};
 use crate::transition::{Command, TransitionError, append};
@@ -980,6 +981,7 @@ pub(crate) struct Start<'a> {
     pub keep_open: bool,
     pub tier: Option<AccessTier>,
     pub tier_cap: Option<AccessTier>,
+    pub signed_prompt: Option<&'a SignedPrompt>,
 }
 
 /// A person asks the parent thread to start a session (`Input::StartSession`): valid on a parent
@@ -1032,6 +1034,7 @@ pub(crate) fn start_session(
             keep_open: start.keep_open,
             tier: start.tier,
             tier_cap: start.tier_cap,
+            signed_prompt: start.signed_prompt.cloned(),
         },
     ])
 }

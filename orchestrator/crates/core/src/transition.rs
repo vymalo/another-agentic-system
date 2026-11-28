@@ -36,6 +36,7 @@ use crate::ids::{AgentId, ThreadId, UserId};
 use crate::locale::LocaleHint;
 use crate::mention::{MAX_MENTIONS, Mention, utf16_len};
 use crate::pick::ModelPick;
+use crate::prompt_signature::SignedPrompt;
 use crate::reasoning::{AgentReasoningData, bound_reasoning};
 use crate::share::{ShareLevel, ShareNonce, ThreadSharedData, ThreadUnsharedData};
 use crate::step::{StepReport, StepSource, record_step};
@@ -87,12 +88,20 @@ pub enum Input {
         tier_cap: Option<AccessTier>,
         /// The interface locale the person's screen named for this message (ADR 0085,
         /// `locale/v1`), already checked by the caller ([`LocaleHint::parse`](crate::LocaleHint::parse)):
-        /// a hint, carried on the delegation (and on the steer, or the held text of a Stop & send)
-        /// and **never recorded in the log**: it is not conversation content, and the projection
-        /// shows nothing of it. `None` for a message that names none.
+        /// a hint, **recorded on the `user_message`** because the log is the state (so a redelivery,
+        /// a fork's first message and an edit carry it), carried on the delegation (and on the
+        /// steer, or the held text of a Stop & send), and shown by no projection: it is not
+        /// conversation content. `None` for a message that names none.
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The person's prompt signature for this message (ADR 0087, decision 2): the compact JWS
+        /// their app sent as the message's `metadata["vymalo.promptSignature"]`, already checked
+        /// for presence at intake and passed on byte for byte. It is **not conversation content**:
+        /// it is never written to the log (no event, no frame, no step, no export), and it rides
+        /// the delegation's outbox row and then the agent's request. `None` for a message that
+        /// carries none.
+        signed_prompt: Option<SignedPrompt>,
     },
     /// The user sent a message with "Stop & send" (ADR 0036): the same fields as
     /// [`Input::UserMessage`], and a different decision while a job runs. On a thread that is
@@ -128,6 +137,12 @@ pub enum Input {
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The person's prompt signature of the message (ADR 0087), as for [`Input::UserMessage`].
+        /// When the message **stops a running job** the envelope is held with its text
+        /// ([`Job::after_stop_signed_prompt`]) and goes to the next job's delegation, or to the
+        /// steer of a stop the agent refuses. A held message and a second one are never joined if
+        /// either is signed ([`TransitionError::StopPending`]).
+        signed_prompt: Option<SignedPrompt>,
     },
     /// The user acted on an A2UI surface (a button with an event action). Like a message, it
     /// answers a blocked thread and is delegated to the agent; unlike one it carries no text.
@@ -178,6 +193,9 @@ pub enum Input {
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The person's prompt signature the message was written with (ADR 0087), as the
+        /// delegation's outbox row holds it (never the log): the redelivery carries it to the agent.
+        signed_prompt: Option<SignedPrompt>,
     },
     /// The user asked to cancel.
     Cancel {
@@ -510,6 +528,9 @@ pub enum Input {
         tier: Option<AccessTier>,
         /// The cap that goes with `tier`, as for [`Input::UserMessage`].
         tier_cap: Option<AccessTier>,
+        /// The person's prompt signature of `text` (ADR 0087), as for [`Input::UserMessage`]: it
+        /// goes to [`Command::StartSession`] and is written in no event and held in no ledger.
+        signed_prompt: Option<SignedPrompt>,
     },
     /// A start a person asked for ended (ADR 0072, S3): the session opened and its child thread
     /// exists, or it did not. Drops the pending start and writes `child_session_start_ended`; a
@@ -641,6 +662,12 @@ pub enum Command {
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The person's prompt signature for the message (ADR 0087, decision 2), as the person's
+        /// app sent it: the application puts it on the delegation's outbox row (never in the log),
+        /// and the dispatcher puts it on the agent's request byte for byte, so that the verifier
+        /// behind the model gateway can check it. `None` for a message that carries none and for a
+        /// rework, which is the core's own words.
+        signed_prompt: Option<SignedPrompt>,
     },
     /// Send this text to the agent's **running task** (ADR 0036): a message written while a job
     /// runs, with no stop on its way. The application writes a `steer` outbox row, and the
@@ -664,6 +691,9 @@ pub enum Command {
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The person's prompt signature, as for [`Command::Delegate`]: a steer carries it into the
+        /// running task, and the delegation it becomes keeps it.
+        signed_prompt: Option<SignedPrompt>,
     },
     /// Follow a round of the thread's child session without sending anything (ADR 0072): the
     /// application writes an `observe` row, and the dispatcher answers with
@@ -698,6 +728,9 @@ pub enum Command {
         tier: Option<AccessTier>,
         /// The cap that goes with `tier`, as for [`Command::Delegate`].
         tier_cap: Option<AccessTier>,
+        /// The person's prompt signature of `text`, as for [`Command::Delegate`]: the bytes
+        /// received, for round 1's request.
+        signed_prompt: Option<SignedPrompt>,
     },
     /// Close the session this child thread is (ADR 0072, S3): the application writes a `steer`
     /// row, so a close with `cancel` reaches a working round now.
@@ -869,6 +902,14 @@ pub enum TransitionError {
         /// The most bytes of text held.
         max: usize,
     },
+    /// A message while a Stop & send already holds one, when the held message or the new one
+    /// carries a prompt signature (ADR 0087, ADR 0036): the two would be joined into one text that
+    /// neither signature covers. Nothing was written; the person sends it again once the held
+    /// message is no longer waiting.
+    #[error(
+        "a message is already waiting for the job to stop, and a signed message is never joined to another; send this one again once the held message is no longer waiting"
+    )]
+    StopPending,
     /// An ask (`ask_agent`, ADR 0026) was refused: the reason is worded for the agent that asked,
     /// which is told it as the tool's error. Nothing was written.
     #[error("ask refused: {0}")]
@@ -896,9 +937,9 @@ pub enum TransitionError {
 impl Classify for TransitionError {
     fn class(&self) -> ErrorClass {
         match self {
-            TransitionError::Finished { .. } | TransitionError::InvalidInState { .. } => {
-                ErrorClass::Rejected
-            }
+            TransitionError::Finished { .. }
+            | TransitionError::InvalidInState { .. }
+            | TransitionError::StopPending => ErrorClass::Rejected,
             TransitionError::TextTooLong { .. }
             | TransitionError::SessionClosesOnStop
             | TransitionError::ChildMentions
@@ -1029,6 +1070,8 @@ struct Said<'a> {
     tier_cap: Option<AccessTier>,
     locale: Option<LocaleHint>,
     pick: Option<ModelPick>,
+    /// The person's prompt signature (ADR 0087): carried to the delegation, never to the event.
+    signed_prompt: Option<&'a SignedPrompt>,
 }
 
 /// The `user_message` event for `said`, with how it reached the running job (ADR 0036).
@@ -1068,6 +1111,7 @@ fn user_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
         tier_cap: said.tier_cap,
         locale: said.locale.clone(),
         pick: said.pick.clone(),
+        signed_prompt: said.signed_prompt.cloned(),
     });
     cmds
 }
@@ -1091,15 +1135,23 @@ fn steered_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
         tier_cap: said.tier_cap,
         locale: said.locale.clone(),
         pick: said.pick.clone(),
+        signed_prompt: said.signed_prompt.cloned(),
     });
     cmds
 }
 
 /// A message that stops the running job (ADR 0036, rows 1 and 2): it is logged `interrupt` and
 /// its text is held for the next job, after a blank line from what the stop holds already. The
-/// first of them also asks for the cancel. Nothing is changed when the text held would be over
-/// [`MAX_AFTER_STOP_BYTES`].
+/// first of them also asks for the cancel. Its prompt signature is held with it (ADR 0087). Nothing
+/// is changed when the text held would be over [`MAX_AFTER_STOP_BYTES`], or when a message is held
+/// already and it or the new one is signed: a signature covers one message, and the joined text
+/// would pass for what was signed.
 fn stopping_message(job: &mut Job, said: &Said<'_>) -> Result<Vec<Command>, TransitionError> {
+    if job.after_stop.is_some()
+        && (job.after_stop_signed_prompt.is_some() || said.signed_prompt.is_some())
+    {
+        return Err(TransitionError::StopPending);
+    }
     // Joined behind what is held, the message's mentions stand `in front` code units further on
     // (the held text and the blank line); the ones past the cap are not carried.
     let (held, in_front) = match &job.after_stop {
@@ -1116,6 +1168,8 @@ fn stopping_message(job: &mut Job, said: &Said<'_>) -> Result<Vec<Command>, Tran
     }
     let first = job.after_stop.is_none();
     job.after_stop = Some(held);
+    // the first message's, or none: the check above lets nothing signed be joined
+    job.after_stop_signed_prompt = said.signed_prompt.cloned();
     let room = MAX_MENTIONS.saturating_sub(job.after_stop_mentions.len());
     job.after_stop_mentions
         .extend(said.mentions.iter().take(room).map(|m| m.shifted(in_front)));
@@ -1150,6 +1204,7 @@ fn stopping_message(job: &mut Job, said: &Said<'_>) -> Result<Vec<Command>, Tran
 /// The thread is `queued` again.
 fn start_after_stop(job: &mut Job) -> Vec<Command> {
     let text = job.after_stop.take().unwrap_or_default();
+    let signed_prompt = job.after_stop_signed_prompt.take();
     let mentions = std::mem::take(&mut job.after_stop_mentions);
     let tier = job.after_stop_tier.take();
     let tier_cap = job.after_stop_tier_cap.take();
@@ -1173,6 +1228,8 @@ fn start_after_stop(job: &mut Job) -> Vec<Command> {
             tier_cap,
             locale,
             pick,
+            // the held message's own (ADR 0087): `text` is that message and nothing else
+            signed_prompt,
         },
     ]
 }
@@ -1189,6 +1246,7 @@ fn job_started(job: &Job) -> Command {
 
 /// The delegation of a message that is in the log already: the screen's catalog is the thread's
 /// current one, since the message carries none of its own.
+#[allow(clippy::too_many_arguments)]
 fn redelegate(
     job: &mut Job,
     text: &str,
@@ -1197,6 +1255,7 @@ fn redelegate(
     tier_cap: Option<AccessTier>,
     locale: Option<LocaleHint>,
     pick: Option<ModelPick>,
+    signed_prompt: Option<&SignedPrompt>,
 ) -> Command {
     job.answer.reset();
     job.tier = tier;
@@ -1210,6 +1269,7 @@ fn redelegate(
         tier_cap,
         locale,
         pick,
+        signed_prompt: signed_prompt.cloned(),
     }
 }
 
@@ -1225,6 +1285,7 @@ fn redelegation(
     tier_cap: Option<AccessTier>,
     locale: Option<LocaleHint>,
     pick: Option<ModelPick>,
+    signed_prompt: Option<&SignedPrompt>,
 ) -> Vec<Command> {
     if sent {
         job.answer.reset();
@@ -1237,7 +1298,14 @@ fn redelegation(
         Vec::new()
     } else {
         vec![redelegate(
-            job, text, mentions, tier, tier_cap, locale, pick,
+            job,
+            text,
+            mentions,
+            tier,
+            tier_cap,
+            locale,
+            pick,
+            signed_prompt,
         )]
     }
 }
@@ -1412,6 +1480,7 @@ pub fn start_thread(
             tier_cap,
             locale,
             pick,
+            signed_prompt,
         }
         | Input::StopAndSend {
             user,
@@ -1425,6 +1494,7 @@ pub fn start_thread(
             tier_cap,
             locale,
             pick,
+            signed_prompt,
         } => {
             let said = Said {
                 user,
@@ -1438,6 +1508,7 @@ pub fn start_thread(
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
                 pick: pick.clone(),
+                signed_prompt: signed_prompt.as_ref(),
             };
             let mut job = Job::with_gate(gate);
             note_task(&mut job, text);
@@ -1527,6 +1598,7 @@ fn decide(
             tier_cap,
             locale,
             pick,
+            signed_prompt,
         } => {
             let said = Said {
                 user,
@@ -1540,6 +1612,7 @@ fn decide(
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
                 pick: pick.clone(),
+                signed_prompt: signed_prompt.as_ref(),
             };
             message(state, job, &said, false)
         }
@@ -1555,6 +1628,7 @@ fn decide(
             tier_cap,
             locale,
             pick,
+            signed_prompt,
         } => {
             let said = Said {
                 user,
@@ -1568,6 +1642,7 @@ fn decide(
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
                 pick: pick.clone(),
+                signed_prompt: signed_prompt.as_ref(),
             };
             message(state, job, &said, true)
         }
@@ -1579,6 +1654,7 @@ fn decide(
             tier_cap,
             locale,
             pick,
+            signed_prompt,
         } => match state {
             // The thread moved on while the message waited (an earlier redelivery started the next
             // job): the message joins that job, as one written during it would, and is sent
@@ -1606,6 +1682,7 @@ fn decide(
                         *tier_cap,
                         locale.clone(),
                         pick.clone(),
+                        signed_prompt.as_ref(),
                     ),
                 ))
             }
@@ -1625,6 +1702,7 @@ fn decide(
                         *tier_cap,
                         locale.clone(),
                         pick.clone(),
+                        signed_prompt.as_ref(),
                     ),
                 ))
             }
@@ -1641,6 +1719,7 @@ fn decide(
                     *tier_cap,
                     locale.clone(),
                     pick.clone(),
+                    signed_prompt.as_ref(),
                 ));
                 Ok((ThreadState::Queued, cmds))
             }
@@ -1683,6 +1762,7 @@ fn decide(
                 // not continued. The text they sent stays in the log and is never sent
                 // (ADR 0036, row 9).
                 job.after_stop = None;
+                job.after_stop_signed_prompt = None;
                 job.after_stop_mentions.clear();
                 job.after_stop_tier = None;
                 job.after_stop_tier_cap = None;
@@ -1805,6 +1885,7 @@ fn decide(
                 if job.after_stop.is_some() && !*retryable =>
             {
                 let text = job.after_stop.take().unwrap_or_default();
+                let signed_prompt = job.after_stop_signed_prompt.take();
                 let mentions = std::mem::take(&mut job.after_stop_mentions);
                 let tier = job.after_stop_tier.take();
                 let tier_cap = job.after_stop_tier_cap.take();
@@ -1833,6 +1914,7 @@ fn decide(
                             tier_cap,
                             locale,
                             pick,
+                            signed_prompt,
                         },
                     ],
                 ))
@@ -2062,6 +2144,7 @@ fn decide(
             keep_open,
             tier,
             tier_cap,
+            signed_prompt,
         } => Ok((
             state,
             child_sessions::start_session(
@@ -2075,6 +2158,7 @@ fn decide(
                     keep_open: *keep_open,
                     tier: *tier,
                     tier_cap: *tier_cap,
+                    signed_prompt: signed_prompt.as_ref(),
                 },
             )?,
         )),
@@ -2987,6 +3071,7 @@ mod tests {
                 input: "cancel",
             },
             TransitionError::TextTooLong { max: 1 },
+            TransitionError::StopPending,
             TransitionError::AskRefused(AskRefusal::TaskOver),
             TransitionError::AskRefused(AskRefusal::EmptyText),
             TransitionError::ChildSessionRefused(SessionRefusal::LedgerFull),
@@ -3001,9 +3086,9 @@ mod tests {
         for e in errors {
             // Exhaustive: a new variant forces a class decision.
             let expected = match e {
-                TransitionError::Finished { .. } | TransitionError::InvalidInState { .. } => {
-                    ErrorClass::Rejected
-                }
+                TransitionError::Finished { .. }
+                | TransitionError::InvalidInState { .. }
+                | TransitionError::StopPending => ErrorClass::Rejected,
                 TransitionError::TextTooLong { .. }
                 | TransitionError::SessionClosesOnStop
                 | TransitionError::ChildMentions

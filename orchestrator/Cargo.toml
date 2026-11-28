@@ -4,7 +4,7 @@ members = ["crates/*", "bin/*"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.98"
 publish = false
 license = "MIT OR Apache-2.0"
 
@@ -47,6 +47,7 @@ orch-surface-agui = { path = "crates/surface-agui" }
 orch-surface-mcp = { path = "crates/surface-mcp" }
 orch-surface-thread-tools = { path = "crates/surface-thread-tools" }
 orch-surface-webhook = { path = "crates/surface-webhook" }
+orch-chat-kit = { path = "crates/chat-kit" }
 orch-testsupport = { path = "crates/testsupport" }
 orch-thread-token = { path = "crates/thread-token" }
 orch-signed-request = { path = "crates/signed-request" }
@@ -64,16 +65,16 @@ orch-agui-projection = { path = "crates/agui-projection" }
 # rustls on aws-lc-rs, the one TLS backend of this process. `orch-agent-adam` builds their pools with
 # `orch-pg-connect`; `adam-postgres` is named for the one thing that needs it, the `PgConfig` the
 # notifier's listener connects with (`PgNotify::new` takes nothing else).
-adam-host = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46", default-features = false, features = ["supervisor"] }
-adam-core = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
-adam-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
-adam-a2a = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
-adam-a2a-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
-adam-store-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
-adam-notify-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
-adam-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
-adam-engine = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
-adam-store-sqlite = { git = "https://github.com/vymalo/another-adam-rs", rev = "9f90f1e67b00c5cc7235acce738bced83f2ebd46" }
+adam-host = { git = "https://github.com/vymalo/another-adam-rs", rev = "588370857dd8f1db3ab878e7ab41631d8e43f8ca", default-features = false, features = ["supervisor"] }
+adam-core = { git = "https://github.com/vymalo/another-adam-rs", rev = "588370857dd8f1db3ab878e7ab41631d8e43f8ca" }
+adam-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "588370857dd8f1db3ab878e7ab41631d8e43f8ca" }
+adam-a2a = { git = "https://github.com/vymalo/another-adam-rs", rev = "588370857dd8f1db3ab878e7ab41631d8e43f8ca" }
+adam-a2a-runtime = { git = "https://github.com/vymalo/another-adam-rs", rev = "588370857dd8f1db3ab878e7ab41631d8e43f8ca" }
+adam-store-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "588370857dd8f1db3ab878e7ab41631d8e43f8ca" }
+adam-notify-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "588370857dd8f1db3ab878e7ab41631d8e43f8ca" }
+adam-postgres = { git = "https://github.com/vymalo/another-adam-rs", rev = "588370857dd8f1db3ab878e7ab41631d8e43f8ca" }
+adam-engine = { git = "https://github.com/vymalo/another-adam-rs", rev = "588370857dd8f1db3ab878e7ab41631d8e43f8ca" }
+adam-store-sqlite = { git = "https://github.com/vymalo/another-adam-rs", rev = "588370857dd8f1db3ab878e7ab41631d8e43f8ca" }
 clap = { version = "4.6", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -144,6 +145,10 @@ aes-gcm = { version = "0.11", default-features = false, features = ["aes", "allo
 hmac = "0.12"
 # The thread-tools token (`orch-thread-token`): base64url without padding, the encoding of a JWS.
 base64 = "0.22"
+# The claim object of the signed requests to a tool server (`orch-signed-request`, ADR 0080): `sign_claims` writes it and
+# `open_claims` verifies it. The contract (docs/api/signed-tool-requests-v1.md) is its bytes; the crate's known-answer
+# test fails if a new version writes others.
+cratestack-cose = "0.17.2"
 # Ed25519 for the signed requests to a tool server (`orch-signed-request`, ADR 0080): already in the tree as rustls'
 # crypto provider, so the crate adds no new library.
 aws-lc-rs = "1.18"

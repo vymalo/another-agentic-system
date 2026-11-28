@@ -70,9 +70,10 @@ impl Example {
         }
     }
 
-    fn header(&self) -> String {
+    async fn header(&self) -> String {
         self.signer
             .sign_with_cti(&self.request(), self.iat, self.cti)
+            .await
             .unwrap()
     }
 
@@ -98,8 +99,8 @@ fn edited(header: &str, edit: impl FnOnce(&mut Vec<u8>)) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-#[test]
-fn the_worked_example_is_written_byte_for_byte_as_the_real_cratestack_cose_wrote_it() {
+#[tokio::test]
+async fn the_worked_example_is_written_byte_for_byte_as_the_real_cratestack_cose_wrote_it() {
     let v = vectors();
     let example = Example::new();
     // the key: its public half and its kid, derived by the thumbprint of RFC 9679
@@ -107,7 +108,7 @@ fn the_worked_example_is_written_byte_for_byte_as_the_real_cratestack_cose_wrote
     assert_eq!(hex(&kid_of(&example.public)), text(&v, "kid"));
     assert_eq!(hex(&example.signer.kid()), text(&v, "kid"));
     // the request: the digest, and the payload as the real library signed it
-    let header = example.header();
+    let header = example.header().await;
     assert_eq!(header, text(&v, "header"));
     let cose = URL_SAFE_NO_PAD.decode(&header).unwrap();
     assert_eq!(hex(&cose), text(&v, "cose_hex"));
@@ -169,10 +170,10 @@ fn the_contract_page_and_the_vectors_say_the_same_thing() {
     }
 }
 
-#[test]
-fn the_receiving_side_accepts_the_example_and_says_who_it_is_for() {
+#[tokio::test]
+async fn the_receiving_side_accepts_the_example_and_says_who_it_is_for() {
     let example = Example::new();
-    let header = example.header();
+    let header = example.header().await;
     let seen = example
         .verifier()
         .verify(
@@ -180,6 +181,7 @@ fn the_receiving_side_accepts_the_example_and_says_who_it_is_for() {
             &example.incoming(&example.body),
             example.iat + 5,
         )
+        .await
         .unwrap();
     assert_eq!(seen.owner, "amina@example.com");
     assert_eq!(seen.thread, example.thread);
@@ -194,37 +196,46 @@ fn the_receiving_side_accepts_the_example_and_says_who_it_is_for() {
         example
             .verifier()
             .verify(&[&header], &example.incoming(&example.body), now)
+            .await
             .unwrap();
     }
 }
 
-#[test]
-fn each_check_fails_in_its_own_place() {
+/// The check that refuses these headers.
+async fn refusal(
+    verifier: &Verifier,
+    headers: &[&str],
+    incoming: Incoming<'_>,
+    now: u64,
+) -> VerifyError {
+    verifier.verify(headers, &incoming, now).await.unwrap_err()
+}
+
+#[tokio::test]
+async fn each_check_fails_in_its_own_place() {
     let example = Example::new();
-    let header = example.header();
+    let header = example.header().await;
     let ok_time = example.iat + 5;
-    let verify = |verifier: &Verifier, headers: &[&str], incoming: Incoming<'_>, now: u64| {
-        verifier.verify(headers, &incoming, now).unwrap_err()
-    };
     let body = example.body.clone();
     let good = example.incoming(&body);
 
     // 1: the header and the shape around it
     assert_eq!(
-        verify(&example.verifier(), &[], good, ok_time),
+        refusal(&example.verifier(), &[], good, ok_time).await,
         VerifyError::Header(Shape::Missing)
     );
     assert_eq!(
-        verify(&example.verifier(), &[&header, &header], good, ok_time),
+        refusal(&example.verifier(), &[&header, &header], good, ok_time).await,
         VerifyError::Header(Shape::Repeated)
     );
     assert_eq!(
-        verify(
+        refusal(
             &example.verifier(),
             &["A".repeat(4097).as_str()],
             good,
             ok_time
-        ),
+        )
+        .await,
         VerifyError::Header(Shape::TooLong)
     );
     for bad in [
@@ -233,7 +244,7 @@ fn each_check_fails_in_its_own_place() {
         format!(" {header}"),
         "!!!!".to_owned(),
     ] {
-        let found = verify(&example.verifier(), &[bad.as_str()], good, ok_time);
+        let found = refusal(&example.verifier(), &[bad.as_str()], good, ok_time).await;
         assert!(
             found == VerifyError::Header(Shape::NotBase64Url)
                 || found == VerifyError::Object(Object::Malformed),
@@ -241,11 +252,11 @@ fn each_check_fails_in_its_own_place() {
         );
     }
     assert_eq!(
-        verify(&example.verifier(), &[&format!("{header}=")], good, ok_time),
+        refusal(&example.verifier(), &[&format!("{header}=")], good, ok_time).await,
         VerifyError::Header(Shape::NotBase64Url)
     );
     assert_eq!(
-        verify(
+        refusal(
             &example.verifier(),
             &[&header],
             Incoming {
@@ -253,11 +264,12 @@ fn each_check_fails_in_its_own_place() {
                 ..good
             },
             ok_time
-        ),
+        )
+        .await,
         VerifyError::Header(Shape::Query)
     );
     assert_eq!(
-        verify(
+        refusal(
             &example.verifier(),
             &[&header],
             Incoming {
@@ -265,7 +277,8 @@ fn each_check_fails_in_its_own_place() {
                 ..good
             },
             ok_time
-        ),
+        )
+        .await,
         VerifyError::Header(Shape::ContentEncoding)
     );
 
@@ -273,51 +286,54 @@ fn each_check_fails_in_its_own_place() {
     let other = SigningKey::from_seed(&[9; 32]).unwrap().public_key();
     let stranger = Verifier::new(&example.audience, 30).pin(other).unwrap();
     assert_eq!(
-        verify(&stranger, &[&header], good, ok_time),
+        refusal(&stranger, &[&header], good, ok_time).await,
         VerifyError::Object(Object::Unverified)
     );
     let no_key = Verifier::new(&example.audience, 30);
     assert_eq!(
-        verify(&no_key, &[&header], good, ok_time),
+        refusal(&no_key, &[&header], good, ok_time).await,
         VerifyError::Object(Object::Unverified)
     );
     // a flipped bit in the signature, in the payload, in the protected header
     let len = URL_SAFE_NO_PAD.decode(&header).unwrap().len();
     for at in [len - 1, len - 70, 20, 40, 100] {
         let flipped = edited(&header, |b| b[at] ^= 1);
-        let found = verify(&example.verifier(), &[&flipped], good, ok_time);
+        let found = refusal(&example.verifier(), &[&flipped], good, ok_time).await;
         assert!(
             matches!(found, VerifyError::Object(_)),
             "byte {at}: {found}"
         );
     }
     assert_eq!(
-        verify(
+        refusal(
             &example.verifier(),
             &[&edited(&header, |b| b.push(0))],
             good,
             ok_time
-        ),
+        )
+        .await,
         VerifyError::Object(Object::Malformed),
         "trailing bytes"
     );
     assert_eq!(
-        verify(
+        refusal(
             &example.verifier(),
             &[&edited(&header, |b| b[0] = 0xd1)],
             good,
             ok_time
-        ),
+        )
+        .await,
         VerifyError::Object(Object::Malformed),
         "another tag"
     );
     assert_eq!(
-        verify(
+        refusal(
             &example.verifier(),
             &[&edited(&header, |b| b.truncate(100))],
             good,
             ok_time
-        ),
+        )
+        .await,
         VerifyError::Object(Object::Malformed),
         "cut short"
     );
@@ -328,7 +344,7 @@ fn each_check_fails_in_its_own_place() {
         b.splice(2..4, [0x59, 0x00, 0x76]);
     });
     assert_eq!(
-        verify(&example.verifier(), &[&lengthened], good, ok_time),
+        refusal(&example.verifier(), &[&lengthened], good, ok_time).await,
         VerifyError::Object(Object::Malformed)
     );
     // a non-empty unprotected header (it is not signed, so only the profile can refuse it)
@@ -338,14 +354,13 @@ fn each_check_fails_in_its_own_place() {
         b.splice(unprotected_at..=unprotected_at, [0xa1, 0x01, 0x01]);
     });
     assert_eq!(
-        verify(&example.verifier(), &[&with_unprotected], good, ok_time),
+        refusal(&example.verifier(), &[&with_unprotected], good, ok_time).await,
         VerifyError::Object(Object::Malformed)
     );
-    // a transport envelope-like object with another typ: re-signed by the right key, so only the typ is wrong
-    // (see the unit tests of the crate for the typ; here the algorithm label)
+    // another algorithm label (another `typ`, signed by the right key, is in `cratestack.rs`)
     let other_alg = edited(&header, |b| b[6] = 0x38); // 1: -19 written as -25 and a following byte: not the profile
     assert!(matches!(
-        verify(&example.verifier(), &[&other_alg], good, ok_time),
+        refusal(&example.verifier(), &[&other_alg], good, ok_time).await,
         VerifyError::Object(Object::Malformed)
     ));
 
@@ -354,23 +369,23 @@ fn each_check_fails_in_its_own_place() {
         .pin(example.public)
         .unwrap();
     assert_eq!(
-        verify(&elsewhere, &[&header], good, ok_time),
+        refusal(&elsewhere, &[&header], good, ok_time).await,
         VerifyError::Audience
     );
 
     // 4: the time
     assert_eq!(
-        verify(&example.verifier(), &[&header], good, example.iat - 31),
+        refusal(&example.verifier(), &[&header], good, example.iat - 31).await,
         VerifyError::Time(Time::NotYet)
     );
     assert_eq!(
-        verify(&example.verifier(), &[&header], good, example.iat + 30 + 31),
+        refusal(&example.verifier(), &[&header], good, example.iat + 30 + 31).await,
         VerifyError::Time(Time::Expired)
     );
 
     // 5: the request
     assert_eq!(
-        verify(
+        refusal(
             &example.verifier(),
             &[&header],
             Incoming {
@@ -378,11 +393,12 @@ fn each_check_fails_in_its_own_place() {
                 ..good
             },
             ok_time
-        ),
+        )
+        .await,
         VerifyError::Request(Mismatch::Method)
     );
     assert_eq!(
-        verify(
+        refusal(
             &example.verifier(),
             &[&header],
             Incoming {
@@ -390,17 +406,19 @@ fn each_check_fails_in_its_own_place() {
                 ..good
             },
             ok_time
-        ),
+        )
+        .await,
         VerifyError::Request(Mismatch::Method)
     );
     for path in ["/mcp2", "/mcp/", "/MCP", "/", "/other"] {
         assert_eq!(
-            verify(
+            refusal(
                 &example.verifier(),
                 &[&header],
                 Incoming { path, ..good },
                 ok_time
-            ),
+            )
+            .await,
             VerifyError::Request(Mismatch::Path),
             "{path}"
         );
@@ -411,22 +429,23 @@ fn each_check_fails_in_its_own_place() {
     reordered.swap(2, 3);
     for other_body in [spaced.as_slice(), reordered.as_slice(), b"".as_slice()] {
         assert_eq!(
-            verify(
+            refusal(
                 &example.verifier(),
                 &[&header],
                 example.incoming(other_body),
                 ok_time
-            ),
+            )
+            .await,
             VerifyError::Request(Mismatch::Body)
         );
     }
 }
 
-#[test]
-fn the_thread_and_the_owner_are_bound_by_the_signature() {
+#[tokio::test]
+async fn the_thread_and_the_owner_are_bound_by_the_signature() {
     // they are in the payload, which the signature covers: change one and the object is not the one that was signed
     let example = Example::new();
-    let header = example.header();
+    let header = example.header().await;
     for (from, to) in [
         (
             "0194a6c2-6b1e-7c3a-9f40-5d2e8b7a1c33",
@@ -449,6 +468,7 @@ fn the_thread_and_the_owner_are_bound_by_the_signature() {
                     &example.incoming(&example.body),
                     example.iat + 1
                 )
+                .await
                 .unwrap_err(),
             VerifyError::Object(Object::Unverified),
             "{from} -> {to}"
@@ -467,10 +487,12 @@ fn the_thread_and_the_owner_are_bound_by_the_signature() {
             example.iat,
             [7; CTI_LEN],
         )
+        .await
         .unwrap();
     let seen = example
         .verifier()
         .verify(&[&header], &example.incoming(&example.body), example.iat)
+        .await
         .unwrap();
     assert_eq!(
         (seen.thread, seen.owner.as_str()),
@@ -478,33 +500,36 @@ fn the_thread_and_the_owner_are_bound_by_the_signature() {
     );
 }
 
-#[test]
-fn an_object_that_lives_too_long_or_ends_before_it_begins_is_refused() {
+#[tokio::test]
+async fn an_object_that_lives_too_long_or_ends_before_it_begins_is_refused() {
     let example = Example::new();
-    let sign = |iat: u64, exp: u64| {
-        // the object a signer would refuse to make: written by the crate's own path with the lifetime changed
+    // the object a signer would refuse to make: written by the crate's own path with the lifetime changed
+    let sign = async |iat: u64, exp: u64| {
         example
             .signer
             .sign_for_tests(&example.request(), iat, exp, [3; CTI_LEN])
+            .await
             .unwrap()
     };
-    let long = sign(example.iat, example.iat + 61);
+    let long = sign(example.iat, example.iat + 61).await;
     assert_eq!(
         example
             .verifier()
             .verify(&[&long], &example.incoming(&example.body), example.iat)
+            .await
             .unwrap_err(),
         VerifyError::Time(Time::Lifetime)
     );
-    let backwards = sign(example.iat, example.iat - 1);
+    let backwards = sign(example.iat, example.iat - 1).await;
     assert_eq!(
         example
             .verifier()
             .verify(&[&backwards], &example.incoming(&example.body), example.iat)
+            .await
             .unwrap_err(),
         VerifyError::Time(Time::Lifetime)
     );
-    let at_the_limit = sign(example.iat, example.iat + 60);
+    let at_the_limit = sign(example.iat, example.iat + 60).await;
     example
         .verifier()
         .verify(
@@ -512,11 +537,12 @@ fn an_object_that_lives_too_long_or_ends_before_it_begins_is_refused() {
             &example.incoming(&example.body),
             example.iat,
         )
+        .await
         .unwrap();
 }
 
-#[test]
-fn a_get_and_a_delete_bind_the_digest_of_nothing() {
+#[tokio::test]
+async fn a_get_and_a_delete_bind_the_digest_of_nothing() {
     let example = Example::new();
     for (method, name) in [(Method::Get, "GET"), (Method::Delete, "DELETE")] {
         let header = example
@@ -529,6 +555,7 @@ fn a_get_and_a_delete_bind_the_digest_of_nothing() {
                 },
                 example.iat,
             )
+            .await
             .unwrap();
         let incoming = Incoming {
             method: name,
@@ -537,6 +564,7 @@ fn a_get_and_a_delete_bind_the_digest_of_nothing() {
         example
             .verifier()
             .verify(&[&header], &incoming, example.iat)
+            .await
             .unwrap();
         assert_eq!(
             example
@@ -549,36 +577,38 @@ fn a_get_and_a_delete_bind_the_digest_of_nothing() {
                     },
                     example.iat
                 )
+                .await
                 .unwrap_err(),
             VerifyError::Request(Mismatch::Method)
         );
     }
 }
 
-#[test]
-fn every_header_has_a_cti_of_its_own() {
+#[tokio::test]
+async fn every_header_has_a_cti_of_its_own() {
     let example = Example::new();
-    let ctis: Vec<_> = (0..64)
-        .map(|_| {
-            let header = example
-                .signer
-                .sign(&example.request(), example.iat)
-                .unwrap();
-            example
-                .verifier()
-                .verify(&[&header], &example.incoming(&example.body), example.iat)
-                .unwrap()
-                .cti
-        })
-        .collect();
+    let mut ctis = Vec::new();
+    for _ in 0..64 {
+        let header = example
+            .signer
+            .sign(&example.request(), example.iat)
+            .await
+            .unwrap();
+        let seen = example
+            .verifier()
+            .verify(&[&header], &example.incoming(&example.body), example.iat)
+            .await
+            .unwrap();
+        ctis.push(seen.cti);
+    }
     for (i, a) in ctis.iter().enumerate() {
         assert_ne!(*a, [0; CTI_LEN]);
         assert!(ctis[i + 1..].iter().all(|b| b != a), "a cti came twice");
     }
 }
 
-#[test]
-fn the_signer_keeps_to_the_limits_of_the_contract() {
+#[tokio::test]
+async fn the_signer_keeps_to_the_limits_of_the_contract() {
     let example = Example::new();
     let key = || SigningKey::from_seed(&[1; 32]).unwrap();
     // construction
@@ -598,13 +628,14 @@ fn the_signer_keeps_to_the_limits_of_the_contract() {
     }
     Signer::new(key(), "a".repeat(256), 30).unwrap();
     // a request
-    let sign = |request: &Request<'_>| example.signer.sign(request, example.iat);
+    let sign = async |request: &Request<'_>| example.signer.sign(request, example.iat).await;
     for path in ["mcp", "", "/caf\u{e9}", "/a\nb"] {
         assert_eq!(
             sign(&Request {
                 path,
                 ..example.request()
             })
+            .await
             .unwrap_err(),
             SignError::Path,
             "{path:?}"
@@ -616,6 +647,7 @@ fn the_signer_keeps_to_the_limits_of_the_contract() {
             path: &long,
             ..example.request()
         })
+        .await
         .unwrap_err(),
         SignError::Path
     );
@@ -624,6 +656,7 @@ fn the_signer_keeps_to_the_limits_of_the_contract() {
         path: &longest,
         ..example.request()
     })
+    .await
     .unwrap();
     for owner in ["", &"a".repeat(321), "a\nb"] {
         assert_eq!(
@@ -631,6 +664,7 @@ fn the_signer_keeps_to_the_limits_of_the_contract() {
                 owner,
                 ..example.request()
             })
+            .await
             .unwrap_err(),
             SignError::Owner,
             "{owner:?}"
@@ -642,6 +676,7 @@ fn the_signer_keeps_to_the_limits_of_the_contract() {
         path: &longest,
         ..example.request()
     })
+    .await
     .unwrap();
     assert!(
         header.len() <= orch_signed_request::MAX_HEADER_BYTES,
@@ -664,6 +699,7 @@ fn the_signer_keeps_to_the_limits_of_the_contract() {
             },
             example.iat,
         )
+        .await
         .unwrap();
     assert!(
         header.len() <= orch_signed_request::MAX_HEADER_BYTES,
@@ -742,8 +778,8 @@ fn a_pkcs8_pem_is_read_and_anything_else_is_refused_without_quoting_it() {
     );
 }
 
-#[test]
-fn a_verifier_pins_at_most_two_keys() {
+#[tokio::test]
+async fn a_verifier_pins_at_most_two_keys() {
     let one = SigningKey::from_seed(&[1; 32]).unwrap().public_key();
     let two = SigningKey::from_seed(&[2; 32]).unwrap().public_key();
     let three = SigningKey::from_seed(&[3; 32]).unwrap().public_key();
@@ -761,7 +797,7 @@ fn a_verifier_pins_at_most_two_keys() {
             thread,
             owner: "o@e.com",
         };
-        let header = signer.sign(&request, 1_000).unwrap();
+        let header = signer.sign(&request, 1_000).await.unwrap();
         both.verify(
             &[&header],
             &Incoming {
@@ -773,6 +809,7 @@ fn a_verifier_pins_at_most_two_keys() {
             },
             1_000,
         )
+        .await
         .unwrap();
     }
 }

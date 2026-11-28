@@ -129,6 +129,8 @@ impl TokenTable {
                     name: None,
                     roles,
                     expires_at: None,
+                    // A static token names no OAuth client (ADR 0087): it is not a signing client's.
+                    client_id: None,
                 },
                 digest,
             });
@@ -243,6 +245,9 @@ mod tests {
         let sub = t.authenticate(BOB_TOKEN).unwrap();
         assert_eq!(sub.user.as_str(), "cm1abc2def");
         assert_eq!(sub.email, None);
+        // A static token names no OAuth client (ADR 0087): `None`, not the token-with-no-client
+        // sentinel, so an MCP client is never asked for a prompt signature.
+        assert_eq!(sub.client_id, None);
     }
 
     #[test]

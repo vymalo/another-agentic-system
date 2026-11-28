@@ -1,7 +1,7 @@
 # A2A extension: steps (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/steps/v1`
-- **Status:** **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side is built (MVP
+- **Status:** ✅ built · **contract accepted (2026-10-01, on the owner's delegation); the orchestrator's side is built (MVP
   slice 5: the `agent_step` event and its coalescing, the AG-UI projection as nested subagents and `vymalo.step`
   activities, and the A2A adapter that reads the extension).** The web's step tree and the right-hand panel are the
   web's slice; the adam-rs side (an agent that reports its tool calls and its sub-agent's as steps) is that
@@ -40,6 +40,8 @@ Facts about A2A are marked *verified* (with a date and a source) or *unverified*
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram, between Orchestrator, Agent (card lists steps/v1), Sub-agent (OpenCode), Event log, Screen.
   autonumber
   participant O as Orchestrator
   participant A as Agent (card lists steps/v1)
@@ -69,6 +71,7 @@ A step is one of these, and a report moves it between them:
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: A2A extension
   [*] --> Running: first report (running or waiting): start
   Running --> Running: report: update, at most 4 are logged
   Running --> Waiting: report waiting: an update

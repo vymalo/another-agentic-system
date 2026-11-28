@@ -174,6 +174,8 @@ the reason and the raw operations.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the web renderer
+  accDescr: A sequence diagram, between A2A agent, Orchestrator, Postgres event log, Web (react-ag-ui + A2UI renderer), Owner.
   participant Ag as A2A agent
   participant O as Orchestrator
   participant DB as Postgres event log
@@ -198,6 +200,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the web renderer
+  accDescr: A state diagram with 8 states: Received, Validating, Refused, Rendering, Interactive, ActionSent, Removed, Inert.
   [*] --> Received: a2ui-surface activity
   Received --> Validating
   Validating --> Refused: a limit, the vocabulary or a URL rule is broken

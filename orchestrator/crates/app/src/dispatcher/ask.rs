@@ -693,6 +693,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             tier_cap: plain_cap(tier, a.tier_cap),
             locale: None,
             pick: None,
+            signed_prompt: None,
         };
         self.app
             .record_agent_build(a.row.thread_id, &a.endpoint)

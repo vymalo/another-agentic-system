@@ -156,6 +156,7 @@ async fn a_message_the_person_sends_into_the_thread_carries_its_own_locale() {
             tier_cap: None,
             locale: Some(tag("fur-IT")),
             pick: None,
+            signed_prompt: None,
         },
         None,
     )

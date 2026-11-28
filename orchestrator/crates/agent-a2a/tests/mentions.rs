@@ -81,6 +81,7 @@ fn request(fake: &FakeAgent, mentions: Vec<MentionInfo>) -> SendRequest {
         tier_cap: None,
         locale: None,
         pick: None,
+        signed_prompt: None,
     }
 }
 

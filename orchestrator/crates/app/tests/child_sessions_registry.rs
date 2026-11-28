@@ -88,6 +88,7 @@ fn start(request: &str, keep_open: bool) -> StartChildSession {
         text: "echo x".into(),
         keep_open,
         tier: None,
+        signed_prompt: None,
     }
 }
 

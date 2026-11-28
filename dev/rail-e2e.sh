@@ -44,7 +44,7 @@
 #   TIMEOUT         90    seconds to wait for a thread to stop
 #
 # The list may hold other threads (the other scenarios' threads of the same user): every check looks at the order of
-# THIS script's threads among themselves. Needs curl and jq (and /proc or uuidgen for a UUID). Verified by CI only, in
+# THIS script's threads among themselves. Needs curl and jq (and python3 for a v7 UUID; /proc or uuidgen, which make a v4, are the fallback). Verified by CI only, in
 # .github/workflows/coder-e2e.yml.
 set -eu
 
@@ -78,7 +78,7 @@ finish() {
   if [ "$fail" -eq 0 ]; then echo "rail e2e passed"; else echo "rail e2e FAILED"; exit 1; fi
 }
 
-uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || { echo 'uuid: python3 is missing, so this is a v4 id and recent will not be creation order' >&2; cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }; }
 # The clock is read once: a clock that steps back between two readings would put a later id before an earlier one.
 now_ms=$(date +%s%3N 2>/dev/null)
 case $now_ms in *[!0-9]* | '') now_ms=$(($(date +%s) * 1000)) ;; esac
@@ -134,12 +134,34 @@ wait_state() { # wait_state THREAD STATE: the resource API's view says STATE (wi
   done
 }
 
-# the ids of THIS script's threads, in the order a listing gives them: the whole list is read (a hundred at most) and
-# filtered, since other scenarios' threads may be in it
+# the ids of THIS script's threads, in the order a listing gives them: the pages are read (a hundred rows of `recent`
+# at most, or a hundred threads of the list's own level with `rail`) and filtered, since other scenarios' threads may be
+# in the list
 mine="" # set below: a jq array of the three ids
 order_of() { # order_of QUERY: the ids among ours, in the order of the listing QUERY, comma-separated
-  api GET "/api/threads?limit=100$1" | jq -r --argjson ours "$mine" \
-    '[.[].id | select(. as $i | $ours | index($i))] | join(",")'
+  # Every page is read: on a reused database another scenario's threads push ours past the hundredth row (an archived
+  # thread sorts last with `archived=include`), and the assertion is about the order, not about the first page.
+  _found="" _before="" _pages=0
+  # At most fifty pages: five thousand rows of `recent`, or as many threads of the list's own level with `rail`.
+  while [ "$_pages" -lt 50 ]; do
+    _page=$(api GET "/api/threads?limit=100$1${_before:+&before=$_before}") || break
+    _ids=$(printf '%s' "$_page" | jq -r --argjson ours "$mine" \
+      '[.[].id | select(. as $i | $ours | index($i))] | join(",")')
+    [ -n "$_ids" ] && _found="${_found:+$_found,}$_ids"
+    # `limit` counts the rows of `recent` and the threads of the list's own level with `rail` (a page never splits a
+    # block, so it holds those and their children). With `rail` the cursor must be one of those: a nested thread has no
+    # page after it, and the last row of a page may be nested.
+    _units=$(printf '%s' "$_page" | jq -r --arg q "$1" '
+      if ($q | contains("order=rail")) then ([.[] | select(.nestedUnder == null)] | length) else length end')
+    [ "$_units" -ge 100 ] || break
+    _last=$(printf '%s' "$_page" | jq -r --arg q "$1" '
+      if ($q | contains("order=rail")) then ([.[] | select(.nestedUnder == null)] | last | .id) // ""
+      else .[-1].id end')
+    [ -n "$_last" ] || break
+    _before=$_last
+    _pages=$((_pages + 1))
+  done
+  printf '%s' "$_found"
 }
 
 for tool in curl jq; do

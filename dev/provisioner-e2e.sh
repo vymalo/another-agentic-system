@@ -11,6 +11,8 @@
 #
 # The platform's owner routes are `/v1/owners/{owner}/agents/{name}` (another-agentic-platform's Platform API). The owner of a person is
 # 24 hex digits of the SHA-256 of their user id (`Provisioning::owner_of` in crates/app/src/provisioning.rs) and the agent is `coder-<owner>`.
+# In this stack the user id is the `sub` of the person's token (`auth.jwt.userClaim: sub`), which is also the `account` the agent is
+# charged to (ADR 0108, ANR-1321): the script reads it from the token it sends.
 # The script gives `mock-platform` one state machine (a WireMock scenario) per person through its admin API, then asks the orchestrator
 # through the edge, as the UI does (an AG-UI run to the agent `adam`, the coder, whose alias is `coder`: the kind is read from the alias):
 #
@@ -27,7 +29,7 @@
 #
 # It prints one ok or FAIL line per check and exits 1 if any failed:
 #   (a) a first message makes the agent: the platform saw one `PUT If-None-Match: *` for `coder-<owner>` whose body names the agent, the
-#       owner, `suspend: false` and the deployment's form of the coder, with a bearer token; it polled until ready; the thread ends
+#       owner, the person's `sub` as `account`, `suspend: false` and the deployment's form of the coder, with a bearer token; it polled until ready; the thread ends
 #       `blocked` or `done` (the coder answered); the thread's first event is later than the platform's first `ready` answer (the message was written
 #       after the agent was ready); and a message to `chat`, an agent that is not provisioned, makes no request to the platform;
 #   (b) a suspended agent is resumed: one `PUT If-Match: "s1"` with `suspend: false`, then polls until ready, the thread ends `blocked` or
@@ -47,7 +49,7 @@
 #   TIMEOUT             120    seconds to wait for a thread to stop
 #
 # It RESETS the stubs and the request journal of `mock-platform` first, so run it on a stack you are not in the middle of another scenario
-# on. Needs curl, jq and sha256sum (and /proc or uuidgen for a UUID). Verified by CI only: the step "A person's own agent" of
+# on. Needs curl, jq and sha256sum (and python3 for a v7 UUID; /proc or uuidgen, which make a v4, are the fallback). Verified by CI only: the step "A person's own agent" of
 # .github/workflows/coder-e2e.yml runs it. `sh -n` and shellcheck are what was run where it was written, with no Docker.
 set -eu
 
@@ -88,9 +90,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || { echo 'uuid: python3 is missing, so this is a v4 id and recent will not be creation order' >&2; cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }; }
 
-# The owner key of a person, as the orchestrator derives it.
+# The `sub` of the token in a header line `Authorization: Bearer <JWT>`: the user id the orchestrator reads in this stack.
+sub_of() {
+  payload=$(printf '%s' "${1##* }" | cut -d. -f2 | tr '_-' '/+')
+  while [ $(( ${#payload} % 4 )) -ne 0 ]; do payload="$payload="; done
+  printf '%s' "$payload" | base64 -d | jq -r '.sub // empty'
+}
+
+# The owner key of a person, as the orchestrator derives it from their user id.
 owner_of() { printf '%s' "$1" | sha256sum | cut -c1-24; }
 
 admin() { # admin METHOD PATH [BODY]: WireMock's admin API
@@ -171,9 +180,14 @@ admin POST /mappings/reset >/dev/null
 admin DELETE /requests >/dev/null
 admin POST /scenarios/reset >/dev/null
 
-dev_owner=$(owner_of "$dev_email");       dev_path=/v1/owners/$dev_owner/agents/coder-$dev_owner
-holder_owner=$(owner_of "$holder_email"); holder_path=/v1/owners/$holder_owner/agents/coder-$holder_owner
-admin_owner=$(owner_of "$admin_email");   admin_path=/v1/owners/$admin_owner/agents/coder-$admin_owner
+dev_sub=$(sub_of "$dev_header")
+holder_sub=$(sub_of "$holder_header")
+admin_sub=$(sub_of "$admin_header")
+if [ -n "$dev_sub" ] && [ -n "$holder_sub" ] && [ -n "$admin_sub" ]; then ok "each token has a sub"; else bad "a token has no sub: dev '$dev_sub', holder '$holder_sub', admin '$admin_sub'"; finish; fi
+
+dev_owner=$(owner_of "$dev_sub");       dev_path=/v1/owners/$dev_owner/agents/coder-$dev_owner
+holder_owner=$(owner_of "$holder_sub"); holder_path=/v1/owners/$holder_owner/agents/coder-$holder_owner
+admin_owner=$(owner_of "$admin_sub");   admin_path=/v1/owners/$admin_owner/agents/coder-$admin_owner
 
 # dev: absent, made by the first message, saving, ready one poll later
 stub dev Started Saving PUT "$dev_path" 201 saving '"d1"' If-None-Match '*'
@@ -217,10 +231,10 @@ esac
 puts=$(count PUT "$dev_path" If-None-Match '*')
 if [ "$puts" = 1 ]; then ok "the platform saw one PUT If-None-Match: * for coder-<owner>"; else bad "the platform saw $puts conditional creates for $dev_path, want 1"; fi
 find_requests PUT "$dev_path" > "$tmp/puts.json"
-if jq -e --arg owner "$dev_owner" --arg name "coder-$dev_owner" '
-    .[0].body | fromjson | (.name == $name and .owner == $owner and .suspend == false and .image == "dev/coder:mock" and .model == "mock-model")' \
+if jq -e --arg owner "$dev_owner" --arg name "coder-$dev_owner" --arg account "$dev_sub" '
+    .[0].body | fromjson | (.name == $name and .owner == $owner and .account == $account and .suspend == false and .image == "dev/coder:mock" and .model == "mock-model")' \
   "$tmp/puts.json" >/dev/null 2>&1; then
-  ok "the create names the agent, the owner, suspend false and the deployment's form of the coder"
+  ok "the create names the agent, the owner, the person's sub as the account, suspend false and the deployment's form of the coder"
 else
   bad "the create's body is not the agent's form: $(jq -c '.[0].body' "$tmp/puts.json" 2>/dev/null)"
 fi
@@ -288,10 +302,10 @@ case $state in
 esac
 resumes=$(count PUT "$holder_path" If-Match '"s1"')
 if [ "$resumes" = 1 ]; then ok "the platform saw one PUT If-Match: \"s1\" (the ETag it had just read)"; else bad "the platform saw $resumes resumes of $holder_path, want 1"; fi
-if find_requests PUT "$holder_path" | jq -e '.[0].body | fromjson | (.suspend == false and .image == "dev/coder:mock")' >/dev/null 2>&1; then
-  ok "the resume says suspend: false and carries the form"
+if find_requests PUT "$holder_path" | jq -e --arg account "$holder_sub" '.[0].body | fromjson | (.suspend == false and .account == $account and .image == "dev/coder:mock")' >/dev/null 2>&1; then
+  ok "the resume says suspend: false and carries the form and the holder's account"
 else
-  bad "the resume's body is not suspend: false and the form"
+  bad "the resume's body is not suspend: false, the form and the holder's account"
 fi
 if [ "$(count PUT "$holder_path" If-None-Match '*')" = 0 ]; then ok "a suspended agent is not made a second time"; else bad "the platform saw a create for a suspended agent"; fi
 if [ "$(admin GET /scenarios | jq -r '.scenarios[] | select(.name == "holder") | .state')" = Ready ]; then

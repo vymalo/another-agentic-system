@@ -94,11 +94,18 @@ fn surface_routes<P: orch_ports::Ports>(
     match surface {
         #[cfg(feature = "surface-agui")]
         Surface::Agui => {
-            let _ = cfg;
+            // What a prompt is asked for and what is kept beside it (ADR 0087): the deployment's
+            // `auth.signingClients` and `server.publicOrigin`, read once here. No signing client
+            // asks nobody.
+            let intake = orch_surface_agui::Intake {
+                signing_clients: Arc::from(cfg.auth.signing_clients.clone()),
+                public_origin: cfg.public_origin.as_deref().map(Arc::from),
+            };
             Ok(orch_surface_agui::routes(
                 Arc::clone(app),
                 sse_keepalive,
                 sse_lifetime,
+                intake,
             ))
         }
         #[cfg(not(feature = "surface-agui"))]
@@ -746,6 +753,8 @@ fn control_plane_router(cfg: &Config, app: &Arc<App<Stack>>) -> Result<Router, C
             })
             .transpose()?,
         client_metadata,
+        // the same list the AG-UI surface is given (ADR 0087): `startChildSession` asks it too
+        signing_clients: cfg.auth.signing_clients.clone(),
         ..ApiConfig::default()
     };
     // Public sharing needs the rate limit of the public routes (ADR 0040, section 10): the order
