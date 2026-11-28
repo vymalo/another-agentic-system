@@ -4,7 +4,7 @@
 # --list-failing: print only the names of the stills that fail the bound, one per line, on stdout (every other line, the
 # per-still detail with its pixel count and percentage, goes to stderr) and exit 0 whatever fails; update-screens.yml uses it to
 # commit only those. Without it, the output and the exit codes are what `check` has always had.
-# The bound (ANR-Q133): a still passes when at most SCREENS_LIMIT_PPM (0.05 % by default) of its pixels differ by more than
+# The bound (ANR-Q133): a still passes when at most SCREENS_LIMIT_PPM (0.1 % by default) of its pixels differ by more than
 # SCREENS_FUZZ_Q/255 (8 by default) (`compare -metric AE -fuzz`). Both are configuration, documented as a default below.
 # A still that is missing on either side, or whose dimensions differ, fails; no still is skipped. Exit 1 when any still fails.
 # A still that passes but spends more than half of the bound is reported as `near the limit` and counted in the summary, so a
@@ -17,9 +17,10 @@ if [ "${1:-}" = "--list-failing" ]; then list=1; shift; fi
 gen="${1:?generated dir}"; com="${2:?committed dir}"
 # The bound is a policy number, so it is configuration with a documented default, not a constant (the owner's rule of
 # 2026-11-28: a threshold is a setting behind configuration, never a number to ask for). A deployment or a job overrides it:
-#   SCREENS_LIMIT_PPM  parts per million of a still's pixels that may differ by more than SCREENS_FUZZ_Q/255 (default 500: 0.05 %)
+#   SCREENS_LIMIT_PPM  parts per million of a still's pixels that may differ by more than SCREENS_FUZZ_Q/255
+#                      (default 1000: 0.1 %, the owner's answer to ANR-Q149 on 2026-11-27)
 #   SCREENS_FUZZ_Q     how far a channel may move before the pixel counts as different, 0..255 (default 8)
-LIMIT_PPM="${SCREENS_LIMIT_PPM:-500}"
+LIMIT_PPM="${SCREENS_LIMIT_PPM:-1000}"
 FUZZ_Q="${SCREENS_FUZZ_Q:-8}"
 case "$LIMIT_PPM" in ''|*[!0-9]*) echo "screens-compare: SCREENS_LIMIT_PPM must be a whole number of parts per million" >&2; exit 2;; esac
 case "$FUZZ_Q" in ''|*[!0-9]*) echo "screens-compare: SCREENS_FUZZ_Q must be a whole number from 0 to 255" >&2; exit 2;; esac
