@@ -599,6 +599,44 @@ async fn a_signing_clients_unsigned_helper_start_is_refused_and_nothing_is_writt
 }
 
 #[tokio::test]
+async fn an_unsigned_helper_start_is_refused_before_the_thread_or_the_card_is_looked_at() {
+    // Each of these has an answer of its own for a signed request (404, 422 `unknown_helper`).
+    // The 403 instead says the check runs before the application looks either of them up.
+    let h = Harness::start_signing(&["desktop"]).await;
+    let parent = parent_with_helpers(&h, "desktop").await;
+    let events = h.events(ALICE, &parent).await;
+    let sends = h.agent.sends().len();
+    let mut unknown_helper = helper_start(None);
+    unknown_helper["agent"] = json!("nobody");
+    for (why, thread, body) in [
+        (
+            "a thread that does not exist",
+            new_thread_id(),
+            helper_start(None),
+        ),
+        (
+            "a helper the card does not list",
+            parent.clone(),
+            unknown_helper,
+        ),
+    ] {
+        let p = h
+            .api_post_as_client(
+                &format!("/api/threads/{thread}/sessions"),
+                ALICE,
+                "desktop",
+                &body,
+            )
+            .await
+            .problem(403);
+        assert_eq!(p["code"], "prompt_signature_invalid", "{why}: {p}");
+        assert_eq!(p["reason"], "invalid", "{why}: {p}");
+    }
+    assert_eq!(h.events(ALICE, &parent).await, events);
+    assert_eq!(h.agent.sends().len(), sends);
+}
+
+#[tokio::test]
 async fn a_signed_helper_start_opens_the_session_with_the_same_bytes_and_logs_none_of_them() {
     let h = Harness::start_signing(&["desktop"]).await;
     let parent = parent_with_helpers(&h, "desktop").await;
@@ -629,7 +667,19 @@ async fn a_signed_helper_start_opens_the_session_with_the_same_bytes_and_logs_no
             !export.contains("promptSignature") && !export.contains("prompt_signature"),
             "an export names the envelope"
         );
-        let events = serde_json::to_string(&h.events(ALICE, thread).await).unwrap();
+        let events = h.events(ALICE, thread).await;
+        // the positive control: the absences below are not of empty answers. The prompt is the
+        // helper's log alone.
+        if thread == &child {
+            assert!(export.contains(HELPER_PROMPT), "the export has no prompt");
+            assert!(
+                events
+                    .iter()
+                    .any(|e| e["kind"] == "user_message" && e["data"]["text"] == HELPER_PROMPT),
+                "the events have no prompt: {events:?}"
+            );
+        }
+        let events = serde_json::to_string(&events).unwrap();
         assert!(!events.contains(ENVELOPE), "the envelope is in an event");
         // the frames every viewer of the thread is sent, folded from the whole log
         let history = h
@@ -637,6 +687,9 @@ async fn a_signed_helper_start_opens_the_session_with_the_same_bytes_and_logs_no
             .await;
         assert_eq!(history.status, 200);
         let history = String::from_utf8_lossy(&history.body).to_string();
+        if thread == &child {
+            assert!(history.contains(HELPER_PROMPT), "the history has no prompt");
+        }
         assert!(!history.contains(ENVELOPE), "the envelope is in a frame");
     }
 }
