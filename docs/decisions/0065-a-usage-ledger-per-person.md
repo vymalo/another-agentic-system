@@ -133,7 +133,7 @@ The nine decisions of the design comment, in its order, each with what PR 1 buil
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: a usage ledger per person
-  accDescr: A sequence diagram of a usage ledger per person, between Dispatcher (apply), ThreadStore (commit), orch-core (pure), Log (events) and Ledger (usagetasks, usagelines, usage_sandbox).
+  accDescr: A sequence diagram, between Dispatcher (apply), ThreadStore (commit), orch-core (pure), Log (events), Ledger (usagetasks, usagelines, usage_sandbox).
   autonumber
   participant D as Dispatcher (apply)
   participant S as ThreadStore (commit)

@@ -46,7 +46,7 @@ sidebarTitle: "0060 · Client copy behind ChatStore"
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: the client keeps a bounded copy of recent threads behind a ChatStore port
-  accDescr: A sequence diagram of the client keeps a bounded copy of recent threads behind a ChatStore port, between Person, Web, ChatStore (capped, one owner) and Orchestrator.
+  accDescr: A sequence diagram, between Person, Web, ChatStore (capped, one owner), Orchestrator.
   autonumber
   actor P as Person
   participant W as Web
@@ -69,7 +69,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   accTitle: Lifecycle: the client keeps a bounded copy of recent threads behind a ChatStore port
-  accDescr: A state diagram of the client keeps a bounded copy of recent threads behind a ChatStore port, with 7 states: Absent, Partial, Trimmed, Complete, Evicted, Dropped, and 1 more.
+  accDescr: A state diagram with 7 states: Absent, Partial, Trimmed, Complete, Evicted, Dropped, Wiped.
   [*] --> Absent
   Absent --> Partial: the first settled chain is stored
   Partial --> Partial: chains appended, older chains prepended

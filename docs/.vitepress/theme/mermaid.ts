@@ -76,13 +76,18 @@ function sizeBoxes() {
 
 // The renderer names every drawing "Interactive Mermaid diagram" and its inner box by the first 80 characters of the
 // source. A diagram names itself instead: Mermaid's `accTitle` (which tools/docs-check requires of every diagram under
-// docs/) becomes the SVG's <title>, and that is what the box a reader lands on is called. The raw source label goes.
+// docs/) becomes the SVG's <title>, `accDescr` its <desc>, and the box a reader lands on takes both. The raw source
+// label goes.
 function nameBoxes() {
   document.querySelectorAll<HTMLElement>(".mermaid-container").forEach((box) => {
     const wrapper = box.querySelector<HTMLElement>(".diagram-wrapper");
     const svg = box.querySelector<SVGSVGElement>(".diagram-wrapper svg[aria-roledescription]");
     const title = svg?.querySelector("title")?.textContent?.trim();
+    const desc = svg?.querySelector("desc");
     if (wrapper && title && wrapper.getAttribute("aria-label") !== title) wrapper.setAttribute("aria-label", title);
+    if (wrapper && desc?.id && wrapper.getAttribute("aria-describedby") !== desc.id) {
+      wrapper.setAttribute("aria-describedby", desc.id);
+    }
     box.querySelector<HTMLElement>(".mermaid")?.removeAttribute("aria-label");
   });
 }
@@ -139,7 +144,7 @@ export const Layout = {
     });
     onMounted(() => {
       document.addEventListener("keydown", onKey);
-      observer?.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["viewBox"] });
+      observer?.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["viewBox", "aria-label"] });
       window.addEventListener("resize", sizeBoxes);
     });
     onUnmounted(() => {

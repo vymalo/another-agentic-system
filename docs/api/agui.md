@@ -1018,7 +1018,7 @@ Two lifecycles, the card's and the subagent's. **The card** (`state`) is `workin
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: child sessions as subagents
+  accTitle: Lifecycle: the child session card, from working to closed
   [*] --> working: child_session_opened with a round
   [*] --> idle: child_session_opened with none
   working --> idle: reported done, failed or canceled
@@ -1033,7 +1033,7 @@ stateDiagram-v2
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: child sessions as subagents
+  accTitle: Lifecycle: the subagent, from open to its end and a later report
   [*] --> Open: child_session_opened (SUBAGENT_STARTED)
   Open --> Finished: reported done or canceled, or closed
   Open --> Failed: reported failed (SUBAGENT_ERROR session_failed)
@@ -1990,7 +1990,7 @@ that sends a message and for every capabilities request.
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: capability detection
-  accDescr: A sequence diagram of capability detection, between Web, Orchestrator, Postgres event log and A2A agent.
+  accDescr: A sequence diagram, between Web, Orchestrator, Postgres event log, A2A agent.
   participant W as Web
   participant O as Orchestrator
   participant DB as Postgres event log

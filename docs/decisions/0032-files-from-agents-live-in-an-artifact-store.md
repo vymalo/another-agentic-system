@@ -148,7 +148,7 @@ neither a ledger entry nor an event, and putting bytes in Postgres would make ev
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: files from agents live in an artifact store
-  accDescr: A sequence diagram of files from agents live in an artifact store, between Agent (any A2A agent), Worker (dispatcher), ArtifactStore, Event log (Postgres), API (control plane) and Web.
+  accDescr: A sequence diagram, between Agent (any A2A agent), Worker (dispatcher), ArtifactStore, Event log (Postgres), API (control plane), Web.
   participant A as Agent (any A2A agent)
   participant W as Worker (dispatcher)
   participant S as ArtifactStore

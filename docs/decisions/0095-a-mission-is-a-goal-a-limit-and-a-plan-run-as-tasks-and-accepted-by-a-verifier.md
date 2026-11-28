@@ -48,7 +48,7 @@ nobody approved, and no statement of "done" a machine can check.
    ```mermaid
    stateDiagram-v2
      accTitle: Lifecycle: a mission
-     accDescr: A state diagram of a mission, with 7 states: Drafted, Planned, Running, Waiting, Paused, Done, and 1 more.
+     accDescr: A state diagram with 7 states: Drafted, Planned, Running, Waiting, Paused, Done, Stopped.
      [*] --> Drafted: create
      Drafted --> Planned: the person approves a plan
      Planned --> Running: start (the limit has room)
@@ -201,7 +201,7 @@ nobody approved, and no statement of "done" a machine can check.
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: a mission
-  accDescr: A sequence diagram of a mission, between Person, Orchestrator, Lead agent, Writer agent, Verifier agent and Git forge.
+  accDescr: A sequence diagram, between Person, Orchestrator, Lead agent, Writer agent, Verifier agent, Git forge.
   participant P as Person
   participant O as Orchestrator
   participant L as Lead agent

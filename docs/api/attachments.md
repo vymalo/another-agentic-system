@@ -34,7 +34,7 @@ that route already keeps.
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: the rule
-  accDescr: A sequence diagram of the rule, between Browser (same origin), POST /api/threads/{threadId}/attachments, Artifact store and GET /api/threads/{threadId}/artifacts/{sha256}.
+  accDescr: A sequence diagram, between Browser (same origin), POST /api/threads/{threadId}/attachments, Artifact store, GET /api/threads/{threadId}/artifacts/{sha256}.
   autonumber
   participant B as Browser (same origin)
   participant R as POST /api/threads/{threadId}/attachments

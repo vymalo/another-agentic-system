@@ -175,7 +175,7 @@ A run waits for the person, and their phone shows it:
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: push notifications for a person's runs
-  accDescr: A sequence diagram of push notifications for a person's runs, between Agent, orch-app (commit), orch-core transition, Postgres, Dispatcher, PushSender adapter, and 4 more.
+  accDescr: A sequence diagram, between Agent, orch-app (commit), orch-core transition, Postgres, Dispatcher, PushSender adapter, Push service, Device, The app on the device, Chat API.
   participant Ag as Agent
   participant Ap as orch-app (commit)
   participant Co as orch-core transition

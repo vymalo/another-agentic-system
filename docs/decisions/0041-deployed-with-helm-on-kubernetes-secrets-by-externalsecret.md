@@ -51,7 +51,7 @@ image is pushed. The coder stays in adam-rs's chart and is named here only by it
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: deployed with Helm on Kubernetes
-  accDescr: A sequence diagram of deployed with Helm on Kubernetes, between Pull request, CI (Orchestrator, Web, Deploy), ghcr.io, main (deploy/chart/values.yaml), Argo CD (home-os, netcup-k8s), External Secrets + AWS SM, and 1 more.
+  accDescr: A sequence diagram, between Pull request, CI (Orchestrator, Web, Deploy), ghcr.io, main (deploy/chart/values.yaml), Argo CD (home-os, netcup-k8s), External Secrets + AWS SM, Pods.
   participant PR as Pull request
   participant CI as CI (Orchestrator, Web, Deploy)
   participant GHCR as ghcr.io

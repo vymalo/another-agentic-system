@@ -105,7 +105,7 @@ The path of a report, including one that beats its watch (parked, then re-armed)
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: CI results by webhook
-  accDescr: A sequence diagram of CI results by webhook, between CI system, Edge (Caddy, oauth2-proxy), orch-surface-webhook, Postgres, InboxWorker and App and transition (pure).
+  accDescr: A sequence diagram, between CI system, Edge (Caddy, oauth2-proxy), orch-surface-webhook, Postgres, InboxWorker, App and transition (pure).
   participant CI as CI system
   participant E as Edge (Caddy, oauth2-proxy)
   participant S as orch-surface-webhook

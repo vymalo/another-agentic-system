@@ -41,7 +41,7 @@ Facts about A2A are marked *verified* (with a date and a source) or *unverified*
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: A2A extension
-  accDescr: A sequence diagram of A2A extension, between Orchestrator, Agent (card lists steps/v1), Sub-agent (OpenCode), Event log and Screen.
+  accDescr: A sequence diagram, between Orchestrator, Agent (card lists steps/v1), Sub-agent (OpenCode), Event log, Screen.
   autonumber
   participant O as Orchestrator
   participant A as Agent (card lists steps/v1)

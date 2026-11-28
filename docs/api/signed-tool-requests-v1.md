@@ -37,7 +37,7 @@ A signed server is sent **no bearer**. A server that is not configured for signi
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: signed requests to a tool server (v1)
-  accDescr: A sequence diagram of signed requests to a tool server (v1), between Agent, Relay (orchestrator), Signing key (configuration, by reference) and Tool server (pins the public key).
+  accDescr: A sequence diagram, between Agent, Relay (orchestrator), Signing key (configuration, by reference), Tool server (pins the public key).
   autonumber
   participant A as Agent
   participant R as Relay (orchestrator)

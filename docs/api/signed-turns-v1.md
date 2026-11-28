@@ -26,7 +26,7 @@ agent that does not list the extension is a plain A2A agent and works as before.
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: who does what
-  accDescr: A sequence diagram of who does what, between Orchestrator and Agent (adam).
+  accDescr: A sequence diagram, between Orchestrator, Agent (adam).
   autonumber
   participant O as Orchestrator
   participant A as Agent (adam)
@@ -50,7 +50,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   accTitle: Lifecycle: who does what
-  accDescr: A state diagram of who does what, with 12 states: Unlisted, Listed, Plain, Activated, Received, NoRows, and 6 more.
+  accDescr: A state diagram with 12 states: Unlisted, Listed, Plain, Activated, Received, NoRows, Verified, Unverified, Refused, Stored, SentBack, Continued.
   [*] --> Unlisted: the card lists no signed-turns/v1
   [*] --> Listed: the card lists it, params well formed
   Unlisted --> Plain: plain A2A, no activation, no rows

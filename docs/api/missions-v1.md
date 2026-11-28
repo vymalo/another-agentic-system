@@ -59,7 +59,7 @@ person may not use, a verifier that is its writer, more than 16 tasks or a `weig
 ```mermaid
 stateDiagram-v2
   accTitle: Lifecycle: missions (v1)
-  accDescr: A state diagram of missions (v1), with 7 states: drafted, planned, running, waiting, paused, done, and 1 more.
+  accDescr: A state diagram with 7 states: drafted, planned, running, waiting, paused, done, stopped.
   [*] --> drafted
   drafted --> planned: approve plan
   planned --> running: start

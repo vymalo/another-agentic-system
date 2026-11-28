@@ -56,7 +56,7 @@ forms catalog of an ask, and the web's rules on a surface.
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: the handshake
-  accDescr: A sequence diagram of the handshake, between Web (catalog 9), Orchestrator, Event log and Agent (card lists ui-catalog/v2 and a2ui/v1.0).
+  accDescr: A sequence diagram, between Web (catalog 9), Orchestrator, Event log, Agent (card lists ui-catalog/v2 and a2ui/v1.0).
   autonumber
   participant W as Web (catalog 9)
   participant O as Orchestrator

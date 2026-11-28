@@ -192,7 +192,7 @@ detected from the live card, never cached, fail closed, removable. **3, stateles
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: the person reaches the agent as a signed assertion
-  accDescr: A sequence diagram of the person reaches the agent as a signed assertion, between Person, Orchestrator, Secret store and link table, GitHub and Agent (coder, lists identity/v1).
+  accDescr: A sequence diagram, between Person, Orchestrator, Secret store and link table, GitHub, Agent (coder, lists identity/v1).
   autonumber
   actor P as Person
   participant O as Orchestrator

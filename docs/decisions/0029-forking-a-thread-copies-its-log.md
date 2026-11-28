@@ -131,7 +131,7 @@ what was said, and to edit an earlier message and keep both versions, the way Ch
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: forking a thread copies its log
-  accDescr: A sequence diagram of forking a thread copies its log, between Web, API, Store, Dispatcher and Agent (A2A).
+  accDescr: A sequence diagram, between Web, API, Store, Dispatcher, Agent (A2A).
   participant W as Web
   participant A as API
   participant S as Store

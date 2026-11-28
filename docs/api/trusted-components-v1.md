@@ -202,8 +202,8 @@ The person gets words and a link, never a plain form.
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: 6. What a client without the extension does
-  accDescr: A sequence diagram of 6. What a client without the extension does, between Agent, Orchestrator, Client and Orchestrator API.
+  accTitle: Interaction: what a client without the extension does
+  accDescr: A sequence diagram, between Agent, Orchestrator, Client, Orchestrator API.
   autonumber
   participant A as Agent
   participant O as Orchestrator

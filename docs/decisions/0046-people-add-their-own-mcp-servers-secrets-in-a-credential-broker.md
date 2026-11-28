@@ -147,8 +147,8 @@ a server, so **"none"** is a real kind.
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: people add their own MCP servers from the UI
-  accDescr: A sequence diagram of people add their own MCP servers from the UI, between Person (web), Orchestrator, Credential broker, User's MCP server, Its authorization server and Agent.
+  accTitle: Interaction: a person adds, authorizes and attaches their own MCP server
+  accDescr: A sequence diagram, between Person (web), Orchestrator, Credential broker, User's MCP server, Its authorization server, Agent.
   participant P as Person (web)
   participant O as Orchestrator
   participant B as Credential broker
@@ -178,7 +178,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: people add their own MCP servers from the UI
+  accTitle: Lifecycle: a person's server definition, from added to revoked
   [*] --> added: POST (definition saved, no credential)
   added --> connected: consent done, key stored, or kind none
   connected --> needs_reauth: refresh fails, 401, scope step-up
@@ -243,8 +243,8 @@ with this section. *Facts about third parties are in [Verified and unverified](#
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: amended 2026-10-11
-  accDescr: A sequence diagram of amended 2026-10-11, between Relay (orchestrator), CredentialBroker, SecretStore (the adapter), Authorization server and User's MCP server.
+  accTitle: Interaction: amended 2026-10-11 — the broker is the orchestrator's, behind two ports
+  accDescr: A sequence diagram, between Relay (orchestrator), CredentialBroker, SecretStore (the adapter), Authorization server, User's MCP server.
   autonumber
   participant R as Relay (orchestrator)
   participant B as CredentialBroker
@@ -272,7 +272,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: amended 2026-10-11
+  accTitle: Lifecycle: amended 2026-10-11 — the broker is the orchestrator's, behind two ports
   [*] --> Current: named as secrets.pg.current, new secrets are sealed under it
   Current --> Previous: a new key is made current, rows sealed under this one still open
   Previous --> Retired: rewrap has re-sealed every row under the current key, the key is removed from the file
@@ -369,7 +369,7 @@ Decisions 1, 2, 4 and 5, the flow and the amendments above stand. What exists, b
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: amended 2026-10-14
+  accTitle: Interaction: amended 2026-10-14, slice 1 — the ports
   participant C as Caller, the broker or the relay
   participant G as EgressPolicy
   participant D as Resolver of the caller
@@ -386,7 +386,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: amended 2026-10-14
+  accTitle: Lifecycle: amended 2026-10-14, slice 1 — the ports
   [*] --> Classified: an address the host resolved to
   Classified --> Public: global unicast
   Classified --> Private: loopback, RFC 1918, carrier-grade NAT, unique local
@@ -561,7 +561,7 @@ The review of [pull request 251](https://github.com/vymalo/another-agentic-syste
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: amended 2026-10-14, slice 2 review
+  accTitle: Interaction: the iss check refuses another authorization server's code
   autonumber
   participant P as Person's browser
   participant B as Broker
@@ -578,7 +578,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: amended 2026-10-14, slice 2 review
+  accTitle: Lifecycle: the pending flow, from begin_oauth to used or revoked
   [*] --> Pending: begin_oauth keeps the issuer and whether it advertised iss
   Pending --> Pending: complete_oauth with an iss that is refused, nothing is spent
   Pending --> Used: complete_oauth with the state and an acceptable iss
@@ -602,8 +602,8 @@ stateDiagram-v2
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: amended 2026-10-14, slice 2 review
-  accDescr: A sequence diagram of amended 2026-10-14, slice 2 review, between Replica A, Replica B, SecretStore and Authorization server (rotates, detects reuse).
+  accTitle: Interaction: two replicas refresh one token, one claim wins
+  accDescr: A sequence diagram, between Replica A, Replica B, SecretStore, Authorization server (rotates, detects reuse).
   autonumber
   participant A as Replica A
   participant B as Replica B
@@ -623,7 +623,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: amended 2026-10-14, slice 2 review
+  accTitle: Lifecycle: the refresh claim, from unclaimed to ended
   [*] --> Unclaimed: tokens kept
   Unclaimed --> Claimed: rotate with refreshing_until, one replica wins
   Claimed --> Unclaimed: tokens kept, or the claim released after a failure
@@ -674,8 +674,8 @@ Decisions 1 to 5, the slice 1 and 2 departures and the amendments above stand, e
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: amended 2026-10-14
-  accDescr: A sequence diagram of amended 2026-10-14, between Operator, kubectl exec, in the orchestrator's pod, orchestrator secrets rewrap and Postgres.
+  accTitle: Interaction: amended 2026-10-14, slice 3 — orch-secrets-pg
+  accDescr: A sequence diagram, between Operator, kubectl exec, in the orchestrator's pod, orchestrator secrets rewrap, Postgres.
   participant O as Operator
   participant K as kubectl exec, in the orchestrator's pod
   participant R as orchestrator secrets rewrap
@@ -694,7 +694,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: amended 2026-10-14
+  accTitle: Lifecycle: amended 2026-10-14, slice 3 — orch-secrets-pg
   [*] --> Current: put or rotate seals under the current key
   Current --> Previous: a new key is made current
   Previous --> Current: rewrap, at the same version
@@ -800,8 +800,8 @@ Slice 4 of the list above is split in two. **4a is everything below the HTTP API
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: amended 2026-10-14
-  accDescr: A sequence diagram of amended 2026-10-14, between Caller (the API, slice 4b), PgUserToolServers and Postgres.
+  accTitle: Interaction: amended 2026-10-14, slice 4a — the definitions in Postgres
+  accDescr: A sequence diagram, between Caller (the API, slice 4b), PgUserToolServers, Postgres.
   autonumber
   participant A as Caller (the API, slice 4b)
   participant S as PgUserToolServers
@@ -835,7 +835,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: amended 2026-10-14
+  accTitle: Lifecycle: amended 2026-10-14, slice 4a — the definitions in Postgres
   [*] --> Off: userToolServers absent or enabled: false
   [*] --> WithoutCredentials: enabled, no secrets section
   [*] --> Full: enabled, secrets.store pg
@@ -891,7 +891,7 @@ The security review of PR 253 (slice 4a) found one major and several minor point
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: amended 2026-10-14
+  accTitle: Lifecycle: amended 2026-10-14, slice 4a review — the bundle gives out no secret store
   [*] --> Off: userToolServers absent or enabled: false, or a worker role
   [*] --> WithoutCredentials: enabled, a role that serves routes, no secrets section
   [*] --> Full: enabled, a role that serves routes, secrets.store pg
@@ -902,8 +902,8 @@ stateDiagram-v2
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: amended 2026-10-14
-  accDescr: A sequence diagram of amended 2026-10-14, between The person, The API (slice 4b), app.user_tools(), PgUserToolServers and Broker.
+  accTitle: Interaction: amended 2026-10-14, slice 4a review — the bundle gives out no secret store
+  accDescr: A sequence diagram, between The person, The API (slice 4b), app.user_tools(), PgUserToolServers, Broker.
   autonumber
   participant P as The person
   participant A as The API (slice 4b)
@@ -961,8 +961,8 @@ The routes, the listing and the OpenAPI for the kinds `none`, `bearer` and `api_
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: amended 2026-10-15
-  accDescr: A sequence diagram of amended 2026-10-15, between Person, App (add, delete), Definitions and Broker.
+  accTitle: Interaction: amended 2026-10-15, slice 4b — the HTTP API for people's own servers, without OAuth, is built
+  accDescr: A sequence diagram, between Person, App (add, delete), Definitions, Broker.
   autonumber
   participant P as Person
   participant A as App (add, delete)
@@ -994,7 +994,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: amended 2026-10-15
+  accTitle: Lifecycle: amended 2026-10-15, slice 4b — the HTTP API for people's own servers, without OAuth, is built
   [*] --> connected: POST none (nothing to wait for)
   [*] --> added: POST oauth2, or bearer and api_key (until the broker keeps the secret)
   added --> connected: bearer or api_key: store then replace, or PATCH with a secret
@@ -1051,8 +1051,8 @@ The security review of the slice 4b pull request (#254) found two major problems
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: amended 2026-10-15
-  accDescr: A sequence diagram of amended 2026-10-15, between Person, App (edit, a move), Definitions and Broker.
+  accTitle: Interaction: amended 2026-10-15, slice 4b review — an edit writes before it revokes
+  accDescr: A sequence diagram, between Person, App (edit, a move), Definitions, Broker.
   autonumber
   participant P as Person
   participant A as App (edit, a move)
@@ -1081,7 +1081,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: amended 2026-10-15
+  accTitle: Lifecycle: amended 2026-10-15, slice 4b review — an edit writes before it revokes
   connected --> connected: replace fails or loses the race (nothing revoked, the credential is there)
   connected --> added: replace(added, no credential) written
   added --> added: revoke fails (503): the sealed record is named by nothing, so it is not lent
@@ -1124,8 +1124,8 @@ A person who holds `tools.user.add` can now authorize an `oauth2` server of thei
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: amended 2026-10-15
-  accDescr: A sequence diagram of amended 2026-10-15, between App or web (signed in), Orchestrator (API and application), Broker, Pending authorizations, Definitions, Browser (no session), and 1 more.
+  accTitle: Interaction: amended 2026-10-15, slice 4c — authorizing an OAuth server is built (the authorize route
+  accDescr: A sequence diagram, between App or web (signed in), Orchestrator (API and application), Broker, Pending authorizations, Definitions, Browser (no session), Authorization server.
   autonumber
   participant C as App or web (signed in)
   participant A as Orchestrator (API and application)
@@ -1165,7 +1165,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: amended 2026-10-15
+  accTitle: Lifecycle: the definition around authorize and the callback
   [*] --> added: POST oauth2 (4b)
   added --> added: authorize (a state is kept, nothing is written)
   added --> added: callback refused (error, a code the server refuses, a server changed meanwhile): nothing written
@@ -1180,7 +1180,7 @@ stateDiagram-v2
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: amended 2026-10-15
+  accTitle: Lifecycle: a pending authorization, from put to taken, ended or swept
   [*] --> Pending: put(state)
   Pending --> Replaced: a put for the same server (the later state wins)
   Pending --> Taken: take while now is before expires_at (once)
@@ -1241,8 +1241,8 @@ The security review of the slice 4c pull request (#255) found two major problems
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: amended 2026-10-15
-  accDescr: A sequence diagram of amended 2026-10-15, between Holder of tools.user.add (the attacker), Orchestrator, Another person (the victim), Authorization server (a real one) and Attacker's MCP server.
+  accTitle: Interaction: consent phishing, the victim's grant kept in the attacker's definition
+  accDescr: A sequence diagram, between Holder of tools.user.add (the attacker), Orchestrator, Another person (the victim), Authorization server (a real one), Attacker's MCP server.
   autonumber
   participant X as Holder of tools.user.add (the attacker)
   participant A as Orchestrator
@@ -1264,8 +1264,8 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: amended 2026-10-15
-  accDescr: A sequence diagram of amended 2026-10-15, between Person, App (an edit of the URL), Definitions, Broker and Browser (the callback).
+  accTitle: Interaction: an edit of the URL ends the flow and the code goes to nobody
+  accDescr: A sequence diagram, between Person, App (an edit of the URL), Definitions, Broker, Browser (the callback).
   autonumber
   participant P as Person
   participant E as App (an edit of the URL)
@@ -1284,7 +1284,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: amended 2026-10-15
+  accTitle: Lifecycle: a flow ends when the definition it began with moved or expired
   [*] --> Pending: begin_oauth
   Pending --> Used: complete_oauth, the state and an acceptable iss, rotate takes it
   Pending --> Used: a callback after expires_at
@@ -1300,7 +1300,7 @@ stateDiagram-v2
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: amended 2026-10-15
+  accTitle: Lifecycle: the consent-phishing path, from add to harmless or harmful
   [*] --> Added: add oauth2 server (a holder of tools.user.add)
   Added --> LinkMade: authorize (state kept for the account)
   LinkMade --> LinkSent: the link is sent to somebody else
@@ -1358,8 +1358,8 @@ Slice 5 of the list is split in two, as 4 was. **5a is everything in Rust**, bui
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: amended 2026-10-15
-  accDescr: A sequence diagram of amended 2026-10-15, between Agent, RelayTools, Definitions, CredentialBroker, McpToolClient (guarded), The person's MCP server, and 1 more.
+  accTitle: Interaction: amended 2026-10-15, slice 5a — attaching a person's own server
+  accDescr: A sequence diagram, between Agent, RelayTools, Definitions, CredentialBroker, McpToolClient (guarded), The person's MCP server, Event log.
   autonumber
   participant A as Agent
   participant R as RelayTools
@@ -1393,7 +1393,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: amended 2026-10-15
+  accTitle: Lifecycle: amended 2026-10-15, slice 5a — attaching a person's own server
   [*] --> added: POST (definition saved, no credential)
   added --> connected: consent done, key stored, or kind none
   connected --> needs_reauth: the broker (a refresh refused), the relay (the broker says NeedsReauth, or the server answers 401 or 403)
@@ -1469,8 +1469,8 @@ The security review of slice 5a (PR 256) found three things that could hurt a de
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: amended 2026-10-15
-  accDescr: A sequence diagram of amended 2026-10-15, between Agent, RelayTools, Places (4 a person, 16 in all), Definitions, CredentialBroker, McpToolClient (guarded), and 1 more.
+  accTitle: Interaction: a relayed call, its place, its lease and the revision check
+  accDescr: A sequence diagram, between Agent, RelayTools, Places (4 a person, 16 in all), Definitions, CredentialBroker, McpToolClient (guarded), The person's server.
   autonumber
   participant A as Agent
   participant R as RelayTools
@@ -1503,8 +1503,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: amended 2026-10-15
-  accDescr: A state diagram of amended 2026-10-15, with 10 states: Waiting, Busy, Reading, Leasing, CouldNotBeHad, Connected, and 4 more.
+  accTitle: Lifecycle: amended 2026-10-15, slice 5a review — a stranger's answers are cut on the wire
+  accDescr: A state diagram with 10 states: Waiting, Busy, Reading, Leasing, CouldNotBeHad, Connected, Served, TooLarge, NeedsSignIn, Refused.
   [*] --> Waiting: a request to a person's server
   Waiting --> Busy: no place within 10 s
   Waiting --> Reading: a place
@@ -1543,8 +1543,8 @@ stateDiagram-v2
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: amended 2026-10-15
-  accDescr: A sequence diagram of amended 2026-10-15, between Owner (permission revoked), App, Event log, Dispatcher (the job) and RelayTools.
+  accTitle: Interaction: a revoked permission detaches the owner's servers at the next message
+  accDescr: A sequence diagram, between Owner (permission revoked), App, Event log, Dispatcher (the job), RelayTools.
   autonumber
   participant O as Owner (permission revoked)
   participant A as App
@@ -1585,8 +1585,8 @@ Slice 5b is `dev/user-tools-relay-e2e.sh`, the scenario that runs the chain of 5
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: amended 2026-10-15
-  accDescr: A sequence diagram of amended 2026-10-15, between The script (tool-maker), Orchestrator, chat (adam-agent), mock-model (WireMock) and mock-mcp-search.
+  accTitle: Interaction: amended 2026-10-15, slice 5b — the compose scenario of the relay is built
+  accDescr: A sequence diagram, between The script (tool-maker), Orchestrator, chat (adam-agent), mock-model (WireMock), mock-mcp-search.
   autonumber
   participant S as The script (tool-maker)
   participant O as Orchestrator
@@ -1609,7 +1609,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: amended 2026-10-15
+  accTitle: Lifecycle: amended 2026-10-15, slice 5b — the compose scenario of the relay is built
   [*] --> Added: POST (a token made up for the run)
   Added --> Attached: vymalo.tools or PUT (ready)
   Attached --> Called: the model is offered u-id__web_search and calls it

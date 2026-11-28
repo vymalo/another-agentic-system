@@ -151,7 +151,7 @@ start is *unverified*: no signing against the deployed OpenBao has been timed.
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: the new path
-  accDescr: A sequence diagram of the new path, between orchestrator, broker (internal listener), the run's signer (adam, or the sidecar), PKI (OpenBao), gateway's key registry, model gateway (Envoy, Authorino), and 2 more.
+  accDescr: A sequence diagram, between orchestrator, broker (internal listener), the run's signer (adam, or the sidecar), PKI (OpenBao), gateway's key registry, model gateway (Envoy, Authorino), gateway's verifier, model.
   participant O as orchestrator
   participant B as broker (internal listener)
   participant S as the run's signer (adam, or the sidecar)
@@ -183,7 +183,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   accTitle: Lifecycle: the new path
-  accDescr: A state diagram of the new path, with 9 states: Unbound, Parked, Requested, Issued, Refused, Signing, and 3 more.
+  accDescr: A state diagram with 9 states: Unbound, Parked, Requested, Issued, Refused, Signing, Renewing, Revoked, Ended.
   [*] --> Unbound: the task starts
   Unbound --> Parked: certificate asked before the bind (run_not_bound)
   Parked --> Requested: the bind lands (timer or resume)

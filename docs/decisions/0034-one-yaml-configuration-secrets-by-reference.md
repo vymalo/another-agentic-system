@@ -133,8 +133,8 @@ in a Deployment.
 
 ```mermaid
 sequenceDiagram
-  accTitle: Interaction: 4. Migration: the environment over the file for one release
-  accDescr: A sequence diagram of 4. Migration: the environment over the file for one release, between Operator (Deployment, compose), orchestrator binary (main.rs), loader (binary: file, env, secret files), orch-config (pure) and boot.rs (composition).
+  accTitle: Interaction: migration: the environment over the file for one release
+  accDescr: A sequence diagram, between Operator (Deployment, compose), orchestrator binary (main.rs), loader (binary: file, env, secret files), orch-config (pure), boot.rs (composition).
   participant Op as Operator (Deployment, compose)
   participant B as orchestrator binary (main.rs)
   participant L as loader (binary: file, env, secret files)
@@ -161,7 +161,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  accTitle: Lifecycle: 4. Migration: the environment over the file for one release
+  accTitle: Lifecycle: migration: the environment over the file for one release
   [*] --> EnvOnly: today
   EnvOnly --> Transition: S9 ships (a release)
   Transition --> FileOnly: the next release

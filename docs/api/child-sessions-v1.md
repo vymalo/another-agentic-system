@@ -40,7 +40,7 @@ An agent whose card does not list the extension is unchanged, and so is a client
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: A2A extension
-  accDescr: A sequence diagram of A2A extension, between Orchestrator (activates child-sessions/v1), Agent, parent task T1 (parent context C) and Agent, round task R1 (child context K).
+  accDescr: A sequence diagram, between Orchestrator (activates child-sessions/v1), Agent, parent task T1 (parent context C), Agent, round task R1 (child context K).
   autonumber
   participant O as Orchestrator (activates child-sessions/v1)
   participant P as Agent, parent task T1 (parent context C)

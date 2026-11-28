@@ -77,7 +77,7 @@ and the conformance cases of `thread_store_conformance!` hold them to the same o
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: a fair share of the dispatcher
-  accDescr: A sequence diagram of a fair share of the dispatcher, between Dispatcher (a replica), ThreadStore::claim_outbox and Postgres (outbox).
+  accDescr: A sequence diagram, between Dispatcher (a replica), ThreadStore::claim_outbox, Postgres (outbox).
   participant D as Dispatcher (a replica)
   participant S as ThreadStore::claim_outbox
   participant DB as Postgres (outbox)

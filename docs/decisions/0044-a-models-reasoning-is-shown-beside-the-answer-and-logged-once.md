@@ -96,7 +96,7 @@ Facts the design rests on, each *verified 2026-10-05* from the page or the code 
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: a model's reasoning is shown beside the answer and logged once
-  accDescr: A sequence diagram of a model's reasoning is shown beside the answer and logged once, between Agent (adam), StreamMapper, Dispatcher (LiveRelay), WakeupPort, Store, LiveOverlay (per connection), and 1 more.
+  accDescr: A sequence diagram, between Agent (adam), StreamMapper, Dispatcher (LiveRelay), WakeupPort, Store, LiveOverlay (per connection), Client (web).
     participant A as Agent (adam)
     participant M as StreamMapper
     participant D as Dispatcher (LiveRelay)

@@ -76,7 +76,7 @@ orchestrator will also be embedded in a desktop application with no Postgres at 
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: embeddings and vector search use pgvector
-  accDescr: A sequence diagram of embeddings and vector search use pgvector, between Client, API, Event log (Postgres), Embed queue, Embed worker, Embeddings endpoint (configured), and 1 more.
+  accDescr: A sequence diagram, between Client, API, Event log (Postgres), Embed queue, Embed worker, Embeddings endpoint (configured), VectorIndex (pgvector).
   participant C as Client
   participant A as API
   participant L as Event log (Postgres)

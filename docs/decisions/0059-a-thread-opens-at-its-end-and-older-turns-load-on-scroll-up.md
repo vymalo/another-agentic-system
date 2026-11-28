@@ -164,7 +164,7 @@ What happens when a person opens a long thread, from reading the code on 2026-10
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: a thread opens at its end
-  accDescr: A sequence diagram of a thread opens at its end, between Person, Web (ThreadAgent, transcript), Seed (runtime, off screen), Chat runtime (on screen) and Orchestrator.
+  accDescr: A sequence diagram, between Person, Web (ThreadAgent, transcript), Seed (runtime, off screen), Chat runtime (on screen), Orchestrator.
   autonumber
   actor P as Person
   participant W as Web (ThreadAgent, transcript)
@@ -192,7 +192,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   accTitle: Lifecycle: a thread opens at its end
-  accDescr: A state diagram of a thread opens at its end, with 8 states: Closed, Seeding, Live, Failed, LoadingEarlier, WaitingForRun, and 2 more.
+  accDescr: A state diagram with 8 states: Closed, Seeding, Live, Failed, LoadingEarlier, WaitingForRun, Complete, NotFound.
   [*] --> Closed
   Closed --> Seeding: opened
   Seeding --> Live: imported, shown at the bottom

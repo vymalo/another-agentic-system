@@ -90,7 +90,7 @@ So an application that links the orchestrator as it is and adam's SQLite store c
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: the orchestrator as a library in an application
-  accDescr: A sequence diagram of the orchestrator as a library in an application, between Application UI, Library root (new), orch-store-sqlite (new), Dispatcher (orch-app), Local agent adapter (orch-agent-adam), adam-engine, and 1 more.
+  accDescr: A sequence diagram, between Application UI, Library root (new), orch-store-sqlite (new), Dispatcher (orch-app), Local agent adapter (orch-agent-adam), adam-engine, The application's model client.
   autonumber
   participant UI as Application UI
   participant R as Library root (new)
@@ -116,7 +116,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   accTitle: Lifecycle: the orchestrator as a library in an application
-  accDescr: A state diagram of the orchestrator as a library in an application, with 7 states: DeploymentHome, ApplicationHome, LogInPostgres, CopyOnADevice, LogInSqlite, Resumed, and 1 more.
+  accDescr: A state diagram with 7 states: DeploymentHome, ApplicationHome, LogInPostgres, CopyOnADevice, LogInSqlite, Resumed, Deleted.
   [*] --> DeploymentHome: a thread started on a deployment
   [*] --> ApplicationHome: a thread started in an application
   state DeploymentHome {

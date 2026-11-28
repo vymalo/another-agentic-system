@@ -43,7 +43,7 @@ asking for German.
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: A2A extension
-  accDescr: A sequence diagram of A2A extension, between Person, Web (interface in fr-FR), Orchestrator, Event log and Agent (card lists locale/v1).
+  accDescr: A sequence diagram, between Person, Web (interface in fr-FR), Orchestrator, Event log, Agent (card lists locale/v1).
   autonumber
   actor P as Person
   participant W as Web (interface in fr-FR)

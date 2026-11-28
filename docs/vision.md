@@ -548,7 +548,7 @@ agent, which the addressed agent asks.
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: a message, end to end
-  accDescr: A sequence diagram of a message, end to end, between Person, Web UI, Orchestrator, Registry (platform), Addressed agent and Mentioned agent.
+  accDescr: A sequence diagram, between Person, Web UI, Orchestrator, Registry (platform), Addressed agent, Mentioned agent.
   actor P as Person
   participant W as Web UI
   participant O as Orchestrator

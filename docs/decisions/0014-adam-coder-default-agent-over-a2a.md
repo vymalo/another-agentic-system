@@ -47,7 +47,7 @@ agent that clones a repository, works on a branch, runs checks, pushes and opens
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: adam-coder is the default agent
-  accDescr: A sequence diagram of adam-coder is the default agent, between Orchestrator and adam-coder (A2A agent).
+  accDescr: A sequence diagram, between Orchestrator, adam-coder (A2A agent).
   participant O as Orchestrator
   participant C as adam-coder (A2A agent)
   O->>C: GET /.well-known/agent-card.json (no token)
@@ -83,7 +83,7 @@ further agent input.
 ```mermaid
 stateDiagram-v2
   accTitle: Lifecycle: adam-coder is the default agent
-  accDescr: A state diagram of adam-coder is the default agent, with 6 states: Queued, Working, Blocked, Done, Failed and Cancelled.
+  accDescr: A state diagram with 6 states: Queued, Working, Blocked, Done, Failed, Cancelled.
   [*] --> Queued: thread created
   Queued --> Working: working
   Blocked --> Working: working

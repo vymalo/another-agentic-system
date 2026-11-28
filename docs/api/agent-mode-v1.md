@@ -60,7 +60,7 @@ A person's choice is never dropped: an unlisted mode is not replaced by the defa
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: what the orchestrator checks
-  accDescr: A sequence diagram of what the orchestrator checks, between Web (or another client), Orchestrator and Agent.
+  accDescr: A sequence diagram, between Web (or another client), Orchestrator, Agent.
   autonumber
   participant W as Web (or another client)
   participant O as Orchestrator
@@ -80,7 +80,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   accTitle: Lifecycle: what the orchestrator checks
-  accDescr: A state diagram of what the orchestrator checks, with 8 states: Unlisted, Listed, Plain, Refused, Resolved, Activated, and 2 more.
+  accDescr: A state diagram with 8 states: Unlisted, Listed, Plain, Refused, Resolved, Activated, Used, Undelivered.
   [*] --> Unlisted: the card lists no agent-mode/v1
   [*] --> Listed: the card lists it, params well formed
   Unlisted --> Plain: nothing picked, plain A2A

@@ -29,7 +29,7 @@ The rest of this page is for agents that do list it.
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: A2A extension
-  accDescr: A sequence diagram of A2A extension, between Orchestrator (steer row), Agent (card lists steer/v1) and Task T1 (working).
+  accDescr: A sequence diagram, between Orchestrator (steer row), Agent (card lists steer/v1), Task T1 (working).
   autonumber
   participant O as Orchestrator (steer row)
   participant A as Agent (card lists steer/v1)

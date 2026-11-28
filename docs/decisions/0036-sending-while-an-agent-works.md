@@ -139,7 +139,7 @@ dispatcher keeps following that task. The question moves to Closed when this is 
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: the dispatcher
-  accDescr: A sequence diagram of the dispatcher, between Person, Orchestrator, Event log and Agent (task T1 working).
+  accDescr: A sequence diagram, between Person, Orchestrator, Event log, Agent (task T1 working).
   autonumber
   participant P as Person
   participant O as Orchestrator

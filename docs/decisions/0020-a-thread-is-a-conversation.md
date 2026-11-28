@@ -72,7 +72,7 @@ job changes.
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: a thread is a conversation
-  accDescr: A sequence diagram of a thread is a conversation, between Person, Orchestrator, Event log and Agent (A2A).
+  accDescr: A sequence diagram, between Person, Orchestrator, Event log, Agent (A2A).
   participant U as Person
   participant O as Orchestrator
   participant L as Event log

@@ -40,7 +40,7 @@ Facts about A2A are marked *verified* (with a date and a source) or *unverified*
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: A2A extension
-  accDescr: A sequence diagram of A2A extension, between Orchestrator (worker), Agent (card lists text-stream/v1), Event log and Other replicas (viewers).
+  accDescr: A sequence diagram, between Orchestrator (worker), Agent (card lists text-stream/v1), Event log, Other replicas (viewers).
   autonumber
   participant O as Orchestrator (worker)
   participant A as Agent (card lists text-stream/v1)

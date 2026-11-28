@@ -42,7 +42,7 @@ An agent whose card does not list the extension is unchanged, and so is a client
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: A2A extension
-  accDescr: A sequence diagram of A2A extension, between Person, Web (composer), Orchestrator, Event log and Agent (card lists commands/v1).
+  accDescr: A sequence diagram, between Person, Web (composer), Orchestrator, Event log, Agent (card lists commands/v1).
   autonumber
   actor P as Person
   participant W as Web (composer)

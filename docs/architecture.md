@@ -91,7 +91,6 @@ capabilities document and A2UI surfaces), read from the code on 2026-09-29. Soli
 ```mermaid
 flowchart LR
   accTitle: Flow: components
-  accDescr: A flowchart of components.
   browser(("Browser"))
   subgraph EDGE["Edge: one origin"]
     edge["oauth2-proxy in production<br/>Caddy in compose, in front of a real oauth2-proxy<br/>and a mock issuer that approves anybody"]
@@ -229,7 +228,7 @@ request, and the connect stream may be served by a third.
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: a chat turn
-  accDescr: A sequence diagram of a chat turn, between Browser (web UI, ThreadAgent), Edge proxy, Replica A orch-api + orch-surface-agui + App, Postgres, Dispatcher (any replica) and A2A agent.
+  accDescr: A sequence diagram, between Browser (web UI, ThreadAgent), Edge proxy, Replica A orch-api + orch-surface-agui + App, Postgres, Dispatcher (any replica), A2A agent.
   autonumber
   actor B as Browser (web UI, ThreadAgent)
   participant E as Edge proxy
@@ -361,7 +360,7 @@ place it changes. It is a subset of the [target job lifecycle](#job-lifecycle) b
 ```mermaid
 stateDiagram-v2
   accTitle: Lifecycle: thread state
-  accDescr: A state diagram of thread state, with 7 states: Queued, Open, Working, Blocked, Done, Failed, and 1 more.
+  accDescr: A state diagram with 7 states: Queued, Open, Working, Blocked, Done, Failed, Cancelled.
   [*] --> Queued: thread created with its first user message
   state Open {
     Queued --> Working: the agent reports working
@@ -436,7 +435,7 @@ and sends the chat text unchanged, so the first message has to name the reposito
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: the default agent
-  accDescr: A sequence diagram of the default agent, between Orchestrator dispatcher, adam-coder, git remote and GitHub API.
+  accDescr: A sequence diagram, between Orchestrator dispatcher, adam-coder, git remote, GitHub API.
   participant D as Orchestrator dispatcher
   participant C as adam-coder
   participant G as git remote
@@ -460,7 +459,7 @@ failure whose detail starts with `rejected:`.
 ```mermaid
 stateDiagram-v2
   accTitle: Lifecycle: the default agent
-  accDescr: A state diagram of the default agent, with 6 states: Queued, Working, Blocked, Done, Failed and Cancelled.
+  accDescr: A state diagram with 6 states: Queued, Working, Blocked, Done, Failed, Cancelled.
   [*] --> Queued: thread created, the task is submitted
   Queued --> Working: task working
   Queued --> Blocked: task input-required or auth-required
@@ -551,7 +550,6 @@ The two directions, both through the same pure crates:
 ```mermaid
 flowchart LR
   accTitle: Flow: AG-UI: how it is served
-  accDescr: A flowchart of AG-UI: how it is served.
   subgraph INB["Inbound: RunAgentInput to a core input"]
     post["POST /agui/agents/{agentId}<br/>RunAgentInput"]
     parse["orch-agui-proto<br/>RunAgentInput::parse<br/>drops unknown members, rejects malformed"]
@@ -644,7 +642,7 @@ MCP `2026-07-28` (`toolServers[].protocol`: the session opens with `server/disco
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: the relay of an attached MCP server's tools
-  accDescr: A sequence diagram of the relay of an attached MCP server's tools, between Agent (any A2A agent that lists thread-tools/v1), Thread tools endpoint (relay), Event log (steps) and MCP server (credentials held by the relay).
+  accDescr: A sequence diagram, between Agent (any A2A agent that lists thread-tools/v1), Thread tools endpoint (relay), Event log (steps), MCP server (credentials held by the relay).
   autonumber
   participant A as Agent (any A2A agent that lists thread-tools/v1)
   participant R as Thread tools endpoint (relay)
@@ -738,7 +736,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   accTitle: Lifecycle: child sessions: a helper an agent runs is a thread
-  accDescr: A state diagram of child sessions: a helper an agent runs is a thread, with 6 states: Queued, Done, Working, Cancelled, Failed and Blocked.
+  accDescr: A state diagram with 6 states: Queued, Done, Working, Cancelled, Failed, Blocked.
   [*] --> Queued: made with a round to follow (open_child_thread)
   [*] --> Done: made at rest, with nothing to follow (idle or closed)
   Queued --> Working: RoundStarted, job 1
@@ -773,7 +771,7 @@ delegates a whole thread to one agent; this is the multi-agent flow it grows int
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: how a job flows
-  accDescr: A sequence diagram of how a job flows, between You, Web chat surface (static export + assistant-ui), Orchestrator (Rust, stateless), Postgres (CNPG), Planner (any A2A agent), Workers (A2A agents, e.g. platform coder), and 2 more.
+  accDescr: A sequence diagram, between You, Web chat surface (static export + assistant-ui), Orchestrator (Rust, stateless), Postgres (CNPG), Planner (any A2A agent), Workers (A2A agents, e.g. platform coder), Verifier (CI via webhook, or a verifier agent), Reviewers (A2A agents).
   actor U as You
   participant CP as Web chat surface (static export + assistant-ui)
   participant O as Orchestrator (Rust, stateless)
@@ -813,7 +811,7 @@ steps 3–5.
 ```mermaid
 stateDiagram-v2
   accTitle: Lifecycle: job lifecycle
-  accDescr: A state diagram of job lifecycle, with 10 states: Queued, Planning, Working, Verifying, Failed, Reviewing, and 4 more.
+  accDescr: A state diagram with 10 states: Queued, Planning, Working, Verifying, Failed, Reviewing, AwaitingYou, Blocked, Done, Cancelled.
   [*] --> Queued
   Queued --> Planning
   Planning --> Working
@@ -856,7 +854,7 @@ rework is `Queued` or `Working` with `attempt > 1`); a timeout in `Verifying` go
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: verifying, the rework loop and attempts
-  accDescr: A sequence diagram of verifying, the rework loop and attempts, between Agent (A2A), Orchestrator (pure transition), Sources: CI webhook · agent checks · verifier agent and You (chat).
+  accDescr: A sequence diagram, between Agent (A2A), Orchestrator (pure transition), Sources: CI webhook · agent checks · verifier agent, You (chat).
   participant A as Agent (A2A)
   participant O as Orchestrator (pure transition)
   participant X as Sources: CI webhook · agent checks · verifier agent
@@ -884,7 +882,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   accTitle: Lifecycle: verifying, the rework loop and attempts
-  accDescr: A state diagram of verifying, the rework loop and attempts, with 7 states: Queued, Working, Done, Verifying, Failed, Blocked, and 1 more.
+  accDescr: A state diagram with 7 states: Queued, Working, Done, Verifying, Failed, Blocked, Cancelled.
   [*] --> Queued
   Queued --> Working
   Working --> Done: completed, empty gate

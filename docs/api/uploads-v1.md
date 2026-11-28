@@ -38,7 +38,7 @@ never holds a store credential. The orchestrator never receives the bytes. An ag
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: A2A extension
-  accDescr: A sequence diagram of A2A extension, between Orchestrator (message), Agent (card lists uploads/v1), Thread tools (orchestrator), Bucket, at the public files host, Dispatcher (orchestrator) and Event log.
+  accDescr: A sequence diagram, between Orchestrator (message), Agent (card lists uploads/v1), Thread tools (orchestrator), Bucket, at the public files host, Dispatcher (orchestrator), Event log.
   autonumber
   participant O as Orchestrator (message)
   participant A as Agent (card lists uploads/v1)
@@ -243,7 +243,7 @@ Not an extension: no card, no activation. The same bucket and the same public ho
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: downloads (A1)
-  accDescr: A sequence diagram of downloads (A1), between Browser (or a reader of a link), File route (orch-api, deliver), App (readable*, redirectttl), ArtifactStore (S3, public signer) and Bucket, at the public files host.
+  accDescr: A sequence diagram, between Browser (or a reader of a link), File route (orch-api, deliver), App (readable*, redirectttl), ArtifactStore (S3, public signer), Bucket, at the public files host.
   autonumber
   participant W as Browser (or a reader of a link)
   participant R as File route (orch-api, deliver)

@@ -53,7 +53,7 @@ by what they spend inside the balance's cache TTL (below) until settlement books
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: what is checked, in order
-  accDescr: A sequence diagram of what is checked, in order, between agent pod, injector Gateway (Agent Router), Authorino (ext-auth), broker, internal listener, ledger, budget read, Envoy Lua filter (balance), and 1 more.
+  accDescr: A sequence diagram, between agent pod, injector Gateway (Agent Router), Authorino (ext-auth), broker, internal listener, ledger, budget read, Envoy Lua filter (balance), model endpoint.
   participant A as agent pod
   participant G as injector Gateway (Agent Router)
   participant Z as Authorino (ext-auth)

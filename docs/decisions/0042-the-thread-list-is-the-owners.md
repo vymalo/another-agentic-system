@@ -159,7 +159,7 @@ fork gets its first message without a second write.
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: the lazy fork
-  accDescr: A sequence diagram of the lazy fork, between Person, Web (fork draft), Run handler (surface-agui, fork_request), App (forkandsend), ArtifactStore (copy), Store (fork_thread), and 2 more.
+  accDescr: A sequence diagram, between Person, Web (fork draft), Run handler (surface-agui, fork_request), App (forkandsend), ArtifactStore (copy), Store (fork_thread), Dispatcher, Agent (A2A).
   autonumber
   actor Person
   participant Web as Web (fork draft)

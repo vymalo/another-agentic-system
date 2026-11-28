@@ -50,7 +50,7 @@ owner asked for the device's voice, and for a help sheet rather than more bindin
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: read aloud with the device's voice
-  accDescr: A sequence diagram of read aloud with the device's voice, between the person, the turn (Read aloud), the speech store (one per page), the device's engine and speechSynthesis.
+  accDescr: A sequence diagram, between the person, the turn (Read aloud), the speech store (one per page), the device's engine, speechSynthesis.
   actor P as the person
   participant T as the turn (Read aloud)
   participant S as the speech store (one per page)

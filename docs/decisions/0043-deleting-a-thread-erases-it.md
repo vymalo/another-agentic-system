@@ -154,7 +154,7 @@ What exists (*verified* 2026-10-03 by reading the code at main plus the sharing 
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: the delete
-  accDescr: A sequence diagram of the delete, between Person, API (DELETE /api/threads/{id}), App (delete_thread), Store (delete_threads), ArtifactStore (delete_prefix) and Purge sweep (worker role).
+  accDescr: A sequence diagram, between Person, API (DELETE /api/threads/{id}), App (delete_thread), Store (delete_threads), ArtifactStore (delete_prefix), Purge sweep (worker role).
   autonumber
   actor Person
   participant API as API (DELETE /api/threads/{id})

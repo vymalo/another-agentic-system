@@ -29,7 +29,7 @@ the web says so before the person sends. The rest of this page is for agents tha
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: A2A extension
-  accDescr: A sequence diagram of A2A extension, between Web (composer), Orchestrator, Agent registry, Event log, Addressed agent (lists mentions/v1, thread-tools/v1) and Mentioned agent.
+  accDescr: A sequence diagram, between Web (composer), Orchestrator, Agent registry, Event log, Addressed agent (lists mentions/v1, thread-tools/v1), Mentioned agent.
   autonumber
   participant W as Web (composer)
   participant O as Orchestrator

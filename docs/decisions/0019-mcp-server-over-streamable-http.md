@@ -123,7 +123,7 @@ A job started from Claude Code, followed to its end:
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: MCP server over streamable HTTP
-  accDescr: A sequence diagram of MCP server over streamable HTTP, between You, Claude Code (MCP client), Edge (no identity for /mcp, unbuffered), orch-surface-mcp, App and Postgres.
+  accDescr: A sequence diagram, between You, Claude Code (MCP client), Edge (no identity for /mcp, unbuffered), orch-surface-mcp, App, Postgres.
   actor U as You
   participant CC as Claude Code (MCP client)
   participant E as Edge (no identity for /mcp, unbuffered)

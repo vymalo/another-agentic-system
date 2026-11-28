@@ -73,7 +73,7 @@ one: a card that cannot be read records nothing, and the export then says `unkno
 ```mermaid
 sequenceDiagram
   accTitle: Interaction: a thread export says which builds made it
-  accDescr: A sequence diagram of a thread export says which builds made it, between Dispatcher, App::recordagentbuild, Agent (live card), ThreadStore (Job.builds), Web (Export JSON) and GET /api/threads/{id}/export.
+  accDescr: A sequence diagram, between Dispatcher, App::recordagentbuild, Agent (live card), ThreadStore (Job.builds), Web (Export JSON), GET /api/threads/{id}/export.
   participant D as Dispatcher
   participant A as App::record_agent_build
   participant G as Agent (live card)
