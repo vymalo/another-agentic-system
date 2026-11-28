@@ -996,6 +996,7 @@ impl Checker<'_> {
         }
         self.roles(auth);
         self.signing_clients(auth);
+        self.public_origin(cfg);
         match (&auth.jwt, auth.mode.reads_tokens()) {
             (None, true) => self.invalid(
                 "auth.jwt",
@@ -1252,6 +1253,41 @@ impl Checker<'_> {
                 "expected scope tokens separated by single spaces, like \"openid email profile\" \
                  (RFC 6749 section 3.3)",
             );
+        }
+    }
+
+    /// `server.publicOrigin` (ADR 0087): there, in its normal form, whenever a signing client is
+    /// listed, because the `aud` of a signed prompt is never read from a request. An empty value is
+    /// no value (fail closed). With no signing client the key may be absent, and a value that is
+    /// given is checked all the same.
+    fn public_origin(&mut self, cfg: &Config) {
+        const KEY: &str = "server.publicOrigin";
+        let given = cfg.server.public_origin.as_deref();
+        match given.filter(|origin| !origin.is_empty()) {
+            None if cfg.auth.signing_clients.is_empty() => {}
+            None => self.invalid(
+                KEY,
+                "required when auth.signingClients lists a client: it is the aud of a signed \
+                 prompt, which is never taken from a request",
+            ),
+            Some(origin) if !is_normal_origin(origin) => self.invalid(
+                KEY,
+                "expected an origin in its normal form, like https://chat.example.com: http or \
+                 https, a lower-case host (an international name as punycode), no default port, \
+                 credentials, path, query, fragment or trailing slash",
+            ),
+            Some(origin)
+                if cfg.server.environment == Environment::Production
+                    && is_plain_http_origin(origin)
+                    && !is_loopback_origin(origin) =>
+            {
+                self.invalid(
+                    KEY,
+                    "an https:// origin when server.environment is production (http:// only for \
+                     localhost, 127.0.0.1 and [::1])",
+                );
+            }
+            Some(_) => {}
         }
     }
 
@@ -2809,6 +2845,14 @@ fn is_origin(raw: &str) -> bool {
             && u.path() == "/"
             && u.query().is_none()
             && u.fragment().is_none()
+    })
+}
+
+/// An `http(s)` origin written as it is compared: exactly its own ASCII serialisation (RFC 6454),
+/// so lower case, no default port, no credentials, path, query, fragment or trailing slash.
+fn is_normal_origin(raw: &str) -> bool {
+    Url::parse(raw).is_ok_and(|u| {
+        matches!(u.scheme(), "http" | "https") && raw == u.origin().ascii_serialization()
     })
 }
 
