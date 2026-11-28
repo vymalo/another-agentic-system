@@ -1,8 +1,8 @@
 # A2A extension: thread tools (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/thread-tools/v1`
-- **Status:** ⚠️ partial · **built (MVP slice 3, 2026-10-01), apart from the tools of later slices.** Accepted on the owner's
-  delegation; the owner may revisit anything here. Built: `orch-thread-token` (the token, with the known-answer vectors
+- **Status:** ✅ built · **every tool this page defines is built on the orchestrator's side** ([the tools](#the-tools)). Accepted on the owner's
+  delegation; the owner may revisit anything here. **Built 2026-10-01 (MVP slice 3):** `orch-thread-token` (the token, with the known-answer vectors
   below), `orch-surface-thread-tools` (the route, the guard, `get_ui_catalog`, the seam for later tools), the binary's
   `thread-tools` surface and `THREAD_TOOLS_*` settings, and the grant in the A2A message (the adapter mints at send
   time, only for an agent whose live card lists the extension). `turn_output` (an agent announces its answer,
@@ -19,10 +19,14 @@
 person added themselves, attached to their threads and relayed with a fresh credential for every request,
 [below](#a-persons-own-servers). **Built 2026-10-17:** the `person` member of an asked agent's message, what the person
 said in the thread ([below](#the-person-member);
-[ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-fourth-an-asked-agent-is-told-what-the-person-said)).
-"Not yet" is marked where it matters. The adam-rs side (an agent
-  that reads the grant and calls the endpoint) is that repository's slice; the `thread-tools` script of the test
-  support's fake agent is the reference of what an agent does.
+[ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md#status-note-2026-10-17-fourth-an-asked-agent-is-told-what-the-person-said)). **Built 2026-10-14 (6a):** `request_upload`, offered only while the
+  deployment offers uploads ([`uploads-v1.md`](uploads-v1.md#3-the-tool-request_upload), whose status is its own).
+  **Run against the real agent image:** with the `chat` agent on the then pinned adam (`sha-9f90f1e`, a scripted model),
+  `dev/tools-e2e.sh` (the card, an attached server's tool relayed, the detach), `dev/mentions-e2e.sh` (`ask_agent`; the asked
+  agents are mocks) and `dev/user-tools-relay-e2e.sh` (a person's own server) passed (*verified 2026-11-28* in the log of CI run
+  46075358410, 2026-11-27); no run on the current pin `5883708` was checked, and no `dev/` scenario runs `request_upload`.
+  The tools that [`memory-v1.md`](memory-v1.md) and [`windows-v1.md`](windows-v1.md) propose for this endpoint are those pages'
+  own, planned, and not part of this status.
 - **Decided in:** the status notes of [ADR 0023](../decisions/0023-ui-component-catalog-as-an-a2a-extension.md) (the
   endpoint, the token, the refetch), [ADR 0024](../decisions/0024-mcp-tools-attached-per-conversation.md) (the relay)
   and [ADR 0026](../decisions/0026-agent-mentions-as-structured-references.md) (`ask_agent`); a second MCP endpoint
