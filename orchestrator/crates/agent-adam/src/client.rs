@@ -196,6 +196,16 @@ impl AgentClient for LocalAgentClient {
 
     async fn send_stream(&self, req: SendRequest) -> Result<AgentStream, AgentError> {
         let (entry, _, caller) = self.resolve(&req.endpoint)?;
+        // A file is never dropped (`docs/api/attachments.md`), and a local agent cannot take one:
+        // the pinned adam-rs does not fetch a URL part, it writes it into the message's text as
+        // `[linked: <url>]`, cut at 512 characters. The model would read a signed link instead of
+        // the file, and the journal, which is in the orchestrator's own Postgres, would keep it.
+        // Nothing is submitted and no link is asked for.
+        if !req.attachments.is_empty() {
+            return Err(AgentError::Unsupported(
+                "a local agent does not take attachments".to_owned(),
+            ));
+        }
         // The card of a local agent lists no access tier (ADR 0061), so a message that names one is
         // never sent: it would run under the agent's own default, and a tier is never dropped.
         if let Some(tier) = req.tier {

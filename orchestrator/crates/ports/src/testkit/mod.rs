@@ -231,6 +231,7 @@ macro_rules! agent_client_conformance {
             a_plain_message_under_a_cap_is_not_sent_to_an_agent_that_lists_tiers
             a_locale_never_holds_a_message_back
             a_pick_is_refused_by_an_agent_that_does_not_offer_it
+            attachments_are_carried_or_refused_never_dropped
         );
     };
     (@cases $make:path; $($case:ident)*) => {

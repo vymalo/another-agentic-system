@@ -65,6 +65,11 @@
 //! live card lists `uploads/v1` and `thread-tools/v1`, a grant was minted for the message and the
 //! request's grant offers uploads.
 //!
+//! The files of a message (`docs/api/attachments.md`) are plain A2A, no extension: one **URL part**
+//! per file after the text, with its `mediaType` and `filename`, never the bytes. The URL is a
+//! signed link asked of [`A2aConfig::attachment_links`] while the message is sent; it is in the
+//! message and in no log line. A message whose files cannot all be sent that way is not sent.
+//!
 //! Release channels (ADR 0008) are an optional extension: [`releases_from_card`] reads them
 //! from the live card, and a selected release is sent as the `A2A-Extensions` header plus
 //! namespaced message metadata. Nothing here depends on a specific agent host.
@@ -88,6 +93,7 @@
 
 mod a2ui;
 mod access_tier;
+mod attachments;
 mod child_sessions;
 mod client;
 mod commands;

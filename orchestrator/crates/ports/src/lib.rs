@@ -98,8 +98,8 @@ pub mod testkit;
 pub use account_erase::{AccountErase, EraseError, EraseOutcome};
 pub use agent::{
     AgentCardInfo, AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream,
-    AgentTransport, IdemKey, MentionInfo, SendContent, SendRequest, TaskHandle, TaskSnapshot,
-    UiSupport,
+    AgentTransport, AttachmentLinks, IdemKey, MentionInfo, PresignedLinks, SendAttachment,
+    SendContent, SendRequest, TaskHandle, TaskSnapshot, UiSupport,
 };
 pub use artifacts::{
     ArtifactError, ArtifactHead, ArtifactKey, ArtifactMeta, ArtifactStore, ByteStream, CHUNK_BYTES,

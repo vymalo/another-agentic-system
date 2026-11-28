@@ -71,6 +71,7 @@ fn request(fake: &FakeAgent, mentions: Vec<MentionInfo>) -> SendRequest {
         task_id: None,
         reference_task_ids: Vec::new(),
         content: SendContent::Text(TEXT.to_owned()),
+        attachments: Vec::new(),
         release: None,
         ui_catalog: None,
         thread_tools: Some(ToolsGrant::main(thread, 1, AgentId::new("chat"))),

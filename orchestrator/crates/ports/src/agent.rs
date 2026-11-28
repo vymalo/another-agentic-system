@@ -3,12 +3,17 @@ use std::fmt;
 use std::future::Future;
 use std::time::Duration;
 
+use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use orch_core::{
     AgentId, AgentTaskState, AgentUpdate, BoxError, ChildSessionsOffer, Classify, CommandsListing,
     ErrorClass, ForkHistory, KnownExtension, LiveChunk, LocaleListing, PickListings, Releases,
     TierListing, Timestamp, ToolsGrant, TrustedComponentsOffer, UiActionData, UiDelivery,
     UiVersion,
+};
+
+use crate::artifacts::{
+    ArtifactError, ArtifactKey, ArtifactStore, PresignedGet, ResponseOverrides,
 };
 
 /// How to reach an agent, one variant per way (ADR 0004: a closed enum, so the compiler lists
@@ -208,6 +213,90 @@ impl SendContent {
     }
 }
 
+/// One file a message carries (`docs/api/attachments.md`, "The message side"): what is known of it,
+/// and **no URL and no bytes**. The link the agent fetches it by is a credential for as long as it
+/// lives: the adapter that sends the message asks [`AttachmentLinks`] for it at send time and puts
+/// it in the message and nowhere else, so it is never in a [`SendRequest`], the outbox or the log.
+///
+/// `Debug` shows the **length** of the file name and never the name: the contract keeps a file's
+/// name out of the orchestrator's log.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SendAttachment {
+    /// Where the store has the file: the thread and the SHA-256 of the content.
+    pub key: ArtifactKey,
+    /// The media type the server read from the store (never the client's word). An `image/*` type
+    /// is what marks an image.
+    pub media_type: String,
+    /// The file's name, when it has one.
+    pub filename: Option<String>,
+}
+
+impl fmt::Debug for SendAttachment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SendAttachment")
+            .field("key", &self.key)
+            .field("media_type", &self.media_type)
+            .field(
+                "filename",
+                &self
+                    .filename
+                    .as_ref()
+                    .map(|name| format!("<{} bytes>", name.len())),
+            )
+            .finish()
+    }
+}
+
+/// Where an adapter gets the signed link of a [`SendAttachment`] when it sends. Object safe, so that
+/// an adapter is configured with one without naming a store type; [`PresignedLinks`] is the one over
+/// an [`ArtifactStore`].
+///
+/// The answer is a [`PresignedGet`], whose `Debug` shows no URL. An implementation writes the URL to
+/// no log line and keeps it nowhere.
+pub trait AttachmentLinks: fmt::Debug + Send + Sync + 'static {
+    /// A fresh link to the file under `key`. Every call signs again: a retry never reuses one.
+    fn link<'a>(
+        &'a self,
+        key: &'a ArtifactKey,
+    ) -> BoxFuture<'a, Result<PresignedGet, ArtifactError>>;
+}
+
+/// [`AttachmentLinks`] over a store that can presign ([`ArtifactStore::presign_get`], ADR 0058):
+/// each link lives for `ttl`, which is the agents' own lifetime and not the one of a download's
+/// redirect. No response header is overridden.
+pub struct PresignedLinks<S> {
+    store: std::sync::Arc<S>,
+    ttl: Duration,
+}
+
+impl<S> PresignedLinks<S> {
+    /// Links of `store` that live for `ttl`.
+    pub fn new(store: std::sync::Arc<S>, ttl: Duration) -> Self {
+        PresignedLinks { store, ttl }
+    }
+}
+
+impl<S> fmt::Debug for PresignedLinks<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PresignedLinks")
+            .field("ttl", &self.ttl)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<S: ArtifactStore> AttachmentLinks for PresignedLinks<S> {
+    fn link<'a>(
+        &'a self,
+        key: &'a ArtifactKey,
+    ) -> BoxFuture<'a, Result<PresignedGet, ArtifactError>> {
+        Box::pin(async move {
+            self.store
+                .presign_get(key, &ResponseOverrides::default(), self.ttl)
+                .await
+        })
+    }
+}
+
 /// One message to deliver to the agent.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SendRequest {
@@ -232,6 +321,11 @@ pub struct SendRequest {
     pub reference_task_ids: Vec<String>,
     /// The message, or the action.
     pub content: SendContent,
+    /// The files the message carries, in order: empty for a message with none, for the verifier and
+    /// for the messages the orchestrator sends on the thread's behalf. Only a
+    /// [`SendContent::Text`] carries files. An adapter delivers **every** one with its media type
+    /// and name, or sends **nothing** and answers an error: a file is never dropped.
+    pub attachments: Vec<SendAttachment>,
     /// Selected release channel or revision (only sent when the card offers releases).
     pub release: Option<String>,
     /// What to tell the agent of the person's UI catalog (ADR 0023): the catalog itself, or a
@@ -318,6 +412,7 @@ impl fmt::Debug for SendRequest {
             .field("task_id", &self.task_id)
             .field("reference_task_ids", &self.reference_task_ids)
             .field("content", &self.content)
+            .field("attachments", &self.attachments)
             .field("release", &self.release)
             .field("ui_catalog", &self.ui_catalog)
             .field("thread_tools", &self.thread_tools)
@@ -662,6 +757,7 @@ mod tests {
             task_id: None,
             reference_task_ids: Vec::new(),
             content: SendContent::Text("hi".into()),
+            attachments: Vec::new(),
             release: None,
             ui_catalog: None,
             thread_tools: None,
@@ -706,6 +802,56 @@ mod tests {
             ..request
         };
         assert!(format!("{none:?}").contains("signed_prompt: None"));
+    }
+
+    #[test]
+    fn debug_of_a_request_shows_no_file_name_and_has_no_url() {
+        let meta = crate::ArtifactMeta::of("image/png", None, b"x");
+        let attachment = SendAttachment {
+            key: meta.key(orch_core::ThreadId(uuid::Uuid::nil())),
+            media_type: "image/png".into(),
+            filename: Some("holiday-photo.png".into()),
+        };
+        let request = SendRequest {
+            endpoint: AgentEndpoint::local(AgentId::new("a"), "echo"),
+            message_id: "row-1".into(),
+            context_id: None,
+            task_id: None,
+            reference_task_ids: Vec::new(),
+            content: SendContent::Text("hi".into()),
+            attachments: vec![attachment.clone()],
+            release: None,
+            ui_catalog: None,
+            thread_tools: None,
+            history: None,
+            steer: false,
+            mentions: Vec::new(),
+            tier: None,
+            tier_cap: None,
+            locale: None,
+            pick: None,
+            signed_prompt: None,
+        };
+        let text = format!("{request:?}");
+        assert!(!text.contains("holiday-photo"), "{text}");
+        assert!(!text.contains("://"), "{text}");
+        assert!(
+            text.contains(&attachment.key.sha256_hex()) && text.contains("image/png"),
+            "{text}"
+        );
+        assert!(text.contains("<17 bytes>"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn links_over_a_store_that_cannot_presign_are_unsupported() {
+        let links = PresignedLinks::new(
+            std::sync::Arc::new(crate::NoArtifacts),
+            Duration::from_secs(60),
+        );
+        let key = crate::ArtifactMeta::of("text/plain", None, b"x")
+            .key(orch_core::ThreadId(uuid::Uuid::nil()));
+        let err = links.link(&key).await.unwrap_err();
+        assert!(matches!(err, ArtifactError::Unsupported), "{err}");
     }
 
     #[test]

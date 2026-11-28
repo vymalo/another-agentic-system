@@ -29,6 +29,7 @@ fn request(ep: &AgentEndpoint, message: &str, context: Option<&str>) -> SendRequ
         task_id: None,
         reference_task_ids: Vec::new(),
         content: SendContent::Text("echo hello".to_owned()),
+        attachments: Vec::new(),
         release: None,
         ui_catalog: None,
         thread_tools: None,

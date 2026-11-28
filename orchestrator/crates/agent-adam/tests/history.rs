@@ -15,6 +15,7 @@ fn request(text: &str, message_id: &str, history: Option<ForkHistory>) -> SendRe
         task_id: None,
         reference_task_ids: Vec::new(),
         content: SendContent::Text(text.to_owned()),
+        attachments: Vec::new(),
         release: None,
         ui_catalog: None,
         thread_tools: None,

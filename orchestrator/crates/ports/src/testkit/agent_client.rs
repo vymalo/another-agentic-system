@@ -14,11 +14,12 @@ use std::future::Future;
 use std::time::Duration;
 
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use orch_core::{AgentTaskState, AgentUpdate, Classify, ErrorClass};
 
 use crate::{
-    AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, IdemKey, SendRequest,
-    TaskHandle,
+    AgentClient, AgentEndpoint, AgentEnvelope, AgentError, AgentStream, ArtifactError, ArtifactKey,
+    ArtifactMeta, AttachmentLinks, IdemKey, PresignedGet, SendAttachment, SendRequest, TaskHandle,
 };
 
 /// How long a case may take before it fails.
@@ -45,6 +46,54 @@ pub enum Script {
 /// The message [`AgentFixture::text`] returns for a failing task carries this.
 pub const FAILURE_MESSAGE: &str = "scripted failure";
 
+/// Marks every link [`TestLinks`] makes: a test that looks for a leaked link looks for this.
+pub const LINK_SECRET: &str = "link-signature-c4n4ry";
+
+/// The link [`TestLinks`] makes for `key`.
+pub fn test_link(key: &ArtifactKey) -> String {
+    format!("https://files.test.invalid/{key}?X-Amz-Signature={LINK_SECRET}")
+}
+
+/// [`AttachmentLinks`] for tests: a fixed, recognisable link per key, and no store behind it. A
+/// fixture of an adapter that carries files is configured with it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TestLinks;
+
+impl AttachmentLinks for TestLinks {
+    fn link<'a>(
+        &'a self,
+        key: &'a ArtifactKey,
+    ) -> BoxFuture<'a, Result<PresignedGet, ArtifactError>> {
+        Box::pin(async move {
+            Ok(PresignedGet {
+                url: test_link(key),
+                expires_at: jiff::Timestamp::MAX,
+            })
+        })
+    }
+}
+
+/// What an agent was sent for one file of a message.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ReceivedFile {
+    /// The URL of the part.
+    pub url: String,
+    /// Its `mediaType`.
+    pub media_type: Option<String>,
+    /// Its `filename`.
+    pub filename: Option<String>,
+}
+
+impl std::fmt::Debug for ReceivedFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReceivedFile")
+            .field("url", &"[redacted]")
+            .field("media_type", &self.media_type)
+            .field("filename", &self.filename)
+            .finish()
+    }
+}
+
 /// An agent adapter under test, with an agent behind it that speaks the [`Script`]s.
 pub trait AgentFixture: Send + Sync + 'static {
     /// The adapter under test.
@@ -67,6 +116,19 @@ pub trait AgentFixture: Send + Sync + 'static {
     /// the cases about an agent that lists them are then skipped.
     fn tiered_endpoint(&self) -> Option<AgentEndpoint> {
         None
+    }
+
+    /// Whether the adapter sends the files of a message (it is then configured with
+    /// [`TestLinks`]) or refuses a message that has any. Default: it refuses.
+    fn carries_attachments(&self) -> bool {
+        false
+    }
+
+    /// The files the agent was sent with the message `message_id`, in order. Asked only of an
+    /// adapter that [`carries_attachments`](Self::carries_attachments).
+    fn received_files(&self, message_id: &str) -> Vec<ReceivedFile> {
+        let _ = message_id;
+        Vec::new()
     }
 
     /// The message text that makes the agent run `script`: its first word, then something to
@@ -104,6 +166,7 @@ fn request(
         task_id,
         reference_task_ids: Vec::new(),
         content: crate::SendContent::Text(text),
+        attachments: Vec::new(),
         release: None,
         ui_catalog: None,
         thread_tools: None,
@@ -818,6 +881,69 @@ pub async fn a_plain_message_under_a_cap_is_not_sent_to_an_agent_that_lists_tier
         )
         .await;
         assert!(!envs.is_empty());
+    })
+    .await;
+}
+
+/// A file is never dropped (`docs/api/attachments.md`). An adapter that carries files sends every
+/// one to the agent as a link with its media type and its name (or none), in the request's order. An
+/// adapter that does not carry them sends **nothing** and answers a refusal that is not retried.
+/// Neither says the link.
+pub async fn attachments_are_carried_or_refused_never_dropped<F: AgentFixture>(fx: F) {
+    within(async {
+        let thread = orch_core::ThreadId(uuid::Uuid::from_u128(7));
+        let files = [
+            ("image/png", Some("dot.png"), b"one".as_slice()),
+            ("application/pdf", None, b"two".as_slice()),
+        ]
+        .map(|(media_type, name, bytes)| SendAttachment {
+            key: ArtifactMeta::of(media_type, None, bytes).key(thread),
+            media_type: media_type.to_owned(),
+            filename: name.map(str::to_owned),
+        });
+        let mut req = request(
+            &fx.endpoint(),
+            fx.text(Script::Echo),
+            "m-files",
+            Some("ctx-files"),
+            None,
+        );
+        req.attachments = files.to_vec();
+        assert!(!format!("{req:?}").contains(LINK_SECRET));
+        let sent = fx.client().send_stream(req).await;
+        if fx.carries_attachments() {
+            let envs = drain(sent.unwrap_or_else(|e| panic!("a message with files: {e}"))).await;
+            assert!(!envs.is_empty());
+            let want: Vec<ReceivedFile> = files
+                .iter()
+                .map(|file| ReceivedFile {
+                    url: test_link(&file.key),
+                    media_type: Some(file.media_type.clone()),
+                    filename: file.filename.clone(),
+                })
+                .collect();
+            let got = fx.received_files("m-files");
+            // not `assert_eq!`: the URL is redacted from `Debug`, and a failure should say so
+            assert!(got == want, "the agent got {got:?}, wanted {want:?}");
+        } else {
+            let err = match sent {
+                Ok(_) => panic!("an adapter that carries no file sent a message that has two"),
+                Err(e) => e,
+            };
+            assert!(!err.is_retryable(), "a refusal for good: {err}");
+            for text in [err.to_string(), err.public_detail(), format!("{err:?}")] {
+                assert!(!text.contains(LINK_SECRET), "{text}");
+            }
+            match fx
+                .client()
+                .find_task_by_message(&fx.endpoint(), Some("ctx-files"), "m-files")
+                .await
+            {
+                Ok(None) | Err(AgentError::Unsupported(_)) => {}
+                Ok(Some(task)) => panic!("the refused message started the task {task}"),
+                Err(e) => panic!("looking the refused message up failed: {e}"),
+            }
+        }
     })
     .await;
 }
