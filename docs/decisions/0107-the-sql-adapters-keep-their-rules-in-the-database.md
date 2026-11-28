@@ -43,11 +43,13 @@ sidebarTitle: "0107 · Rules in SQL, PostgreSQL 18 floor"
   *Status note (2026-11-28): slice P3 is built* (claims, the inbox, the outbox and watches: `orch_outbox_due_at`,
   `orch_watch_arm` and `orch_inbox_park`, in one migration, `0040_orch_claims.sql`).
   `orch_outbox_due_at` takes a **fourth argument, `p_now`**, beside the three of row 34 and the *Slices* table: it
-  answers a boolean and reads no clock (decision 3), so the time must be passed. It is one expression. The claims need
-  the planner to inline it **and** to prove `status IN ('pending', 'inflight')` from what is left, or the partial
-  indexes of the open rows do not serve them. `tests/claims.rs` asserts both with `EXPLAIN` (inlined; and, with
-  sequential scans forbidden, an `outbox_open…` index for the claims' due predicate, none for a `CASE` on the status).
-  It covers that predicate alone, not a whole claim, and on an empty table. The claims
+  answers a boolean and reads no clock (decision 3), so the time must be passed. It is one expression. The FIFO claim
+  (`CLAIM_FIFO`) names no status in its due rows' `WHERE` beyond this call, so for the partial indexes of the open rows
+  to serve that scan the planner must inline the function **and** prove `status IN ('pending', 'inflight')` from what
+  is left; the fair claim's candidate and cancel scans and the statistics write that condition themselves.
+  `tests/claims.rs` asserts both with `EXPLAIN` (inlined; and, with sequential scans forbidden, an `outbox_open…` index
+  for the due predicate, and a sequential scan for a `CASE` on the status). It covers that predicate alone, not a whole
+  claim, and on an empty table. The claims
   stay one statement each; since `RETURNING` has no order, each selects from its `UPDATE` and orders there (as row 31
   says), and no order is restored in Rust. **Row 38 is built in this slice** (it is in the survey's section of P3, and
   the *Slices* row had not named it): `mark_sent` is one statement, a data-modifying `WITH` over the outbox row and the

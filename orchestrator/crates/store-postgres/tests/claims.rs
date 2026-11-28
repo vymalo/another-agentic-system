@@ -337,8 +337,9 @@ async fn the_inbox_claim_comes_back_earliest_first_then_by_id() {
 }
 
 /// The planner puts the expression of `orch_outbox_due_at` in place of the call. Were it not
-/// inlined (a `SET`, `STRICT` or `SECURITY DEFINER` on a later version), the claims could not use
-/// the partial indexes of the open rows and would read the whole outbox, which keeps every row.
+/// inlined (a `SET`, `STRICT` or `SECURITY DEFINER` on a later version), `CLAIM_FIFO`, which names
+/// no status in its due rows' `WHERE` beyond the call, could not use the partial indexes of the open
+/// rows for them and would read the whole outbox, which keeps every row.
 #[tokio::test]
 async fn the_due_function_is_inlined_into_the_statement() {
     let db = db_or_skip!();
@@ -391,6 +392,7 @@ async fn the_due_predicate_uses_a_partial_index_of_the_open_rows() {
     .await
     .unwrap();
     let by_case = by_case.join("\n");
+    assert!(by_case.contains("Seq Scan on outbox"), "{by_case}");
     assert!(!by_case.contains("outbox_open"), "{by_case}");
     tx.rollback().await.unwrap();
 }
