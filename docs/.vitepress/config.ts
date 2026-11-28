@@ -107,7 +107,19 @@ const sidebar = [
   },
   { text: "Get started", items: [page("getting-started", "Run it locally")] },
   // Guides: one task per page. A group with no page is not drawn.
-  section("Guides", [group("Deploy", [page("guides/deploy")]), group("Operate", []), group("Use", []), group("Extend", [])]),
+  section("Guides", [
+    group("Deploy", [page("guides/deploy")]),
+    group("Operate", [
+      page("guides/operate/backup-and-restore"),
+      page("guides/operate/scale-the-database"),
+      page("guides/operate/rate-limit"),
+      page("guides/operate/upgrade-a-release"),
+      page("guides/operate/logs-and-traces"),
+      page("guides/operate/troubleshoot"),
+    ]),
+    group("Use", []),
+    group("Extend", []),
+  ]),
   section("Reference", [
     group("API", [referencePage, chatApiOperations, ...apiPages]),
     group("Extensions", extensionPages),
