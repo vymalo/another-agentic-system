@@ -120,6 +120,8 @@ pub struct SendCall {
     pub locale: Option<orch_core::LocaleHint>,
     /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
     pub pick: Option<orch_core::ModelPick>,
+    /// The mode the message was sent under (ADR 0109), as the request carried it.
+    pub mode: Option<orch_core::ModeName>,
     /// The person's prompt signature the request carried (ADR 0087): what an adapter would pass on
     /// to the agent's message, byte for byte.
     pub prompt_signature: Option<String>,
@@ -370,6 +372,7 @@ impl ScriptedAgent {
                 access_tier: TierListing::Absent,
                 locale: LocaleListing::Absent,
                 pick: PickListings::default(),
+                mode: orch_core::ModeListing::default(),
                 commands: CommandsListing::Absent,
                 child_sessions: None,
                 trusted_components: None,
@@ -442,7 +445,34 @@ impl ScriptedAgent {
         card.pick = PickListings {
             model: models.map_or(orch_core::Listing::Absent, orch_core::Listing::Offered),
             effort: efforts.map_or(orch_core::Listing::Absent, orch_core::Listing::Offered),
+            // a pick and a mode are independent extensions: setting one leaves the other as it is
+            mode: card.pick.mode.clone(),
         };
+    }
+
+    /// Makes `agent`'s card list `agent-mode/v1` with these modes (`None` removes it). Takes effect
+    /// on the next read.
+    pub fn set_mode(&self, agent: &str, offer: Option<orch_core::ModeOffer>) {
+        let mut st = self.state();
+        let card = st
+            .cards
+            .entry(AgentId::new(agent))
+            .or_insert_with(default_card);
+        let mode = offer.map_or(orch_core::Listing::Absent, orch_core::Listing::Offered);
+        card.mode = mode.clone();
+        card.pick.mode = mode;
+    }
+
+    /// Makes `agent`'s card list `agent-mode/v1` with `params` that cannot be read. Takes effect on
+    /// the next read.
+    pub fn set_mode_malformed(&self, agent: &str) {
+        let mut st = self.state();
+        let card = st
+            .cards
+            .entry(AgentId::new(agent))
+            .or_insert_with(default_card);
+        card.mode = orch_core::Listing::Malformed;
+        card.pick.mode = orch_core::Listing::Malformed;
     }
 
     /// Makes `agent`'s card list `locale/v1` with a `locale` member that is not a tag. Takes
@@ -659,6 +689,7 @@ fn default_card() -> AgentCardInfo {
         access_tier: TierListing::Absent,
         locale: LocaleListing::Absent,
         pick: PickListings::default(),
+        mode: orch_core::ModeListing::default(),
         commands: CommandsListing::Absent,
         child_sessions: None,
         trusted_components: None,
@@ -1795,6 +1826,7 @@ impl AgentClient for ScriptedAgent {
                 tier: req.tier,
                 locale: req.locale.clone(),
                 pick: req.pick.clone(),
+                mode: req.mode.clone(),
                 prompt_signature: req.prompt_signature.clone(),
             })));
             if let Some(hook) = st.on_send.take() {

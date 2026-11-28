@@ -803,6 +803,9 @@ pub fn start_child_for(
                     // has no member for one (ADR 0085)
                     locale: None,
                     pick: None,
+                    // a person's start of a child session names no mode: a child run starts in
+                    // its parent's mode (ADR 0109, adam's behaviour)
+                    mode: None,
                 }),
             )
         })

@@ -694,6 +694,8 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             locale: None,
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         };
         self.app
             .record_agent_build(a.row.thread_id, &a.endpoint)

@@ -113,6 +113,8 @@ async fn verifying_with(
                 catalog: Some(catalog),
                 mentions: Vec::new(),
                 tier: None,
+
+                mode: None,
             },
             None,
         )
@@ -398,6 +400,8 @@ async fn the_verifier_is_not_told_the_conversation_a_fork_of_the_authors_thread_
                     tier: None,
                     locale: None,
                     pick: None,
+
+                    mode: None,
                 },
                 target: None,
                 id: None,
@@ -898,6 +902,8 @@ async fn a_request_that_reached_the_verifier_before_the_crash_is_found_not_resen
             locale: None,
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         },
     )
     .await
@@ -1011,6 +1017,8 @@ async fn sent_and_forgotten(w: &World, _t: &ThreadRecord, row: &OutboxItem) {
             locale: None,
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         },
     )
     .await

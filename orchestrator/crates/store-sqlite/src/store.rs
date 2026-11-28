@@ -2038,6 +2038,52 @@ impl ThreadStore for SqliteStore {
         .await
     }
 
+    async fn thread_mode(
+        &self,
+        thread: ThreadId,
+    ) -> Result<Option<orch_core::ModeName>, StoreError> {
+        let name: Option<Option<String>> = self
+            .call(move |conn| {
+                row_opt(
+                    conn,
+                    "SELECT mode FROM threads WHERE id = ?1",
+                    &[&thread.0.to_string()],
+                    |row| row.get(0).map_err(store_err),
+                )
+            })
+            .await?;
+        name.flatten()
+            .map(|name| {
+                orch_core::ModeName::parse(&name)
+                    .map_err(|e| StoreError::corrupt_with("cannot read the thread's mode", e))
+            })
+            .transpose()
+    }
+
+    async fn set_thread_mode(
+        &self,
+        owner: &UserId,
+        thread: ThreadId,
+        mode: Option<orch_core::ModeName>,
+    ) -> Result<(), StoreError> {
+        let owner = owner.as_str().to_owned();
+        let name = mode.map(|mode| mode.to_string());
+        self.call(move |conn| {
+            write(conn, |tx| {
+                let touched = exec(
+                    tx,
+                    "UPDATE threads SET mode = ?3 WHERE id = ?1 AND owner = ?2",
+                    &[&thread.0.to_string(), &owner, &name],
+                )?;
+                if touched == 0 {
+                    return Err(StoreError::NotFound);
+                }
+                Ok(())
+            })
+        })
+        .await
+    }
+
     async fn get_binding(&self, thread: ThreadId) -> Result<Option<AgentBinding>, StoreError> {
         self.call(move |conn| {
             row_opt(

@@ -103,6 +103,13 @@
 #                     reaches the model with `reasoning_effort: high`, the thread's default
 #                     level reaches it too, and a level the card does not offer is a 422
 #                     `reasoning_not_offered` with nothing written
+#   mode-real         a message's mode on a REAL adam agent (ADR 0109): the chat's card   mode-real-e2e.sh
+#                     lists agent-mode/v1 with the modes of its folder (direct, the default,
+#                     and plan); GET /api/agents carries them; a message naming plan reaches
+#                     the model with the plan mode's instructions and the log records it;
+#                     a message naming none carries no member and the agent works in its own
+#                     default; a mode the card does not offer is a 422 `mode_not_offered` with
+#                     the offered list and nothing written or sent
 #   locale-real       the interface language on a REAL adam agent (ADR 0069): the chat's   locale-real-e2e.sh
 #                     card lists locale/v1 with the deployment's tag (DEFAULT_LOCALE of
 #                     compose.yaml), a message naming de-DE reaches the model as one more turn
@@ -297,7 +304,7 @@ base=${BASE_URL:-http://127.0.0.1:${EDGE_PORT:-8080}}
 base=${base%/}
 export BASE_URL="$base"
 
-all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier tier-real pick pick-real commands locale locale-real child-sessions title description fork rail search prompts prompt-signature delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
+all="greeting agents choices cards tools steer reasoning mentions browser usage usage-ledger tier tier-real pick pick-real mode-real commands locale locale-real child-sessions title description fork rail search prompts prompt-signature delete share registry rbac user-tools user-tools-relay coder workspace artifact verify verifier mcp ci folder"
 # shellcheck disable=SC2086 # the list is words on purpose
 [ "$#" -gt 0 ] || set -- $all
 for s in "$@"; do
@@ -429,6 +436,13 @@ for s in "$@"; do
           *) echo "scenario pick-real needs the agents chat and researcher; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
         esac
       done ;;
+    mode-real)
+      for a in chat researcher; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario mode-real needs the agents chat and researcher; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
     commands)
       for a in adam chat; do
         case " $agents " in
@@ -542,6 +556,7 @@ for s in "$@"; do
     tier-real) run tier-real sh "$here/tier-real-e2e.sh" ;;
     pick) run pick sh "$here/pick-e2e.sh" ;;
     pick-real) run pick-real sh "$here/pick-real-e2e.sh" ;;
+    mode-real) run mode-real sh "$here/mode-real-e2e.sh" ;;
     commands) run commands sh "$here/commands-e2e.sh" ;;
     locale) run locale sh "$here/locale-e2e.sh" ;;
     locale-real) run locale-real sh "$here/locale-real-e2e.sh" ;;

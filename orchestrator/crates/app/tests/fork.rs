@@ -56,6 +56,8 @@ fn replace(seq: i64, text: &str) -> ForkRequest {
             tier: None,
             locale: None,
             pick: None,
+
+            mode: None,
         },
         target: None,
         id: None,
@@ -861,6 +863,8 @@ fn first(text: &str) -> FirstMessage {
         locale: None,
         pick: None,
         prompt_signature: None,
+
+        mode: None,
     }
 }
 

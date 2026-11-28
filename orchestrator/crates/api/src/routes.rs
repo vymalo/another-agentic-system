@@ -469,6 +469,8 @@ pub(crate) async fn patch_thread<P: Ports>(
     let (mut title, mut description) = (None, None);
     // The thread's default model and reasoning effort (ADR 0086): absent leaves it, `null` clears it.
     let (mut model, mut effort) = (None, None);
+    // The thread's default mode (ADR 0109): absent leaves it, `null` clears it.
+    let mut mode = None;
     for (member, value) in body {
         match (member.as_str(), value) {
             ("title", serde_json::Value::String(text)) => title = Some(text),
@@ -485,14 +487,22 @@ pub(crate) async fn patch_thread<P: Ports>(
                 effort =
                     Some(orch_app::pick::parse_effort(&value).map_err(orch_app::AppError::from)?);
             }
+            ("mode", value) => {
+                mode = Some(orch_app::mode::parse_mode(&value).map_err(orch_app::AppError::from)?);
+            }
             (other, _) => {
                 return Err(Problem::bad_request(format!("unknown member `{other}`")).into());
             }
         }
     }
-    if title.is_none() && description.is_none() && model.is_none() && effort.is_none() {
+    if title.is_none()
+        && description.is_none()
+        && model.is_none()
+        && effort.is_none()
+        && mode.is_none()
+    {
         return Err(Problem::bad_request(
-            "`title`, `description`, `model` or `reasoningEffort` is required",
+            "`title`, `description`, `model`, `reasoningEffort` or `mode` is required",
         )
         .into());
     }
@@ -504,6 +514,14 @@ pub(crate) async fn patch_thread<P: Ports>(
         check_description(description).map_err(|e| Problem::bad_request(e.to_string()))?;
     }
     let mut thread = None;
+    // The mode is checked first, without writing, so that a mode the card has dropped refuses the
+    // request before the pick (or the title) is written: a 422 changes nothing (ADR 0109).
+    if mode.is_some() {
+        state
+            .app
+            .check_thread_mode(&principal, id, mode.clone())
+            .await?;
+    }
     // The default pick first: it is the one that can be refused (422), and a refusal changes nothing.
     let mut pick = None;
     if model.is_some() || effort.is_some() {
@@ -512,6 +530,12 @@ pub(crate) async fn patch_thread<P: Ports>(
             .set_thread_pick(&principal, id, model, effort)
             .await?;
         (thread, pick) = (Some(record), Some(now));
+    }
+    // The default mode is checked the same way, before anything else is written.
+    let mut chosen_mode = None;
+    if mode.is_some() {
+        let (record, now) = state.app.set_thread_mode(&principal, id, mode).await?;
+        (thread, chosen_mode) = (Some(record), Some(now));
     }
     if let Some(title) = title {
         thread = Some(state.app.rename_thread(&principal, id, &title).await?);
@@ -526,7 +550,7 @@ pub(crate) async fn patch_thread<P: Ports>(
     }
     let Some(thread) = thread else {
         return Err(Problem::bad_request(
-            "`title`, `description`, `model` or `reasoningEffort` is required",
+            "`title`, `description`, `model`, `reasoningEffort` or `mode` is required",
         )
         .into());
     };
@@ -539,6 +563,9 @@ pub(crate) async fn patch_thread<P: Ports>(
             "reasoningEffort".into(),
             serde_json::json!(pick.reasoning_effort),
         );
+    }
+    if let (Some(mode), Some(object)) = (chosen_mode, body.as_object_mut()) {
+        object.insert("mode".into(), serde_json::json!(mode));
     }
     Ok(Json(body))
 }
@@ -906,6 +933,9 @@ struct ForkBody {
     /// The reasoning effort of the fork's message or of the edit (ADR 0086), or `null`; read as
     /// `forwardedProps["vymalo.reasoningEffort"]` is.
     reasoning_effort: Option<serde_json::Value>,
+    /// The mode of the fork's message or of the edit (ADR 0109), or `null`; read as
+    /// `forwardedProps["vymalo.mode"]` is.
+    mode: Option<serde_json::Value>,
 }
 
 impl ForkBody {
@@ -933,6 +963,11 @@ impl ForkBody {
         };
         let pick = orch_app::pick::parse(self.model.as_ref(), self.reasoning_effort.as_ref())
             .map_err(|e| Problem::bad_request(e.to_string()))?;
+        let mode = match &self.mode {
+            Some(value) => orch_app::mode::parse_mode(value)
+                .map_err(|e| Problem::bad_request(e.to_string()))?,
+            None => None,
+        };
         let at = match (self.after, self.replace) {
             // The fork is made with its first message when there is one (ADR 0042, decision 8):
             // no mentions and no UI catalog travel on this route, the AG-UI run carries them.
@@ -954,6 +989,10 @@ impl ForkBody {
                         "`model` and `reasoningEffort` go with `text`",
                     ));
                 }
+                // and a mode, for the same reason
+                if mode.is_some() && self.text.is_none() {
+                    return Err(Problem::bad_request("`mode` goes with `text`"));
+                }
                 orch_app::ForkAt::AfterTurn {
                     seq,
                     first: self.text.map(|text| orch_app::FirstMessage {
@@ -966,6 +1005,7 @@ impl ForkBody {
                         tier,
                         locale,
                         pick,
+                        mode,
                         prompt_signature: None,
                     }),
                 }
@@ -979,6 +1019,7 @@ impl ForkBody {
                 tier,
                 locale,
                 pick,
+                mode,
             },
             (Some(_), Some(_)) => {
                 return Err(Problem::bad_request("give `after` or `replace`, not both"));

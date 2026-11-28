@@ -82,6 +82,8 @@ async fn a_catalog_from_before_the_cutover_is_never_served() {
                 catalog: Some(old.clone()),
                 mentions: Vec::new(),
                 tier: None,
+
+                mode: None,
             },
             None,
         )

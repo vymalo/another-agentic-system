@@ -720,6 +720,7 @@ fn agent_info_card_url_is_optional_and_absent_when_none() {
         source: AgentSource::Static,
         tags: Vec::new(),
         pick: None,
+        mode: None,
     };
     assert_eq!(
         serde_json::to_value(&info).unwrap(),
@@ -753,6 +754,7 @@ fn agent_info_says_where_it_is_listed_from_and_carries_the_registry_tags() {
         source: AgentSource::Registry,
         tags: vec!["coding".into(), "git".into()],
         pick: None,
+        mode: None,
     };
     let wire = serde_json::to_value(&info).unwrap();
     assert_eq!(
@@ -811,6 +813,8 @@ fn user_message_ids_are_optional_camel_case_and_absent_when_none() {
             tier: None,
             locale: None,
             pick: None,
+
+            mode: None,
         }),
         Actor::system(),
     );
@@ -1344,6 +1348,7 @@ fn agent_pick_lists_the_models_and_levels_the_card_offers() {
         AgentPick::of(&PickListings {
             model: Listing::Malformed,
             effort: Listing::Absent,
+            mode: Listing::Absent,
         }),
         None
     );
@@ -1368,6 +1373,7 @@ fn agent_pick_lists_the_models_and_levels_the_card_offers() {
             efforts: vec![ReasoningEffort::Low, ReasoningEffort::High],
             default: Some(ReasoningEffort::Low),
         }),
+        mode: Listing::Absent,
     };
     let pick = AgentPick::of(&listings).expect("a listing");
     assert_eq!(

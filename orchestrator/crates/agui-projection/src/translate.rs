@@ -605,6 +605,8 @@ pub fn translate_with_warnings(
             catalog: None,
             mentions: Vec::new(),
             tier: None,
+
+            mode: None,
         }],
         // Stop & send (ADR 0036): on a thread that exists, where the core knows what to stop
         // (and treats it as a plain message when nothing runs). A new thread has nothing to stop.
@@ -622,6 +624,8 @@ pub fn translate_with_warnings(
                 catalog: None,
                 mentions: Vec::new(),
                 tier: None,
+
+                mode: None,
             }]
         }
         (None, Some((id, text)), _) => vec![Input::UserMessage {
@@ -637,6 +641,8 @@ pub fn translate_with_warnings(
             catalog: None,
             mentions: Vec::new(),
             tier: None,
+
+            mode: None,
         }],
         (None, None, true) => vec![Input::Cancel { user }],
         (None, None, false) => {

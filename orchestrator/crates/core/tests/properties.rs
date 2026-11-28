@@ -34,6 +34,8 @@ fn arb_input() -> impl Strategy<Value = Input> {
             catalog: None,
             mentions: Vec::new(),
             tier: None,
+
+            mode: None,
         }),
         Just(Input::Cancel {
             user: UserId::new("u@x.io")
@@ -114,6 +116,8 @@ fn arb_input() -> impl Strategy<Value = Input> {
             locale: None,
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         }),
         arb_step().prop_map(|report| Input::Agent {
             agent: AgentId::new("a"),
@@ -327,50 +331,54 @@ fn arb_catalog_input() -> impl Strategy<Value = Input> {
     let pool = catalog_pool();
     let carried = proptest::option::of((0..pool.len()).prop_map(move |i| pool[i].clone()));
     prop_oneof![
-        4 => ("[a-z]{1,8}", carried.clone()).prop_map(|(text, catalog)| Input::UserMessage {
-            tier_cap: None,
-            locale: None,
-            pick: None,
-            prompt_signature: None,
-            user: UserId::new("u@x.io"),
-            text,
-            message_id: None,
-            run_id: None,
-            origin: orch_core::Origin::Agui,
-            catalog,
-            mentions: Vec::new(), tier: None,
-        }),
-        2 => carried.prop_map(|catalog| Input::UiAction {
-            tier_cap: None,
-            user: UserId::new("u@x.io"),
-            action: UiActionData { tier: None, tier_cap: None,
-                surface_id: "s".into(),
-                name: "go".into(),
-                source_component_id: "b".into(),
-                context: serde_json::Map::new(),
-                version: UiVersion::V1_0,
+            4 => ("[a-z]{1,8}", carried.clone()).prop_map(|(text, catalog)| Input::UserMessage {
+                tier_cap: None,
+                locale: None,
+                pick: None,
+                prompt_signature: None,
+                user: UserId::new("u@x.io"),
+                text,
+                message_id: None,
                 run_id: None,
-            },
-            catalog,
-            tier: None,
-        }),
-        2 => "[a-z]{1,8}".prop_map(|text| Input::Redeliver {
-            tier_cap: None,
-            locale: None,
-            pick: None,
-            prompt_signature: None,
-            text,
-            sent: false,
-            mentions: Vec::new(),
-            tier: None,
-        }),
-        3 => arb_task_state().prop_map(|state| Input::Agent {
-            agent: AgentId::new("a"),
-            revision: None,
-            update: AgentUpdate::Status { state, detail: None, tier: None, },
-        }),
-        1 => Just(Input::Cancel { user: UserId::new("u@x.io") }),
-    ]
+                origin: orch_core::Origin::Agui,
+                catalog,
+                mentions: Vec::new(), tier: None,
+
+                mode: None,
+    }),
+            2 => carried.prop_map(|catalog| Input::UiAction {
+                tier_cap: None,
+                user: UserId::new("u@x.io"),
+                action: UiActionData { tier: None, tier_cap: None,
+                    surface_id: "s".into(),
+                    name: "go".into(),
+                    source_component_id: "b".into(),
+                    context: serde_json::Map::new(),
+                    version: UiVersion::V1_0,
+                    run_id: None,
+                },
+                catalog,
+                tier: None,
+            }),
+            2 => "[a-z]{1,8}".prop_map(|text| Input::Redeliver {
+                tier_cap: None,
+                locale: None,
+                pick: None,
+                prompt_signature: None,
+                text,
+                sent: false,
+                mentions: Vec::new(),
+                tier: None,
+
+                mode: None,
+    }),
+            3 => arb_task_state().prop_map(|state| Input::Agent {
+                agent: AgentId::new("a"),
+                revision: None,
+                update: AgentUpdate::Status { state, detail: None, tier: None, },
+            }),
+            1 => Just(Input::Cancel { user: UserId::new("u@x.io") }),
+        ]
 }
 
 proptest! {
@@ -444,32 +452,34 @@ proptest! {
 /// thread.
 fn arb_step_input() -> impl Strategy<Value = Input> {
     prop_oneof![
-        8 => arb_step().prop_map(|report| Input::Agent {
-            agent: AgentId::new("a"),
-            revision: None,
-            update: AgentUpdate::Step(report),
-        }),
-        3 => arb_step().prop_map(|report| Input::Step { actor: Actor::system(), report }),
-        2 => arb_task_state().prop_map(|state| Input::Agent {
-            agent: AgentId::new("a"),
-            revision: None,
-            update: AgentUpdate::Status { state, detail: None, tier: None, },
-        }),
-        1 => "[a-z]{1,8}".prop_map(|text| Input::UserMessage {
-            tier_cap: None,
-            locale: None,
-            pick: None,
-            prompt_signature: None,
-            user: UserId::new("u@x.io"),
-            text,
-            message_id: None,
-            run_id: None,
-            origin: orch_core::Origin::Agui,
-            catalog: None,
-            mentions: Vec::new(), tier: None,
-        }),
-        1 => Just(Input::Cancel { user: UserId::new("u@x.io") }),
-    ]
+            8 => arb_step().prop_map(|report| Input::Agent {
+                agent: AgentId::new("a"),
+                revision: None,
+                update: AgentUpdate::Step(report),
+            }),
+            3 => arb_step().prop_map(|report| Input::Step { actor: Actor::system(), report }),
+            2 => arb_task_state().prop_map(|state| Input::Agent {
+                agent: AgentId::new("a"),
+                revision: None,
+                update: AgentUpdate::Status { state, detail: None, tier: None, },
+            }),
+            1 => "[a-z]{1,8}".prop_map(|text| Input::UserMessage {
+                tier_cap: None,
+                locale: None,
+                pick: None,
+                prompt_signature: None,
+                user: UserId::new("u@x.io"),
+                text,
+                message_id: None,
+                run_id: None,
+                origin: orch_core::Origin::Agui,
+                catalog: None,
+                mentions: Vec::new(), tier: None,
+
+                mode: None,
+    }),
+            1 => Just(Input::Cancel { user: UserId::new("u@x.io") }),
+        ]
 }
 
 proptest! {
@@ -574,38 +584,40 @@ fn arb_turn_input() -> impl Strategy<Value = Input> {
         Just(Some(orch_core::MessagePurpose::Answer)),
     ];
     prop_oneof![
-        4 => ("[a-c]{1,2}", 1u32..3, "j[12]").prop_map(|(text, job, token)| Input::Answer {
-            actor: Actor::agent(&AgentId::new("a"), None),
-            text,
-            job,
-            token,
-        }),
-        6 => ("[a-c]{1,2}", "[a-c]{1,2}", purpose).prop_map(|(id, text, purpose)| Input::Agent {
-            agent: AgentId::new("a"),
-            revision: None,
-            update: AgentUpdate::Message { message_id: id, text, is_final: true, purpose },
-        }),
-        4 => (arb_task_state(), proptest::option::of("[a-c]{1,2}")).prop_map(|(state, detail)| {
-            Input::Agent {
+            4 => ("[a-c]{1,2}", 1u32..3, "j[12]").prop_map(|(text, job, token)| Input::Answer {
+                actor: Actor::agent(&AgentId::new("a"), None),
+                text,
+                job,
+                token,
+            }),
+            6 => ("[a-c]{1,2}", "[a-c]{1,2}", purpose).prop_map(|(id, text, purpose)| Input::Agent {
                 agent: AgentId::new("a"),
                 revision: None,
-                update: AgentUpdate::Status { state, detail, tier: None, },
-            }
-        }),
-        2 => "[a-z]{1,8}".prop_map(|text| Input::UserMessage {
-            tier_cap: None,
-            locale: None,
-            pick: None,
-            prompt_signature: None,
-            user: UserId::new("u@x.io"),
-            text,
-            message_id: None,
-            run_id: None,
-            origin: orch_core::Origin::Agui,
-            catalog: None,
-            mentions: Vec::new(), tier: None,
-        }),
-    ]
+                update: AgentUpdate::Message { message_id: id, text, is_final: true, purpose },
+            }),
+            4 => (arb_task_state(), proptest::option::of("[a-c]{1,2}")).prop_map(|(state, detail)| {
+                Input::Agent {
+                    agent: AgentId::new("a"),
+                    revision: None,
+                    update: AgentUpdate::Status { state, detail, tier: None, },
+                }
+            }),
+            2 => "[a-z]{1,8}".prop_map(|text| Input::UserMessage {
+                tier_cap: None,
+                locale: None,
+                pick: None,
+                prompt_signature: None,
+                user: UserId::new("u@x.io"),
+                text,
+                message_id: None,
+                run_id: None,
+                origin: orch_core::Origin::Agui,
+                catalog: None,
+                mentions: Vec::new(), tier: None,
+
+                mode: None,
+    }),
+        ]
 }
 
 proptest! {
@@ -692,43 +704,49 @@ fn arb_mentioning_message() -> impl Strategy<Value = (String, Vec<Mention>)> {
 
 fn arb_mentions_input() -> impl Strategy<Value = Input> {
     prop_oneof![
-        4 => arb_mentioning_message().prop_map(|(text, mentions)| Input::UserMessage {
-            tier_cap: None,
-            locale: None,
-            pick: None,
-            prompt_signature: None,
-            user: UserId::new("u@x.io"), text, message_id: None, run_id: None,
-            origin: orch_core::Origin::Agui, catalog: None, mentions, tier: None,
-        }),
-        3 => arb_mentioning_message().prop_map(|(text, mentions)| Input::StopAndSend {
-            tier_cap: None,
-            locale: None,
-            pick: None,
-            prompt_signature: None,
-            user: UserId::new("u@x.io"), text, message_id: None, run_id: None,
-            origin: orch_core::Origin::Agui, catalog: None, mentions, tier: None,
-        }),
-        2 => (arb_mentioning_message(), any::<bool>())
-            .prop_map(|((text, mentions), sent)| Input::Redeliver {
+            4 => arb_mentioning_message().prop_map(|(text, mentions)| Input::UserMessage {
                 tier_cap: None,
                 locale: None,
                 pick: None,
                 prompt_signature: None,
-                text,
-                sent,
-                mentions,
-                tier: None,
+                user: UserId::new("u@x.io"), text, message_id: None, run_id: None,
+                origin: orch_core::Origin::Agui, catalog: None, mentions, tier: None,
+
+                mode: None,
+    }),
+            3 => arb_mentioning_message().prop_map(|(text, mentions)| Input::StopAndSend {
+                tier_cap: None,
+                locale: None,
+                pick: None,
+                prompt_signature: None,
+                user: UserId::new("u@x.io"), text, message_id: None, run_id: None,
+                origin: orch_core::Origin::Agui, catalog: None, mentions, tier: None,
+
+                mode: None,
+    }),
+            2 => (arb_mentioning_message(), any::<bool>())
+                .prop_map(|((text, mentions), sent)| Input::Redeliver {
+                    tier_cap: None,
+                    locale: None,
+                    pick: None,
+                    prompt_signature: None,
+                    text,
+                    sent,
+                    mentions,
+                    tier: None,
+
+                    mode: None,
+    }),
+            3 => arb_task_state().prop_map(|state| Input::Agent {
+                agent: AgentId::new("a"), revision: None,
+                update: AgentUpdate::Status { state, detail: None, tier: None, },
             }),
-        3 => arb_task_state().prop_map(|state| Input::Agent {
-            agent: AgentId::new("a"), revision: None,
-            update: AgentUpdate::Status { state, detail: None, tier: None, },
-        }),
-        1 => Just(Input::Cancel { user: UserId::new("u@x.io") }),
-        1 => (any::<bool>(), "[a-z]{1,5}").prop_map(|(retryable, reason)| Input::CancelRejected {
-            agent: AgentId::new("a"), reason, retryable
-        }),
-        1 => Just(Input::CancelledBeforeStart),
-    ]
+            1 => Just(Input::Cancel { user: UserId::new("u@x.io") }),
+            1 => (any::<bool>(), "[a-z]{1,5}").prop_map(|(retryable, reason)| Input::CancelRejected {
+                agent: AgentId::new("a"), reason, retryable
+            }),
+            1 => Just(Input::CancelledBeforeStart),
+        ]
 }
 
 /// The agents an input names.

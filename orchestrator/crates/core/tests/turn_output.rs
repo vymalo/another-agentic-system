@@ -62,6 +62,8 @@ fn user_says(text: &str) -> Input {
         catalog: None,
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     }
 }
 

@@ -940,6 +940,8 @@ async fn an_ask_carries_what_the_person_said_in_the_whole_thread_and_nothing_of_
             locale: None,
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         },
         None,
     )
@@ -1679,6 +1681,8 @@ async fn sent_and_forgotten(
             locale: None,
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         },
     )
     .await

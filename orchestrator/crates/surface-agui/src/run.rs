@@ -16,13 +16,13 @@ use orch_api::sse::{bounded, hold, keep_alive, stream_budget, stream_headers};
 use orch_api::{ApiError, Problem};
 use orch_app::{
     App, AppError, ApplyOutcome, Creation, FirstMessage, GateLayer, Inbound, NewThread,
-    THREAD_GATE_KEY, THREAD_LOCALE_KEY, THREAD_MENTIONS_KEY, THREAD_MODEL_KEY,
+    THREAD_GATE_KEY, THREAD_LOCALE_KEY, THREAD_MENTIONS_KEY, THREAD_MODE_KEY, THREAD_MODEL_KEY,
     THREAD_REASONING_KEY, THREAD_TIER_KEY, THREAD_TOOLS_KEY, THREAD_UI_CATALOG_KEY,
-    check_catalog_schemas, locale, mentions, pick, tier,
+    check_catalog_schemas, locale, mentions, mode, pick, tier,
 };
 use orch_core::{
-    AccessTier, AgentId, AgentTarget, Event, Input, LocaleHint, Mention, ModelPick, Origin,
-    ThreadId, ThreadRecord, UiCatalogData, fork_message, is_fork_at, report,
+    AccessTier, AgentId, AgentTarget, Event, Input, LocaleHint, Mention, ModeName, ModelPick,
+    Origin, ThreadId, ThreadRecord, UiCatalogData, fork_message, is_fork_at, report,
 };
 use orch_ports::{Clock, Ports, Principal};
 
@@ -68,6 +68,7 @@ pub(crate) async fn run<P: Ports>(
     let tiered = tier_request(&input)?;
     let locale = locale_request(&input)?;
     let picked = pick_request(&input)?;
+    let moded = mode_request(&input)?;
     let fork = fork_request(&input, gate.is_some(), &tools)?;
     let thread = thread_id_of(&input).map_err(|e| input_error(&e))?;
     // A request that names an agent by an alias is about the agent (ADR 0049).
@@ -99,6 +100,7 @@ pub(crate) async fn run<P: Ports>(
                 tier: tiered,
                 locale: locale.as_ref(),
                 pick: picked.as_ref(),
+                mode: moded.as_ref(),
                 fork,
             },
         )
@@ -304,6 +306,22 @@ fn pick_request(input: &RunAgentInput) -> Result<Option<ModelPick>, Problem> {
         .map_err(|e| Problem::bad_request(e.to_string()))
 }
 
+/// The mode of the run's message, `forwardedProps["vymalo.mode"]` (ADR 0109,
+/// [`agent-mode-v1`](../../../../docs/api/agent-mode-v1.md)): a non-blank string of at most 64 bytes
+/// with no control character, `null` or absent for none. Read on every run, so a value that is not
+/// one is a **400** every time. Like the pick it is **not a hint**: the application checks it
+/// against the agent's live card and refuses (422) what is not offered, before anything is written.
+fn mode_request(input: &RunAgentInput) -> Result<Option<ModeName>, Problem> {
+    let Some(value) = input
+        .forwarded_props
+        .as_ref()
+        .and_then(|props| props.get(THREAD_MODE_KEY))
+    else {
+        return Ok(None);
+    };
+    mode::parse_mode(value).map_err(|e| Problem::bad_request(e.to_string()))
+}
+
 /// Where the run's thread is cut from, `forwardedProps["vymalo.fork"]` (ADR 0042, decision 8):
 /// `{from, after}`, the thread to fork (a UUID) and an event of the turn to copy up to the end of.
 /// With it the run creates its thread as a fork of `from` and its message is the fork's first,
@@ -398,6 +416,16 @@ fn picking(mut input: Input, picked: &mut Option<ModelPick>) -> Input {
     if let Input::UserMessage { pick: own, .. } | Input::StopAndSend { pick: own, .. } = &mut input
     {
         *own = picked.take();
+    }
+    input
+}
+
+/// Gives the mode of the run to the first input that is a message (a stop included), once: it is
+/// the message's own, as its tier is. Every other input is left as it is.
+fn moding(mut input: Input, moded: &mut Option<ModeName>) -> Input {
+    if let Input::UserMessage { mode: own, .. } | Input::StopAndSend { mode: own, .. } = &mut input
+    {
+        *own = moded.take();
     }
     input
 }
@@ -576,6 +604,7 @@ struct Requested<'a> {
     tier: Option<AccessTier>,
     locale: Option<&'a LocaleHint>,
     pick: Option<&'a ModelPick>,
+    mode: Option<&'a ModeName>,
     fork: Option<ForkRun>,
 }
 
@@ -599,6 +628,7 @@ async fn attempt<P: Ports>(
         tier,
         locale,
         pick,
+        mode,
         fork,
     } = *requested;
     let user = &principal.user;
@@ -776,6 +806,7 @@ async fn attempt<P: Ports>(
                         tier,
                         locale: locale.cloned(),
                         pick: pick.cloned(),
+                        mode: mode.cloned(),
                         prompt_signature: prompt_signature.clone(),
                     },
                     held,
@@ -799,6 +830,7 @@ async fn attempt<P: Ports>(
                 tier,
                 locale: locale.cloned(),
                 pick: pick.cloned(),
+                mode: mode.cloned(),
                 prompt_signature: prompt_signature.clone(),
             };
             match app
@@ -842,6 +874,8 @@ async fn attempt<P: Ports>(
             let mut located = locale.cloned();
             // and the model pick
             let mut picked = pick.cloned();
+            // and the mode
+            let mut moded = mode.cloned();
             for next in inputs {
                 let key = key_of(thread, &next);
                 let next = carrying(next, &mut carried);
@@ -849,6 +883,7 @@ async fn attempt<P: Ports>(
                 let next = tiering(next, &mut tiered);
                 let next = localizing(next, &mut located);
                 let next = picking(next, &mut picked);
+                let next = moding(next, &mut moded);
                 match app.submit(principal, thread, next, key).await? {
                     ApplyOutcome::Applied { events, .. } => {
                         start = start.or_else(|| events.first().map(|e| e.seq));
@@ -872,6 +907,9 @@ async fn attempt<P: Ports>(
             }
             if picked.is_some() {
                 tracing::warn!(%thread, "{THREAD_MODEL_KEY} or {THREAD_REASONING_KEY} on a run with no message to carry it was ignored");
+            }
+            if moded.is_some() {
+                tracing::warn!(%thread, "{THREAD_MODE_KEY} on a run with no message to carry it was ignored");
             }
             // An input that writes no event (a cancel) is answered by whatever the log says next.
             let start = if opens_run {
@@ -963,6 +1001,8 @@ mod tests {
             mentions: Vec::new(),
             tier: None,
             prompt_signature: None,
+
+            mode: None,
         }
     }
 

@@ -88,6 +88,8 @@ fn delegate(id: Uuid) -> NewOutbox {
             tier_cap: None,
             locale: None,
             pick: None,
+            mode: None,
+            prompt_signature: None,
         },
     }
 }

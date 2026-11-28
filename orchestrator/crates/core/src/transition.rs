@@ -94,6 +94,11 @@ pub enum Input {
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The mode the message is sent under (ADR 0109, `agent-mode/v1`), resolved by the
+        /// application (the message's own over the thread's default, or the job's mode when the
+        /// message continues it) and checked against the live card. Recorded on the `user_message`
+        /// and carried by everything that continues it.
+        mode: Option<crate::ModeName>,
         /// The person's prompt signature for this message (ADR 0087, decision 2): the compact JWS
         /// their app sent as the message's `metadata["vymalo.promptSignature"]`, already checked
         /// for presence at intake and passed on byte for byte. It is **not conversation content**:
@@ -136,6 +141,9 @@ pub enum Input {
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The mode of the message (ADR 0109), as for [`Input::UserMessage`]. When the message
+        /// stops a running job it goes to **the next job** ([`Job::after_stop_mode`]).
+        mode: Option<crate::ModeName>,
         /// The person's prompt signature of the message (ADR 0087), as for [`Input::UserMessage`].
         /// When the message **stops a running job** the envelope is not held with its text (a
         /// signature is not ledger state, and the ledger is exported): the next job's delegation,
@@ -191,6 +199,9 @@ pub enum Input {
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The mode the message was written with (ADR 0109), as its `user_message` records it: the
+        /// redelivery carries it.
+        mode: Option<crate::ModeName>,
         /// The person's prompt signature the message was written with (ADR 0087), as the
         /// delegation's outbox row holds it (never the log): the redelivery carries it to the agent.
         prompt_signature: Option<String>,
@@ -657,6 +668,11 @@ pub enum Command {
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The mode of the message (ADR 0109, `agent-mode/v1`), resolved and checked against the
+        /// live card when the message was written, as its `user_message` records it. The adapter
+        /// sends it and refuses a card that no longer offers it: a mode is never dropped. A rework
+        /// carries the mode of the job ([`Job::mode`]): it continues the person's work.
+        mode: Option<crate::ModeName>,
         /// The person's prompt signature for the message (ADR 0087, decision 2), as the person's
         /// app sent it: the application puts it on the delegation's outbox row (never in the log),
         /// and the dispatcher puts it on the agent's request byte for byte, so that the verifier
@@ -686,6 +702,9 @@ pub enum Command {
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The mode of the message (ADR 0109), as for [`Command::Delegate`]; the delegation this
+        /// steer may become keeps it.
+        mode: Option<crate::ModeName>,
         /// The person's prompt signature, as for [`Command::Delegate`]: a steer carries it into the
         /// running task, and the delegation it becomes keeps it.
         prompt_signature: Option<String>,
@@ -751,6 +770,10 @@ pub enum Command {
         tier: Option<AccessTier>,
         /// The cap that goes with `tier` ([`Job::tier_cap`]), as for [`Command::Delegate`].
         tier_cap: Option<AccessTier>,
+        /// The mode the action is sent under (ADR 0109): the job's mode ([`Job::mode`]), the mode
+        /// the person's last message of the job was sent under, so the agent does not work on it in
+        /// its own default.
+        mode: Option<crate::ModeName>,
     },
     /// Ask the agent to cancel the running task (outbox kind `cancel`). `job` is the number of
     /// the job the person asked to stop: a row claimed after that job ended and the next began
@@ -1054,6 +1077,7 @@ struct Said<'a> {
     tier_cap: Option<AccessTier>,
     locale: Option<LocaleHint>,
     pick: Option<ModelPick>,
+    mode: Option<crate::ModeName>,
     /// The person's prompt signature (ADR 0087): carried to the delegation, never to the event.
     prompt_signature: Option<&'a str>,
 }
@@ -1073,6 +1097,7 @@ fn user_message_event(said: &Said<'_>, delivery: Option<Delivery>) -> Command {
             tier_cap: said.tier_cap,
             locale: said.locale.clone(),
             pick: said.pick.clone(),
+            mode: said.mode.clone(),
         }),
     )
 }
@@ -1083,6 +1108,7 @@ fn user_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
     job.answer.reset();
     job.tier = said.tier;
     job.tier_cap = said.tier_cap;
+    job.mode = said.mode.clone();
     let (record, delivery) = deliver(job, said.user, said.catalog.as_ref());
     job.note_mentions(said.mentions);
     let mut cmds: Vec<Command> = record.into_iter().collect();
@@ -1095,6 +1121,7 @@ fn user_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
         tier_cap: said.tier_cap,
         locale: said.locale.clone(),
         pick: said.pick.clone(),
+        mode: said.mode.clone(),
         prompt_signature: said.prompt_signature.map(str::to_owned),
     });
     cmds
@@ -1106,6 +1133,11 @@ fn steered_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
     job.answer.reset();
     job.tier = said.tier;
     job.tier_cap = said.tier_cap;
+    // the mode holds as adam holds it within a task: the newest message that names one wins, and
+    // one that names none leaves the task's mode as it is
+    if said.mode.is_some() {
+        job.mode = said.mode.clone();
+    }
     let (record, delivery) = deliver(job, said.user, said.catalog.as_ref());
     // The agents of a message sent while the job runs may be asked for from then on (ADR 0026).
     job.note_mentions(said.mentions);
@@ -1119,6 +1151,7 @@ fn steered_message(job: &mut Job, said: &Said<'_>) -> Vec<Command> {
         tier_cap: said.tier_cap,
         locale: said.locale.clone(),
         pick: said.pick.clone(),
+        mode: said.mode.clone(),
         prompt_signature: said.prompt_signature.map(str::to_owned),
     });
     cmds
@@ -1162,6 +1195,11 @@ fn stopping_message(job: &mut Job, said: &Said<'_>) -> Result<Vec<Command>, Tran
     if said.pick.is_some() {
         job.after_stop_pick = said.pick.clone();
     }
+    // a mode is held the same way: the newest message that named one sets the next job's, and one
+    // that names none leaves it
+    if said.mode.is_some() {
+        job.after_stop_mode = said.mode.clone();
+    }
     job.tier = said.tier;
     job.tier_cap = said.tier_cap;
     let (record, _) = deliver(job, said.user, said.catalog.as_ref());
@@ -1184,10 +1222,12 @@ fn start_after_stop(job: &mut Job) -> Vec<Command> {
     let tier_cap = job.after_stop_tier_cap.take();
     let locale = job.after_stop_locale.take();
     let pick = job.after_stop_pick.take();
+    let mode = job.after_stop_mode.take();
     let abandoned = job.number;
     *job = job.next();
     job.tier = tier;
     job.tier_cap = tier_cap;
+    job.mode = mode.clone();
     note_task(job, &text);
     // The next job starts with the mentions of the messages that stopped this one (ADR 0026).
     job.note_mentions(&mentions);
@@ -1202,6 +1242,7 @@ fn start_after_stop(job: &mut Job) -> Vec<Command> {
             tier_cap,
             locale,
             pick,
+            mode,
             // The held text carries no envelope: a signature is not ledger state (ADR 0087), so a
             // message that stopped a running job reaches the agent unsigned.
             prompt_signature: None,
@@ -1230,11 +1271,15 @@ fn redelegate(
     tier_cap: Option<AccessTier>,
     locale: Option<LocaleHint>,
     pick: Option<ModelPick>,
+    mode: Option<crate::ModeName>,
     prompt_signature: Option<&str>,
 ) -> Command {
     job.answer.reset();
     job.tier = tier;
     job.tier_cap = tier_cap;
+    if mode.is_some() {
+        job.mode = mode.clone();
+    }
     job.note_mentions(mentions);
     Command::Delegate {
         text: text.to_owned(),
@@ -1244,6 +1289,7 @@ fn redelegate(
         tier_cap,
         locale,
         pick,
+        mode,
         prompt_signature: prompt_signature.map(str::to_owned),
     }
 }
@@ -1260,6 +1306,7 @@ fn redelegation(
     tier_cap: Option<AccessTier>,
     locale: Option<LocaleHint>,
     pick: Option<ModelPick>,
+    mode: Option<crate::ModeName>,
     prompt_signature: Option<&str>,
 ) -> Vec<Command> {
     if sent {
@@ -1270,6 +1317,9 @@ fn redelegation(
         // follows continues it
         job.tier = tier;
         job.tier_cap = tier_cap;
+        if mode.is_some() {
+            job.mode = mode;
+        }
         Vec::new()
     } else {
         vec![redelegate(
@@ -1280,6 +1330,7 @@ fn redelegation(
             tier_cap,
             locale,
             pick,
+            mode,
             prompt_signature,
         )]
     }
@@ -1317,6 +1368,8 @@ fn ui_action(
         catalog: delivery,
         tier: job.tier,
         tier_cap: job.tier_cap,
+        // the action continues the person's work under the mode of their last message (ADR 0109)
+        mode: job.mode.clone(),
     });
     cmds
 }
@@ -1455,6 +1508,7 @@ pub fn start_thread(
             tier_cap,
             locale,
             pick,
+            mode,
             prompt_signature,
         }
         | Input::StopAndSend {
@@ -1469,6 +1523,7 @@ pub fn start_thread(
             tier_cap,
             locale,
             pick,
+            mode,
             prompt_signature,
         } => {
             let said = Said {
@@ -1483,6 +1538,7 @@ pub fn start_thread(
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
                 pick: pick.clone(),
+                mode: mode.clone(),
                 prompt_signature: prompt_signature.as_deref(),
             };
             let mut job = Job::with_gate(gate);
@@ -1573,6 +1629,7 @@ fn decide(
             tier_cap,
             locale,
             pick,
+            mode,
             prompt_signature,
         } => {
             let said = Said {
@@ -1587,6 +1644,7 @@ fn decide(
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
                 pick: pick.clone(),
+                mode: mode.clone(),
                 prompt_signature: prompt_signature.as_deref(),
             };
             message(state, job, &said, false)
@@ -1603,6 +1661,7 @@ fn decide(
             tier_cap,
             locale,
             pick,
+            mode,
             prompt_signature,
         } => {
             let said = Said {
@@ -1617,6 +1676,7 @@ fn decide(
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
                 pick: pick.clone(),
+                mode: mode.clone(),
                 prompt_signature: prompt_signature.as_deref(),
             };
             message(state, job, &said, true)
@@ -1629,6 +1689,7 @@ fn decide(
             tier_cap,
             locale,
             pick,
+            mode,
             prompt_signature,
         } => match state {
             // The thread moved on while the message waited (an earlier redelivery started the next
@@ -1657,6 +1718,7 @@ fn decide(
                         *tier_cap,
                         locale.clone(),
                         pick.clone(),
+                        mode.clone(),
                         prompt_signature.as_deref(),
                     ),
                 ))
@@ -1677,6 +1739,7 @@ fn decide(
                         *tier_cap,
                         locale.clone(),
                         pick.clone(),
+                        mode.clone(),
                         prompt_signature.as_deref(),
                     ),
                 ))
@@ -1694,6 +1757,7 @@ fn decide(
                     *tier_cap,
                     locale.clone(),
                     pick.clone(),
+                    mode.clone(),
                     prompt_signature.as_deref(),
                 ));
                 Ok((ThreadState::Queued, cmds))
@@ -1742,6 +1806,7 @@ fn decide(
                 job.after_stop_tier_cap = None;
                 job.after_stop_locale = None;
                 job.after_stop_pick = None;
+                job.after_stop_mode = None;
                 Ok((state, vec![Command::RequestCancel { job: job.number }]))
             }
             // The agent's task is over, so there is nothing to ask it to cancel: the thread is
@@ -1864,9 +1929,13 @@ fn decide(
                 let tier_cap = job.after_stop_tier_cap.take();
                 let locale = job.after_stop_locale.take();
                 let pick = job.after_stop_pick.take();
+                let mode = job.after_stop_mode.take();
                 // the held messages are the job's now, and so is the tier they named
                 job.tier = tier;
                 job.tier_cap = tier_cap;
+                if mode.is_some() {
+                    job.mode = mode.clone();
+                }
                 note_task(job, &text);
                 // The stop did not happen: the held messages are those of the job that goes on.
                 job.note_mentions(&mentions);
@@ -1887,6 +1956,7 @@ fn decide(
                             tier_cap,
                             locale,
                             pick,
+                            mode,
                             // the held text carries no envelope: a signature is not ledger state
                             prompt_signature: None,
                         },

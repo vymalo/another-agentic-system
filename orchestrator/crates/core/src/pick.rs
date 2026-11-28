@@ -338,6 +338,8 @@ pub struct PickListings {
     pub model: Listing<ModelPickOffer>,
     /// `reasoning/v1`.
     pub effort: Listing<EffortOffer>,
+    /// `agent-mode/v1` (ADR 0109): the modes the agent offers and its default.
+    pub mode: Listing<crate::ModeOffer>,
 }
 
 /// Why a pick cannot be sent to an agent: the axis, and what the card offers (empty when it lists
@@ -429,6 +431,7 @@ mod tests {
                 EffortOffer::from_params(&json!({"efforts": ["low", "high"], "default": "low"}))
                     .unwrap(),
             ),
+            mode: Listing::default(),
         }
     }
 

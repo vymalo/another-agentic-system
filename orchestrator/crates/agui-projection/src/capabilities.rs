@@ -14,7 +14,8 @@ use orch_agui_proto::{
 };
 use orch_core::{
     ACCESS_TIER_EXTENSION, AccessTier, AgentId, CHILD_SESSIONS_EXTENSION, COMMANDS_EXTENSION,
-    ChildSessionsOffer, CommandsOffer, KnownExtension, Releases, TierOffer, UiVersion,
+    ChildSessionsOffer, CommandsOffer, KnownExtension, MODE_EXTENSION, ModeOffer, Releases,
+    TierOffer, UiVersion,
 };
 
 use crate::vocab::RELEASE_CHANNELS_URI;
@@ -49,6 +50,9 @@ pub struct CardFacts {
     /// Present only when the card lists `child-sessions/v1` with well-formed `params` (ADR 0072):
     /// the helpers a person may start a session with, and how many may be open at once.
     pub child_sessions: Option<ChildSessionsOffer>,
+    /// Present only when the card lists `agent-mode/v1` with well-formed `params` (ADR 0109): the
+    /// modes the agent offers and its default. The web draws its switch from it.
+    pub mode: Option<ModeOffer>,
 }
 
 /// The `AgentCapabilities` of the agent `id` (display name `name`); `card` is `None` when the
@@ -107,6 +111,11 @@ pub fn agent_capabilities(id: &AgentId, name: &str, card: Option<&CardFacts>) ->
         && let Ok(value) = serde_json::to_value(offer)
     {
         custom.insert(CHILD_SESSIONS_EXTENSION.to_owned(), value);
+    }
+    if let Some(offer) = card.and_then(|c| c.mode.as_ref())
+        && let Ok(value) = serde_json::to_value(offer)
+    {
+        custom.insert(MODE_EXTENSION.to_owned(), value);
     }
     let description = card.and_then(|c| c.description.clone());
     AgentCapabilities {

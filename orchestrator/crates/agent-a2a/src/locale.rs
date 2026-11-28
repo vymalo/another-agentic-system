@@ -114,6 +114,8 @@ mod tests {
             locale: locale.map(|tag| LocaleHint::parse(tag).unwrap()),
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         }
     }
 

@@ -15,16 +15,18 @@
 
 use a2a::AgentCard;
 use orch_core::{
-    EffortOffer, Listing, MODEL_PICK_EXTENSION, ModelPickOffer, PickListings, REASONING_EXTENSION,
+    EffortOffer, Listing, MODE_EXTENSION, MODEL_PICK_EXTENSION, ModeOffer, ModelPickOffer,
+    PickListings, REASONING_EXTENSION,
 };
 use orch_ports::{AgentError, SendRequest};
 use serde_json::{Value, json};
 
-/// What the card says under the two extensions of a pick.
+/// What the card says under the two extensions of a pick and `agent-mode/v1`.
 pub fn pick_from_card(card: &AgentCard) -> PickListings {
     PickListings {
         model: listing(card, MODEL_PICK_EXTENSION, ModelPickOffer::from_params),
         effort: listing(card, REASONING_EXTENSION, EffortOffer::from_params),
+        mode: listing(card, MODE_EXTENSION, ModeOffer::from_params),
     }
 }
 
@@ -50,39 +52,44 @@ fn listing<T>(card: &AgentCard, uri: &str, read: impl Fn(&Value) -> Option<T>) -
 }
 
 /// The members of the message metadata that carry the pick: the model's (under
-/// [`MODEL_PICK_EXTENSION`]) and the effort's (under [`REASONING_EXTENSION`]), each `None` when the
-/// message names nothing on that axis.
+/// [`MODEL_PICK_EXTENSION`]), the effort's (under [`REASONING_EXTENSION`]) and the mode's (under
+/// [`MODE_EXTENSION`]), each `None` when the message names nothing on that axis.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct PickMetadata {
     pub(crate) model: Option<Value>,
     pub(crate) effort: Option<Value>,
+    pub(crate) mode: Option<Value>,
 }
 
 /// The pick of `req` as message metadata, checked against the card read for this very call.
 ///
 /// # Errors
-/// [`AgentError::Unsupported`] when the message names a model or an effort the card does not offer
-/// (or lists the extension not at all, or badly): nothing is sent, and the work is never retried
-/// without the pick (ADR 0086 decision 6).
+/// [`AgentError::Unsupported`] when the message names a model, an effort or a mode the card does
+/// not offer (or lists the extension not at all, or badly): nothing is sent, and the work is never
+/// retried without the pick (ADR 0086, ADR 0109).
 pub(crate) fn pick_metadata(
     req: &SendRequest,
     listings: &PickListings,
 ) -> Result<PickMetadata, AgentError> {
-    let Some(pick) = req.pick.as_ref() else {
-        return Ok(PickMetadata::default());
-    };
-    listings
-        .check(pick)
-        .map_err(|refusal| AgentError::Unsupported(refusal.to_string()))?;
-    Ok(PickMetadata {
-        model: pick
+    let mut metadata = PickMetadata::default();
+    if let Some(pick) = req.pick.as_ref() {
+        listings
+            .check(pick)
+            .map_err(|refusal| AgentError::Unsupported(refusal.to_string()))?;
+        metadata.model = pick
             .model
             .as_ref()
-            .map(|id| json!({ "model": id.as_str() })),
-        effort: pick
+            .map(|id| json!({ "model": id.as_str() }));
+        metadata.effort = pick
             .reasoning_effort
-            .map(|level| json!({ "effort": level.as_str() })),
-    })
+            .map(|level| json!({ "effort": level.as_str() }));
+    }
+    if let Some(mode) = req.mode.as_ref() {
+        orch_core::check_mode(&listings.mode, Some(mode))
+            .map_err(|refusal| AgentError::Unsupported(refusal.to_string()))?;
+        metadata.mode = Some(json!({ "mode": mode.as_str() }));
+    }
+    Ok(metadata)
 }
 
 #[cfg(test)]
@@ -161,6 +168,7 @@ mod tests {
             tier_cap: None,
             locale: None,
             pick,
+            mode: None,
             prompt_signature: None,
         }
     }
@@ -240,6 +248,7 @@ mod tests {
             PickMetadata {
                 model: Some(json!({"model": "deep"})),
                 effort: Some(json!({"effort": "high"})),
+                mode: None,
             }
         );
         // an effort alone activates the reasoning extension and not the model's
@@ -249,8 +258,63 @@ mod tests {
             PickMetadata {
                 model: None,
                 effort: Some(json!({"effort": "low"})),
+                mode: None,
             }
         );
+    }
+
+    fn mode_card() -> AgentCard {
+        card_with(vec![entry(
+            orch_core::MODE_EXTENSION,
+            json!({
+                "modes": [{"name": "build", "title": "Build"}, {"name": "plan"}],
+                "default": "build"
+            }),
+        )])
+    }
+
+    #[test]
+    fn a_mode_the_card_offers_arrives_under_its_uri_and_one_it_does_not_is_refused() {
+        let listings = pick_from_card(&mode_card());
+        assert_eq!(listings.mode.offer().unwrap().names(), ["build", "plan"]);
+        let plan = orch_core::ModeName::parse("plan").unwrap();
+        let req = SendRequest {
+            mode: Some(plan.clone()),
+            ..request(None)
+        };
+        assert_eq!(
+            pick_metadata(&req, &listings).unwrap(),
+            PickMetadata {
+                mode: Some(json!({"mode": "plan"})),
+                ..PickMetadata::default()
+            }
+        );
+        // a message that names no mode carries no member
+        assert_eq!(
+            pick_metadata(&request(None), &listings).unwrap(),
+            PickMetadata::default()
+        );
+        // a mode the card does not offer, or a card that lists none, refuses and sends nothing
+        for (req, listings) in [
+            (
+                SendRequest {
+                    mode: Some(orch_core::ModeName::parse("review").unwrap()),
+                    ..request(None)
+                },
+                listings.clone(),
+            ),
+            (
+                SendRequest {
+                    mode: Some(plan),
+                    ..request(None)
+                },
+                PickListings::default(),
+            ),
+        ] {
+            let error = pick_metadata(&req, &listings).unwrap_err();
+            assert!(matches!(error, AgentError::Unsupported(_)), "{error:?}");
+            assert_eq!(error.class(), ErrorClass::Unsupported, "never retried");
+        }
     }
 
     #[test]

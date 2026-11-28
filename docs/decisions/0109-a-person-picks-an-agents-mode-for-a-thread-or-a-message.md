@@ -4,8 +4,8 @@ sidebarTitle: "0109 · Pick an agent's mode"
 
 # ADR 0109 — A person picks an agent's mode, for a thread or a message
 
-- **Status:** **proposed 2026-11-27** (card ANR-979). **adam's side is built** (adam-rs `2c2b551d` (2026-11-27, "feat(a2a): agent-mode/v1 — folder modes, the extension, activation (#465)")); **the orchestrator's side is not**: no card read, activation, check, `422`, log member or web control. **Contract:** [`docs/api/agent-mode-v1.md`](../api/agent-mode-v1.md) (it holds the sequence and state diagrams).
-  **Pattern:** [ADR 0086](0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md) (the model pick), which this copies on purpose; the tier ([ADR 0061](0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)) for the hold rule; [ADR 0008](0008-platform-integration-via-a2a-extension.md) for the pattern. The scenario that will prove it (ANR-913) is *unbuilt*.
+- **Status:** **proposed 2026-11-27** (card ANR-979). **adam's side is built** (adam-rs `2c2b551d` (2026-11-27, "feat(a2a): agent-mode/v1 — folder modes, the extension, activation (#465)")); **the orchestrator's side is built too** (2026-11-28, card ANR-913): the card read, activation, check, `422`, log member and capabilities document; the web switch is ANR-980. **Contract:** [`docs/api/agent-mode-v1.md`](../api/agent-mode-v1.md) (it holds the sequence and state diagrams).
+  **Pattern:** [ADR 0086](0086-a-person-picks-a-model-or-a-reasoning-level-for-a-thread-or-a-message.md) (the model pick), which this copies on purpose; the tier ([ADR 0061](0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md)) for the hold rule; [ADR 0008](0008-platform-integration-via-a2a-extension.md) for the pattern. The scenario that proves it (ANR-913) is `dev/mode-real-e2e.sh`.
 
 ## Context
 
@@ -60,8 +60,8 @@ switch, carrying the mode on its own reworks like the tier)" to this repository.
 - Nothing runs differently until an agent lists the extension. A plain A2A agent gets the same request as before.
 - `chat-api.yaml` changes are additive only (`mode` on `ThreadPatch`, `ForkRequest` and the `user_message` data, the `forwardedProps` key `vymalo.mode`, one error code, one capabilities
   member on `Agent`), when the build lands.
-- **Prerequisites of the proof:** the coder pin (`compose.yaml` about line 196, `dev/coder/UPSTREAM` `9f90f1e`) predates adam-rs `2c2b551d`, so a `bump-adam` comes first; and `dev/agents/chat/agent/` needs a `modes/` folder with two modes that narrow by `tools:` only.
-- **The proof is a scenario, *unbuilt* (ANR-913)** in `dev/e2e-all.sh`: see the page's "Conformance".
+- **Prerequisites of the proof:** the coder pin (`compose.yaml` about line 196, `dev/coder/UPSTREAM` `9f90f1e`) predates adam-rs `2c2b551d`, so a `bump-adam` comes first; and `dev/agents/chat/agent/` needs a `modes/` folder with two modes that narrow by `tools:` only. **Amended 2026-11-28 (ANR-913):** the pin is `sha-5883708` (a descendant of `2c2b551d`) and `dev/agents/chat/agent/modes/` holds `direct` (default) and `plan`.
+- **The proof is a scenario (ANR-913, built 2026-11-28)** in `dev/e2e-all.sh`: `dev/mode-real-e2e.sh`, see the page's "Conformance".
 
 ## Alternatives rejected
 
@@ -72,6 +72,6 @@ switch, carrying the mode on its own reworks like the tier)" to this repository.
 - **Sending the default mode on every message:** it would activate the extension for nothing and pin the agent's choice in the log.
 - **Caching the card's modes:** forbidden by ADR 0008; a mode removed in a new release would still be offered.
 
-## Proof (to build)
+## Proof
 
-`dev/mode-real-e2e.sh` (ANR-913, unbuilt): see [`agent-mode-v1.md`](../api/agent-mode-v1.md#conformance). Each test red before its fix.
+`dev/mode-real-e2e.sh` (ANR-913, built 2026-11-28): see [`agent-mode-v1.md`](../api/agent-mode-v1.md#conformance). Each test red before its fix.

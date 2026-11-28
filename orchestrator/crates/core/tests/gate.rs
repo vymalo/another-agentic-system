@@ -71,6 +71,8 @@ fn message(text: &str) -> Input {
         catalog: None,
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     }
 }
 fn ci_report(name: &str, sha: &str, conclusion: CiConclusion) -> CiReport {
@@ -3309,6 +3311,8 @@ fn a_redelivery_to_a_thread_that_moved_on_joins_the_job_it_reached() {
             locale: None,
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         }],
     );
     assert_eq!((open.state, open.job.number), (Working, 2));
@@ -3317,4 +3321,26 @@ fn a_redelivery_to_a_thread_that_moved_on_joins_the_job_it_reached() {
         task.contains("first") && task.contains("second"),
         "the rework prompt must carry what the person wrote: {task}"
     );
+}
+
+#[test]
+fn a_rework_carries_the_jobs_mode() {
+    // The rework continues the person's work: an agent that was started in `plan` must not be sent
+    // back to work in its own default (ADR 0109, the hold rule).
+    let (mut verifying, _) = feed(verifier_gate(), &[branch(S1), completed()]);
+    let plan = ModeName::parse("plan").unwrap();
+    verifying.job.mode = Some(plan.clone());
+    let (reworked, cmds) = step(
+        &verifying,
+        &verdict(1, 1, false, &["the change ignores the task"]),
+    );
+    assert_eq!(reworked.state, Queued);
+    let carried = cmds
+        .iter()
+        .find_map(|c| match c {
+            Command::Delegate { mode, .. } => Some(mode.clone()),
+            _ => None,
+        })
+        .expect("a rework delegation");
+    assert_eq!(carried, Some(plan), "the rework keeps the job's mode");
 }

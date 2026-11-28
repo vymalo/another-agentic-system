@@ -44,6 +44,8 @@ struct ThreadEntry {
     search_ahead: std::collections::BTreeSet<i64>,
     /// The thread's default model and reasoning effort (ADR 0086): the `pick` column of the Postgres store.
     pick: orch_core::ModelPick,
+    /// The thread's default mode (ADR 0109): the `mode` column of the Postgres store.
+    mode: Option<orch_core::ModeName>,
 }
 
 impl ThreadEntry {
@@ -696,6 +698,7 @@ fn insert_thread(
             search_fold: search::FOLD_VERSION,
             search_ahead: std::collections::BTreeSet::new(),
             pick: orch_core::ModelPick::default(),
+            mode: None,
         },
     );
     let (mut record, events) =
@@ -1634,6 +1637,29 @@ impl ThreadStore for MemoryStore {
             .filter(|e| &e.record.owner == owner)
             .ok_or(StoreError::NotFound)?;
         entry.pick = pick;
+        Ok(())
+    }
+
+    async fn thread_mode(
+        &self,
+        thread: ThreadId,
+    ) -> Result<Option<orch_core::ModeName>, StoreError> {
+        Ok(self.lock().threads.get(&thread).and_then(|e| e.mode.clone()))
+    }
+
+    async fn set_thread_mode(
+        &self,
+        owner: &UserId,
+        thread: ThreadId,
+        mode: Option<orch_core::ModeName>,
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock();
+        let entry = inner
+            .threads
+            .get_mut(&thread)
+            .filter(|e| &e.record.owner == owner)
+            .ok_or(StoreError::NotFound)?;
+        entry.mode = mode;
         Ok(())
     }
 

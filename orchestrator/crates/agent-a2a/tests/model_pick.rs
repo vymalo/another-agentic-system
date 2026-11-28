@@ -69,6 +69,8 @@ fn request(fake: &FakeAgent, pick: Option<ModelPick>) -> SendRequest {
         locale: None,
         pick,
         prompt_signature: None,
+
+        mode: None,
     }
 }
 

@@ -350,6 +350,8 @@ impl Harness {
                     mentions: Vec::new(),
                     tier: None,
                     prompt_signature: None,
+
+                    mode: None,
                 },
                 None,
                 None,
@@ -387,6 +389,8 @@ impl Harness {
                     mentions: Vec::new(),
                     tier: None,
                     prompt_signature: None,
+
+                    mode: None,
                 },
                 None,
             )

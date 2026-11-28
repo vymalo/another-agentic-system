@@ -424,6 +424,20 @@ pub struct Job {
     /// [`Job::after_stop`] holds (ADR 0086), as for the locale. Cleared with the text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_stop_pick: Option<ModelPick>,
+    /// The mode of the newest message that named one among those [`Job::after_stop`] holds
+    /// (ADR 0109), as for the locale and the pick: the next job's first delegation is sent with it.
+    /// A message that names none leaves it. Cleared with the text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_stop_mode: Option<crate::ModeName>,
+    /// The mode the newest message of the person was sent under (ADR 0109, `agent-mode/v1`): what
+    /// the orchestrator's own messages on the thread's behalf (the gate's rework, the delegation of
+    /// an A2UI action, an answer to a blocked job, an MCP message while the job is unfinished) are
+    /// sent under, so that an agent never works on them in its own default when the person chose
+    /// something else. Belongs to the job: [`Job::next`] forgets it, and the message that starts
+    /// the next job sets it. A mode is never carried from one job to the next. A ledger stored
+    /// before the field existed has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<crate::ModeName>,
     /// The access tier the newest message of the person was sent under (ADR 0061), named or not:
     /// what the job is working under. The orchestrator's own messages on the thread's behalf, a
     /// gate's rework and the delegation of an A2UI action, are sent under it, so that an agent
@@ -519,6 +533,8 @@ impl Default for Job {
             after_stop_tier_cap: None,
             after_stop_locale: None,
             after_stop_pick: None,
+            after_stop_mode: None,
+            mode: None,
             tier: None,
             tier_cap: None,
             asks: Vec::new(),

@@ -51,6 +51,9 @@ tokio::spawn(async move { agents.run(stop).await });
 
 * **Endpoints.** It serves `AgentTransport::Local` only: an A2A endpoint is `Unsupported`; a local endpoint of a
   kind this process does not host is `Unreachable` (transient: another process may host it).
+* **No card, so no pick and no mode.** A local agent's `read_card` lists no extension, and a pick or a mode is
+  never dropped (ADR 0086, ADR 0109): a request that names one is `Unsupported` and nothing is sent. A locale is
+  a hint and is dropped as before (ADR 0085).
 * **Caller and tasks.** The caller is `orch:<agent id>`, so two configured agents of one kind never see each
   other's tasks. A new task's id comes from `task_id_for(kind, caller, context, message id)`: sending the same
   message twice reaches one task, and `find_task_by_message` recomputes the id and answers `Some` only if that task

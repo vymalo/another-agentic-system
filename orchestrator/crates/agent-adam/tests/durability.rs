@@ -54,6 +54,8 @@ fn request(text: &str, message_id: &str, context_id: &str) -> SendRequest {
         locale: None,
         pick: None,
         prompt_signature: None,
+
+        mode: None,
     }
 }
 

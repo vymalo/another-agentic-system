@@ -498,6 +498,8 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                     catalog: None,
                     mentions: Vec::new(),
                     tier: None,
+
+                    mode: None,
                 }
             }
             Action::StopAndSend { text, ids } => {
@@ -515,6 +517,8 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                     catalog: None,
                     mentions: Vec::new(),
                     tier: None,
+
+                    mode: None,
                 }
             }
             Action::Catalog { which } => {
@@ -532,6 +536,8 @@ pub fn build_under(actions: &[Action], gate: &GatePolicy) -> Vec<Event> {
                     catalog: Some(catalog(*which)),
                     mentions: Vec::new(),
                     tier: None,
+
+                    mode: None,
                 }
             }
             Action::Cancel => Input::Cancel { user: user.clone() },

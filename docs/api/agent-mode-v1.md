@@ -1,7 +1,7 @@
 # A2A extension: agent mode (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/agent-mode/v1`
-- **Status:** 🚧 planned · **adam built, the orchestrator's side not yet** (proposed 2026-11-27, card ANR-979). adam serves it since adam-rs `2c2b551d` (2026-11-27, "feat(a2a): agent-mode/v1 — folder modes, the extension, activation (#465)"): `crates/adam-a2a/src/modes.rs`, `crates/adam-a2a-runtime/src/mode.rs`, and a coder card with `build` and `plan` (`bin/adam-coder/tests/fixtures/agent/card.json`). The orchestrator reads no card entry for it, activates nothing, checks nothing and logs nothing; no `dev/` scenario has run it. The coder pin here (`dev/coder/UPSTREAM`, `9f90f1e`) predates that commit. Decided in [ADR 0109](../decisions/0109-a-person-picks-an-agents-mode-for-a-thread-or-a-message.md); the wire is adam's ([adam-rs ADR 0039](#verified-and-unverified), answer 3).
+- **Status:** ✅ built · **adam built and the orchestrator's side built** (proposed 2026-11-27, card ANR-979; built 2026-11-28, card ANR-913). adam serves it since adam-rs `2c2b551d` (2026-11-27, "feat(a2a): agent-mode/v1 — folder modes, the extension, activation (#465)"): `crates/adam-a2a/src/modes.rs`, `crates/adam-a2a-runtime/src/mode.rs`, and a coder card with `build` and `plan` (`bin/adam-coder/tests/fixtures/agent/card.json`). The orchestrator reads the card, activates the extension, checks it, logs it on the `user_message` and lists it in the capabilities document; `dev/mode-real-e2e.sh` proves it against the real `chat` agent. The web switch is ANR-980. Decided in [ADR 0109](../decisions/0109-a-person-picks-an-agents-mode-for-a-thread-or-a-message.md); the wire is adam's ([adam-rs ADR 0039](#verified-and-unverified), answer 3).
 - **Defined by:** adam-rs writes the wire; this system writes the orchestrator's side. **Used by:** agents that work in more than one way (adam's coder: `build`, `plan`), the orchestrator and the web.
 - **Not this:** the access tier ([`access-tier-v1.md`](access-tier-v1.md)) is a limit on what the agent may do; a mode is a way of working the agent defines. The tier caps every mode. The model and the effort are [`model-pick-v1.md`](model-pick-v1.md).
 
@@ -105,7 +105,7 @@ The `user_message` holds the resolved mode as `mode: "<name>"` (omitted when non
 
 ## The capabilities document
 
-The agent's entry (`GET /api/agents`, and the AG-UI capabilities) will list the modes the live card lists, each `{name, title, description}`, and which is the `default`; nothing when it lists none. A client draws a switch only for an agent that offers one.
+The agent's entry (`GET /api/agents`, and the AG-UI capabilities) lists the modes the live card lists, each `{name, title, description}`, and which is the `default`; nothing when it lists none. A client draws a switch only for an agent that offers one. The AG-UI capabilities carry it under the extension's own URI in `custom`, as every extension does.
 
 ## Security notes
 
@@ -113,20 +113,28 @@ A mode only narrows what the agent does; the access tier still caps every mode. 
 
 ## What the build changes
 
+*Built 2026-11-28 (ANR-913).*
+
 - `docs/api/chat-api.yaml`, additive only (names checked against the file): `mode` on `ThreadPatch` (`additionalProperties: false`, so it must be added) and on `ForkRequest` (also `additionalProperties: false`, served by `forkThread`), beside `model` and `reasoningEffort`; `mode` in `EventData` for the `user_message`, beside `pick`; the modes the live card lists on `Agent` (and so `AgentList`), beside its `pick` member; the descriptions of `patchThread`, `forkThread` and the AG-UI run (its 400 and 422 answers) gain `mode_not_offered`, and the run gains the `forwardedProps` key `vymalo.mode`. The thread's default is the stored column; as with model pick it is **not a member of the `Thread` schema**: only the answer of `patchThread` carries it. (`AgentInfo` is the web's own type name, not a schema here.)
-- The core: a validated mode name, `user_message.mode`, a `threads.mode` column in each store (no event), the card read and the activation in the A2A client.
-- The web: a switch beside the tier's, drawn only from a live card that lists modes.
+- The core: a validated mode name (`orch_core::ModeName`), `user_message.mode`, a `threads.mode` column in each store (no event), the card read and the activation in the A2A client.
+- The web: a switch beside the tier's, drawn only from a live card that lists modes (ANR-980).
 
 ## Conformance
 
-*Unbuilt* (card ANR-913): `dev/mode-real-e2e.sh`, in `dev/e2e-all.sh`. The real `chat` (a folder with two modes) is sent a message with the second mode, and its model request, read from `mock-model`'s journal, carries that mode's instructions. A mode the card does not list is a `422`, and "nothing sent" is asserted on `mock-model`'s journal and the agent's request journal, both unchanged.
+*Built 2026-11-28* (card ANR-913): `dev/mode-real-e2e.sh`, in `dev/e2e-all.sh`. The real `chat` (a folder with two modes) is sent a message with the second mode, and its model request, read from `mock-model`'s journal, carries that mode's instructions. A mode the card does not list is a `422`, and "nothing sent" is asserted on `mock-model`'s journal and the agent's request journal, both unchanged.
 
-Prerequisites: the coder pin (`compose.yaml` about line 196, `dev/coder/UPSTREAM` `9f90f1e`) predates adam-rs `2c2b551d`, so a `bump-adam` comes first; and `dev/agents/chat/agent/` needs a `modes/` folder with two modes that narrow by `tools:` only (a `permission:` in a mode file is refused at load).
+The mock-agent checks, each red before its fix:
 
-The mock-agent checks, each red before its fix: the mode arrives in the metadata with the URI activated; an unlisted mode is `422` and writes nothing; no pick sends no member and activates nothing; the message's mode beats the thread's; an unpicked message in a task keeps the task's mode; a redelivery carries the recorded mode; a rework carries the job's last mode.
+- `orch_agent_a2a::tests::mode` — the mode arrives in the metadata with the URI activated; no pick sends no member and activates nothing; an unlisted mode is `AgentError::Unsupported` and sends nothing; a card that lists the extension badly reads as not listed.
+- `orch_app::tests::modes` — an unlisted mode is `422` and writes nothing; a message that names none reads no card and writes the event it always did; the message's mode beats the thread's; a dropped thread default is `422` and never falls back; an edit inherits the replaced mode; a fork's first message is checked.
+- `orch_core::tests::modes` — the `user_message` records the mode; a steer that names none keeps the task's mode; a Stop & send holds the newest mode; a redelivery carries the recorded mode; a mode is never carried to the next job.
+- `orch_core::tests::gate::a_rework_carries_the_jobs_mode` — the gate's rework keeps the job's mode.
+- `orch_agui_projection::tests::capabilities` — the capabilities document lists the modes and the default, and nothing when the card lists none.
+- `orch_surface_agui::tests::modes` — `vymalo.mode` is read on every run, a non-name is `400`, an unlisted mode is `422` and nothing is written.
 
 ## Verified and unverified
 
 - *Verified 2026-11-27* (adam-rs `origin/main` `e8809b4d`, `docs/decisions/0039-the-agent-loop-takes-opencodes-structure-and-agents-get-plugins.md`, last commit `2c2b551d`, "The owner's answers (2026-10-11)", answer 3, and its "Amended 2026-11-27" note): the URI, the card `params {modes: [{name, title, description}], default}`, `metadata[URI] = {"mode": "<name>"}`, an unknown mode is `InvalidParams` with `mode_not_offered`, the tier caps every mode, a mode file's `permission:` is refused at load, the mode is not echoed.
 - *Verified 2026-11-27*: the coder's card lists the extension with `build` (default) and `plan` (adam-rs `bin/adam-coder/tests/fixtures/agent/card.json`, `e8809b4d`); the hold rule and `CONTEXT_MODE` are in `crates/adam-a2a-runtime/README.md`; adam-rs built it in `2c2b551d` (#465).
-- *Unverified:* that the coder image this stack pins serves it (the pin predates `2c2b551d`); the names `vymalo.mode`, `mode` on the thread and the capabilities shape are this system's.
+- *Verified 2026-11-28* (this repository): the stack's pin lists it (`compose.yaml` `x-adam-image` `sha-5883708`, a descendant of `2c2b551d`); `dev/agents/chat/agent/modes/` holds `direct` and `plan`; `dev/mode-real-e2e.sh` is built and registered, and asserts the mode's instructions on `mock-model`'s journal and that an unlisted mode writes and sends nothing. *Unrun here:* it needs the local stack (`docker compose`).
+- *Unverified:* nothing of the wire; the names `vymalo.mode`, `mode` on the thread and the capabilities shape are this system's, and the web switch is ANR-980.

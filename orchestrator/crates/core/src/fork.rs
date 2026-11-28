@@ -380,6 +380,9 @@ pub struct Replacement {
     pub locale: Option<LocaleHint>,
     /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
     pub pick: Option<ModelPick>,
+    /// The mode of the message (ADR 0109), checked against the live card as the pick is. An edit
+    /// that names none carries the mode of the message it replaces.
+    pub mode: Option<crate::ModeName>,
     /// The person's prompt signature for the message (ADR 0087), as for
     /// [`Input::UserMessage`](crate::Input::UserMessage): carried to the fork's delegation, never to
     /// the log. `None` for an edit, which the orchestrator's own words do not carry.
@@ -403,6 +406,7 @@ impl Replacement {
             tier_cap: None,
             locale: None,
             pick: None,
+            mode: None,
             prompt_signature: None,
             run_id: None,
             origin: Origin::Agui,
@@ -446,6 +450,7 @@ pub fn fork_commit(
             tier_cap: replacement.tier_cap,
             locale: replacement.locale,
             pick: replacement.pick,
+            mode: replacement.mode,
             prompt_signature: replacement.prompt_signature,
         },
     )?;

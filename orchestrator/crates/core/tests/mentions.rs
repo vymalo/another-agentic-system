@@ -45,6 +45,8 @@ fn said_with(text: &str, mentions: Vec<Mention>) -> Input {
         catalog: None,
         mentions,
         tier: None,
+
+        mode: None,
     }
 }
 fn stop_with(text: &str, mentions: Vec<Mention>) -> Input {
@@ -61,6 +63,8 @@ fn stop_with(text: &str, mentions: Vec<Mention>) -> Input {
         catalog: None,
         mentions,
         tier: None,
+
+        mode: None,
     }
 }
 fn agent_status(state: AgentTaskState) -> Input {
@@ -377,6 +381,8 @@ fn a_redelivery_carries_the_mentions_into_the_job_it_lands_in() {
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+
+                mode: None,
             },
         );
         assert_eq!(next.job.number, number, "{state:?}");
@@ -437,6 +443,8 @@ fn a_redelivery_that_was_sent_delegates_nothing_and_still_opens_the_set() {
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+
+                mode: None,
             },
         );
         assert_eq!(next.job.number, number, "{state:?}");

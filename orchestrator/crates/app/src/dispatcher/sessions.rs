@@ -193,6 +193,8 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             locale: None,
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         };
         let answer = match tokio::time::timeout(ANSWER_TIMEOUT, self.read_answer(req)).await {
             Ok(Ok(answer)) => answer,
@@ -305,6 +307,8 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             locale: None,
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         };
         let answer = match tokio::time::timeout(ANSWER_TIMEOUT, self.read_answer(req)).await {
             Ok(Ok(answer)) => answer,

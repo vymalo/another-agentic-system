@@ -20,7 +20,7 @@ use futures::stream::BoxStream;
 use orch_a2a_mapping::{StreamMapper, sessions_news, snapshot, usage_totals, wants_task_read};
 use orch_core::{
     ACCESS_TIER_EXTENSION, BoxError, CHILD_SESSIONS_EXTENSION, KnownExtension, LOCALE_EXTENSION,
-    MENTIONS_EXTENSION, MODEL_PICK_EXTENSION, REASONING_EXTENSION, STEER_EXTENSION,
+    MENTIONS_EXTENSION, MODE_EXTENSION, MODEL_PICK_EXTENSION, REASONING_EXTENSION, STEER_EXTENSION,
     STEPS_EXTENSION, TEXT_STREAM_EXTENSION, THREAD_TOOLS_EXTENSION, TRUSTED_COMPONENTS_EXTENSION,
     TrustedComponentsOffer, UI_CATALOG_EXTENSION, UPLOADS_EXTENSION, USAGE_EXTENSION, UiDelivery,
     UiVersion, history_preamble,
@@ -702,6 +702,7 @@ struct Riders<'a> {
     locale: Option<&'a Value>,
     model: Option<&'a Value>,
     effort: Option<&'a Value>,
+    mode: Option<&'a Value>,
     uploads: Option<&'a Value>,
 }
 
@@ -752,6 +753,9 @@ fn extensions_of(
     }
     if riders.effort.is_some() {
         uris.push(REASONING_EXTENSION.to_owned());
+    }
+    if riders.mode.is_some() {
+        uris.push(MODE_EXTENSION.to_owned());
     }
     if riders.uploads.is_some() {
         uris.push(UPLOADS_EXTENSION.to_owned());
@@ -856,6 +860,11 @@ fn user_message(
     if let Some(effort) = riders.effort {
         metadata.insert(REASONING_EXTENSION.to_owned(), effort.clone());
     }
+    // The mode the person picked (ADR 0109), under its own extension and only when the message
+    // names one (`crate::pick`: the card was checked, a mode is never a hint).
+    if let Some(mode) = riders.mode {
+        metadata.insert(MODE_EXTENSION.to_owned(), mode.clone());
+    }
     // What the deployment offers for large files, only when the live card lists the extension and
     // the agent has the endpoint the tool is on (`crate::uploads`).
     if let Some(uploads) = riders.uploads {
@@ -888,6 +897,7 @@ impl AgentClient for A2aAgentClient {
             build: build_from_card(&card),
             locale: locale_from_card(&card),
             pick: pick_from_card(&card),
+            mode: pick_from_card(&card).mode,
         })
     }
 
@@ -942,7 +952,7 @@ impl AgentClient for A2aAgentClient {
         // (ADR 0085): a hint, so a card without it is sent the plain message, never nothing.
         let locale = locale_metadata(&req, &locale_from_card(&card));
         // A pick is never dropped (ADR 0086): a card that does not offer it is refused here, before
-        // anything is sent.
+        // anything is sent. So is a mode (ADR 0109).
         let pick = pick_metadata(&req, &pick_from_card(&card))?;
         let uploads = uploads_metadata(&req, &known, thread_tools.is_some());
         // a steer asks for no reporting of its own (the task keeps reporting on the stream that
@@ -970,6 +980,7 @@ impl AgentClient for A2aAgentClient {
             locale: locale.as_ref(),
             model: pick.model.as_ref(),
             effort: pick.effort.as_ref(),
+            mode: pick.mode.as_ref(),
             uploads: uploads.as_ref(),
         };
         let client = Arc::new(

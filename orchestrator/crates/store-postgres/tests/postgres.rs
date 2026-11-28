@@ -92,6 +92,8 @@ fn delegate() -> NewOutbox {
             ui_catalog: None,
             mentions: Vec::new(),
             tier: None,
+
+            mode: None,
         },
     }
 }
@@ -2818,6 +2820,8 @@ async fn migration_0013_upgrades_a_database_that_holds_an_outbox() {
             ui_catalog: None,
             mentions: Vec::new(),
             tier: None,
+
+            mode: None,
         }
     );
     assert!(
@@ -2841,6 +2845,8 @@ async fn migration_0013_upgrades_a_database_that_holds_an_outbox() {
             ui_catalog: None,
             mentions: Vec::new(),
             tier: None,
+
+            mode: None,
         }
     );
 }

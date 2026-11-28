@@ -491,6 +491,8 @@ async fn a_blocked_job_returns_blocked_and_waiting_again_after_the_answer_waits(
             catalog: None,
             mentions: Vec::new(),
             tier: None,
+
+            mode: None,
         },
         None,
     )

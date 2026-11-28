@@ -87,6 +87,8 @@ fn message(text: &str, tier: Option<AccessTier>) -> Input {
         catalog: None,
         mentions: Vec::new(),
         tier,
+
+        mode: None,
     }
 }
 
@@ -104,6 +106,8 @@ fn stop(text: &str, tier: Option<AccessTier>) -> Input {
         catalog: None,
         mentions: Vec::new(),
         tier,
+
+        mode: None,
     }
 }
 
@@ -555,6 +559,8 @@ fn mcp_message(text: &str) -> Input {
         catalog: None,
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     }
 }
 
@@ -1084,6 +1090,8 @@ fn edit(seq: i64, tier: Option<AccessTier>) -> ForkRequest {
             tier,
             locale: None,
             pick: None,
+
+            mode: None,
         },
         target: None,
         id: None,
@@ -1105,6 +1113,8 @@ fn first_message_after(seq: i64, tier: Option<AccessTier>) -> ForkRequest {
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+
+                mode: None,
             }),
         },
         target: None,

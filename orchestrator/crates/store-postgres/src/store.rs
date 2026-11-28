@@ -76,6 +76,7 @@ fn migrator() -> Result<Migrator, StoreError> {
         "0037_orch_commit_open.sql",
         "0038_orch_admit.sql",
         "0040_orch_claims.sql",
+        "0041_thread_mode.sql",
     )
     .map_err(migrate_err)?;
     Migrator::new(MIGRATIONS_TABLE, migrations).map_err(migrate_err)
@@ -2322,6 +2323,48 @@ impl ThreadStore for PgStore {
         Ok(())
     }
 
+    async fn thread_mode(
+        &self,
+        thread: ThreadId,
+    ) -> Result<Option<orch_core::ModeName>, StoreError> {
+        let row = query("SELECT mode FROM threads WHERE id = $1")
+            .bind(thread.0)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(store_err)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let name = row
+            .try_get::<_, Option<String>>("mode")
+            .map_err(store_err)?;
+        name.map(|name| {
+            orch_core::ModeName::parse(&name)
+                .map_err(|e| StoreError::corrupt_with("cannot read the thread's mode", e))
+        })
+        .transpose()
+    }
+
+    async fn set_thread_mode(
+        &self,
+        owner: &UserId,
+        thread: ThreadId,
+        mode: Option<orch_core::ModeName>,
+    ) -> Result<(), StoreError> {
+        let name = mode.map(|mode| mode.to_string());
+        let done = query("UPDATE threads SET mode = $3 WHERE id = $1 AND owner = $2")
+            .bind(thread.0)
+            .bind(owner.as_str())
+            .bind(name)
+            .execute(&self.pool)
+            .await
+            .map_err(store_err)?;
+        if done.rows_affected() == 0 {
+            return Err(StoreError::NotFound);
+        }
+        Ok(())
+    }
+
     async fn get_binding(&self, thread: ThreadId) -> Result<Option<AgentBinding>, StoreError> {
         query(
             "SELECT thread_id, agent_id, context_id, task_id, task_state, revision \
@@ -2876,7 +2919,7 @@ mod tests {
             .unwrap();
         let first = &migrator.migrations()[0];
         assert_eq!((first.version(), first.description()), (1, "init"));
-        assert_eq!(migrator.migrations().len(), 39);
+        assert_eq!(migrator.migrations().len(), 40);
     }
 
     /// `orch_watch_arm` and `orch_inbox_park` take one lock for a watch key, in their own text, and

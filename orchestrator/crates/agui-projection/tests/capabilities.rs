@@ -7,8 +7,8 @@ use orch_agui_projection::{CardFacts, RELEASE_CHANNELS_URI, agent_capabilities};
 use orch_agui_proto::testkit::assert_capabilities_conform;
 use orch_core::{
     A2UI_EXTENSION_V1_0, ACCESS_TIER_EXTENSION, AgentId, CHILD_SESSIONS_EXTENSION,
-    COMMANDS_EXTENSION, ChildSessionsOffer, CommandsOffer, KnownExtension, Releases, TierOffer,
-    UiVersion,
+    COMMANDS_EXTENSION, ChildSessionsOffer, CommandsOffer, KnownExtension, MODE_EXTENSION,
+    ModeOffer, Releases, TierOffer, UiVersion,
 };
 use serde_json::json;
 
@@ -35,6 +35,8 @@ fn a_card_with_releases_is_declared_under_the_extension_uri() {
         max_tier: None,
         commands: None,
         child_sessions: None,
+
+        mode: None,
     };
     let doc = agent_capabilities(&AgentId::new("coder"), "Coder", Some(&card));
     assert_capabilities_conform(&doc);
@@ -72,6 +74,8 @@ fn a_card_without_the_extension_declares_no_releases() {
         max_tier: None,
         commands: None,
         child_sessions: None,
+
+        mode: None,
     };
     let doc = agent_capabilities(&AgentId::new("plain"), "Plain", Some(&card));
     assert_capabilities_conform(&doc);
@@ -333,4 +337,42 @@ fn a_card_that_lists_no_commands_or_an_unreadable_one_has_no_key_for_it() {
             "{json}"
         );
     }
+}
+
+#[test]
+fn a_card_that_lists_a_mode_declares_its_modes_and_default_under_the_uri() {
+    // the web draws its mode switch from this key (ADR 0109)
+    let offer = ModeOffer::from_params(&json!({
+        "modes": [
+            {"name": "build", "title": "Build", "description": "Make the change."},
+            {"name": "plan", "title": "Plan", "description": "Read and plan."}
+        ],
+        "default": "build"
+    }))
+    .unwrap();
+    let card = CardFacts {
+        mode: Some(offer),
+        ..CardFacts::default()
+    };
+    let doc = agent_capabilities(&AgentId::new("coder"), "Coder", Some(&card));
+    assert_capabilities_conform(&doc);
+    assert_eq!(
+        serde_json::to_value(&doc).unwrap()["custom"][MODE_EXTENSION],
+        json!({
+            "modes": [
+                {"name": "build", "title": "Build", "description": "Make the change."},
+                {"name": "plan", "title": "Plan", "description": "Read and plan."}
+            ],
+            "default": "build"
+        })
+    );
+    // nothing when the card lists no mode
+    let nothing = CardFacts::default();
+    let doc = agent_capabilities(&AgentId::new("coder"), "Coder", Some(&nothing));
+    assert!(
+        serde_json::to_value(&doc)
+            .unwrap()
+            .get("custom")
+            .is_none_or(|c| c.get(MODE_EXTENSION).is_none())
+    );
 }

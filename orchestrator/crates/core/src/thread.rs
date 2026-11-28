@@ -303,4 +303,8 @@ pub struct AgentInfo {
     /// the chips it can actually use. Omitted when the card lists neither (ADR 0086).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pick: Option<crate::AgentPick>,
+    /// What the live card lists for a mode (`agent-mode/v1`), so a screen draws the switch it can
+    /// actually use. Omitted when the card lists no mode (ADR 0109).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<crate::AgentMode>,
 }

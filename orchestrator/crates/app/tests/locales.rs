@@ -157,6 +157,8 @@ async fn a_message_the_person_sends_into_the_thread_carries_its_own_locale() {
             locale: Some(tag("fur-IT")),
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         },
         None,
     )

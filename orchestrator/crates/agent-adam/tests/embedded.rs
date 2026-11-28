@@ -30,6 +30,8 @@ fn echo_request(text: &str) -> SendRequest {
         locale: None,
         pick: None,
         prompt_signature: None,
+
+        mode: None,
     }
 }
 

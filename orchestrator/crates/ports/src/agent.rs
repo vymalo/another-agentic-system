@@ -151,6 +151,11 @@ pub struct AgentCardInfo {
     /// What the card says about `model-pick/v1` and `reasoning/v1` (ADR 0086). A pick the card does
     /// not offer is refused, never dropped. Read live like the rest of the card (ADR 0008).
     pub pick: PickListings,
+    /// What the card says about `agent-mode/v1` (ADR 0109): not listed, listed with `params` that
+    /// cannot be read, or listed well formed with the modes the agent offers and its default. A
+    /// mode the card does not offer is refused, never dropped. Read live like the rest of the card
+    /// (ADR 0008).
+    pub mode: orch_core::ModeListing,
 }
 
 impl AgentCardInfo {
@@ -297,6 +302,13 @@ pub struct SendRequest {
     pub locale: Option<orch_core::LocaleHint>,
     /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
     pub pick: Option<orch_core::ModelPick>,
+    /// The mode the message is sent under (ADR 0109, `agent-mode/v1`), checked against the live card
+    /// before anything is written. The adapter activates the extension and puts the name in the
+    /// message's metadata only when the card read for this very call still offers it, and otherwise
+    /// **sends nothing** and answers [`AgentError::Unsupported`]: a mode is never dropped. `None`
+    /// for a message that names none, and for every message that is not the person's or the job's
+    /// (an ask, the verifier).
+    pub mode: Option<orch_core::ModeName>,
     /// The person's prompt signature for the message (ADR 0087, decision 2): the compact JWS their
     /// app sent, checked for presence at intake and passed on **byte for byte** — never decoded,
     /// re-encoded or verified here. It is the adapter's to put on the message (the cloud path's
@@ -328,6 +340,7 @@ impl fmt::Debug for SendRequest {
             .field("tier_cap", &self.tier_cap)
             .field("locale", &self.locale)
             .field("pick", &self.pick)
+            .field("mode", &self.mode)
             .field("prompt_signature", &Envelope(&self.prompt_signature))
             .finish()
     }
@@ -685,6 +698,7 @@ mod tests {
             tier_cap: None,
             locale: None,
             pick: None,
+            mode: None,
             prompt_signature: Some(envelope.into()),
         };
         let text = format!("{request:?}");

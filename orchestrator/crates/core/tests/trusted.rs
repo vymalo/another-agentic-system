@@ -25,6 +25,8 @@ fn started() -> Snapshot {
             locale: None,
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         },
     )
     .unwrap();

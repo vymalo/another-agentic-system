@@ -367,6 +367,9 @@ pub struct Inbound {
     pub locale: Option<LocaleHint>,
     /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
     pub pick: Option<ModelPick>,
+    /// The mode the first message is sent under (ADR 0109), checked against the live card before
+    /// anything is written, and carried as the tier is.
+    pub mode: Option<orch_core::ModeName>,
     /// The person's prompt signature for the first message (ADR 0087, decision 2), already checked
     /// for presence at intake: it rides the delegation's outbox row and never the log.
     pub prompt_signature: Option<String>,
@@ -418,6 +421,9 @@ pub enum ForkAt {
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The mode the person names for it (ADR 0109). An edit that names none is sent under the
+        /// mode of the message it replaces.
+        mode: Option<orch_core::ModeName>,
     },
 }
 
@@ -447,6 +453,9 @@ pub struct FirstMessage {
     pub locale: Option<LocaleHint>,
     /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
     pub pick: Option<ModelPick>,
+    /// The mode the message names (ADR 0109), checked against the live card of the fork's agent, as
+    /// for the first message of a new thread.
+    pub mode: Option<orch_core::ModeName>,
     /// The person's prompt signature for the fork's first message (ADR 0087), as for
     /// [`Inbound::prompt_signature`].
     pub prompt_signature: Option<String>,
@@ -956,13 +965,14 @@ impl<P: Ports> App<P> {
             )
         });
         let lookups = entries.map(|entry| async move {
-            let (description, releases, pick) = match self.live_card(&entry.endpoint).await {
+            let (description, releases, pick, mode) = match self.live_card(&entry.endpoint).await {
                 Some(card) => (
                     card.description,
                     card.releases,
                     orch_core::AgentPick::of(&card.pick),
+                    orch_core::AgentMode::of(&card.pick.mode),
                 ),
-                None => (None, None, None),
+                None => (None, None, None, None),
             };
             // Only an A2A agent has a card URL; the contract's `cardUrl` is optional for that.
             let card_url = match &entry.endpoint.transport {
@@ -979,6 +989,7 @@ impl<P: Ports> App<P> {
                 source: entry.origin,
                 tags: entry.tags,
                 pick,
+                mode,
             }
         });
         // `buffered` keeps the registry's order, which is the display order.
@@ -1278,6 +1289,10 @@ impl<P: Ports> App<P> {
         let pick = self
             .resolve_pick(&req.target.agent_id, inbound.pick, &ModelPick::default())
             .await?;
+        // the mode it names, checked against the live card (ADR 0109); a new thread has no default
+        let mode = self
+            .resolve_mode(&req.target.agent_id, inbound.mode, None)
+            .await?;
         let gate = self.resolve_gate(&req.target.agent_id, inbound.gate.as_ref())?;
 
         let tools = self
@@ -1314,6 +1329,7 @@ impl<P: Ports> App<P> {
                 tier_cap: tier.cap,
                 locale: inbound.locale,
                 pick,
+                mode,
                 prompt_signature: inbound.prompt_signature,
             },
         )?;
@@ -1829,6 +1845,7 @@ impl<P: Ports> App<P> {
                         tier_cap: None,
                         locale: first.locale,
                         pick: first.pick,
+                        mode: first.mode,
                         prompt_signature: first.prompt_signature,
                         run_id: first.run_id,
                         origin: first.origin,
@@ -1842,12 +1859,14 @@ impl<P: Ports> App<P> {
                 tier,
                 locale,
                 pick,
+                mode,
             } => {
                 validate_text(&text)?;
                 let mut edit = Replacement::edit(text, message_id, None);
                 edit.tier = tier;
                 edit.locale = locale;
                 edit.pick = pick;
+                edit.mode = mode;
                 (ForkPoint::Replace(seq), ForkKind::Edit, Some(edit))
             }
         };
@@ -1903,6 +1922,15 @@ impl<P: Ports> App<P> {
                 replacement.pick = self
                     .resolve_pick(&target.agent_id, named, &ModelPick::default())
                     .await?;
+                // The mode is checked against the fork's agent before anything is written
+                // (ADR 0109): the one it names, or for an edit that names none the one of the
+                // message it replaces, which the card must still offer. A fork has no thread
+                // default of its own.
+                let named = replacement
+                    .mode
+                    .take()
+                    .or_else(|| replaced_seq.and_then(|seq| replaced_mode(&events, seq)));
+                replacement.mode = self.resolve_mode(&target.agent_id, named, None).await?;
                 Some(replacement)
             }
             None => None,
@@ -2545,6 +2573,8 @@ impl<P: Ports> App<P> {
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+
+                mode: None,
             }
         } else {
             Input::UserMessage {
@@ -2560,6 +2590,8 @@ impl<P: Ports> App<P> {
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+
+                mode: None,
             }
         };
         // like any message of a person: the checks, the mentions and the access tier (ADR 0061)
@@ -2689,6 +2721,9 @@ impl<P: Ports> App<P> {
         // The mentions of a message are checked against its text, the registry and the person's
         // roles before the message is written (ADR 0026), and written under the canonical id of
         // the agent each names (ADR 0049).
+        // Whether the message asks to stop: one that does may start the thread's next job, whose
+        // first message is resolved like any other first message (ADR 0109).
+        let stopping = matches!(input, Input::StopAndSend { .. });
         if let Input::UserMessage {
             text,
             mentions,
@@ -2696,6 +2731,7 @@ impl<P: Ports> App<P> {
             tier_cap,
             origin,
             pick,
+            mode,
             ..
         }
         | Input::StopAndSend {
@@ -2705,6 +2741,7 @@ impl<P: Ports> App<P> {
             tier_cap,
             origin,
             pick,
+            mode,
             ..
         } = &mut input
         {
@@ -2731,6 +2768,29 @@ impl<P: Ports> App<P> {
             *pick = self
                 .resolve_pick(&thread.target.agent_id, pick.take(), &default)
                 .await?;
+            // The mode (ADR 0109). An answer to a blocked job, or anything from a surface that
+            // cannot name one (MCP) while the job is unfinished, is sent under the job's mode: the
+            // task keeps the mode it was started in. A message that starts a task of its own (a
+            // new job, or a message to a verifying thread) resolves like a first one: the message's
+            // own, then the thread's default, then nothing. A steer of a running task names its
+            // own or nothing, because the task keeps its mode as it is.
+            let new_task = thread.state.is_terminal()
+                || thread.state == ThreadState::Verifying
+                || (matches!(thread.state, ThreadState::Queued | ThreadState::Working)
+                    && (stopping || thread.job.after_stop.is_some()));
+            let held = continues.then(|| thread.job.mode.clone()).flatten();
+            let named = mode.take();
+            *mode = if continues {
+                self.resolve_mode(&thread.target.agent_id, named.or(held), None)
+                    .await?
+            } else if new_task {
+                let default = self.ports.store().thread_mode(id).await?;
+                self.resolve_mode(&thread.target.agent_id, named, default.as_ref())
+                    .await?
+            } else {
+                self.resolve_mode(&thread.target.agent_id, named, None)
+                    .await?
+            };
         }
         // The action of a person on a surface continues the job's task: its tier is the job's,
         // lowered to the person's cap and the agent's card as an answer's is. What a surface put
@@ -2882,6 +2942,59 @@ impl<P: Ports> App<P> {
         .await?;
         store.set_thread_pick(who.user(), id, pick.clone()).await?;
         Ok((thread, pick))
+    }
+
+    /// Changes the thread's default mode (ADR 0109): what a message that names none is sent with
+    /// when a new task starts. `None` leaves it, `Some(None)` clears it, `Some(Some(x))` sets it. A
+    /// default is **checked when it is set** against the live card of the thread's agent
+    /// ([`AppError::ModeNotOffered`]), and again whenever a message resolves to it. Nothing is
+    /// written to the log. Returns the thread and the default as it is afterwards.
+    ///
+    /// # Errors
+    /// [`AppError::NotFound`] for a thread that is not the user's, [`AppError::Forbidden`] without
+    /// `thread.write`, [`AppError::ModeNotOffered`] and [`AppError::CardUnavailable`] as for a
+    /// message.
+    pub async fn set_thread_mode(
+        &self,
+        who: &impl Requester,
+        id: ThreadId,
+        mode: Option<Option<orch_core::ModeName>>,
+    ) -> Result<(ThreadRecord, Option<orch_core::ModeName>), AppError> {
+        let thread = self.writable_thread(&self.access(who), id).await?;
+        let store = self.ports.store();
+        let mode = match mode {
+            Some(mode) => mode,
+            None => store.thread_mode(id).await?,
+        };
+        // Only what is set is checked: clearing needs no card.
+        self.resolve_mode(&thread.target.agent_id, mode.clone(), None)
+            .await?;
+        store.set_thread_mode(who.user(), id, mode.clone()).await?;
+        Ok((thread, mode))
+    }
+
+    /// Checks the thread's default mode against the live card **without writing it** (ADR 0109), so
+    /// that a `PATCH` naming several members refuses a mode the card has dropped before any of them
+    /// is written. Same errors as [`App::set_thread_mode`].
+    ///
+    /// # Errors
+    /// [`AppError::NotFound`], [`AppError::Forbidden`], [`AppError::ModeNotOffered`] and
+    /// [`AppError::CardUnavailable`] as for [`App::set_thread_mode`].
+    pub async fn check_thread_mode(
+        &self,
+        who: &impl Requester,
+        id: ThreadId,
+        mode: Option<Option<orch_core::ModeName>>,
+    ) -> Result<(), AppError> {
+        let thread = self.writable_thread(&self.access(who), id).await?;
+        let store = self.ports.store();
+        let mode = match mode {
+            Some(mode) => mode,
+            None => store.thread_mode(id).await?,
+        };
+        self.resolve_mode(&thread.target.agent_id, mode, None)
+            .await?;
+        Ok(())
     }
 
     /// The servers a person may attach, in the order the deployment lists them: what
@@ -3189,6 +3302,7 @@ impl<P: Ports> App<P> {
                     tier_cap,
                     locale,
                     pick,
+                    mode,
                     prompt_signature,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
@@ -3202,6 +3316,7 @@ impl<P: Ports> App<P> {
                         tier_cap,
                         locale,
                         pick,
+                        mode,
                         // The person's envelope rides the row, never the log (ADR 0087): the
                         // dispatcher puts it on the agent's request, byte for byte.
                         prompt_signature,
@@ -3221,6 +3336,7 @@ impl<P: Ports> App<P> {
                     tier_cap,
                     locale,
                     pick,
+                    mode,
                     prompt_signature,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
@@ -3233,6 +3349,7 @@ impl<P: Ports> App<P> {
                         tier_cap,
                         locale,
                         pick,
+                        mode,
                         prompt_signature,
                     },
                 }),
@@ -3241,6 +3358,7 @@ impl<P: Ports> App<P> {
                     catalog,
                     tier,
                     tier_cap,
+                    mode,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Action {
@@ -3250,6 +3368,7 @@ impl<P: Ports> App<P> {
                         ui_catalog: catalog,
                         tier,
                         tier_cap,
+                        mode,
                     },
                 }),
                 // Said by the commit itself: the store finishes the abandoned job's unsent rows in
@@ -4080,6 +4199,16 @@ fn replaced_locale(events: &[Event], seq: i64) -> Option<LocaleHint> {
         .find(|e| e.seq == seq)
         .and_then(|e| match &e.body {
             orch_core::EventBody::UserMessage(m) => m.locale.clone(),
+            _ => None,
+        })
+}
+
+fn replaced_mode(events: &[Event], seq: i64) -> Option<orch_core::ModeName> {
+    events
+        .iter()
+        .find(|e| e.seq == seq)
+        .and_then(|e| match &e.body {
+            orch_core::EventBody::UserMessage(m) => m.mode.clone(),
             _ => None,
         })
 }

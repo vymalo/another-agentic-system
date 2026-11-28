@@ -27,6 +27,7 @@ mod locale;
 mod memory;
 mod mention;
 mod mission;
+mod mode;
 mod notify;
 mod pick;
 mod pricing;
@@ -132,6 +133,10 @@ pub use mission::{
     DoneCheck, DraftError, MAX_DONE_CHECKS, MAX_MISSION_GOAL_BYTES, MAX_MISSION_MEMBERS,
     MAX_MISSION_ROLE_CHARS, MIN_MISSION_MEMBERS, Mission, MissionActor, MissionEvent, MissionLimit,
     MissionMember, MissionRefusal, MissionState, MissionTeam, StopReason, WaitReason,
+};
+pub use mode::{
+    AgentMode, MAX_MODE_NAME_LEN, MODE_EXTENSION, ModeChoice, ModeError, ModeListing, ModeName,
+    ModeOffer, ModeRefusal, check as check_mode,
 };
 pub use notify::{
     Notify, NotifyClass, NotifyIntent, NotifyKind, NotifyTtl, ThreadRole,

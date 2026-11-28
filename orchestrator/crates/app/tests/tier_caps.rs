@@ -107,6 +107,8 @@ fn message(text: &str) -> Input {
         catalog: None,
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     }
 }
 
@@ -303,6 +305,8 @@ async fn the_first_message_of_a_fork_keeps_the_cap_when_the_card_offers_no_tier_
                         locale: None,
                         pick: None,
                         prompt_signature: None,
+
+                        mode: None,
                     }),
                 },
                 target: None,

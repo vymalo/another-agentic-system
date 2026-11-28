@@ -86,6 +86,11 @@ pub enum AppError {
     /// agent's default. The refusal carries the stable code and the list the card offers.
     #[error("{0}")]
     PickNotOffered(orch_core::PickRefusal),
+    /// A mode the person picked that the live card of the thread's agent does not offer (ADR 0109):
+    /// refused before anything is written, never silently replaced by the agent's default. The
+    /// refusal carries the stable code and the list the card offers.
+    #[error("{0}")]
+    ModeNotOffered(orch_core::ModeRefusal),
     /// A change of how the person's list shows a thread that cannot be made (ADR 0042): well
     /// formed, and what it names is in the way. `code` is the stable name a client acts on
     /// (`bad_anchor`, `nested_row`), and `child_thread` for the thread of a helper session that
@@ -332,6 +337,7 @@ impl Classify for AppError {
             | AppError::Refused(_)
             | AppError::Unprocessable(_)
             | AppError::PickNotOffered(_)
+            | AppError::ModeNotOffered(_)
             | AppError::Arrangement { .. }
             | AppError::Blocked { .. }
             | AppError::OverCap { .. }
@@ -416,6 +422,7 @@ impl Classify for AppError {
             | AppError::Refused(_)
             | AppError::Unprocessable(_)
             | AppError::PickNotOffered(_)
+            | AppError::ModeNotOffered(_)
             | AppError::Arrangement { .. }
             | AppError::Blocked { .. }
             | AppError::UserTool(_)
@@ -495,6 +502,10 @@ mod tests {
             AppError::PickNotOffered(orch_core::PickRefusal::ModelNotOffered {
                 picked: "deep".into(),
                 offered: vec!["fast".into()],
+            }),
+            AppError::ModeNotOffered(orch_core::ModeRefusal {
+                picked: "review".into(),
+                offered: vec!["build".into()],
             }),
             AppError::arrangement("bad_anchor"),
             AppError::arrangement("nested_row"),
@@ -586,6 +597,7 @@ mod tests {
                 | AppError::Refused(_)
                 | AppError::Unprocessable(_)
                 | AppError::PickNotOffered(_)
+                | AppError::ModeNotOffered(_)
                 | AppError::Arrangement { .. }
                 | AppError::Blocked { .. }
                 | AppError::OverCap { .. }

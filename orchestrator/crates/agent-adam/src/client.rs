@@ -187,6 +187,7 @@ impl AgentClient for LocalAgentClient {
             // a local agent is never sent a locale: the card it would list it on is not read
             locale: orch_core::LocaleListing::Absent,
             pick: orch_core::PickListings::default(),
+            mode: orch_core::ModeListing::default(),
             commands: orch_core::CommandsListing::Absent,
             child_sessions: None,
             trusted_components: None,
@@ -209,6 +210,14 @@ impl AgentClient for LocalAgentClient {
             // default when another model was asked for would be worse than refusing.
             return Err(AgentError::Unsupported(format!(
                 "a local agent does not offer the model or reasoning effort '{pick:?}'"
+            )));
+        }
+        if let Some(mode) = req.mode.as_ref() {
+            // The card of a local agent lists nothing (`read_card`: no `agent-mode/v1`), and a mode
+            // is never dropped (ADR 0109): running the agent's own default when another mode was
+            // asked for would be worse than refusing.
+            return Err(AgentError::Unsupported(format!(
+                "a local agent does not offer the mode '{mode}'"
             )));
         }
         if req.steer {

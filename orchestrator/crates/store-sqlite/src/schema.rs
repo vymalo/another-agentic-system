@@ -84,6 +84,11 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         description: "outbox_refunded",
         sql: include_str!("../migrations/0009_outbox_refunded.sql"),
     },
+    Migration {
+        version: 10,
+        description: "thread_mode",
+        sql: include_str!("../migrations/0010_thread_mode.sql"),
+    },
 ];
 
 /// The SHA-256 of a migration's text, lowercase hex: the `checksum` column.

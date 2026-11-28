@@ -887,6 +887,8 @@ fn stop_and_send_ends_the_asks_of_the_job_it_replaces_and_the_next_job_has_none(
         catalog: None,
         mentions: vec![],
         tier: None,
+
+        mode: None,
     };
     let (stopping, cmds) = step(&snap, &stop);
     assert_eq!(
@@ -928,6 +930,8 @@ fn a_new_job_starts_a_ledger_of_its_own_and_an_old_deadline_is_stale_in_it() {
                 card_url: None,
             }],
             tier: None,
+
+            mode: None,
         },
     );
     assert_eq!((next.job.number, next.job.asks.len()), (2, 0));
@@ -968,6 +972,8 @@ fn what_an_earlier_jobs_ask_reports_is_not_the_later_jobs_ask() {
                 card_url: None,
             }],
             tier: None,
+
+            mode: None,
         },
     );
     let (next, _) = step(&next, &ask("a"));
@@ -1531,83 +1537,89 @@ fn arb_task_state() -> impl Strategy<Value = AgentTaskState> {
 fn arb_input() -> impl Strategy<Value = Input> {
     let agent_name = || prop::sample::select(AGENTS.to_vec());
     prop_oneof![
-        8 => (arb_caller(), agent_name(), arb_limits(), proptest::option::of(0..4_u8)).prop_map(
-            |(caller, to, limits, key)| Input::Ask {
-                actor: coder(),
-                caller,
-                agent: agent(to),
-                text: "do it".into(),
-                call_key: key.map(|k| format!("k{k}")),
-                parent_step: None,
-                limits,
-            }
-        ),
-        4 => (1..=7_u32, arb_outcome()).prop_map(|(ask, outcome)| finished(ask, outcome)),
-        1 => (1..=7_u32).prop_map(|ask| Input::AskFailed { job: 1, ask, reason: "gone".into() }),
-        1 => (1..=7_u32).prop_map(|ask| sent(ask, &format!("t{ask}"))),
-        3 => (1..=3_u32, 1..=7_u32).prop_map(|(job, ask)| timer(job, ask)),
-        3 => arb_task_state().prop_map(status),
-        2 => Just(cancel()),
-        2 => prop::collection::vec(agent_name(), 0..3).prop_map(|names| {
-            let mentions = names
-                .iter()
-                .map(|n| Mention {
+            8 => (arb_caller(), agent_name(), arb_limits(), proptest::option::of(0..4_u8)).prop_map(
+                |(caller, to, limits, key)| Input::Ask {
+                    actor: coder(),
+                    caller,
+                    agent: agent(to),
+                    text: "do it".into(),
+                    call_key: key.map(|k| format!("k{k}")),
+                    parent_step: None,
+                    limits,
+                }
+            ),
+            4 => (1..=7_u32, arb_outcome()).prop_map(|(ask, outcome)| finished(ask, outcome)),
+            1 => (1..=7_u32).prop_map(|ask| Input::AskFailed { job: 1, ask, reason: "gone".into() }),
+            1 => (1..=7_u32).prop_map(|ask| sent(ask, &format!("t{ask}"))),
+            3 => (1..=3_u32, 1..=7_u32).prop_map(|(job, ask)| timer(job, ask)),
+            3 => arb_task_state().prop_map(status),
+            2 => Just(cancel()),
+            2 => prop::collection::vec(agent_name(), 0..3).prop_map(|names| {
+                let mentions = names
+                    .iter()
+                    .map(|n| Mention {
+                        tier_cap: None,
+                        agent_id: agent(n),
+                        label: format!("@{n}"),
+                        start: 0,
+                        end: 2,
+                        card_url: None,
+                    })
+                    .collect();
+                Input::UserMessage {
+                    tier_cap: None,
+                    locale: None,
+                    pick: None,
+                    prompt_signature: None,
+                    user: user(),
+                    text: "go".into(),
+                    message_id: None,
+                    run_id: None,
+                    origin: Origin::Agui,
+                    catalog: None,
+                    mentions, tier: None,
+
+                    mode: None,
+    }
+            }),
+            1 => agent_name().prop_map(|n| Input::StopAndSend {
+                tier_cap: None,
+                locale: None,
+                pick: None,
+                prompt_signature: None,
+                user: user(),
+                text: "instead".into(),
+                message_id: None,
+                run_id: None,
+                origin: Origin::Agui,
+                catalog: None,
+                mentions: vec![Mention {
                     tier_cap: None,
                     agent_id: agent(n),
                     label: format!("@{n}"),
                     start: 0,
                     end: 2,
                     card_url: None,
-                })
-                .collect();
-            Input::UserMessage {
+                }], tier: None,
+
+                mode: None,
+    }),
+            1 => (any::<bool>(), "[a-z]{1,4}").prop_map(|(retryable, reason)|
+                Input::DeliveryFailed { reason, retryable }),
+            1 => Just(Input::CancelledBeforeStart),
+            1 => Just(Input::Redeliver {
                 tier_cap: None,
                 locale: None,
                 pick: None,
                 prompt_signature: None,
-                user: user(),
-                text: "go".into(),
-                message_id: None,
-                run_id: None,
-                origin: Origin::Agui,
-                catalog: None,
-                mentions, tier: None,
-            }
-        }),
-        1 => agent_name().prop_map(|n| Input::StopAndSend {
-            tier_cap: None,
-            locale: None,
-            pick: None,
-            prompt_signature: None,
-            user: user(),
-            text: "instead".into(),
-            message_id: None,
-            run_id: None,
-            origin: Origin::Agui,
-            catalog: None,
-            mentions: vec![Mention {
-                tier_cap: None,
-                agent_id: agent(n),
-                label: format!("@{n}"),
-                start: 0,
-                end: 2,
-                card_url: None,
-            }], tier: None,
-        }),
-        1 => (any::<bool>(), "[a-z]{1,4}").prop_map(|(retryable, reason)|
-            Input::DeliveryFailed { reason, retryable }),
-        1 => Just(Input::CancelledBeforeStart),
-        1 => Just(Input::Redeliver {
-            tier_cap: None,
-            locale: None,
-            pick: None,
-            prompt_signature: None,
-            text: "again".into(),
-            sent: false,
-            mentions: vec![],
-            tier: None,
-        }),
-    ]
+                text: "again".into(),
+                sent: false,
+                mentions: vec![],
+                tier: None,
+
+                mode: None,
+    }),
+        ]
 }
 
 fn arb_gate() -> impl Strategy<Value = GatePolicy> {
@@ -1661,7 +1673,9 @@ proptest! {
                     card_url: None,
                 })
                 .collect(), tier: None,
-        };
+
+            mode: None,
+};
         let (mut snap, _) = start_thread(gate, &first).unwrap();
         if snap.job.gate.is_active() {
             snap.job.pushed = Some(pushed());

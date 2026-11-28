@@ -33,6 +33,8 @@ fn message(text: &str) -> Input {
         catalog: None,
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     }
 }
 

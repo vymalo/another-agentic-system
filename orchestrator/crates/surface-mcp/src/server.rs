@@ -559,6 +559,7 @@ impl<P: Ports> McpServer<P> {
             tier_cap: None,
             locale: None,
             pick: None,
+            mode: None,
             user: who.user.clone(),
             text: args.text,
             message_id: None,

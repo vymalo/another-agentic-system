@@ -38,6 +38,8 @@ fn um(text: &str) -> Input {
         catalog: None,
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     }
 }
 fn status(state: AgentTaskState, detail: Option<&str>) -> Input {
@@ -123,6 +125,8 @@ fn row1_user_message_in_queued_or_working() {
                 catalog: None,
                 mentions: Vec::new(),
                 tier: None,
+
+                mode: None,
             }
         );
     }
@@ -143,6 +147,8 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
         catalog: None,
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     };
     for s in [Queued, Working, Blocked] {
         let (_, cmds) = run(s, &input);
@@ -161,6 +167,8 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
                     delivery: matches!(s, Queued | Working).then_some(Delivery::Steer),
                     mentions: Vec::new(),
                     tier: None,
+
+                    mode: None,
                 })
             ),
             other => panic!("unexpected {other:?}"),
@@ -180,6 +188,8 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
                     catalog: None,
                     mentions: Vec::new(),
                     tier: None,
+
+                    mode: None,
                 }
             } else {
                 Command::Delegate {
@@ -191,6 +201,8 @@ fn row1b_a_surface_names_the_message_and_the_run_and_the_log_records_both() {
                     catalog: None,
                     mentions: Vec::new(),
                     tier: None,
+
+                    mode: None,
                 }
             }
         );
@@ -212,6 +224,8 @@ fn row1c_the_origin_of_a_message_is_recorded_in_the_log() {
         catalog: None,
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     };
     for s in [Queued, Working, Blocked] {
         let (_, cmds) = run(s, &input);
@@ -244,6 +258,8 @@ fn row2_user_message_in_blocked_requeues() {
             catalog: None,
             mentions: Vec::new(),
             tier: None,
+
+            mode: None,
         }
     );
 }
@@ -283,6 +299,8 @@ fn row3_user_message_in_terminal_starts_the_next_job() {
                 catalog: None,
                 mentions: Vec::new(),
                 tier: None,
+
+                mode: None,
             }
         );
         // No `thread_state`: entering `queued` is implied by the message.
@@ -373,6 +391,8 @@ fn row3b_the_next_job_keeps_the_gate_and_the_verification_count_and_clears_the_r
                 route: None,
                 after_stop_locale: None,
                 after_stop_pick: None,
+                after_stop_mode: None,
+                mode: None,
                 number: 3,
                 gate: gate.clone(),
                 attempt: 2,
@@ -493,6 +513,8 @@ fn a_redelivery_that_was_sent_changes_the_thread_as_one_that_was_not_and_delegat
         sent: true,
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     };
     for s in [Done, Failed] {
         let (next, cmds) = run(s, &sent("x"));
@@ -549,6 +571,8 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
                 sent: false,
                 mentions: Vec::new(),
                 tier: None,
+
+                mode: None,
             },
         );
         assert_eq!(next, Queued);
@@ -571,6 +595,8 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
                 catalog: None,
                 mentions: Vec::new(),
                 tier: None,
+
+                mode: None,
             }
         );
     }
@@ -586,6 +612,8 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
                 sent: false,
                 mentions: Vec::new(),
                 tier: None,
+
+                mode: None,
             }
         ),
         (Cancelled, vec![])
@@ -604,6 +632,8 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
                     sent: false,
                     mentions: Vec::new(),
                     tier: None,
+
+                    mode: None,
                 }
             ),
             (
@@ -617,6 +647,8 @@ fn row3c_redelivery_starts_the_next_job_unless_the_person_stopped() {
                     catalog: None,
                     mentions: Vec::new(),
                     tier: None,
+
+                    mode: None,
                 }]
             )
         );
@@ -1437,6 +1469,7 @@ fn row_ui4_an_action_is_a_user_event_and_a_delegation() {
                 action: act(),
                 catalog: None,
                 tier: None,
+                mode: None,
             }
         );
     }
@@ -1523,6 +1556,8 @@ fn um_with(text: &str, catalog: &UiCatalogData) -> Input {
         catalog: Some(catalog.clone()),
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     }
 }
 fn action_with(catalog: &UiCatalogData) -> Input {
@@ -1744,6 +1779,8 @@ fn row_cat9_a_new_job_without_a_catalog_keeps_the_conversations_and_a_redelivery
                 sent: false,
                 mentions: Vec::new(),
                 tier: None,
+
+                mode: None,
             },
         )
         .unwrap();
@@ -1767,6 +1804,8 @@ fn row_cat9_a_new_job_without_a_catalog_keeps_the_conversations_and_a_redelivery
                 sent: false,
                 mentions: Vec::new(),
                 tier: None,
+
+                mode: None,
             },
         )
         .unwrap();

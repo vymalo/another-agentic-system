@@ -31,6 +31,8 @@ fn said(text: &str, prompt_signature: Option<&str>) -> Input {
         locale: None,
         pick: None,
         prompt_signature: prompt_signature.map(str::to_owned),
+
+        mode: None,
     }
 }
 
@@ -111,6 +113,8 @@ fn a_stop_and_send_holds_no_envelope_for_the_next_job() {
         locale: None,
         pick: None,
         prompt_signature: Some(ENVELOPE.to_owned()),
+
+        mode: None,
     };
     let (after, cmds) = step(&snapshot, &stop);
     assert!(
@@ -138,6 +142,8 @@ fn a_redelivery_carries_what_its_row_holds() {
             locale: None,
             pick: None,
             prompt_signature: Some(ENVELOPE.to_owned()),
+
+            mode: None,
         },
     );
     assert_eq!(sent(&cmds), Some(ENVELOPE.to_owned()));

@@ -1064,6 +1064,9 @@ impl ThreadStore for RacyStore {
         thread_pick(thread: ThreadId) -> Result<orch_core::ModelPick, StoreError>;
         set_thread_pick(owner: &orch_core::UserId, thread: ThreadId, pick: orch_core::ModelPick)
             -> Result<(), StoreError>;
+        thread_mode(thread: ThreadId) -> Result<Option<orch_core::ModeName>, StoreError>;
+        set_thread_mode(owner: &orch_core::UserId, thread: ThreadId, mode: Option<orch_core::ModeName>)
+            -> Result<(), StoreError>;
         finish_purge(thread: ThreadId) -> Result<(), StoreError>;
         purges_pending() -> Result<u64, StoreError>;
         idle_threads(before: orch_core::Timestamp, after: Option<(orch_core::Timestamp, ThreadId)>, limit: u32)

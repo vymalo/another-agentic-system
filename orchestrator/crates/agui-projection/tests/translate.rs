@@ -90,6 +90,8 @@ fn um(text: &str, message_id: Option<&str>, run_id: &str) -> Input {
         catalog: None,
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     }
 }
 
@@ -552,6 +554,8 @@ fn stop(text: &str, message_id: &str, run_id: &str) -> Input {
         catalog: None,
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     }
 }
 
@@ -1189,6 +1193,8 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
                 tier: None,
                 locale: None,
                 pick: None,
+
+                mode: None,
             }),
         ),
         ev(
@@ -1252,6 +1258,8 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
             tier: None,
             locale: None,
             pick: None,
+
+            mode: None,
         }),
     ));
     // ... and a retry of the same POST attaches instead of answering twice.

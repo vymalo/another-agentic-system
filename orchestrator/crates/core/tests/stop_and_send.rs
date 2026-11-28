@@ -32,6 +32,8 @@ fn said(text: &str) -> Input {
         catalog: None,
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     }
 }
 fn stop(text: &str) -> Input {
@@ -48,6 +50,8 @@ fn stop(text: &str) -> Input {
         catalog: None,
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     }
 }
 fn agent_input(update: AgentUpdate) -> Input {
@@ -189,6 +193,8 @@ fn next_job(text: &str, abandoned: u32) -> [Command; 2] {
             catalog: None,
             mentions: Vec::new(),
             tier: None,
+
+            mode: None,
         },
     ]
 }
@@ -222,6 +228,8 @@ fn row1_a_stop_and_send_logs_the_message_asks_for_the_cancel_and_holds_the_text(
                 tier: None,
                 locale: None,
                 pick: None,
+
+                mode: None,
             }
         );
         // the message and the cancel: nothing is sent to the agent (no delegation, no steer)
@@ -261,6 +269,8 @@ fn row1_the_catalog_the_screen_sent_is_recorded_first_and_the_next_job_is_told_a
         catalog: Some(catalog.clone()),
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     };
     let (held, cmds) = step(&running(Working), &input);
     assert_eq!(kinds(&cmds), ["ui_catalog", "user_message"]);
@@ -274,6 +284,8 @@ fn row1_the_catalog_the_screen_sent_is_recorded_first_and_the_next_job_is_told_a
         catalog: Some(UiDelivery::Ref(catalog.reference())),
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     }));
 }
 
@@ -381,6 +393,8 @@ fn row3_a_message_to_a_running_job_is_a_steer_and_the_job_goes_on() {
                 catalog: None,
                 mentions: Vec::new(),
                 tier: None,
+
+                mode: None,
             }]
         );
     }
@@ -419,6 +433,8 @@ fn the_first_message_of_a_thread_is_delegated_with_no_delivery() {
                 catalog: None,
                 mentions: Vec::new(),
                 tier: None,
+
+                mode: None,
             }]
         );
         assert_eq!(snap.job.after_stop, None);
@@ -763,6 +779,8 @@ fn row6_the_cancel_that_follows_still_starts_the_next_job() {
         catalog: None,
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     }));
 }
 
@@ -790,6 +808,8 @@ fn row7_a_cancel_refused_for_good_sends_the_text_to_the_agent_as_a_steer() {
                 catalog: None,
                 mentions: Vec::new(),
                 tier: None,
+
+                mode: None,
             }]
         );
         assert_eq!(
@@ -892,6 +912,8 @@ fn a_message_redelivered_for_the_abandoned_job_is_superseded() {
             locale: None,
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         },
     );
     assert_eq!(next, held);

@@ -268,6 +268,8 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             tier_cap: None,
             locale: None,
             pick: None,
+            // the verifier works under no mode of the person's either (ADR 0109)
+            mode: None,
             prompt_signature: None,
         };
         self.app.record_agent_build(v.thread, &v.endpoint).await;

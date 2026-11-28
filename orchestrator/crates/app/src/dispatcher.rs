@@ -234,6 +234,9 @@ struct Adopt {
     locale: Option<orch_core::LocaleHint>,
     /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
     pick: Option<orch_core::ModelPick>,
+    /// The mode the message was written with (ADR 0109), as its row holds it: the adopted message
+    /// keeps it, as it keeps its tier.
+    mode: Option<orch_core::ModeName>,
     /// The person's prompt signature, as the row holds it (ADR 0087): the adopted message keeps it,
     /// as it keeps its locale.
     prompt_signature: Option<String>,
@@ -1105,6 +1108,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             tier_cap,
             locale,
             pick,
+            mode,
             prompt_signature,
         ) = match row.payload.clone() {
             OutboxPayload::Delegate {
@@ -1117,6 +1121,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 tier_cap,
                 locale,
                 pick,
+                mode,
                 prompt_signature,
             } => (
                 SendContent::Text(text),
@@ -1128,6 +1133,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 tier_cap,
                 locale,
                 pick,
+                mode,
                 prompt_signature,
             ),
             OutboxPayload::Action {
@@ -1137,6 +1143,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 ui_catalog,
                 tier,
                 tier_cap,
+                mode,
             } => (
                 SendContent::UiAction { action, at },
                 release,
@@ -1150,6 +1157,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 // signature (ADR 0087: an action is not a prompt yet, open question 3)
                 None,
                 None,
+                mode,
                 None,
             ),
             // taken before this function (`process`): it is followed, never sent
@@ -1210,6 +1218,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 tier_cap,
                 locale,
                 pick,
+                mode,
                 prompt_signature,
                 ..
             } = &row.payload
@@ -1230,6 +1239,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                             tier_cap: *tier_cap,
                             locale: locale.clone(),
                             pick: pick.clone(),
+                            mode: mode.clone(),
                             // the row holds the person's envelope (ADR 0087): the redelivery sends
                             // the same bytes, and the log still holds none of it
                             prompt_signature: prompt_signature.clone(),
@@ -1366,6 +1376,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             // plain message
             locale,
             pick,
+            mode,
             // the person's envelope, as the row holds it (ADR 0087): byte for byte, never decoded.
             // Cloned because the row's copy is what an adoption hands the core.
             prompt_signature: prompt_signature.clone(),
@@ -1381,6 +1392,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                     tier_cap,
                     locale,
                     pick,
+                    mode,
                     ..
                 },
                 None,
@@ -1391,6 +1403,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
                 pick: pick.clone(),
+                mode: mode.clone(),
                 prompt_signature: prompt_signature.clone(),
                 previous: binding.task_id.clone(),
             }),
@@ -1641,6 +1654,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             tier_cap: adopt.tier_cap,
             locale: adopt.locale.clone(),
             pick: adopt.pick.clone(),
+            mode: adopt.mode.clone(),
             prompt_signature: adopt.prompt_signature.clone(),
         };
         match self
@@ -1679,6 +1693,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             tier_cap,
             locale,
             pick,
+            mode,
             prompt_signature,
             ..
         } = row.payload.clone()
@@ -1763,6 +1778,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             // the language of the screen the message came from, as the row holds it (ADR 0085)
             locale,
             pick,
+            mode,
             // the person's envelope, as the row holds it (ADR 0087): byte for byte
             prompt_signature,
         };

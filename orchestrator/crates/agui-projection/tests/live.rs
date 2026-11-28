@@ -249,6 +249,8 @@ fn sent(seq: i64, text: &str, message_id: &str, run_id: &str) -> Event {
             tier: None,
             locale: None,
             pick: None,
+
+            mode: None,
         }),
     )
 }

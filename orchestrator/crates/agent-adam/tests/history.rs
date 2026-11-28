@@ -26,6 +26,8 @@ fn request(text: &str, message_id: &str, history: Option<ForkHistory>) -> SendRe
         locale: None,
         pick: None,
         prompt_signature: None,
+
+        mode: None,
     }
 }
 

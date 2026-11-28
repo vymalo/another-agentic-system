@@ -1539,6 +1539,31 @@ POST /agui/agents/coder   forwardedProps: {"vymalo.model": "deep", "vymalo.reaso
 → A2A metadata {".../model-pick/v1": {"model": "deep"}, ".../reasoning/v1": {"effort": "high"}}
 ```
 
+## Mode
+
+**Built 2026-11-28** ([ADR 0109](../decisions/0109-a-person-picks-an-agents-mode-for-a-thread-or-a-message.md),
+contract [`agent-mode-v1.md`](agent-mode-v1.md)); adam serves `agent-mode/v1` since adam-rs `2c2b551d`, and the stack's `chat`
+declares two modes (`dev/agents/chat/agent/modes/`, `dev/mode-real-e2e.sh`); the web's switch is ANR-980.
+
+- **In:** `forwardedProps["vymalo.mode"]` (a non-blank string of at most 64 bytes with no control character) on the run that
+  carries the message; `null` or no member: none. Read on every run, so a value that is not a mode name is **400** before the
+  stream. A message that names none is sent with the thread's default (`PATCH /api/threads/{id}`), then nothing: the agent's
+  own `default` is never sent.
+- **Checked:** the resolved mode against the thread's agent's **live** card, before anything is written. **Not a hint**: a mode
+  the card does not list (or a card that lists the extension not at all) is **422** `mode_not_offered` with `offered`, and
+  nothing is written; a card that cannot be read is **503**.
+- **Log:** the `user_message` holds `mode: "<name>"` (omitted when none): the log is the state, so a redelivery, a fork's first
+  message, an edit and an export carry it. No frame carries it and no activity is emitted for it.
+- **To the agent:** `metadata[agent-mode/v1] = {"mode": name}`, the URI activated for that message alone and only when it names
+  one; an agent whose card no longer offers it is sent nothing. The mode holds within a task as adam holds it; the gate's
+  rework, an A2UI action, an answer to a blocked job and an MCP message to an unfinished job carry the job's mode.
+
+```
+POST /agui/agents/chat    forwardedProps: {"vymalo.mode": "plan"}
+                          messages: [{role: "user", content: "what would you do?"}]
+→ A2A metadata {".../agent-mode/v1": {"mode": "plan"}}
+```
+
 ## Commands
 
 **Built** (2026-11-19, [ADR 0079](../decisions/0079-an-agents-own-commands-listed-from-its-card.md); the orchestrator's card read and

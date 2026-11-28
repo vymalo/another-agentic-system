@@ -226,6 +226,8 @@ mod tests {
                 tier: None,
                 locale: None,
                 pick: None,
+
+                mode: None,
             }),
         )
     }

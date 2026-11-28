@@ -971,6 +971,8 @@ async fn every_entry_that_starts_a_job_detaches_what_the_owner_may_no_longer_use
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+
+                mode: None,
             },
             None,
         )
@@ -1053,6 +1055,8 @@ async fn a_fork_made_with_its_first_message_by_an_owner_who_lost_the_permission_
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+
+                mode: None,
             },
         )
         .await

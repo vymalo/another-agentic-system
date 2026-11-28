@@ -124,6 +124,8 @@ fn only_the_two_usage_events_change_the_ledger() {
             tier_cap: None,
             locale: None,
             pick: None,
+
+            mode: None,
         }),
     };
     assert_eq!(usage_change(&owner(), &message), None);

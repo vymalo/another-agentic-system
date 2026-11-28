@@ -358,6 +358,8 @@ pub(crate) fn conclude(
                 tier_cap: job.tier_cap,
                 locale: None,
                 pick: None,
+                // the rework continues the person's work under the mode of the job (ADR 0109)
+                mode: job.mode.clone(),
                 // the core's own words, not the person's: no envelope goes with them
                 prompt_signature: None,
             });

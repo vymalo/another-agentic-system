@@ -377,6 +377,15 @@ pub(crate) fn problem_for(err: &AppError) -> (Problem, Option<u64>) {
         }));
         return (problem, None);
     }
+    if let AppError::ModeNotOffered(refusal) = err {
+        let mut problem = Problem::new(StatusCode::UNPROCESSABLE_ENTITY, refusal.to_string())
+            .with_code(refusal.code());
+        problem.ext = Some(Box::new(ProblemExt {
+            offered: Some(refusal.offered().to_vec()),
+            ..ProblemExt::default()
+        }));
+        return (problem, None);
+    }
     if let AppError::Unprocessable(detail) = err {
         return (
             Problem::new(StatusCode::UNPROCESSABLE_ENTITY, detail.clone()),

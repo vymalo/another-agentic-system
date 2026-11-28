@@ -81,6 +81,8 @@ fn message(text: &str, pick: Option<ModelPick>) -> Input {
         locale: None,
         pick,
         prompt_signature: None,
+
+        mode: None,
     }
 }
 
@@ -328,6 +330,8 @@ async fn an_edit_and_a_forks_first_message_carry_the_pick_and_check_it() {
             tier: None,
             locale: None,
             pick: None,
+
+            mode: None,
         },
         target: None,
         id: None,
@@ -350,6 +354,8 @@ async fn an_edit_and_a_forks_first_message_carry_the_pick_and_check_it() {
                 locale: None,
                 pick: Some(ModelPick::model("huge").unwrap()),
                 prompt_signature: None,
+
+                mode: None,
             }),
         },
         target: None,

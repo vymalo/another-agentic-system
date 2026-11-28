@@ -38,6 +38,7 @@ pub(crate) async fn capabilities<P: Ports>(
         access_tier: card.access_tier.offer().cloned(),
         commands: card.commands.offer().cloned(),
         child_sessions: card.child_sessions,
+        mode: card.pick.mode.offer().cloned(),
         // the cap of this person on this agent (ADR 0061), over the roles that let them invoke it
         max_tier: state.app.access(&principal).max_tier_for(&agent.id),
     });

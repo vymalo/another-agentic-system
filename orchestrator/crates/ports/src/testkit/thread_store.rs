@@ -99,6 +99,8 @@ fn delegate(n: u128) -> NewOutbox {
             locale: None,
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         },
     }
 }
@@ -116,6 +118,8 @@ fn steer_row(n: u128) -> NewOutbox {
             locale: None,
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         },
     }
 }
@@ -304,6 +308,8 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             tier_cap: None,
             locale: None,
             pick: None,
+
+            mode: None,
         }),
         idempotency_key: None,
     };
@@ -320,6 +326,8 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             tier_cap: Some(orch_core::AccessTier::Plan),
             locale: None,
             pick: None,
+
+            mode: None,
         }),
         ..user_event("unused", None)
     };
@@ -434,6 +442,8 @@ pub async fn event_data_roundtrip<S: ThreadStore>(store: S) {
             ui_catalog: Some(UiDelivery::Ref(catalog_data(2, "chat").reference())),
             tier: Some(orch_core::AccessTier::Auto),
             tier_cap: Some(orch_core::AccessTier::Edits),
+
+            mode: None,
         },
     };
     let rows = vec![delegate(1), action_row.clone()];
@@ -2876,6 +2886,8 @@ pub async fn steer_rows_claim_beside_an_inflight_delegate<S: ThreadStore>(store:
             locale: None,
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         }
     );
     assert_eq!(stored.sent_at, None);
@@ -3099,6 +3111,8 @@ pub async fn a_requeued_steer_waits_behind_the_delegation_in_flight<S: ThreadSto
             locale: None,
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         }
     );
     assert_eq!(row.status, OutboxStatus::Pending);
@@ -3434,6 +3448,8 @@ fn busy_job() -> Job {
     let mut job = Job {
         after_stop_locale: None,
         after_stop_pick: None,
+        after_stop_mode: None,
+        mode: None,
         number: 3,
         gate,
         attempt: 2,
@@ -4295,6 +4311,8 @@ pub async fn delegate_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             ui_catalog: None,
             mentions,
             tier: None,
+
+            mode: None,
         },
     };
     let first = commit(
@@ -4360,6 +4378,8 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             ui_catalog: None,
             mentions,
             tier: None,
+
+            mode: None,
         },
     };
     seed(&store, &alice(), 1).await; // delegate 1, claimed below and in flight
@@ -4416,6 +4436,8 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             ui_catalog: None,
             mentions: mentions.clone(),
             tier: None,
+
+            mode: None,
         }
     );
 
@@ -4456,6 +4478,8 @@ pub async fn steer_rows_keep_their_mentions<S: ThreadStore>(store: S) {
             ui_catalog: None,
             mentions: Vec::new(),
             tier: None,
+
+            mode: None,
         }
     );
 }
@@ -4485,6 +4509,8 @@ pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
             ui_catalog: Some(delivery),
             mentions: Vec::new(),
             tier: None,
+
+            mode: None,
         },
     };
 
@@ -4525,6 +4551,8 @@ pub async fn ui_catalog_roundtrip<S: ThreadStore>(store: S) {
             ui_catalog: Some(UiDelivery::Inline(v1.clone())),
             mentions: Vec::new(),
             tier: None,
+
+            mode: None,
         }
     );
 
@@ -7743,6 +7771,58 @@ pub async fn a_threads_default_pick_is_its_owners_and_goes_with_the_thread<S: Th
         store.thread_pick(thread_id(1)).await.unwrap(),
         ModelPick::default()
     );
+}
+
+/// A thread's default mode (ADR 0109) is its owner's alone: it reads back as written, `None`
+/// clears it, another person's thread and a thread that does not exist are not found, it changes
+/// neither the version nor the log, and it goes with the thread.
+pub async fn a_threads_default_mode_is_its_owners_and_goes_with_the_thread<S: ThreadStore>(
+    store: S,
+) {
+    use orch_core::ModeName;
+    seed(&store, &alice(), 1).await;
+    seed(&store, &bob(), 2).await;
+    // a thread with no default has none; so does one that does not exist
+    assert_eq!(store.thread_mode(thread_id(1)).await.unwrap(), None);
+    assert_eq!(store.thread_mode(thread_id(99)).await.unwrap(), None);
+    let before = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    let mode = ModeName::parse("plan").unwrap();
+    store
+        .set_thread_mode(&alice(), thread_id(1), Some(mode.clone()))
+        .await
+        .unwrap();
+    assert_eq!(store.thread_mode(thread_id(1)).await.unwrap(), Some(mode));
+    // it is a setting of the row: no new version, no new event
+    let after = store.get_thread(None, thread_id(1)).await.unwrap().unwrap();
+    assert_eq!(
+        (after.version, after.last_seq),
+        (before.version, before.last_seq)
+    );
+    // another person's thread, and one that does not exist, are not found; nothing was written
+    for (who, n) in [(&alice(), 2), (&alice(), 99), (&bob(), 1)] {
+        let err = store
+            .set_thread_mode(who, thread_id(n), Some(ModeName::parse("plan").unwrap()))
+            .await;
+        assert_eq!(class_of(&err), Some(ErrorClass::NotFound), "{n}: {err:?}");
+    }
+    assert_eq!(store.thread_mode(thread_id(2)).await.unwrap(), None);
+    // `None` clears it
+    store
+        .set_thread_mode(&alice(), thread_id(1), None)
+        .await
+        .unwrap();
+    assert_eq!(store.thread_mode(thread_id(1)).await.unwrap(), None);
+    // and it is erased with the thread
+    store
+        .set_thread_mode(
+            &alice(),
+            thread_id(1),
+            Some(ModeName::parse("plan").unwrap()),
+        )
+        .await
+        .unwrap();
+    delete_now(&store, &[1], 60).await.unwrap();
+    assert_eq!(store.thread_mode(thread_id(1)).await.unwrap(), None);
 }
 
 /// Another owner's thread, and a thread that does not exist, are not found, and nothing named with

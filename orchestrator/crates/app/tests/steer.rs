@@ -513,6 +513,8 @@ async fn mention_coder(app: &TestApp, id: ThreadId) {
                 catalog: None,
                 mentions: vec![coder_mention()],
                 tier: None,
+
+                mode: None,
             },
             Some("k:m-2".to_owned()),
         )

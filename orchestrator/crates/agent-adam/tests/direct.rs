@@ -87,6 +87,8 @@ fn echo_request() -> SendRequest {
         locale: None,
         pick: None,
         prompt_signature: None,
+
+        mode: None,
     }
 }
 

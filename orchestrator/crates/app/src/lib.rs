@@ -13,6 +13,7 @@ mod gate_config;
 mod inbox;
 pub mod locale;
 pub mod mentions;
+pub mod mode;
 pub mod pick;
 mod prompts;
 mod provisioning;
@@ -64,6 +65,7 @@ pub use inbox::{
 };
 pub use locale::THREAD_LOCALE_KEY;
 pub use mentions::THREAD_MENTIONS_KEY;
+pub use mode::THREAD_MODE_KEY;
 pub use pick::{THREAD_MODEL_KEY, THREAD_REASONING_KEY};
 pub use prompts::{EditPrompt, PromptRefusal, RenderPrompt, RenderedPrompt};
 pub use provisioning::{OUTER_SLACK, Provisioning};

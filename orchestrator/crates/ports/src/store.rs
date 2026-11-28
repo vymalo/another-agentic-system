@@ -293,6 +293,12 @@ pub enum OutboxPayload {
         /// offers it: a pick is never dropped.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pick: Option<orch_core::ModelPick>,
+        /// The mode the message was sent under (ADR 0109, `agent-mode/v1`), resolved and checked
+        /// against the live card when the message was written, as its `user_message` records it.
+        /// The adapter sends it and refuses a card that no longer offers it: a mode is never
+        /// dropped.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<orch_core::ModeName>,
         /// The person's prompt signature for the message (ADR 0087, decision 2): the compact JWS
         /// their app sent, checked for presence at intake and kept here byte for byte. It is
         /// **not conversation content**: it is in no event, frame, step or export, and the row is
@@ -322,6 +328,10 @@ pub enum OutboxPayload {
         /// The cap that goes with `tier`, as for [`OutboxPayload::Delegate`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tier_cap: Option<orch_core::AccessTier>,
+        /// The mode the action is sent under (ADR 0109): the job's mode, as for
+        /// [`OutboxPayload::Delegate`]. A row written before the field existed has none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<orch_core::ModeName>,
     },
     /// Cancel. `job` is the job of the thread the person asked to stop (ADR 0020): a row claimed
     /// after that job ended and the next began is finished without calling the agent. A row
@@ -400,6 +410,10 @@ pub enum OutboxPayload {
         /// offers it: a pick is never dropped.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pick: Option<orch_core::ModelPick>,
+        /// The mode of the message, as for [`OutboxPayload::Delegate`]: a steer carries it into the
+        /// running task, and the delegation it becomes keeps it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<orch_core::ModeName>,
         /// The person's prompt signature for the message (ADR 0087), as for
         /// [`OutboxPayload::Delegate`]: a steer carries it into the running task, and the delegation
         /// it becomes keeps it.
@@ -528,6 +542,7 @@ impl OutboxPayload {
                 tier_cap,
                 locale,
                 pick,
+                mode,
                 prompt_signature,
             } => Some(OutboxPayload::Delegate {
                 text: text.clone(),
@@ -539,6 +554,9 @@ impl OutboxPayload {
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
                 pick: pick.clone(),
+                // the mode holds with the rest of the steer (ADR 0109): the delegation it becomes
+                // continues the person's work under it
+                mode: mode.clone(),
                 prompt_signature: prompt_signature.clone(),
             }),
             OutboxPayload::Delegate { .. }
@@ -1348,6 +1366,24 @@ pub trait ThreadStore:
         pick: orch_core::ModelPick,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
+    /// The thread's default mode (ADR 0109), or `None` when it has none or no thread has this id.
+    /// One row read: a default is the orchestrator's convenience and no event records it, so what
+    /// reaches an agent is always the one mode a message recorded.
+    fn thread_mode(
+        &self,
+        thread: ThreadId,
+    ) -> impl Future<Output = Result<Option<orch_core::ModeName>, StoreError>> + Send;
+
+    /// Replaces the thread's default mode (ADR 0109), in no event and with no change of `version`
+    /// or `updated_at`; `None` clears it. A thread that is not the owner's, or does not exist, is
+    /// [`StoreError::NotFound`]. The default is erased with the thread.
+    fn set_thread_mode(
+        &self,
+        owner: &UserId,
+        thread: ThreadId,
+        mode: Option<orch_core::ModeName>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
     /// The thread's A2A binding.
     fn get_binding(
         &self,
@@ -1689,6 +1725,8 @@ mod payload_tests {
             ui_catalog: None,
             mentions: vec![mention()],
             tier: None,
+
+            mode: None,
         };
         let json = serde_json::to_value(&with).unwrap();
         assert_eq!(json["steer"]["mentions"][0]["label"], "@coder");

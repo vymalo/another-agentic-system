@@ -27,6 +27,8 @@ fn said(text: &str, tier: Option<AccessTier>) -> Input {
         catalog: None,
         mentions: Vec::new(),
         tier,
+
+        mode: None,
     }
 }
 fn stop(text: &str, tier: Option<AccessTier>) -> Input {
@@ -43,6 +45,8 @@ fn stop(text: &str, tier: Option<AccessTier>) -> Input {
         catalog: None,
         mentions: Vec::new(),
         tier,
+
+        mode: None,
     }
 }
 fn status(state: AgentTaskState, tier: Option<AccessTier>) -> Input {
@@ -272,6 +276,8 @@ fn a_redelivered_message_carries_the_tier_its_row_held() {
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+
+                mode: None,
             },
         );
         assert_eq!(sent(&cmds), Some(Plan), "{state:?}");
@@ -288,6 +294,8 @@ fn a_redelivered_message_carries_the_tier_its_row_held() {
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+
+                mode: None,
             },
         );
         assert_eq!(sent(&cmds), Some(Auto), "{state:?}");
@@ -310,6 +318,8 @@ fn a_redelivery_of_a_message_already_sent_gives_the_job_the_tier_it_went_out_und
                 locale: None,
                 pick: None,
                 prompt_signature: None,
+
+                mode: None,
             },
         );
         assert!(
@@ -338,6 +348,8 @@ fn a_redelivery_of_a_message_already_sent_gives_the_job_the_tier_it_went_out_und
             locale: None,
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         },
     );
     assert_eq!(snap.job.tier, None);
@@ -399,6 +411,8 @@ fn the_rework_after_a_redelivery_of_a_sent_message_is_under_its_tier() {
             locale: None,
             pick: None,
             prompt_signature: None,
+
+            mode: None,
         },
     );
     assert!(cmds.is_empty());

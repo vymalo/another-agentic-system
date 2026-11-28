@@ -49,6 +49,8 @@ fn message(text: &str, catalog: Option<&UiCatalogData>) -> Input {
         catalog: catalog.cloned(),
         mentions: Vec::new(),
         tier: None,
+
+        mode: None,
     }
 }
 

@@ -61,92 +61,96 @@ fn arb_input() -> impl Strategy<Value = Input> {
     let sha = (0..SHAS.len()).prop_map(|i| SHAS[i]);
     let small = 0_u32..6;
     prop_oneof![
-        2 => "[a-z]{1,6}".prop_map(|text| Input::UserMessage {
-            tier_cap: None,
-            locale: None,
-            pick: None,
-            prompt_signature: None,
-            user: UserId::new("u@x.io"),
-            text,
-            message_id: None,
-            run_id: None,
-            origin: orch_core::Origin::Agui,
-            catalog: None,
-            mentions: Vec::new(), tier: None,
-        }),
-        1 => Just(Input::Cancel {
-            user: UserId::new("u@x.io")
-        }),
-        6 => arb_task_state().prop_map(|state| agent(AgentUpdate::Status { state, detail: None, tier: None, })),
-        4 => (sha.clone(), 0..REPOS.len()).prop_map(|(sha, r)| artifact(
-            "branch",
-            json!({"repository": REPOS[r], "branch": "agent/x", "commit": sha})
-        )),
-        4 => (any::<bool>(), sha.clone(), prop::collection::vec("[a-z]{1,5}", 0..3)).prop_map(
-            |(passed, sha, findings)| artifact(
-                "checks",
-                json!({"passed": passed, "commit": sha, "findings": findings})
-            )
-        ),
-        1 => Just(artifact("checks", json!({"passed": "maybe"}))),
-        // a `branch` the gate cannot use: a short hash, and a repository that is no address
-        1 => Just(artifact("branch", json!({"repository": REPOS[0], "branch": "agent/x", "commit": "abc"}))),
-        1 => Just(artifact("branch", json!({"repository": "not a repo", "branch": "agent/x", "commit": SHAS[0]}))),
-        1 => Just(artifact("other", json!({}))),
-        1 => (any::<bool>(), "[a-z]{1,5}").prop_map(|(retryable, reason)| Input::DeliveryFailed {
-            reason,
-            retryable
-        }),
-        1 => Just(Input::CancelledBeforeStart),
-        1 => "[a-z]{1,6}".prop_map(|text| Input::Redeliver {
-            tier_cap: None,
-            locale: None,
-            pick: None,
-            prompt_signature: None,
-            text,
-            sent: false,
-            mentions: Vec::new(),
-            tier: None,
-        }),
-        1 => (any::<bool>(), "[a-z]{1,5}")
-            .prop_map(|(retryable, reason)| Input::CancelRejected {
-                agent: AgentId::new("a"),
+            2 => "[a-z]{1,6}".prop_map(|text| Input::UserMessage {
+                tier_cap: None,
+                locale: None,
+                pick: None,
+                prompt_signature: None,
+                user: UserId::new("u@x.io"),
+                text,
+                message_id: None,
+                run_id: None,
+                origin: orch_core::Origin::Agui,
+                catalog: None,
+                mentions: Vec::new(), tier: None,
+
+                mode: None,
+    }),
+            1 => Just(Input::Cancel {
+                user: UserId::new("u@x.io")
+            }),
+            6 => arb_task_state().prop_map(|state| agent(AgentUpdate::Status { state, detail: None, tier: None, })),
+            4 => (sha.clone(), 0..REPOS.len()).prop_map(|(sha, r)| artifact(
+                "branch",
+                json!({"repository": REPOS[r], "branch": "agent/x", "commit": sha})
+            )),
+            4 => (any::<bool>(), sha.clone(), prop::collection::vec("[a-z]{1,5}", 0..3)).prop_map(
+                |(passed, sha, findings)| artifact(
+                    "checks",
+                    json!({"passed": passed, "commit": sha, "findings": findings})
+                )
+            ),
+            1 => Just(artifact("checks", json!({"passed": "maybe"}))),
+            // a `branch` the gate cannot use: a short hash, and a repository that is no address
+            1 => Just(artifact("branch", json!({"repository": REPOS[0], "branch": "agent/x", "commit": "abc"}))),
+            1 => Just(artifact("branch", json!({"repository": "not a repo", "branch": "agent/x", "commit": SHAS[0]}))),
+            1 => Just(artifact("other", json!({}))),
+            1 => (any::<bool>(), "[a-z]{1,5}").prop_map(|(retryable, reason)| Input::DeliveryFailed {
                 reason,
                 retryable
             }),
-        8 => (0..NAMES.len(), sha.clone(), 0..REPOS.len(), arb_conclusion()).prop_map(
-            |(n, sha, r, conclusion)| Input::CiReported(CiReport {
-                provider: CiProvider::Generic,
-                repository: REPOS[r].to_owned(),
-                sha: sha.to_owned(),
-                branch: None,
-                name: NAMES[n].to_owned(),
-                conclusion,
-                url: None,
-                summary: None,
-            })
-        ),
-        6 => (small.clone(), small.clone(), any::<bool>(), prop::collection::vec("[a-z]{1,5}", 0..3))
-            .prop_map(|(attempt, verification, passed, findings)| Input::VerifierReported {
-                attempt,
-                verification,
-                verdict: Verdict { passed, findings }
+            1 => Just(Input::CancelledBeforeStart),
+            1 => "[a-z]{1,6}".prop_map(|text| Input::Redeliver {
+                tier_cap: None,
+                locale: None,
+                pick: None,
+                prompt_signature: None,
+                text,
+                sent: false,
+                mentions: Vec::new(),
+                tier: None,
+
+                mode: None,
+    }),
+            1 => (any::<bool>(), "[a-z]{1,5}")
+                .prop_map(|(retryable, reason)| Input::CancelRejected {
+                    agent: AgentId::new("a"),
+                    reason,
+                    retryable
+                }),
+            8 => (0..NAMES.len(), sha.clone(), 0..REPOS.len(), arb_conclusion()).prop_map(
+                |(n, sha, r, conclusion)| Input::CiReported(CiReport {
+                    provider: CiProvider::Generic,
+                    repository: REPOS[r].to_owned(),
+                    sha: sha.to_owned(),
+                    branch: None,
+                    name: NAMES[n].to_owned(),
+                    conclusion,
+                    url: None,
+                    summary: None,
+                })
+            ),
+            6 => (small.clone(), small.clone(), any::<bool>(), prop::collection::vec("[a-z]{1,5}", 0..3))
+                .prop_map(|(attempt, verification, passed, findings)| Input::VerifierReported {
+                    attempt,
+                    verification,
+                    verdict: Verdict { passed, findings }
+                }),
+            3 => (small.clone(), small.clone(), "[a-z]{0,5}").prop_map(
+                |(attempt, verification, reason)| Input::VerifierFailed {
+                    attempt,
+                    verification,
+                    reason
+                }
+            ),
+            4 => (small.clone(), small, any::<bool>()).prop_map(|(attempt, verification, ci)| {
+                Input::TimerFired(if ci {
+                    Timer::CiDeadline { attempt, verification }
+                } else {
+                    Timer::VerifierDeadline { attempt, verification }
+                })
             }),
-        3 => (small.clone(), small.clone(), "[a-z]{0,5}").prop_map(
-            |(attempt, verification, reason)| Input::VerifierFailed {
-                attempt,
-                verification,
-                reason
-            }
-        ),
-        4 => (small.clone(), small, any::<bool>()).prop_map(|(attempt, verification, ci)| {
-            Input::TimerFired(if ci {
-                Timer::CiDeadline { attempt, verification }
-            } else {
-                Timer::VerifierDeadline { attempt, verification }
-            })
-        }),
-    ]
+        ]
 }
 
 fn arb_gate() -> impl Strategy<Value = GatePolicy> {

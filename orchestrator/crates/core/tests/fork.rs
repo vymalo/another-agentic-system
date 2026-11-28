@@ -305,6 +305,8 @@ fn the_next_message_of_a_fork_starts_the_next_job() {
             catalog: None,
             mentions: Vec::new(),
             tier: None,
+
+            mode: None,
         },
     )
     .unwrap();
@@ -468,6 +470,8 @@ fn a_fork_has_no_catalog_for_its_agent_has_been_sent_none() {
             catalog: Some(data),
             mentions: Vec::new(),
             tier: None,
+
+            mode: None,
         },
     )
     .unwrap();
@@ -624,6 +628,8 @@ fn first_message() -> Replacement {
         run_id: Some("run-1".into()),
         origin: Origin::Agui,
         tier: None,
+
+        mode: None,
     }
 }
 
@@ -691,6 +697,7 @@ fn a_fork_made_with_its_first_message_commits_it_as_the_next_job() {
         tier_cap: None,
         locale: None,
         pick: None,
+        mode: None,
         prompt_signature: None,
     } = commands.last().unwrap()
     else {
