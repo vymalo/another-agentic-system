@@ -37,6 +37,12 @@ data:
   subagent-browser.md: |
     {{- include "agentic.browserAgent.chatSubagent" . | nindent 4 }}
   {{- end }}
+  # The modes a person picks for a message (`agent-mode/v1`, ADR 0109): `modes/<name>.md`, exactly one of them `default: true`. The
+  # chat's own are `direct` (the default) and `plan`; a mode adds its words to the instructions and narrows nothing (the chat has no tools).
+  mode-direct.md: |
+    {{- .Files.Get "files/chat/modes/direct.md" | nindent 4 }}
+  mode-plan.md: |
+    {{- .Files.Get "files/chat/modes/plan.md" | nindent 4 }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -57,7 +63,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        checksum/agent: {{ print (.Files.Get "files/chat/instructions.md") (.Files.Get "files/chat/subagents/planner.md") (.Files.Get "files/chat/subagents/writer.md") (.Files.Get "files/chat/subagents/researcher/instructions.md") .Values.webSearch.enabled (include "agentic.chat.researcherMcp" .) (ternary (include "agentic.browserAgent.chatSubagent" .) "" (and .Values.browser.enabled .Values.browser.chatSubagent)) | sha256sum }}
+        checksum/agent: {{ print (.Files.Get "files/chat/instructions.md") (.Files.Get "files/chat/subagents/planner.md") (.Files.Get "files/chat/subagents/writer.md") (.Files.Get "files/chat/subagents/researcher/instructions.md") (.Files.Get "files/chat/modes/direct.md") (.Files.Get "files/chat/modes/plan.md") .Values.webSearch.enabled (include "agentic.chat.researcherMcp" .) (ternary (include "agentic.browserAgent.chatSubagent" .) "" (and .Values.browser.enabled .Values.browser.chatSubagent)) | sha256sum }}
         checksum/secrets: {{ include (print $.Template.BasePath "/externalsecrets.yaml") . | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -193,6 +199,8 @@ spec:
               {{- if and .Values.browser.enabled .Values.browser.chatSubagent }}
               - { key: subagent-browser.md, path: subagents/browser.md }
               {{- end }}
+              - { key: mode-direct.md, path: modes/direct.md }
+              - { key: mode-plan.md, path: modes/plan.md }
       {{- include "agentic.placement" . | nindent 6 }}
 ---
 apiVersion: v1
