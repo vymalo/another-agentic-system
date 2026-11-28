@@ -57,6 +57,19 @@ const ROUTINES: &[(&str, Option<&str>)] = &[
              THEN RAISE EXCEPTION 'counted'; END IF; END $$",
         ),
     ),
+    // 0038 (P2): admission.
+    (
+        "orch_admit(p_owner text, p_limit integer)",
+        // both outcomes for a person with no open delegation: room, and none at a limit of zero.
+        // The count reads `outbox`, so a renamed column of it fails here.
+        Some(
+            "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM orch_admit('nobody', 1) \
+             WHERE outcome = 'admitted' AND running = 0) \
+             OR NOT EXISTS (SELECT 1 FROM orch_admit('nobody', 0) \
+             WHERE outcome = 'no_room' AND running = 0) \
+             THEN RAISE EXCEPTION 'admit'; END IF; END $$",
+        ),
+    ),
 ];
 
 /// The functions (of any kind) and the views of `schema`, sorted.

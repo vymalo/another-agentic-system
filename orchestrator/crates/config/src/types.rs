@@ -324,7 +324,7 @@ pub struct Provisioner {
     /// chat agent is never provisioned.
     #[schemars(length(min = 1, max = 2))]
     pub kinds: Vec<ProvisionedKind>,
-    /// The agent form of each kind (the platform's form without `name`, `owner` and `suspend`),
+    /// The agent form of each kind (the platform's form without `name`, `owner`, `account` and `suspend`),
     /// one for every kind in `kinds`.
     #[serde(default)]
     pub forms: BTreeMap<ProvisionedKind, serde_json::Map<String, serde_json::Value>>,
