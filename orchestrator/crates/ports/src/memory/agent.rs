@@ -120,6 +120,9 @@ pub struct SendCall {
     pub locale: Option<orch_core::LocaleHint>,
     /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
     pub pick: Option<orch_core::ModelPick>,
+    /// The person's prompt signature the request carried (ADR 0087): what an adapter would pass on
+    /// to the agent's message, byte for byte.
+    pub prompt_signature: Option<String>,
 }
 
 /// How a [`ScriptedAgent`] that plays the verifier answers whatever it is asked
@@ -1792,6 +1795,7 @@ impl AgentClient for ScriptedAgent {
                 tier: req.tier,
                 locale: req.locale.clone(),
                 pick: req.pick.clone(),
+                prompt_signature: req.prompt_signature.clone(),
             })));
             if let Some(hook) = st.on_send.take() {
                 hook();

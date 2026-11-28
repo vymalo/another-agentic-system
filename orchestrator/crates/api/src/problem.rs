@@ -30,8 +30,13 @@ pub struct Problem {
     pub ext: Option<Box<ProblemExt>>,
 }
 
-/// The extension members of a problem of the prompt library (RFC 9457 allows them): where a save is
-/// refused, or which answer and which rule. Names positions and ids, never a word of a prompt.
+/// The extension members of a problem (RFC 9457 allows them), boxed beside `Problem::ext`: where a
+/// save of the prompt library is refused, or which answer and which rule (`at`, `offset`,
+/// `question`, `rule`); which models or levels an agent offers (`offered`); the lowest client
+/// version a deployment serves (`minClientVersion`); the limit a person reached and its usage
+/// (`limit`, `inUse`, `max`); and why a client should not retry (`reason`, `prompt_signature_invalid`).
+/// They name positions, ids, counts and codes, never a word of a prompt, an answer, a credential or
+/// a signature.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ProblemExt {
     /// Where a save is refused (`createPrompt`, `updatePrompt`): `name`, `body`,
@@ -64,6 +69,10 @@ pub struct ProblemExt {
     /// `over_limit`: the value of the limit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max: Option<u32>,
+    /// `prompt_signature_invalid` (ADR 0087, decision 7): the reason the client sees, `invalid` today.
+    /// The finer one (`missing`, `malformed`) is in the orchestrator's log and never in the response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl Problem {
@@ -158,6 +167,17 @@ impl Problem {
     /// 403.
     pub fn forbidden(detail: impl Into<String>) -> Self {
         Self::new(StatusCode::FORBIDDEN, detail)
+    }
+
+    /// The same problem saying why a client should not retry (ADR 0087, decision 7):
+    /// `prompt_signature_invalid` carries `invalid`; the finer reason is only logged.
+    #[must_use]
+    pub fn with_reason(mut self, reason: &str) -> Self {
+        self.ext = Some(Box::new(ProblemExt {
+            reason: Some(reason.to_owned()),
+            ..self.ext.map(|ext| *ext).unwrap_or_default()
+        }));
+        self
     }
 }
 

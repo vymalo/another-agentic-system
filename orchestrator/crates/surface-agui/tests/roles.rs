@@ -140,6 +140,7 @@ impl Rig {
                 Arc::clone(&app),
                 keepalive,
                 lifetime,
+                Arc::from(Vec::<String>::new()),
             )],
         );
         let server = tokio::spawn(async move {

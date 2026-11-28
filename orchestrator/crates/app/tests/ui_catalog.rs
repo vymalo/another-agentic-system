@@ -40,6 +40,7 @@ fn message(text: &str, catalog: Option<&UiCatalogData>) -> Input {
         tier_cap: None,
         locale: None,
         pick: None,
+        prompt_signature: None,
         user: alice(),
         text: text.to_owned(),
         message_id: None,

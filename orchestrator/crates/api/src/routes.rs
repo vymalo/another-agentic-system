@@ -966,6 +966,7 @@ impl ForkBody {
                         tier,
                         locale,
                         pick,
+                        prompt_signature: None,
                     }),
                 }
             }

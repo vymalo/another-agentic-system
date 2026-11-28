@@ -90,6 +90,7 @@ pub(crate) async fn run<P: Ports>(
             &agent,
             thread,
             &input,
+            &state.signing_clients,
             &Requested {
                 gate: gate.as_ref(),
                 catalog: catalog.as_ref(),
@@ -128,6 +129,40 @@ async fn continues_own_thread<P: Ports>(
         // not theirs, not there, or a person who may not write: not a continuation
         Ok(None) | Err(AppError::NotFound | AppError::Forbidden { .. }) => Ok(false),
         Err(other) => Err(other.into()),
+    }
+}
+
+/// ADR 0087, decision 1 and 7: a prompt from a **signing client** (`auth.signingClients`) that
+/// carries no envelope, or one that is not a compact JWS, is refused with `403
+/// prompt_signature_invalid`, reason `invalid`, before anything is written or any agent is called.
+/// No cryptography happens here (the verifier behind the model gateway checks the signature); the
+/// finer reason (`missing`, `malformed`) is logged and never sent. A client that is not listed, and
+/// a deployment that lists none, is never checked.
+///
+/// It is called only for an input that writes the person's words (a message or a Stop & send), and
+/// before the rate limit and the allowance: a message that is both unsigned and over the limit is
+/// the 403, and nothing is counted.
+fn check_signature(
+    principal: &Principal,
+    signing_clients: &[String],
+    envelope: Option<&str>,
+) -> Result<(), Problem> {
+    if !orch_prompt_statement::requires_signature(signing_clients, principal.client_id.as_deref()) {
+        return Ok(());
+    }
+    match orch_prompt_statement::check_presence(envelope) {
+        Ok(_) => Ok(()),
+        Err(refusal) => {
+            tracing::warn!(
+                reason = refusal.log_reason(),
+                "a signing client's prompt was refused"
+            );
+            Err(Problem::forbidden(
+                "this message couldn't be verified as coming from your device; please try again",
+            )
+            .with_code(refusal.code())
+            .with_reason(refusal.client_reason()))
+        }
     }
 }
 
@@ -242,8 +277,9 @@ fn tier_request(input: &RunAgentInput) -> Result<Option<AccessTier>, Problem> {
 /// The interface locale of the run's message, `forwardedProps["vymalo.locale"]` (ADR 0085,
 /// [`locale-v1`](../../../../docs/api/locale-v1.md)): a BCP 47 tag, `null` or absent for none. Like
 /// the tier it is read on every run, so one that is not a tag is a **400** every time, before
-/// anything is written. Nothing else checks it: it is a hint, carried on the message to an agent
-/// whose live card lists the extension, and it is never written to the log.
+/// anything is written. Nothing else checks it: it is a hint, recorded on the `user_message` (the
+/// log is the state) and carried on the message to an agent whose live card lists the extension,
+/// and shown by no projection.
 fn locale_request(input: &RunAgentInput) -> Result<Option<LocaleHint>, Problem> {
     let Some(value) = input
         .forwarded_props
@@ -526,9 +562,12 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
     }
 }
 
-/// What a run asks for beside its messages, read from its `forwardedProps` before anything is
-/// written: the gate, the UI catalog, the MCP servers to attach, the agents the message
-/// mentions, the access tier of the message and the thread to make the thread a fork of.
+/// What a run asks for beside its messages, read before anything is written: from its
+/// `forwardedProps`, the gate, the UI catalog, the MCP servers to attach, the agents the message
+/// mentions, the access tier of the message, the model and reasoning pick, and the thread to make
+/// the thread a fork of; and, from the **new message's metadata**, the person's prompt signature
+/// (ADR 0087), which the projection reads into the input it builds (the presence check is
+/// `check_signature`'s, on that input).
 struct Requested<'a> {
     gate: Option<&'a GateLayer>,
     catalog: Option<&'a UiCatalogData>,
@@ -549,6 +588,7 @@ async fn attempt<P: Ports>(
     agent: &AgentId,
     thread: ThreadId,
     input: &RunAgentInput,
+    signing_clients: &[String],
     requested: &Requested<'_>,
 ) -> Result<Option<Feed>, ApiError> {
     let Requested {
@@ -643,6 +683,25 @@ async fn attempt<P: Ports>(
     for warning in &warnings {
         tracing::warn!(%thread, %warning, "part of the run input was ignored");
     }
+    // ADR 0087, decisions 1 and 7: a prompt from a signing client must carry its envelope, and it
+    // is checked here — after the thread, the agent and the translation are known, and before
+    // `create_thread_as`, `fork_and_send` or `submit` writes anything. **Only an input that writes
+    // the person's words is a prompt**: an attach, a cancel and a surface action are not, and are
+    // never refused for a missing signature. The envelope is the one the projection read from the
+    // raw source (the new message's `metadata`, or an answer's `resume` entry), passed on as it
+    // arrived.
+    let prompt = inputs.iter().find_map(|input| match input {
+        Input::UserMessage {
+            prompt_signature, ..
+        }
+        | Input::StopAndSend {
+            prompt_signature, ..
+        } => Some(prompt_signature.as_deref()),
+        _ => None,
+    });
+    if let Some(envelope) = prompt {
+        check_signature(principal, signing_clients, envelope)?;
+    }
     let held = held_message_ids(input);
 
     let last_seq = known
@@ -686,6 +745,7 @@ async fn attempt<P: Ports>(
                     text,
                     message_id,
                     run_id,
+                    prompt_signature,
                     ..
                 },
             ] = inputs.as_slice()
@@ -716,6 +776,7 @@ async fn attempt<P: Ports>(
                         tier,
                         locale: locale.cloned(),
                         pick: pick.cloned(),
+                        prompt_signature: prompt_signature.clone(),
                     },
                     held,
                 )
@@ -738,6 +799,7 @@ async fn attempt<P: Ports>(
                 tier,
                 locale: locale.cloned(),
                 pick: pick.cloned(),
+                prompt_signature: prompt_signature.clone(),
             };
             match app
                 .create_thread_as(principal, thread, new, inbound)
@@ -900,6 +962,7 @@ mod tests {
             catalog: None,
             mentions: Vec::new(),
             tier: None,
+            prompt_signature: None,
         }
     }
 

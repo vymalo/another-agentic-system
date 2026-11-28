@@ -254,6 +254,7 @@ impl TestInstance {
             Arc::clone(&app),
             keepalive,
             lifetime,
+            Arc::from(Vec::<String>::new()),
         )];
         surfaces.extend(extra);
         let router =
