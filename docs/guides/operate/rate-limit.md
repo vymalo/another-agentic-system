@@ -77,9 +77,11 @@ them. There is no shared state and no configuration for one.
 
 The limit is only as good as the address it counts, and **with the wrong address it throttles everybody together** — which is
 worse than no limit, because the site goes down for every person at the rate one client could use. There are two ways to get
-it wrong, and the end-to-end reproduces both:
+it wrong, and the end-to-end reproduces both: **depth 0 behind a proxy**, where every client shares the proxy's address, and
+**depth 1 or more with a proxy Traefik does not trust**, where the forwarded header is deleted and every client shares one
+bucket.
 
-::: in-depth The two ways the address can be wrong
+::: in-depth The two ways the address can be wrong, in detail
 - **Depth 0 behind a proxy.** The peer that connects to Traefik is then the load balancer's or the node's address — a
   Service with `externalTrafficPolicy: Cluster` hides the client's address behind the node's — and it is the same for every
   client: one bucket for all of them.
@@ -121,7 +123,7 @@ Write down both addresses. If `ClientAddr` is the same for two different network
    trust — an entry further left is written by the client, so a client could pick its own bucket.
 2. **Tell Traefik to trust that proxy**, for any depth above 0: the entrypoints' `forwardedHeaders.trustedIPs` (in Traefik's
    own chart, `ports.websecure.forwardedHeaders.trustedIPs`) must hold the proxy's addresses. Without it you get the second
-   failure above, not a limit.
+   failure of §2, not a limit.
 
 ## 5. Check the Traefik itself before you turn it on
 
@@ -180,8 +182,8 @@ read Traefik's log.
 
 To take the limit off again, set `enabled: false`: the `Middleware` goes, and the annotation with it.
 
-::: in-depth Measure before you tighten it
-**Measure before you tighten it.** A page load of the web asks for the shell, a few dozen static files, the thread list and
+::: in-depth Why the default is generous
+A page load of the web asks for the shell, a few dozen static files, the thread list and
 a stream; the default burst is meant to hold one, and the default rate is meant to be far above what a person does and far
 below what a script does. The orchestrator's own limit — per process, per share link — is the other layer, and it stays: it
 does not depend on the address.
@@ -189,7 +191,6 @@ does not depend on the address.
 
 ## 8. What CI proves, and what it does not
 
-::: in-depth What the checks prove, and what they do not
 `tests/render-check.sh` holds the render: off, nothing (no `Middleware`, no annotation, the Ingress as it was); on, the
 `Middleware` with the numbers and the annotation naming it in the release's namespace, ours before the deployer's, the
 deployer's other annotations kept, and every refusal above — each check was broken on purpose once. `deploy.yml` validates
@@ -206,7 +207,6 @@ forged header at depth 0 is not the source, and a Traefik that does not trust th
 what `X-Forwarded-For` holds behind its load balancer (open question 51). Nor the starting numbers under real traffic, two
 Traefik replicas (each keeps its own buckets), an SSE stream (counted once by Traefik's design, read in its source and not
 run here), or the Ingress's TLS through cert-manager (the certificate in the scenario is self-signed).
-:::
 
 ## Next
 

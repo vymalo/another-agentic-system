@@ -75,13 +75,13 @@ With many replicas of the orchestrator, each holds a pool, and every pool costs 
 PgBouncer in transaction mode between them lets every replica keep a small pool while the database sees few connections.
 
 ::: in-depth Why the pool mode is not a value
-**The pool mode is not a value.** The chart writes `transaction`, and nothing else: the orchestrator's connections are made
+The chart writes `transaction`, and nothing else: the orchestrator's connections are made
 for it (`SET LOCAL`, transaction-scoped advisory locks). Session mode would need no pooler at all, and statement mode breaks
 transactions.
 :::
 
 ::: in-depth Why max_prepared_statements is above zero
-**`max_prepared_statements` must be above 0**, which needs PgBouncer 1.21 or later. The orchestrator's driver names its
+It must be above 0, which needs PgBouncer 1.21 or later. The orchestrator's driver names its
 prepared statements (`tokio-postgres` names them `s0`, `s1`, … in each process, so two replicas use the same names), and the
 setting is what lets PgBouncer keep them across server connections. At 0 the first statements of two clients collide on one
 server connection. The collision was observed with sqlx's names (`prepared statement "sqlx_s_1" already exists`, PgBouncer
@@ -91,7 +91,7 @@ the key absent, or with a value that is not a whole number above 0. `pool_mode` 
 :::
 
 ::: in-depth The two sizes that decide the connections
-**The two sizes that decide how much reaches Postgres.** `default_pool_size` is the server connections one pooler pod opens
+`default_pool_size` is the server connections one pooler pod opens
 per user and database; `max_client_conn` is the client connections one pod accepts. The orchestrator's most is about
 `pooler.instances` × `default_pool_size` server connections, and with the migrations', the listeners', the agents' and the
 operator's own it must stay well below the database's `max_connections` (PostgreSQL's default is 100, and CloudNativePG does
@@ -117,7 +117,10 @@ the pooler reaches the primary.
 
 ## 4. The two URLs, and why the Deployment can build them
 
-::: in-depth Why the Deployment builds both URLs
+With the pooler on, the orchestrator cannot take the app Secret's `uri` key: it names the cluster's own host. It builds both
+URLs from that Secret's `username`, `password` and `dbname`, one through the pooler and one to the cluster itself.
+
+::: in-depth The Deployment's environment, and the three properties that make it safe
 The orchestrator takes a URL as one secret, and a pooler is another host. So with the pooler on, the Deployment does not
 mount the app Secret's `uri` key (which names the cluster's own host). It builds both URLs from that Secret's `username`,
 `password` and `dbname`:
@@ -149,10 +152,12 @@ The pooler's Service is named like the `Pooler`, `<fullname>-db-pooler` (a Poole
 
 ## 5. What it costs
 
-::: in-depth What the starting resources come to
-With `instances: 3` and the pooler on with two pods, the chart's starting resources come to **five pods where the default
-render has one**, **1.7 CPU and 3.25Gi requested** (3 × 500m + 2 × 100m, 3 × 1Gi + 2 × 128Mi), a memory limit of 6.5Gi, and
-**two more volumes of `storage.size`** — 30Gi in all with the default 10Gi. The CloudNativePG operator is not the chart's.
+With `instances: 3` and the pooler on with two pods, the starting resources are **five pods where the default render has one**,
+**1.7 CPU and 3.25Gi requested, a 6.5Gi memory limit and 30Gi of volumes** with the default `storage.size`.
+
+::: in-depth The arithmetic, and what it does not say
+3 × 500m + 2 × 100m is the CPU, 3 × 1Gi + 2 × 128Mi the memory, and the volumes are 3 × 10Gi. The CloudNativePG operator is not
+the chart's.
 
 Those are the numbers of a starting point. A database that holds the chat of a few people is not known to need them, and a
 smaller one is a value. The pooler's own defaults are a starting point too, not a measurement.

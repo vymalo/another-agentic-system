@@ -133,7 +133,6 @@ name is `externalSecrets.key`. With the values of step 4 the chart renders four.
 rendered chart.)
 
 ::: in-depth Which properties each ExternalSecret reads
-
 | `ExternalSecret` | Properties it reads |
 |---|---|
 | `another-agentic-orchestrator` | `thread_tools_secret`, `model_api_key`, `chat_a2a_token` |
@@ -143,7 +142,7 @@ rendered chart.)
 
 :::
 
-That is six properties. `oauth2_client_secret` comes from Keycloak and `model_api_key` from your model provider. You
+The six properties. `oauth2_client_secret` comes from Keycloak and `model_api_key` from your model provider. You
 make the other four. How to make each one, with its length and format, is in
 [the chart's table](../../deploy/chart/README.md#the-aws-secret). These print random values of the two forms it asks
 for (ran):
@@ -155,7 +154,7 @@ openssl rand -hex 16   # oauth2_cookie_secret
 
 Write the six properties **before** you install: one missing property stops the whole Secret from syncing.
 
-::: in-depth Why one missing property stops the Secret
+::: in-depth Where that rule comes from, and how you write the properties
 That is External Secrets behaviour as [the chart's README](../../deploy/chart/README.md#the-key-of-the-stored-secrets-adr-0046-slice-3)
 and its `values.yaml` state it; *unverified* here: there was no cluster. How you
 write them depends on your store, so this page has no command for it (***unverified***). The chart's own deployment

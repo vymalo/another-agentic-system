@@ -102,17 +102,15 @@ The rule the binary applies to that value is the useful part:
   target is `rmcp` or starts with `rmcp::`) — then it is yours whole.
 
 So the chart's `info` runs as `info,rmcp=off`
-([`orch-log-filter`](../../../orchestrator/crates/log-filter/src/lib.rs)).
+([`orch-log-filter`](../../../orchestrator/crates/log-filter/src/lib.rs)). **Naming `rmcp` in a deployment that lets people add
+servers puts what a stranger's server says, and the URL of a failed request, in the logs** — that is the trade, and it is yours
+to make.
 
-::: in-depth Why the MCP library is off by default
-**Why `rmcp` is off by default.** `rmcp` is the MCP library, and it logs what the servers it talks to
-say: at `info` a server's own `instructions`, at `warn` and `error` the **URL** of a request that failed
-(a person's URL can carry a secret in its path) and the pre-handshake messages, and at `debug` and
-`trace` every message. A server a person typed can make any of that say what it likes. The
-orchestrator's own lines say what happened without the URL and without a word the server chose, so the
-library's are off unless you name it. **Naming `rmcp` in a deployment that lets people add servers puts
-what a stranger's server says, and the URL of a failed request, in the logs** — that is the trade, and
-it is yours to make.
+::: in-depth What the MCP library would log
+`rmcp` is the MCP library, and it logs what the servers it talks to say: at `info` a server's own `instructions`, at `warn` and
+`error` the **URL** of a request that failed (a person's URL can carry a secret in its path) and the pre-handshake messages, and
+at `debug` and `trace` every message. A server a person typed can make any of that say what it likes. The orchestrator's own
+lines say what happened without the URL and without a word the server chose, so the library's are off unless you name it.
 :::
 
 To read one process more closely without drowning in the rest, raise its own filter, for one pod:

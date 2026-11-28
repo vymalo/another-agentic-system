@@ -145,20 +145,21 @@ Last, restore once before you rely on any of it (§5). **A backup nobody has res
 ## 4. How long a deleted thread stays in the backups
 
 Deleting a thread erases it from the database, its files and its link, and **the backups keep it until they expire**
-([ADR 0043](../../decisions/0043-deleting-a-thread-erases-it.md), decision 7).
+([ADR 0043](../../decisions/0043-deleting-a-thread-erases-it.md), decision 7). With the default `28d`, a thread deleted today
+leaves the bucket after about **29 days**, within 30. Switching backups off does **not** erase the bucket: the sweep stops with
+the sidecar, and the data stays until someone deletes it.
 
-::: in-depth The recovery window, and why 28 days is the cap
+::: in-depth Why the window is a recovery window, and why 28 days is the cap
 The retention is a **recovery window**, not a "keep the last N backups": the plugin keeps every backup and every WAL segment
 needed to restore to any moment in the window, including the newest base backup older than it, and it deletes an obsolete backup
 only after the next backup completes.
 
 So a window of W days keeps data for about **W+1 days**, and up to W+2 if a deletion waits for the next backup (*unverified* in a
-cluster; the sweep runs every 30 minutes). With the default `28d`, a thread deleted today leaves the bucket after about **29 days**,
-within 30. That is why the chart accepts **at most 28 days** (`28d` or `4w`) and refuses `29d`, `30d`, `5w`, the unit `m` and 0: a
-ceiling of 30 would keep data 31 or 32 days and break the sentence people are given. **A longer keep is a decision about people's
-threads, not a value.** [`docs/tester-note.md`](https://github.com/vymalo/another-agentic-system/blob/main/docs/tester-note.md) is the draft that says "within about 30 days" to testers.
-
-Switching backups off does **not** erase the bucket: the sweep stops with the sidecar, and the data stays until someone deletes it.
+cluster; the sweep runs every 30 minutes). That is why the chart accepts **at most 28 days** (`28d` or `4w`) and refuses `29d`,
+`30d`, `5w`, the unit `m` and 0: a ceiling of 30 would keep data 31 or 32 days and break the sentence people are given. **A longer
+keep is a decision about people's threads, not a value.**
+[`docs/tester-note.md`](https://github.com/vymalo/another-agentic-system/blob/main/docs/tester-note.md) is the draft that says
+"within about 30 days" to testers.
 :::
 
 ## 5. Try a restore, beside the running cluster
@@ -213,8 +214,8 @@ sequenceDiagram
   Op->>K: wait for "Cluster in healthy state"
   Op->>K: remove spec.bootstrap and spec.externalClusters from the live object
   Op->>G: commit backup.serverName, and only then turn the sync back on
-  Op->>K: rollout restart the orchestrator: its app password is new
   Op->>K: take a base backup by hand, then read the conditions
+  Op->>K: rollout restart the orchestrator: its app password is new
   Op->>S3: keep the old folder until the new cluster has run well, then delete it
 ```
 
@@ -254,7 +255,7 @@ server's files until it has worked.
    ```
 5. **Restore**: apply your copy, then wait for `Cluster in healthy state`. If the pod's log says `Expected empty archive`, the new
    server name was not new.
-6. **Take a base backup at once** (§3, the last block), before anything else. The restored cluster archives under the new name
+6. **Take a base backup at once** (the last code block of §3), before anything else. The restored cluster archives under the new name
    from the moment it is up, but it has **no base backup** there, and WAL without one restores nothing: the schedule's next run
    may be a day away (the cron is daily), so until one completes a second loss inside that window cannot be restored.
 7. **Make the live Cluster one the chart can take over.** The chart renders `bootstrap.initdb`, the restored cluster has
@@ -280,7 +281,11 @@ server's files until it has worked.
 
 ## 7. What the backups keep, and what they do not
 
-::: in-depth What is kept, and what is not
+Two things a restore does **not** bring back, and they are the two that bite: the **key of the stored secrets** lives in the
+secret entry, not in the database — keep that entry's history as you keep the backups, or every sealed credential is lost — and
+the **files agents hand over** live in the artifact store, which has no backup.
+
+::: in-depth The full table: what a restore brings back, and what it cannot
 | Kept | Not kept |
 |---|---|
 | Every database of the one cluster: the orchestrator's (its thread log and the state beside it) and the agents' | The **Kubernetes Secrets**. The operator does not back them up: a restored cluster gets an app Secret with a **new random password** for `orchestrator`, and the other roles' Secrets are the chart's |
@@ -325,7 +330,7 @@ when the Cluster gains the plugin), an AWS bucket and its IAM user, the External
 | The database pod stays `Pending` after you enable backups | `sidecar.resources` is empty by default: a ResourceQuota or a LimitRange that asks for requests and limits on every container refuses the pod until you set them |
 | A change to `s3.region`, `sidecar.env` or `sidecar.resources` has no effect | they are put into the pod spec when the pod is created: restart the pod |
 | A restore stays in `Setting up primary` with `Expected empty archive` | the server name it archives under already has files in the bucket: choose a new one (§6, step 3) |
-| The orchestrator cannot reach the restored cluster | its app Secret was made anew with a new password: restart it (§6, step 8) |
+| The orchestrator cannot reach the restored cluster | its app Secret was made anew with a new password: restart it (§6, step 9) |
 | The old backups never disappear after a cutover | the sweep is per server name: the old folder no longer expires by itself (§6, step 10) |
 
 ## Next
