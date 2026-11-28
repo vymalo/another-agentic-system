@@ -135,6 +135,7 @@ under the URI, one **event**:
   "description": "Plan the migration",
   "keepOpen": true,
   "by": "agent",
+  "config": {"maxTurns": 20, "timeLimit": 10},
   "round": {"number": 1, "taskId": "01936f1c-7a2e-7000-8000-00000000004b", "state": "TASK_STATE_WORKING"}
 }}
 ```
@@ -146,7 +147,9 @@ under the URI, one **event**:
 | `reported` | A round ended. | `round` (its final state), `report`: `done`, `failed`, `canceled` or `blocked` (a round waiting for the person, `input-required`) |
 | `closed` | The session closed: not kept open and its round ended, a close, or the agent's idle limit. | nothing more |
 
-Every event carries `session`, `contextId`, `agent`, `description`, `keepOpen` and `by` (`agent` or `person`: who acted). A session the
+Every event carries `session`, `contextId`, `agent`, `description`, `keepOpen` and `by` (`agent` or `person`: who acted), and
+`config` when the session was started with one ([section 4](#4-a-person-starts-a-session)): the same object, on every event of
+that session. A session the
 orchestrator first learns from the sessions object (which carries no `by`) is noted without it, and a later event does not change the note.
 `round.state` is the round task's A2A state, spelled as the A2A JSON spells it (`TASK_STATE_WORKING`, `TASK_STATE_COMPLETED`, `TASK_STATE_INPUT_REQUIRED`, ...), and `null` when the agent could not read it; the orchestrator also reads the plain word (`completed`). An event carries **no report text**: the text is the round's own task, which the
 client reads in the child context. Events of one session come in the order above; events of different sessions interleave.
@@ -165,12 +168,14 @@ closed (a fixed 16):
 "metadata": {"https://agents.vymalo.com/a2a/extensions/child-sessions/v1": {
   "sessions": [
     {"session": "01936f1c-…-04b", "contextId": "…", "agent": "planner", "description": "Plan the migration",
-     "keepOpen": true, "state": "idle", "round": {"number": 2, "taskId": "…", "state": "TASK_STATE_COMPLETED"}}
+     "keepOpen": true, "state": "idle", "config": {"maxTurns": 20, "timeLimit": 10},
+     "round": {"number": 2, "taskId": "…", "state": "TASK_STATE_COMPLETED"}}
   ]
 }}
 ```
 
-`state` is `working`, `idle` or `closed` (a round waiting for the person is `working`, its `round.state` `input-required`). This
+`state` is `working`, `idle` or `closed` (a round waiting for the person is `working`, its `round.state` `input-required`).
+`config` is there when the session was started with one, and absent when none was asked for. This
 object, read again, is the truth; the events only say when to read it. A session also says its own state on each of its rounds
 ([section 5](#5-talking-to-a-session)), so a client that follows a round needs no parent task to learn that it ended or that the
 session closed.
@@ -186,7 +191,8 @@ A message to the **parent context**, with no `taskId`, activated, whose `metadat
   "contextId": "ctx-parent",
   "parts": [{"text": "List every place that writes the session header."}],
   "metadata": {"https://agents.vymalo.com/a2a/extensions/child-sessions/v1": {
-    "start": {"agent": "planner", "description": "Find the writers", "keepOpen": true}
+    "start": {"agent": "planner", "description": "Find the writers", "keepOpen": true,
+              "config": {"maxTurns": 20, "maxOutputTokens": 4096, "timeLimit": 10}}
   }},
   "extensions": ["https://agents.vymalo.com/a2a/extensions/child-sessions/v1"]
 }}
@@ -194,6 +200,16 @@ A message to the **parent context**, with no `taskId`, activated, whose `metadat
 
 - `agent` is one of the card's `agents`. `description` is **required**: a string of 1 to 80 characters on one line, not blank, with no
   control character (it is trimmed). `keepOpen` defaults to `false`.
+- `config` is **optional**: an object of at most these seven members, in camelCase, each a whole number and each present only when
+  the person sets it — `maxTurns` (the model turns of a round), `maxToolCalls` (its tool calls), `maxOutputTokens` (the cap of one
+  model call), `contextWindow` (the tokens compaction starts from), `maxParallelToolCalls` (the tool calls of one turn that run at
+  once), `timeLimit` (**minutes** one round may take) and `maxRounds` (the rounds the session may have). `null` is the same as
+  absent, and an object of no members is the same as no `config`.
+  A value is admitted against the helper's own limits, which the card's folder sets: **an unknown member**, a value that is not a
+  whole number, a value above its bound, and `maxOutputTokens` or `timeLimit` of `0` are each refused with `InvalidParams` whose
+  message names the member (`start.config.<member>`), and nothing starts. A **remote** helper takes only `timeLimit` and
+  `maxRounds`: any of the other five is refused the same way. A role that binds no helper (a control plane) cannot know the
+  limits and refuses every `config`. A start without one is unchanged.
 - The message's text is round 1's prompt. **It is not a turn of the parent**: the parent's model does not read it, and no parent task
   starts.
 - The answer is **round 1's task**, in the new child context (its `contextId` is the session's; the client adopts it, as
@@ -264,6 +280,7 @@ A refusal is an A2A error response; nothing is started or written.
 | A `start`, or a message to an idle session, while the agent's limit of rounds working in the parent context is reached (adam-rs: "4 rounds are already working in this context; wait for one to finish") | `UnsupportedOperationError` |
 | A message to an idle session that has had the agent's most rounds (adam-rs: "session S has had 20 rounds, the most it may have") | `UnsupportedOperationError` |
 | A `start` with no `description`, a blank one or one with a control character (adam-rs: "`start.description` is missing: it is a string") | `InvalidParams` |
+| A `start.config` with an unknown member, a value that is not a whole number, a value above the helper's bound, `maxOutputTokens` or `timeLimit` of `0`, an option other than `timeLimit` and `maxRounds` on a remote helper, or any member where the helper's limits are not known (a control plane) — the message names `start.config.<member>` | `InvalidParams` |
 | A message to a closed session (or one idle past the agent's limit) | `UnsupportedOperationError`, as for a terminal task |
 | A message naming a round that is over | `UnsupportedOperationError`, as for a terminal task |
 
@@ -300,7 +317,7 @@ the agent's, untrusted.
 
 What a build of an agent that lists the extension is tested for: a card with the params; an activated parent reports `opened`,
 `reported` and `closed` for a session its model starts, and its tasks carry the sessions object; a person's `start` answers with
-round 1 in a new child context and reports `opened` by the person, and a `start` with no description is `InvalidParams`; a start or a message past the limit of working rounds, and a message past the limit of rounds, is `UnsupportedOperation` with words; a message to an idle session starts round 2, which continues
+round 1 in a new child context and reports `opened` by the person, and a `start` with no description is `InvalidParams`; a `start` with a `config` within the helper's limits reports it on the session's row and on each event, and one above them, with an unknown member or with a `0` is `InvalidParams`; a start or a message past the limit of working rounds, and a message past the limit of rounds, is `UnsupportedOperation` with words; a message to an idle session starts round 2, which continues
 round 1's conversation; a message to a working session is delivered into its round, and one naming the round is a steer only under
 `steer/v1`; a round that fails, asks (`blocked`) or is canceled is reported so; `CancelTask` of a round makes a kept-open session
 idle; a close closes it and a later message is refused; without activation a child context is `InvalidParams` and the parent's
@@ -320,4 +337,13 @@ WireMock agent (`dev/wiremock/sessions`, `dev/child-sessions-e2e.sh`).
 - *Built (S2c):* the orchestrator's agent side: activation on a send, a resubscribe, a `GetTask` and a `CancelTask` only for a card that offers the extension well formed, a strict bounded read of the sessions object, the events and a round's own object, and a poll of the parent task every 5 seconds while it runs (the events are a latency optimisation, so until an agent sends them, a poll is how a session is learned). Proven against the fake agent only; a real agent is unverified (*as of S2c; see S5 above for what has run since*).
 - *Built (S2c, fix round):* the orchestrator activates the extension on a steer too (every request about a child context), on `ListTasks`, `GetTask`, `CancelTask`, a send and a resubscribe, each only for a card read for that very call that lists it well formed; what an agent says of sessions to a call that did not activate it is dropped, and a stream whose agent sends events is not polled (the read before its ending status still runs). A `reported` event's `report` word (`done`, `failed`, `canceled`, `blocked`) is read when `round.state` is `null`.
 - *Built (S2c, fix round):* the orchestrator refuses a whole `sessions` object or event that breaks a bound: a session id, context id or helper name that is blank or holds a control or format character, a context id that two sessions share or that is the parent's own, a round whose `parentContextId` is its own context, or a description is cleaned instead (each such character becomes a space) and cut to 256 characters.
+- *Verified 2026-11-28* by reading adam-rs at `05bc4475` (adam-rs #464, `crates/adam-a2a-runtime/src/child_sessions.rs`:
+  `parse_config`, `config_value`, `CONFIG_OPTIONS`, `REMOTE_REFUSED`; `crates/adam-runtime/src/session.rs`: `SessionConfig`,
+  `SessionBounds::admit`; `crates/adam-a2a-runtime/src/session_events.rs`): `start.config` is the seven camelCase members above,
+  `null` and an empty object are "none", an unknown member is refused with the list of options, a non-number with "a whole number",
+  a remote helper refuses every option but `timeLimit` and `maxRounds`, a helper whose bounds are not known refuses any `config`,
+  and the admitted object is reported as `config` (camelCase, only the members set, absent when none) on the session's row and on
+  each event. `timeLimit` is **minutes** (`session.rs`, `time_limit: Option<u32>`), not a duration string. The orchestrator's reader
+  ignores it: it reads the members it knows (`crates/a2a-mapping/src/child_sessions.rs`, `read`), so a session that carries a
+  `config` is read as before, and nothing shows it to the person yet.
 - *Verified 2026-11-19* by reading adam-rs at `9aeb53a` (`crates/adam-a2a-runtime/src/child_sessions.rs`: `parse_start`, `start_session`, `message_to_session`, `working_words`; `docs/reference/a2a-server.md` "Child sessions"): the three refusals and their words as above; a round that only closes a session is not counted; a person's start and round ids derive from `messageId`, so a resend finds the same session or round. adam-rs #181 (`60579fd`): a person's round is reported to the parent's model without the person's text.
