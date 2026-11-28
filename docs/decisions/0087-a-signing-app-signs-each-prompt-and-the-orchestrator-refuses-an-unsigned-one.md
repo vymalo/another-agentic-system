@@ -343,13 +343,40 @@ now `ForkAt::Replace.signed_prompt`.
   made from it could differ from the app's. `content` is the message's `content`, or an answer's whole `payload`.
 - **`server.publicOrigin` is built,** in decision 2's normal form. A file that lists a signing client with the key
   absent or empty **does not start**. `production` refuses `http://` except for the loopback. With no signing client it
-  may be absent; an envelope an unlisted client sends is then carried with no claims. The resource API is not given it:
-  its two signing routes, `startChildSession` and `forkThread`, keep no claims.
-- **The claims are optional as a whole.** A helper-session start (`POST /api/threads/{id}/sessions`) carries the
-  envelope **only**: it has no AG-UI message id, `content`, `forwardedProps` or `agentId` segment, and this record does
-  not say what it signs, so nothing is made up. **It is signed and not yet verifiable. The verifier's work (ANR-903)
-  must refuse a helper start from a signing client until the contract says what such a start signs. Open.** The intake
-  behaviour of ANR-1383 is unchanged: today the start is accepted.
+  may be absent; an envelope an unlisted client sends is then carried with no claims. The resource API's two signing
+  routes, `startChildSession` and `forkThread`, keep claims of their own (the first since 2026-11-28, below; the second
+  still open, below).
+- **A helper-session start signs these claims (decided 2026-11-28).** `POST /api/threads/{threadId}/sessions` has no
+  AG-UI `content`, `forwardedProps` or `agentId` segment, so each claim is taken from what the route does carry: `aud` is
+  the configuration's `server.publicOrigin` (decision 2, as on a run); `thread` is the **parent** thread's id, from the
+  path (the child context does not exist when the request arrives); `agent` is the body's `agent`, the helper's name
+  **exactly as the card lists it** (ADR 0049's aliases name orchestrator agents, not helpers, so they do not apply);
+  `msg` is the body's `id`, the request id the caller chooses so that a repeat is recognised; `content` is the body's
+  `text`, one JSON string, so `content_sha256` is `base64url(SHA-256(JCS(text)))`; and `props_sha256` is the hash of the
+  empty object, `base64url(SHA-256("{}"))`, since the route has no `forwardedProps`. `thread` and `msg` are the ids in
+  their **normal form** — lower case, hyphenated — not as the caller wrote them, because both are parsed into a UUID and
+  printed again; a client that signs an upper-case id signs a different payload. The claims, for the text
+  `List every place that writes the session header.`:
+
+  ```json
+  {
+    "aud": "https://chat.example.com",
+    "thread": "0194a6c2-6b1e-7c3a-9f40-5d2e8b7a1c33",
+    "agent": "planner",
+    "msg": "0194a6c2-7c10-7a1e-8f42-1b2c3d4e5f60",
+    "content_sha256": "zJA-Pfw1qI_cyfimdG87eRX4_7u91p6bvhHsKwaCM8E",
+    "props_sha256": "RBNvo1WzZ4oRRq0W9-hknpT7T8If536DEMBg9hyq_4o"
+  }
+  ```
+
+  (`zJA-…` is the SHA-256 of `"List every place that writes the session header."`, quotes included, and `RBNv…` of `{}`;
+  both were computed outside the orchestrator's code, as the other vectors are. The **signed payload** is not this
+  object: it is decision 2's `{typ, aud, thread, agent, msg, content_sha256, props_sha256, nonce, iat}`, canonicalised,
+  of which these six members are the part this route supplies.) **This is the contract for what a client signs. The
+  route does not build the claims yet** — it keeps the envelope **alone** (`SignedPrompt::envelope_only`,
+  `orchestrator/crates/api/src/routes.rs`, and `ApiConfig` carries no `server.publicOrigin`) — so a start is still
+  **signed and not yet verifiable**, and ANR-903 must refuse one from a signing client until **ANR-1441** keeps them. The
+  intake behaviour of ANR-1383 is unchanged.
 - **The same holds for the REST fork and edit** (`POST /api/threads/{id}/fork`, ANR-1375): its body has no AG-UI
   `content`, `forwardedProps` or `agentId` segment, and its `messageId` is optional, so it carries the envelope
   **only**. **It is signed and not yet verifiable, and the verifier (ANR-903) must refuse it from a signing client
@@ -358,9 +385,21 @@ now `ForkAt::Replace.signed_prompt`.
   `prompt_signature` and `afterStopPromptSignature` were. There is no migration and no reading of the old members:
   they are ignored. **During a rolling upgrade, a message queued or held across it loses its signature and goes out
   unsigned.** With a verifier on, that message is refused downstream, which fails closed; today nothing shows it.
-- **Open: no time of intake is kept.** A held or queued message can reach the verifier long after it was signed, and
-  whether the verifier compares the signature's `iat` with its own clock or with an intake time is not decided; adding
-  `received_at` would change the statement contract and its vectors, so it waits for that decision.
+- **The verifier's own clock, not an intake time (decided 2026-11-28).** It compares the signature's `iat` with **its**
+  clock inside decision 4's window — **300 seconds in the past and 60 seconds in the future** — and both bounds are a
+  deployment's value, not this contract's. No `received_at` is kept and the statement contract and its vectors do not
+  change. (The cloud path checks no `iat` at intake today, presence only; the window is the device path's, and this
+  decision extends it to the verifier.) **The consequence belongs to the hold, not to this record:** a Stop & send
+  message that outlives the window is refused by the verifier, and neither the held envelope (ANR-1376, merged) nor the
+  claims kept at intake (ANR-1422) re-signs anything. Two answers are buildable: the hold is **bounded by the window**
+  (Stop & send refuses a message that would outlive it) or the held message is **dropped at delivery** when it is too
+  old and the person is told to send it again. A third — the client re-signing at delivery — needs a server-to-client
+  flow that does not exist. **ANR-1442** decides which.
+
+*Verified 2026-11-28 by reading `main`'s code: `ChildSessionStart`'s `id` is required (`docs/api/chat-api.yaml`), the
+route passes `body.agent` to the card's `agents` as an exact string (`orchestrator/crates/api/src/routes.rs`,
+`core/src/child_sessions.rs`), `text` is not trimmed (`crates/app/src/app.rs`), the body has no `forwardedProps`
+(`deny_unknown_fields`), and the route keeps `SignedPrompt::envelope_only` with no `public_origin` on `ApiConfig`.*
 
 *Unverified: nothing of this change was built or run where it was written; CI is the first build. The shared vectors
 have no resume case; the test of one compares with a hash computed outside the orchestrator's code.*
