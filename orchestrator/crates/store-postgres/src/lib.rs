@@ -39,6 +39,7 @@
 
 mod codec;
 mod error;
+mod memory_notes;
 mod pending_authorizations;
 mod prompts;
 mod run_leases;
@@ -51,6 +52,7 @@ mod user_tool_servers;
 mod wakeup;
 
 pub use error::DbFailure;
+pub use memory_notes::{LOCK_TIMEOUT as MEMORY_LOCK_TIMEOUT, MEMORY_OWNER_LOCK_CLASS};
 pub use pending_authorizations::{PENDING_LOCK_TIMEOUT, PgPendingAuthorizations};
 pub use prompts::{
     LOCK_TIMEOUT as PROMPT_LOCK_TIMEOUT, PROMPT_OWNER_LOCK_CLASS, list_sql as prompt_list_sql,

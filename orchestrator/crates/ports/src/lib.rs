@@ -73,6 +73,7 @@ mod entitlement;
 mod inbox;
 mod lookup;
 mod model;
+mod notes;
 mod pending;
 mod platform_credentials;
 mod prompt_signer;
@@ -130,6 +131,7 @@ pub use inbox::{
 };
 pub use lookup::{HostLookup, LOOKUP_TIMEOUT, LookupFailure, LookupFuture, judge_lookup};
 pub use model::{ChatModel, ChatRequest, ModelError, NoModel};
+pub use notes::{MAX_NOTES, MAX_READ_NOTES, MemoryNoteStore, MemoryNoteStoreError};
 pub use pending::{
     NoPendingAuthorizations, PendingAuthorization, PendingAuthorizationError,
     PendingAuthorizations, StateDigest,

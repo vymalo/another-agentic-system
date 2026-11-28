@@ -75,6 +75,7 @@ fn migrator() -> Result<Migrator, StoreError> {
         "0036_outbox_open_owner_due.sql",
         "0037_orch_commit_open.sql",
         "0038_orch_admit.sql",
+        "0039_user_memories.sql",
         "0040_orch_claims.sql",
     )
     .map_err(migrate_err)?;

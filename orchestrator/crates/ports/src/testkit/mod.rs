@@ -5,7 +5,8 @@
 //! [`ThreadSearch`](crate::ThreadSearch),
 //! [`UserToolServerStore`](crate::UserToolServerStore),
 //! [`PendingAuthorizations`](crate::PendingAuthorizations),
-//! [`TeamPresetStore`](crate::TeamPresetStore), [`PromptSigner`](crate::PromptSigner),
+//! [`TeamPresetStore`](crate::TeamPresetStore), [`MemoryNoteStore`](crate::MemoryNoteStore),
+//! [`PromptSigner`](crate::PromptSigner),
 //! [`CredentialBroker`](crate::CredentialBroker), [`AgentProvisioner`](crate::AgentProvisioner) and
 //! [`EntitlementSource`](crate::EntitlementSource) and
 //! [`PlatformClientCertificates`](crate::PlatformClientCertificates) implementation must pass it.
@@ -24,6 +25,7 @@ pub mod bearer;
 pub mod chat_model;
 pub mod credential_broker;
 pub mod entitlement;
+pub mod memory_notes;
 pub mod pending_authorizations;
 pub mod platform_client_certificates;
 pub mod prompt_signer;
@@ -868,6 +870,39 @@ macro_rules! team_preset_store_conformance {
                 match $make().await {
                     Some(store) => $crate::testkit::teams::$case(store).await,
                     None => eprintln!("skipped: no team preset store available"),
+                }
+            }
+        )*
+    };
+}
+
+/// Generates one `#[tokio::test]` per `MemoryNoteStore` conformance case (ADR 0091): what the API and
+/// the memory tools rely on from any store of people's memory notes and grants. `$make` is an
+/// `async fn() -> Option<S>` returning a fresh store (`None` skips the suite). Each case uses people
+/// of its own and gives up after 60 s. The calling crate needs `tokio` (with `macros`, `rt` and
+/// `rt-multi-thread`, or `time`) as a dev-dependency.
+#[macro_export]
+macro_rules! memory_note_store_conformance {
+    ($make:path) => {
+        $crate::memory_note_store_conformance!(@cases $make;
+            a_note_round_trips_every_field a_new_persons_settings_read_as_off
+            a_grant_round_trips_and_replaces
+            another_person_never_reads_edits_or_deletes_a_note
+            another_persons_grants_are_not_mine
+            a_read_is_newest_first_and_cut_at_the_limit the_limit_is_clamped
+            a_query_is_a_case_insensitive_substring forgetting_is_idempotent
+            an_id_the_person_holds_is_exists at_most_two_hundred_per_person
+            concurrent_saves_never_pass_the_limit
+            concurrent_saves_of_one_id_have_one_winner
+        );
+    };
+    (@cases $make:path; $($case:ident)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                match $make().await {
+                    Some(store) => $crate::testkit::memory_notes::$case(store).await,
+                    None => eprintln!("skipped: no memory note store available"),
                 }
             }
         )*
