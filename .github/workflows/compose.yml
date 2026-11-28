@@ -137,6 +137,9 @@ jobs:
           ORCH_TEST_MOCK_TIERED_URL=http://127.0.0.1:8089 \
           ORCH_TEST_MOCK_SESSIONS_URL=http://127.0.0.1:8102 \
             cargo test -p orch-e2e --test wiremock_agent --locked
+      - name: Two projects keep their own volumes (dev/stack-isolation-e2e.sh)
+        # The stack above holds the default ports; the test picks free ones and its own project names.
+        run: dev/stack-isolation-e2e.sh
       - name: Logs
         if: failure()
         run: docker compose --profile app logs --no-color

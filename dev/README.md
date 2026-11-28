@@ -16,7 +16,7 @@ bound to `127.0.0.1`.
 | Docker Compose | v2 (`docker compose version`); **v2.24.4 or newer** for `compose.live.yaml`, which uses the `!override` tag that older versions do not parse (the version is from Docker's documentation, *not run* on that release; this stack was checked with v5.1.1). |
 | Disk and memory | About 10 GB of free disk and 8 GB of memory for Docker: the coder image is 2.9 GB, and the Rust and web builds add several more. *An estimate, not measured.* |
 | CPU | `linux/amd64`. The coder image has no arm64 build, so `compose.yaml` names the platform and an ARM machine (Apple Silicon) runs it under emulation (slower; your Docker setup must have emulation enabled). |
-| Host tools | `curl`, `jq`, `git` and `openssl`, for the scenario scripts (not for the stack), and `node` 22 or newer for `dev/locale-real-e2e.sh`, which builds its run body with the web's own builder (TypeScript, loaded by Node's type stripping). |
+| Host tools | `curl`, `jq`, `git` and `openssl`, for the scenario scripts, and `ss`, `netstat` or `lsof` for `dev/check-ports.sh` (not for the stack), and `node` 22 or newer for `dev/locale-real-e2e.sh`, which builds its run body with the web's own builder (TypeScript, loaded by Node's type stripping). |
 | Free ports (all on 127.0.0.1) | **8080** the edge (chat, API, MCP, webhooks), 5432 Postgres, 8081 to 8083 the mock agents, 8085 the mock GitHub MCP server, 8090 the coder, 8091 to 8093 its model, GitHub and git mocks, 8094 the chat's and researcher's model, 8096 the mock web search, 8097 the chat, 8098 the researcher, 8099 the mock issuer, 8100 the browser, 9000 RustFS. Each has a variable (`EDGE_PORT`, `MOCK_OIDC_PORT`, `POSTGRES_PORT`, `CODER_PORT`, `CHAT_PORT`, `RESEARCHER_PORT`, `BROWSER_PORT`, `RUSTFS_PORT`, `MOCK_*_PORT`, `GIT_SERVER_PORT`; see [`.env.example`](../.env.example)) if it clashes. |
 
 ### Start it
@@ -481,7 +481,7 @@ EXPECT_INSTALLATION_LOOKUP=1 GITHUB_AUTH=app dev/coder-e2e.sh && GITHUB_AUTH=app
 
 (`dev/e2e-all.sh` passes `GITHUB_AUTH` on, but its `folder` scenario restarts the coder without the override: run the App pass on its own, as CI does,
 after the first one.) The split roles (`dev/split-e2e.sh`) need another shape of the stack and are not in the list
-([The split profile](#the-split-profile-a-control-plane-and-two-workers)), and neither is `dev/browser-auth-e2e.sh` (the stack **with** `-f dev/compose.browser-auth.yaml`: [Tokens in the browser](#tokens-in-the-browser-the-web-signs-in-itself-adr-0054)); `dev/check-mocks.sh` checks the WireMock agents and the registry mock alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the scripted models (the agents' and the title's) and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`. `dev/kagent-e2e.sh` is not in the list either: it needs a kind cluster with kagent on it (0.10 with `dev/kagent/up-0.10.sh`, 1.x with Agent Substrate and `dev/kagent/up.sh`), and the stack with `-f dev/compose.kagent.yaml` ([kagent](#kagent-an-agent-on-kubernetes-over-plain-a2a)).
+([The split profile](#the-split-profile-a-control-plane-and-two-workers)), and neither is `dev/browser-auth-e2e.sh` (the stack **with** `-f dev/compose.browser-auth.yaml`: [Tokens in the browser](#tokens-in-the-browser-the-web-signs-in-itself-adr-0054)); `dev/check-mocks.sh` checks the WireMock agents and the registry mock alone and needs only `docker compose up -d --wait`; `dev/check-agent-mocks.sh` checks the mock web search and the scripted models (the agents' and the title's) and needs `docker compose --profile app up -d --wait mock-mcp-search mock-model`; `dev/stack-isolation-e2e.sh` starts stacks of its own (`postgres` only) and needs no running one. `dev/kagent-e2e.sh` is not in the list either: it needs a kind cluster with kagent on it (0.10 with `dev/kagent/up-0.10.sh`, 1.x with Agent Substrate and `dev/kagent/up.sh`), and the stack with `-f dev/compose.kagent.yaml` ([kagent](#kagent-an-agent-on-kubernetes-over-plain-a2a)).
 
 ### Connect Claude Code over MCP
 
@@ -588,22 +588,24 @@ recreates another's stack, and `docker compose down -v` removes only that projec
 Host ports are not per project: two stacks side by side need different `*_PORT` values (`POSTGRES_PORT=15432`, ...).
 `sh tools/check-compose-project.sh` checks that two checkouts give two names (also in CI).
 
-**Two stacks side by side, in two checkouts** — the recipe, with a worktree `../wt-fix`:
+**Two stacks side by side, in two checkouts** — the recipe, with a worktree `../wt-fix`. The first stack holds the
+defaults of every port it publishes, so the second moves all of them, not three: `--suggest` prints exactly the
+assignments to paste.
 
 ```sh
 # in the main checkout, on the default ports
 docker compose --profile app up -d --wait
 
 # in ../wt-fix, on ports of its own; its project name is `wt-fix`, from the directory
-POSTGRES_PORT=15432 EDGE_PORT=18080 MOCK_OIDC_PORT=18099 dev/check-ports.sh
-POSTGRES_PORT=15432 EDGE_PORT=18080 MOCK_OIDC_PORT=18099 docker compose --profile app up -d --wait
+eval "$(dev/check-ports.sh --suggest)"
+docker compose --profile app up -d --wait
 ```
 
-`docker compose down -v` in either one stops and forgets **that** stack only: the other keeps its containers, its
-network and its volumes. `dev/stack-isolation-e2e.sh` proves it — two projects from one checkout, a table written in
-each, `down -v` in one, the other's row still there — and then shows the failure the rule prevents: under **one shared
-project name**, `down -v` takes the other's data with it. It needs Docker, starts only `postgres`, and removes every
-project it makes.
+`docker compose down -v` in either one stops and forgets **that** project only: the other keeps its volume and its data
+(*verified 2026-11-28* by `dev/stack-isolation-e2e.sh`, which is also a step of the `Compose` workflow). The same script
+shows the failure the rule prevents: two checkouts under **one shared project name** are one project, and the second
+one's `down -v` takes the first's data with it. It needs Docker, starts only `postgres`, picks free ports and removes
+every project and directory it makes.
 
 ## Services
 
