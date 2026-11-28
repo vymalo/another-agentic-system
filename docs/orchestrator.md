@@ -84,6 +84,7 @@ has the same map with one line per crate.
 
 ```mermaid
 flowchart TB
+  accTitle: Flow: crate layout
   subgraph G_CORE["Core: pure, no async, no I/O"]
     core["<b>orch-core</b><br/>ThreadState, Event, Input, Command,<br/>transition(), error classes"]
   end
@@ -375,6 +376,8 @@ chat API) keeps its idempotency key on the event, and **MCP goes straight to `Ap
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: event flow
+  accDescr: A sequence diagram, between Inbound adapters (webhooks · timers), Postgres, Core (pure fn, no I/O), Dispatcher, Outbound adapters (A2A · MCP · chat · Slack · GitHub · webhooks).
   participant In as Inbound adapters<br/>(webhooks · timers)
   participant DB as Postgres
   participant C as Core (pure fn, no I/O)
@@ -424,6 +427,8 @@ adds the watch re-arms it:
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: inbox, timers and watches
+  accDescr: A sequence diagram, between A surface (the webhook), Postgres, InboxWorker, App and transition (pure).
   participant S as A surface (the webhook)
   participant DB as Postgres
   participant W as InboxWorker
@@ -445,6 +450,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: inbox, timers and watches
+  accDescr: A state diagram with 6 states: Pending, Inflight, Applied, Parked, Expired, Dead.
   [*] --> Pending: received, or a timer armed (available_at = commit time + after)
   Pending --> Inflight: claimed when due (SKIP LOCKED), lease
   Inflight --> Inflight: lease lapsed, claimed again (attempts + 1, counted)
@@ -521,6 +528,8 @@ the handler parses them (400), normalises to a `CiReport` and calls `App::receiv
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the webhook surface (MVP slices 6 and 9)
+  accDescr: A sequence diagram, between CI system, Edge (no identity for /webhooks/*), Guard (machine route), Handler, App::receive, Postgres (inbox).
   participant CI as CI system
   participant E as Edge (no identity for /webhooks/*)
   participant G as Guard (machine route)
@@ -549,6 +558,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the webhook surface (MVP slices 6 and 9)
   [*] --> Arrived: POST /webhooks/ci
   Arrived --> Refused401: header missing, timestamp not digits or outside the skew, or HMAC matches no secret
   Arrived --> Refused408: the request did not arrive within 10 s
@@ -594,6 +604,7 @@ in `orch-ports`):
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: command (outbox) lifecycle
   [*] --> Pending: inserted in the same txn as the state change
   Pending --> Inflight: claimed (FOR UPDATE SKIP LOCKED), lease taken, attempts + 1
   Inflight --> Inflight: heartbeat renews the lease
@@ -681,6 +692,8 @@ agent's turn ends, and in order among the thread's other steer rows. The agent's
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: steering a running task (ADR 0036)
+  accDescr: A sequence diagram, between Dispatcher (steer row), Store, Agent (task T1 working).
   autonumber
   participant D as Dispatcher (steer row)
   participant S as Store
@@ -702,6 +715,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: steering a running task (ADR 0036)
   [*] --> Pending: written with the message (kind steer)
   Pending --> Inflight: claimed, no older open steer row of the thread
   Inflight --> Delivered: the running task answered with itself, not ended
@@ -746,6 +760,8 @@ that sends the row to the asked agent and puts its answer in the log; the tool t
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: asked agents (ADR 0026)
+  accDescr: A sequence diagram, between Addressed agent (running the job), Thread tools endpoint (next change), Core (transition), Store (one commit), Dispatcher (ask.rs), Asked agent.
   participant M as Addressed agent (running the job)
   participant E as Thread tools endpoint (next change)
   participant C as Core (transition)
@@ -772,6 +788,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: asked agents (ADR 0026)
+  accDescr: A state diagram with 8 states: Running, Completed, InputRequired, AuthRequired, Failed, Rejected, Canceled, TimedOut.
   [*] --> Running: an ask is accepted (ask_started)
   Running --> Completed: the asked agent answered
   Running --> InputRequired: it asked a question back (asking it again continues its task)
@@ -835,6 +853,8 @@ delegation: `dispatcher/ask.rs` mirrors `verify.rs`. The core decided every rule
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the dispatcher's ask path (PR-20)
+  accDescr: A sequence diagram, between Dispatcher (ask row), Store, Registry, Asked agent, Core (App::apply).
   participant D as Dispatcher (ask row)
   participant S as Store
   participant R as Registry
@@ -861,6 +881,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the dispatcher's ask path (PR-20)
   [*] --> Pending: written with ask_started
   Pending --> Inflight: claimed
   Inflight --> Pending: registry down, transport error within the budget, cancel to retry
@@ -929,6 +950,8 @@ The thread tool [`ask_agent`](api/thread-tools-v1.md#ask_agent) is what makes an
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the ask_agent tool (PR-21)
+  accDescr: A sequence diagram, between Asking agent (MCP client), AskTools (thread-tools endpoint), App::ask, Core and event log, Dispatcher (ask row), Asked agent.
   autonumber
   participant A as Asking agent (MCP client)
   participant E as AskTools (thread-tools endpoint)
@@ -952,6 +975,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the ask_agent tool (PR-21)
   [*] --> Refused: a check failed (nothing written): a result with isError and the reason
   [*] --> Waiting: the ask is on the ledger (new, or found by its call key)
   Waiting --> Waiting: a step under the ask, an ask it made, a heartbeat: progress to a client that wants it
@@ -1012,6 +1036,7 @@ dropped` and stops.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: fenced commits
   participant A as Worker A (paused)
   participant S as Store (Postgres)
   participant B as Worker B
@@ -1029,6 +1054,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: fenced commits
   [*] --> Held: claim_outbox, attempts = n
   Held --> Held: heartbeat renews
   Held --> Expired: no renewal before lease_until
@@ -1096,6 +1122,8 @@ context the message names (none for a thread's first message, ADR 0055) and the 
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: local agents
+  accDescr: A sequence diagram, between Dispatcher, ByTransport, LocalAgentClient, RuntimeTaskBackend, Runtime + worker, Postgres (orchagent*).
   participant D as Dispatcher
   participant B as ByTransport
   participant L as LocalAgentClient
@@ -1123,6 +1151,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: local agents
   [*] --> submitted: submit (run created, no worker commit yet)
   submitted --> working: a worker commits its first transition
   working --> working: Continue, or Park on a timer
@@ -1411,6 +1440,7 @@ for a request, so the same thing is refused in the same words everywhere.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the gate's configuration and its projection (MVP slice 3)
   participant B as Binary (startup)
   participant S as Surface (a run)
   participant A as App
@@ -1426,6 +1456,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the gate's configuration and its projection (MVP slice 3)
   [*] --> Layer: a layer arrives (env, file entry or request)
   Layer --> Refused: names a source or setting this build cannot honour (none by default)
   Layer --> Refused: leaves out a source the layer above requires
@@ -1472,6 +1503,8 @@ behind the same `AgentClient` port: there is no new port.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the verifier's dispatch (MVP slice 10)
+  accDescr: A sequence diagram, between Worker agent (A2A), Dispatcher, App and core (transition, pure), Store (outbox, inbox), Verifier agent (A2A), Chat.
   participant W as Worker agent (A2A)
   participant D as Dispatcher
   participant O as App and core (transition, pure)
@@ -1498,6 +1531,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the verifier's dispatch (MVP slice 10)
   [*] --> Pending: RequestVerification (the commit of Verifying)
   Pending --> Inflight: claimed (unordered)
   Inflight --> Skipped: the verification is no longer the one in progress (a timeout, a cancel, a user message or another source failed), the verifier is told to stop
@@ -1558,6 +1592,8 @@ asked, which ask was answered, whether the reply that is going on has asked):
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: thread titles (MVP slice 6)
+  accDescr: A sequence diagram, between Person, App / core, Dispatcher (title worker), ChatModel (OpenAI-compatible).
   participant P as Person
   participant A as App / core
   participant D as Dispatcher (title worker)
@@ -1576,6 +1612,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: thread titles (MVP slice 6)
   [*] --> FirstMessage: the thread is created
   FirstMessage --> FirstMessage: the model said NONE, failed, or is not configured (the next reply asks again, 2 asks at most)
   FirstMessage --> Model: Titled (thread_titled, source model)
@@ -1641,6 +1678,8 @@ and endpoint map, the same worker pattern, the same ledger shape, one more event
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: thread descriptions (ADR 0035)
+  accDescr: A sequence diagram, between Person, App / core, Dispatcher (description worker), ChatModel (endpoint of tasks.description).
   participant P as Person
   participant A as App / core
   participant D as Dispatcher (description worker)
@@ -1664,6 +1703,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: thread descriptions (ADR 0035)
   [*] --> None: the thread is created
   None --> None: declined (too few messages, NONE, no model, a failure)
   None --> Model: Described (thread_described, source model)
@@ -1750,6 +1790,8 @@ application from S2d. `ThreadRecord.child_of` (`ChildOf { thread, session }`, se
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: child sessions: the core's half and the application's (ADR 0072, slices S2a to S2d)
+  accDescr: A sequence diagram, between Application, Parent thread (core), Child thread (core).
   autonumber
   participant A as Application
   participant P as Parent thread (core)
@@ -1770,6 +1812,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: child sessions: the core's half and the application's (ADR 0072, slices S2a to S2d)
   [*] --> Queued: start_child
   Queued --> Working: RoundStarted on a fresh thread
   Working --> Working: ChildSessionSaid, a newer round is ordered once
@@ -1808,6 +1851,8 @@ restart, writes nothing twice.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: child sessions: the application's half (slice S2d)
+  accDescr: A sequence diagram, between Agent (A2A), Dispatcher, Store, Parent thread, Child thread.
   autonumber
   participant A as Agent (A2A)
   participant D as Dispatcher
@@ -1829,6 +1874,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: child sessions: the application's half (slice S2d)
   [*] --> Open: Command Observe in the child's commit
   Open --> Claimed: the dispatcher claims it in the thread's order
   Claimed --> Open: the registry is unreachable, the child still works on an earlier round, or the parent's rounds are all followed (retry with backoff)
@@ -1942,6 +1988,8 @@ where they want it, and eject a fork from the thread it is nested under. The sta
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the owner's list: pin, archive, order and nesting (ADR 0042)
+  accDescr: A sequence diagram, between Person, API (PATCH /api/threads/{id}/rail), App (arrange_thread), Store (arrange_thread), orch_core::rank.
   autonumber
   actor Person
   participant API as API (PATCH /api/threads/{id}/rail)
@@ -1968,6 +2016,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the owner's list: pin, archive, order and nesting (ADR 0042)
   [*] --> Top: created (on top of the list)
   [*] --> Nested: a fork, under the row the person sees
   Top --> Pinned: pin (on top of the pinned)
@@ -2050,6 +2099,8 @@ bucket) under `threads/<thread>/<sha256>`; the log holds only the reference, and
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: files from agents
+  accDescr: A sequence diagram, between Agent, A2A adapter (orch-agent-a2a, orch-a2a-mapping), Dispatcher (the ingest), ArtifactStore, Core + log, API.
   participant A as Agent
   participant M as A2A adapter (orch-agent-a2a, orch-a2a-mapping)
   participant D as Dispatcher (the ingest)
@@ -2069,6 +2120,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: files from agents
   [*] --> Reported: the adapter reports a file
   Reported --> Refused: over the file cap, or the job's files or bytes are used up
   Reported --> NotKept: no store, or the put failed
@@ -2116,6 +2168,8 @@ receives the bytes. A deployment sets `artifacts.upload` (and an S3 store with `
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: uploads (ADR 0058)
+  accDescr: A sequence diagram, between Dispatcher (delegate, steer), A2A adapter, Agent, requestupload (UploadTools, App::requestupload), ArtifactStore (S3, public endpoint), Dispatcher (the ingest), Core + log.
   autonumber
   participant D as Dispatcher (delegate, steer)
   participant M as A2A adapter
@@ -2143,6 +2197,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: uploads (ADR 0058)
+  accDescr: A state diagram with 9 states: Refused, Issued, Expired, Put, Named, Unnamed, Kept, NotKept, Deleted.
   [*] --> Refused: request_upload says a code (too_large, over_limit, not_activated, unsupported, bad_request, caller_not_allowed, task_over, unavailable)
   [*] --> Issued: a slot, URL and id
   Issued --> Expired: no PUT before expiresAt
@@ -2187,6 +2243,8 @@ What the code does that the diagrams do not say:
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: downloads by a redirect (ADR 0058 A1)
+  accDescr: A sequence diagram, between Route (orch-api: getartifact, getsharedartifact, getpublicsharedartifact), App (readable*, redirectttl, readablemeta, presigndownload), ArtifactStore (S3: head, presign_get), Bucket at the public endpoint.
   autonumber
   participant R as Route (orch-api: get_artifact, get_shared_artifact, get_public_shared_artifact)
   participant A as App (readable_*, redirect_ttl, readable_meta, presign_download)
@@ -2208,6 +2266,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: downloads by a redirect (ADR 0058 A1)
   [*] --> Refused: refuse_subresource or a readable_* check fails
   [*] --> Readable: ReadableFile
   Readable --> Streamed: redirect_ttl is None (stream, or a store that cannot presign)
@@ -2247,6 +2306,8 @@ Job on request ([`deploy/chart/README.md`](../deploy/chart/README.md#moving-the-
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: moving the directory store into the bucket
+  accDescr: A sequence diagram, between migrate (bin/orchestrator), Config::validate_artifacts (orch-config), FsArtifacts (read-only), ConfiguredArtifacts (S3).
   autonumber
   participant C as migrate (bin/orchestrator)
   participant L as Config::validate_artifacts (orch-config)
@@ -2267,6 +2328,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: moving the directory store into the bucket
+  accDescr: A state diagram with 7 states: Scanned, Ignored, Unreadable, Failed, Skipped, Uploaded, WouldUpload.
   [*] --> Scanned: threads/uuid/sha256 with its meta
   [*] --> Ignored: a temporary file, bytes or a meta alone, a stray name
   [*] --> Unreadable: a link, or a directory where a file belongs
@@ -2298,6 +2361,8 @@ and calls `ThreadStore::delete_threads` with the version it read of each.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: deleting a thread
+  accDescr: A sequence diagram, between Person, API (DELETE /api/threads/{id}), App (delete_thread), ThreadStore (delete_threads), ArtifactStore (delete_prefix), PurgeWorker (worker role).
   autonumber
   actor Person
   participant API as API (DELETE /api/threads/{id})
@@ -2332,6 +2397,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: deleting a thread
   [*] --> Pending: inserted in transaction 1
   Pending --> Finished: the inline delete_prefix succeeds, finish_purge
   Pending --> Leased: claim_purges by the sweep
@@ -2379,6 +2445,8 @@ no new port and no new store query, because `ThreadStore::list_events` pages the
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: exporting a thread
+  accDescr: A sequence diagram, between Browser or dev/export-thread.sh, orch-api (identity layer), App::export_thread, ThreadStore.
   participant B as Browser or dev/export-thread.sh
   participant A as orch-api (identity layer)
   participant S as App::export_thread
@@ -2601,6 +2669,8 @@ dispatcher's and the streams' own polling), so a lost notification costs latency
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: process roles
+  accDescr: A sequence diagram, between Signal (SIGTERM), boot::run, adam_host::Host, HTTP server (control plane), Dispatcher and inbox worker (workers), Health router (worker role only).
   participant S as Signal (SIGTERM)
   participant B as boot::run
   participant H as adam_host::Host
@@ -2622,6 +2692,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: process roles
   [*] --> Starting: configuration valid, role known
   Starting --> Running: migrated, listener bound, components of the role started
   Starting --> [*]: database down (69), address taken (71), bad configuration (78)
@@ -2691,6 +2762,8 @@ takes `max`, never `sum` (three replicas would triple the count).
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: observability and scaling
+  accDescr: A sequence diagram, between KEDA (scaler), Prometheus, Control plane /metrics, Postgres, Worker Deployment.
   participant K as KEDA (scaler)
   participant P as Prometheus
   participant C as Control plane /metrics
@@ -2711,6 +2784,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: observability and scaling
   [*] --> Waiting: pending, next_attempt_at in the future (retry backoff)
   [*] --> Due: pending, next_attempt_at reached
   Waiting --> Due: backoff over
@@ -2811,6 +2885,8 @@ replica (`orch-pg-migrate` takes sqlx's advisory lock and keeps its history; an 
 
 ```mermaid
 erDiagram
+  accTitle: Data model: threads, events, A2A bindings and outbox
+  accDescr: An entity-relationship diagram of 4 tables: threads, events, a2a_bindings, outbox.
   threads ||--o{ events : "log, PK thread_id + seq"
   threads ||--|| a2a_bindings : "A2A context and task"
   threads ||--o{ outbox : "delegate, cancel"
@@ -2929,6 +3005,8 @@ so that parallel slices do not collide:
 
 ```mermaid
 erDiagram
+  accTitle: Data model: the inbox, watches and the usage ledger
+  accDescr: An entity-relationship diagram of 7 tables: threads, inbox, watches, outbox, usage_tasks, usage_lines, usage_sandbox.
   threads ||--o{ inbox : "correlation, through watches"
   threads ||--o{ watches : "key to thread"
   threads {
@@ -3086,6 +3164,7 @@ message marked `answer` in it**.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a reply's live text, from the agent to the browser
   participant A as Agent (A2A)
   participant W as Worker: dispatcher
   participant PG as Postgres
@@ -3103,6 +3182,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a live text from streaming to persisted or abandoned
   [*] --> Streaming: first piece (offset 0)
   Streaming --> Streaming: piece, or the refresh from offset 0
   Streaming --> Persisted: agent_message S in the log
@@ -3123,6 +3203,8 @@ input caused to the terminal event of that run.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the connect stream, its pages and its wake-ups
+  accDescr: A sequence diagram, between AG-UI client, orch-surface-agui, orch-app App, PgWakeup (one LISTEN per replica), Postgres, orch-agui-projection (pure: Connect, Projector).
   participant C as AG-UI client
   participant S as orch-surface-agui
   participant A as orch-app App
@@ -3149,6 +3231,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a reader's loop, reading pages and waiting for a wake-up
   [*] --> Reading: subscribe, then read the events after the cursor
   Reading --> Reading: a page of events (up to 500): hand them on
   Reading --> Waiting: caught up
@@ -3209,6 +3292,7 @@ the table of what uses which, the requirements on the pooler and what was and wa
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the database behind a pooler (issue 290)
   participant B as orchestrator boot
   participant D as Postgres (directUrl)
   participant P as pooler (url)
@@ -3223,6 +3307,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the database behind a pooler (issue 290)
   [*] --> Migrating: boot
   Migrating --> Pooled: the history is applied on the direct connection
   Pooled --> Listening: the wakeup listener attaches (direct)

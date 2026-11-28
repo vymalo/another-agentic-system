@@ -76,6 +76,7 @@ first, because every later slice needs more than one kind of agent to show anyth
 
 ```mermaid
 flowchart LR
+  accTitle: Flow: the new build order
   s1[1 Agents at run time] --> s2[2 Several agents]
   s1 --> s3[3 Catalog and Choices]
   s3 --> s4[4 Cards and Mermaid]

@@ -825,6 +825,38 @@ ingress:
     # entrypoint's `forwardedHeaders.trustedIPs`, else Traefik drops the header and every request has no source). Never more than the proxies you trust.
     sourceDepth: 0
 
+# Example alert rules for "running out" (ANR-339; README.md, "Alert rules"): a `PrometheusRule`, a custom resource of the Prometheus Operator's CRDs
+# (`monitoring.coreos.com/v1`). OFF by default: the chart assumes no monitoring stack, and on a cluster without those CRDs a sync with it on fails.
+# It adds no scrape (no ServiceMonitor) and opens no NetworkPolicy. Every threshold here is a STARTING POINT, not a measurement: nothing was load-tested
+# to choose it. The numbers are checked whether or not the rules are on.
+alerts:
+  enabled: false
+  # More labels on the PrometheusRule object, for the `ruleSelector` of your Prometheus (a kube-prometheus-stack often selects `release: <its release>`).
+  # A map of strings. The chart's own labels (`app.kubernetes.io/*`, `helm.sh/chart`) are refused here.
+  labels: {}
+  # Dispatcher slots busy, as a share of those configured, over all replicas: above 0 and at most 1, held for `for`.
+  dispatcherSlots:
+    threshold: 0.9
+    for: 10m
+  # Seconds the oldest due outbox row has waited: a whole number from 1 to 86400, held for `for`.
+  outboxAge:
+    seconds: 60
+    for: 5m
+  # Connections of the database pool in use, as a share of the most it holds, over all replicas: above 0 and at most 1, held for `for`.
+  dbPool:
+    threshold: 0.9
+    for: 10m
+  # The run pods' ResourceQuota (the coder chart's, not this one's). NOT a metric of the orchestrator: it needs an exporter of `kube_resourcequota`
+  # (kube-state-metrics; unverified here), so it has a switch of its own. `namespace` is where the run pods' quota is, required when on (without it
+  # the rule would watch every quota of the cluster). `resource` is the quota's resource name as the exporter labels it (`pods`, `requests.cpu`,
+  # `requests.memory`, `limits.cpu`, ...: unverified, it depends on what the quota sets).
+  runPodQuota:
+    enabled: false
+    namespace: ""
+    resource: pods
+    threshold: 0.8
+    for: 10m
+
 # The deployment's one Postgres (CloudNativePG): the orchestrator's database, and beside it the databases `agent` (the chat
 # agent's runs) and, with `sharedDatabase.coders` (or `sharedDatabase.coder`), one per coder, each owned by a role of its own (README.md, "One database cluster").
 database:

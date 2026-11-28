@@ -68,6 +68,7 @@ How swapping works:
 
 ```mermaid
 flowchart LR
+  accTitle: Flow: swappable implementations
   core[core<br/>pure Event/Command model<br/>closed enums — ADR 0004]
   ports[ports<br/>traits + conformance testkit]
   impls[implementations<br/>store-postgres · wakeup-pg-notify ·<br/>a2a-lf · model-openai · …]

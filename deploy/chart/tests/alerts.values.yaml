@@ -1,0 +1,21 @@
+# Layered over examples/netcup.values.yaml by deploy/chart/tests/render-check.sh ("Example alert rules", ANR-339) and rendered by deploy.yml: the rules ON,
+# the run-pod quota's included, with numbers that are not the chart's defaults, so that a check that finds a number finds the one it set.
+alerts:
+  enabled: true
+  labels:
+    release: monitoring
+  dispatcherSlots:
+    threshold: 0.75
+    for: 7m
+  outboxAge:
+    seconds: 123
+    for: 3m
+  dbPool:
+    threshold: 0.85
+    for: 11m
+  runPodQuota:
+    enabled: true
+    namespace: run-pods
+    resource: requests.cpu
+    threshold: 0.7
+    for: 13m

@@ -54,6 +54,7 @@ what a person typed, as the catalog says).
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a person's prompt library (v1)
   participant C as Client
   participant S as Server
   C->>S: getConfig (has "prompts"?)
@@ -89,6 +90,7 @@ prompt (not its title, not its body) without unsharing it first**: the edit that
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a person's prompt library (v1)
   [*] --> Private: createPrompt (audience empty)
   [*] --> Shared: createPrompt (needs prompts.share)
   Private --> Shared: updatePrompt audience (needs prompts.share)

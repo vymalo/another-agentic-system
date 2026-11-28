@@ -40,6 +40,8 @@ Facts about A2A are marked *verified* (with a date and a source) or *unverified*
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram, between Orchestrator, Agent (card lists steps/v1), Sub-agent (OpenCode), Event log, Screen.
   autonumber
   participant O as Orchestrator
   participant A as Agent (card lists steps/v1)
@@ -69,6 +71,7 @@ A step is one of these, and a report moves it between them:
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: A2A extension
   [*] --> Running: first report (running or waiting): start
   Running --> Running: report: update, at most 4 are logged
   Running --> Waiting: report waiting: an update

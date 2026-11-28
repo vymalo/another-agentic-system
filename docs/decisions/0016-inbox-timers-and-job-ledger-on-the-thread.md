@@ -151,6 +151,8 @@ due.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the inbox holds unsolicited machine input, and only that
+  accDescr: A sequence diagram, between InboxWorker (orch-app, every role that runs workers), App, transition (pure), Postgres.
   participant W as InboxWorker (orch-app, every role that runs workers)
   participant A as App
   participant C as transition (pure)
@@ -169,6 +171,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the inbox holds unsolicited machine input, and only that
   [*] --> Armed: Schedule committed, available_at in the future
   Armed --> Due: available_at reached
   Due --> Inflight: claimed by an InboxWorker (lease)

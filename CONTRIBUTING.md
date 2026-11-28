@@ -68,14 +68,16 @@ pass: [`.github/workflows`](.github/workflows).
   `write-adr` in `.agents/skills/` has the format.
 - **Mark facts** about third parties and about what runs as *verified* (date and source) or *unverified*.
   Say what is proven on mocks and what is not.
-- **Docs.** A process is a Mermaid pair: a `sequenceDiagram` for the interaction and a `stateDiagram-v2` for the
-  lifecycle. Open questions move between Open, Closed and Moved in `docs/open-questions.md`; they are never deleted.
-  Screenshots are the web's own (`pnpm screens`), linked and never copied.
+- **Docs.** Every change updates its docs in the same pull request. The rules — short pages, a Mermaid pair for a
+  process, *verified* facts, the web's own screenshots, open questions never deleted — and the gate are in
+  [Writing docs](docs/writing-docs.md); they are not repeated here, so the two cannot drift.
 - **Crate READMEs.** Every crate under `orchestrator/crates/` and `orchestrator/bin/` has a `README.md` next to its
   `Cargo.toml`. Update it in the same pull request as any change to the crate's public API, environment variables or
   tests. `tools/docs-check` fails on a missing one.
-- **Rust.** `thiserror` in libraries, `anyhow` in binaries, no `f64` for time or money, `jiff` for time, `sqlx` and
-  `axum`. The `core` crate stays free of async and I/O. Never edit a migration that has been applied: CI refuses it.
+- **Rust.** `thiserror` in libraries, `anyhow` in binaries, no `f64` for time or money, `jiff` for time,
+  `tokio-postgres` (pools and connections through `orch-pg-connect`, migrations through `orch-pg-migrate`) and `axum`.
+  **No `sqlx`**: `tools/sqlx-out-check.sh` keeps it out of the lockfile. The `core` crate stays free of async and I/O.
+  Never edit a migration that has been applied: CI refuses it.
 - **Secrets** are references in the configuration (ADR 0034). Never put one in a file, a log or an issue.
 
 ## Open a pull request

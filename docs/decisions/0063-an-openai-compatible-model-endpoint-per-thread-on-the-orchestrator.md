@@ -74,6 +74,8 @@ What exists, and what the design rests on:
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: an OpenAI-compatible model endpoint per thread on the orchestrator
+  accDescr: A sequence diagram, between Person, Web, Orchestrator, Agent (lists model-relay/v1), Relay (orchestrator surface), Model server.
   actor P as Person
   participant W as Web
   participant O as Orchestrator

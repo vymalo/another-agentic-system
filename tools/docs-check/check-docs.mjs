@@ -120,12 +120,50 @@ function anchorsOf(file) {
 }
 const checksAnchors = (rel) => path.basename(rel) === 'README.md' || rel.startsWith('docs' + path.sep);
 
+// A committed merge conflict. `<<<<<<< ` and `>>>>>>> ` are git's markers at column 0 and never
+// legitimate Markdown; `=======` alone is a setext underline, so it counts only inside a block a
+// `<<<<<<< ` opened. A file that reached a branch this way has two versions of a paragraph or a
+// table in it, and every link in both halves can still resolve, so nothing else here catches it
+// (`dev/README.md` did on 2026-11-28).
+function conflictMarkers(src) {
+  const found = [];
+  let opened = null;
+  const lines = src.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^<<<<<<<(\s|$)/.test(line)) {
+      if (opened === null) opened = i + 1;
+      found.push({ line: i + 1, marker: '<<<<<<<' });
+    } else if (/^=======$/.test(line) && opened !== null) {
+      found.push({ line: i + 1, marker: '=======' });
+    } else if (/^>>>>>>>(\s|$)/.test(line)) {
+      found.push({ line: i + 1, marker: '>>>>>>>' });
+      opened = null;
+    }
+  }
+  return { found, unclosed: opened };
+}
+
 for (const file of markdownFiles(root)) {
   const rel = path.relative(root, file);
   const src = fs.readFileSync(file, 'utf8');
 
+  const conflict = conflictMarkers(src);
+  for (const c of conflict.found) {
+    failures.push(`${rel}:${c.line} merge conflict marker ${c.marker} (resolve the block: it is two versions of the same text)`);
+  }
+  if (conflict.unclosed !== null && !conflict.found.some((c) => c.marker === '>>>>>>>' && c.line > conflict.unclosed)) {
+    failures.push(`${rel}:${conflict.unclosed} merge conflict block never closed (no >>>>>>> line after it)`);
+  }
+
   for (const m of src.matchAll(/```mermaid\n([\s\S]*?)```/g)) {
     diagrams++;
+    // A diagram on the docs site names itself: Mermaid's accTitle becomes the SVG's <title>, which
+    // mermaid.ts hands to the drawing's box as its aria-label. A screen reader otherwise hears the
+    // renderer's "Interactive Mermaid diagram" for every drawing on every page.
+    if (rel.startsWith('docs' + path.sep) && !/^\s*accTitle\s*:\s*\S/m.test(m[1])) {
+      failures.push(`${rel}:${lineOf(src, m.index)} mermaid: no accTitle (say what the diagram shows)`);
+    }
     try { await mermaid.parse(m[1]); }
     catch (e) { failures.push(`${rel}:${lineOf(src, m.index)} mermaid: ${String(e.message).split('\n')[0]}`); }
   }
