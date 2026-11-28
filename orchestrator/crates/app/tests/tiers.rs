@@ -1084,6 +1084,7 @@ fn edit(seq: i64, tier: Option<AccessTier>) -> ForkRequest {
             tier,
             locale: None,
             pick: None,
+            prompt_signature: None,
         },
         target: None,
         id: None,

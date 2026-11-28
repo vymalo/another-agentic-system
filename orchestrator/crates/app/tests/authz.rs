@@ -658,6 +658,7 @@ async fn agents_are_listed_described_and_invoked_by_the_roles_that_name_them() {
                         tier: None,
                         locale: None,
                         pick: None,
+                        prompt_signature: None,
                     },
                     target: Some(AgentTarget {
                         agent_id: AgentId::new("coder"),

@@ -316,6 +316,7 @@ async fn an_edit_is_not_listed_and_a_fork_of_one_is_nested_under_its_root() {
                     tier: None,
                     locale: None,
                     pick: None,
+                    prompt_signature: None,
                 },
                 target: None,
                 id: None,

@@ -383,7 +383,8 @@ pub struct Replacement {
     pub pick: Option<ModelPick>,
     /// The person's prompt signature for the message (ADR 0087), as for
     /// [`Input::UserMessage`](crate::Input::UserMessage): carried to the fork's delegation, never to
-    /// the log. `None` for an edit, which the orchestrator's own words do not carry.
+    /// the log. An edit carries one too: what it replaces is the person's words, written by them
+    /// through the route that edits (ADR 0087, decision 3).
     pub prompt_signature: Option<PromptSignature>,
     /// The run (AG-UI `runId`) the message opens, which names the response that streams it.
     pub run_id: Option<String>,
@@ -392,9 +393,15 @@ pub struct Replacement {
 }
 
 impl Replacement {
-    /// The replacement of an edit: the screen's message with its catalog, no mentions, no run,
-    /// from the AG-UI surface (the only one that edits).
-    pub fn edit(text: String, message_id: Option<String>, catalog: Option<UiCatalogData>) -> Self {
+    /// The replacement of an edit: the screen's message with its catalog and the person's prompt
+    /// signature (ADR 0087: an edit is the person's words too), no mentions, no run, from the AG-UI
+    /// surface (the only one that edits).
+    pub fn edit(
+        text: String,
+        message_id: Option<String>,
+        catalog: Option<UiCatalogData>,
+        prompt_signature: Option<PromptSignature>,
+    ) -> Self {
         Self {
             text,
             message_id,
@@ -404,7 +411,7 @@ impl Replacement {
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: None,
+            prompt_signature,
             run_id: None,
             origin: Origin::Agui,
         }
