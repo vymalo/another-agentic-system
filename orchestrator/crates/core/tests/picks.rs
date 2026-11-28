@@ -41,6 +41,7 @@ fn said(text: &str, pick: Option<ModelPick>) -> Input {
         tier_cap: None,
         locale: None,
         pick,
+        prompt_signature: None,
     }
 }
 
@@ -57,6 +58,7 @@ fn stop(text: &str, pick: Option<ModelPick>) -> Input {
         tier_cap: None,
         locale: None,
         pick,
+        prompt_signature: None,
     }
 }
 
@@ -155,6 +157,7 @@ fn a_redelivery_carries_the_pick_its_message_recorded() {
         tier_cap: None,
         locale: None,
         pick,
+        prompt_signature: None,
     };
     let (_, cmds) = step(&Snapshot::new(Done), &redeliver(Some(deep())));
     assert_eq!(sent(&cmds), Some(deep()));
@@ -164,7 +167,7 @@ fn a_redelivery_carries_the_pick_its_message_recorded() {
 
 #[test]
 fn a_fork_first_message_and_an_edit_carry_the_pick_they_name() {
-    let mut edit = Replacement::edit("new words".into(), None, None);
+    let mut edit = Replacement::edit("new words".into(), None, None, None);
     edit.pick = Some(deep());
     assert_eq!(edit.pick, Some(deep()));
 }

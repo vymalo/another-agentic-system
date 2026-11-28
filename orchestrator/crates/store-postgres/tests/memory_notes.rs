@@ -52,8 +52,8 @@ orch_ports::memory_note_store_conformance!(make_store);
 // ------------------------------------------------------------------------------- the migration
 
 /// Migration 0039 on a database that has run 0001 to 0038: the tables are not there, `migrate()`
-/// applies exactly the one migration (the history ends at 38, then at 39), and the store works on
-/// what it made, a note and a grant included.
+/// applies 0039 next (then any later migration), and the store works on what it made, a note and
+/// a grant included.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn migration_0039_applies_to_a_database_at_the_previous_number() {
     let db = TestDb::new().await.expect("ORCH_TEST_DATABASE_URL");
@@ -99,8 +99,10 @@ async fn migration_0039_applies_to_a_database_at_the_previous_number() {
     let store = PgStore::from_pool(pool.clone());
     store.migrate().await.unwrap();
     let after = versions(pool).await;
-    assert_eq!(after.last(), Some(&39), "the database is at 0039");
-    assert_eq!(after.len(), before.len() + 1, "exactly one migration ran");
+    // Later migrations run too (0040 and on); what this test owns is that 0039 is the next one
+    // applied, right after 0038, and that the history before it is untouched.
+    assert_eq!(after[..before.len()], before[..], "the earlier history is unchanged");
+    assert_eq!(after.get(before.len()), Some(&39), "0039 is applied next, after 0038");
 
     let a = owner();
     let saved = store

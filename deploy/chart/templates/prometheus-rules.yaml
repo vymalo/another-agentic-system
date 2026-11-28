@@ -1,0 +1,71 @@
+{{- if .Values.alerts.enabled }}
+# Example alert rules for "running out" (ANR-339; deploy/chart/README.md, "Alert rules"): a `PrometheusRule`, a custom resource of the Prometheus Operator's
+# CRDs. OFF by default, so the chart assumes no monitoring stack. The thresholds are starting points, not measurements. The chart adds no scrape: the rules
+# read what the deployment's Prometheus already collects from `GET /metrics` (the orchestrator) and, for the run-pod quota, from the cluster's own exporter.
+# Every `orch`, `dispatcher` and `db_pool` name here is one `orchestrator/crates/api/src/metrics.rs` emits (tests/render-check.sh holds that).
+{{- $root := dict "root" . "component" "alerts" }}
+{{- $a := .Values.alerts }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "agentic.component" $root }}
+  labels:
+    {{- include "agentic.labels" $root | nindent 4 }}
+    {{- with $a.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: {{ include "agentic.component" $root }}
+      rules:
+        # This process's own gauges: `sum` over the replicas. A role with no dispatcher reports 0 of 0, and `> 0` drops that from the division.
+        - alert: AgenticDispatcherSlotsNearLimit
+          expr: |-
+            sum by (namespace) (dispatcher_slots_in_use)
+              / (sum by (namespace) (dispatcher_slots_configured) > 0)
+              >= {{ $a.dispatcherSlots.threshold }}
+          for: {{ $a.dispatcherSlots.for | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: "The dispatcher's slots are near their limit"
+            description: {{ "{{ $value | humanizePercentage }} of the dispatcher slots are busy in namespace {{ $labels.namespace }}." | quote }}
+        # Read from the store, so every replica reports the same queue: `max`, never `sum`.
+        - alert: AgenticOutboxOldestDueTooOld
+          expr: |-
+            max by (namespace) (orch_outbox_oldest_due_age_seconds)
+              > {{ int64 $a.outboxAge.seconds }}
+          for: {{ $a.outboxAge.for | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: "A due outbox row has waited too long"
+            description: {{ "The oldest due outbox row in namespace {{ $labels.namespace }} is {{ $value }} seconds old." | quote }}
+        # This process's own gauges: `sum` over the replicas, so one full replica among idle ones can stay under the threshold.
+        - alert: AgenticDbPoolNearSize
+          expr: |-
+            sum by (namespace, pool) (db_pool_connections{state="in_use"})
+              / (sum by (namespace, pool) (db_pool_max_connections) > 0)
+              >= {{ $a.dbPool.threshold }}
+          for: {{ $a.dbPool.for | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: "The database pool is near its size"
+            description: {{ "{{ $value | humanizePercentage }} of the connections of pool {{ $labels.pool }} in namespace {{ $labels.namespace }} are in use." | quote }}
+        {{- if $a.runPodQuota.enabled }}
+        # NOT a metric of the orchestrator: `kube_resourcequota` is the cluster's, as kube-state-metrics names it (unverified here).
+        # `max by` drops the `type` label, so that the two sides match, and counts a quota once however many exporters report it.
+        - alert: AgenticRunPodQuotaNearLimit
+          expr: |-
+            max by (namespace, resourcequota, resource) (kube_resourcequota{namespace="{{ $a.runPodQuota.namespace }}", resource="{{ $a.runPodQuota.resource }}", type="used"})
+              / (max by (namespace, resourcequota, resource) (kube_resourcequota{namespace="{{ $a.runPodQuota.namespace }}", resource="{{ $a.runPodQuota.resource }}", type="hard"}) > 0)
+              >= {{ $a.runPodQuota.threshold }}
+          for: {{ $a.runPodQuota.for | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: "A run-pod quota is near its limit"
+            description: {{ "{{ $value | humanizePercentage }} of {{ $labels.resource }} of ResourceQuota {{ $labels.resourcequota }} in namespace {{ $labels.namespace }} is used." | quote }}
+        {{- end }}
+{{- end }}

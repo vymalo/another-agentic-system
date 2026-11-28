@@ -104,6 +104,14 @@ data:
     {{- end }}
     ui:
       showDescriptions: {{ .Values.orchestrator.showDescriptions }}
+      {{- /* Only when the operator offers its own list (ADR 0085, card ANR-957): the orchestrator's default is the four, and
+             an image that does not know the key would refuse it, so nothing is written unless it is set. */}}
+      {{- with .Values.orchestrator.languages }}
+      languages:
+        {{- range . }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
       {{- /* Only when something is not the orchestrator's default (ADR 0059): the pinned image may not know `ui.history`. */}}
       {{- with .Values.orchestrator.history }}
       {{- if or (not .windowed) .initialTurns .pageTurns }}

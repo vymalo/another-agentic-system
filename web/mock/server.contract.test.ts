@@ -658,7 +658,7 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     }
   });
 
-  it("config (getConfig): the ui section with showDescriptions and the history capability, switched per session by a test hook", async () => {
+  it("config (getConfig): the ui section with showDescriptions, the languages and the history capability, switched per session by a test hook", async () => {
     const history = {
       initialTurns: 12,
       pageTurns: 20,
@@ -666,6 +666,8 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
       projection: PROJECTION_VERSION,
       windowed: true,
     };
+    // ADR 0085: the interface languages the deployment offers, the four when it names none
+    const languages = ["en-GB", "fr-FR", "gsw-CH", "fur-IT"];
     const res = await fetch(`${base}/api/config`);
     expect(res.status).toBe(200);
     const search = { maxQueryLength: 200, maxTerms: 8 };
@@ -673,7 +675,7 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     expect(await expectDocumented("/api/config", "get", res)).toEqual({
       search,
       prompts,
-      ui: { showDescriptions: true, history },
+      ui: { showDescriptions: true, languages, history },
     });
     const cookie = { Cookie: "mock-registry=config-test" };
     expect((await post("/__mock/config?showDescriptions=false&session=config-test")).status).toBe(
@@ -683,13 +685,29 @@ describe("mock server honours docs/api/chat-api.yaml", () => {
     expect(await off.json()).toEqual({
       search,
       prompts,
-      ui: { showDescriptions: false, history },
+      ui: { showDescriptions: false, languages, history },
     });
     // another session keeps its own
     expect(await (await fetch(`${base}/api/config`)).json()).toEqual({
       search,
       prompts,
-      ui: { showDescriptions: true, history },
+      ui: { showDescriptions: true, languages, history },
+    });
+  });
+
+  it("config (getConfig): ui.languages is the deployment's own list, and a malformed one is a 400 that writes nothing", async () => {
+    const cookie = { Cookie: "mock-registry=languages-test" };
+    const set = (query: string) => post(`/__mock/config?${query}&session=languages-test`);
+    expect((await set("languages=en-GB,fr-FR")).status).toBe(204);
+    const res = await fetch(`${base}/api/config`, { headers: cookie });
+    expect(await expectDocumented("/api/config", "get", res)).toMatchObject({
+      ui: { languages: ["en-GB", "fr-FR"] },
+    });
+    // a tag this client would not send, and an empty one: refused before anything is written
+    expect((await set("languages=en-GB,en_CM")).status).toBe(400);
+    expect((await set("languages=")).status).toBe(400);
+    expect(await (await fetch(`${base}/api/config`, { headers: cookie })).json()).toMatchObject({
+      ui: { languages: ["en-GB", "fr-FR"] },
     });
   });
 

@@ -13,7 +13,7 @@ use orch_agui_projection::{
 };
 use orch_agui_proto::RunAgentInput;
 use orch_api::sse::{bounded, hold, keep_alive, stream_budget, stream_headers};
-use orch_api::{ApiError, Problem};
+use orch_api::{ApiError, Problem, check_prompt_signature};
 use orch_app::{
     App, AppError, ApplyOutcome, Creation, FirstMessage, GateLayer, Inbound, NewThread,
     THREAD_GATE_KEY, THREAD_LOCALE_KEY, THREAD_MENTIONS_KEY, THREAD_MODEL_KEY,
@@ -22,7 +22,7 @@ use orch_app::{
 };
 use orch_core::{
     AccessTier, AgentId, AgentTarget, Event, Input, LocaleHint, Mention, ModelPick, Origin,
-    ThreadId, ThreadRecord, UiCatalogData, fork_message, is_fork_at, report,
+    PromptSignature, ThreadId, ThreadRecord, UiCatalogData, fork_message, is_fork_at, report,
 };
 use orch_ports::{Clock, Ports, Principal};
 
@@ -90,6 +90,7 @@ pub(crate) async fn run<P: Ports>(
             &agent,
             thread,
             &input,
+            &state.signing_clients,
             &Requested {
                 gate: gate.as_ref(),
                 catalog: catalog.as_ref(),
@@ -242,8 +243,9 @@ fn tier_request(input: &RunAgentInput) -> Result<Option<AccessTier>, Problem> {
 /// The interface locale of the run's message, `forwardedProps["vymalo.locale"]` (ADR 0085,
 /// [`locale-v1`](../../../../docs/api/locale-v1.md)): a BCP 47 tag, `null` or absent for none. Like
 /// the tier it is read on every run, so one that is not a tag is a **400** every time, before
-/// anything is written. Nothing else checks it: it is a hint, carried on the message to an agent
-/// whose live card lists the extension, and it is never written to the log.
+/// anything is written. Nothing else checks it: it is a hint, recorded on the `user_message` (the
+/// log is the state) and carried on the message to an agent whose live card lists the extension,
+/// and shown by no projection.
 fn locale_request(input: &RunAgentInput) -> Result<Option<LocaleHint>, Problem> {
     let Some(value) = input
         .forwarded_props
@@ -526,9 +528,12 @@ fn key_of(thread: ThreadId, input: &Input) -> Option<String> {
     }
 }
 
-/// What a run asks for beside its messages, read from its `forwardedProps` before anything is
-/// written: the gate, the UI catalog, the MCP servers to attach, the agents the message
-/// mentions, the access tier of the message and the thread to make the thread a fork of.
+/// What a run asks for beside its messages, read before anything is written: from its
+/// `forwardedProps`, the gate, the UI catalog, the MCP servers to attach, the agents the message
+/// mentions, the access tier of the message, the model and reasoning pick, and the thread to make
+/// the thread a fork of; and, from the **new message's metadata**, the person's prompt signature
+/// (ADR 0087), which the projection reads into the input it builds (the presence check is
+/// `check_prompt_signature`'s, on that input).
 struct Requested<'a> {
     gate: Option<&'a GateLayer>,
     catalog: Option<&'a UiCatalogData>,
@@ -549,6 +554,7 @@ async fn attempt<P: Ports>(
     agent: &AgentId,
     thread: ThreadId,
     input: &RunAgentInput,
+    signing_clients: &[String],
     requested: &Requested<'_>,
 ) -> Result<Option<Feed>, ApiError> {
     let Requested {
@@ -636,12 +642,35 @@ async fn attempt<P: Ports>(
         .into());
     }
     let Translation {
-        inputs,
+        mut inputs,
         warnings,
         attach,
     } = translate_with_warnings(input, &view).map_err(|e| input_error(&e))?;
     for warning in &warnings {
         tracing::warn!(%thread, %warning, "part of the run input was ignored");
+    }
+    // ADR 0087, decisions 1 and 7: a prompt from a signing client must carry its envelope, and it
+    // is checked here — after the thread, the agent and the translation are known, and before
+    // `create_thread_as`, `fork_and_send` or `submit` writes anything. **Only an input that writes
+    // the person's words is a prompt**: an attach, a cancel and a surface action are not, and are
+    // never refused for a missing signature. The envelope is the one the projection read from the
+    // raw source (the new message's `metadata`, or an answer's `resume` entry), passed on as it
+    // arrived or not at all: every client's is bounded here, before a Stop & send can hold it.
+    let prompt = inputs.iter_mut().find_map(|input| match input {
+        Input::UserMessage {
+            prompt_signature, ..
+        }
+        | Input::StopAndSend {
+            prompt_signature, ..
+        } => Some(prompt_signature),
+        _ => None,
+    });
+    if let Some(prompt_signature) = prompt {
+        let received = prompt_signature.as_ref().map(PromptSignature::as_str);
+        // an empty or over-long value of a client that is not asked for one is not carried
+        if check_prompt_signature(principal, signing_clients, received)?.is_none() {
+            *prompt_signature = None;
+        }
     }
     let held = held_message_ids(input);
 
@@ -686,6 +715,7 @@ async fn attempt<P: Ports>(
                     text,
                     message_id,
                     run_id,
+                    prompt_signature,
                     ..
                 },
             ] = inputs.as_slice()
@@ -716,6 +746,9 @@ async fn attempt<P: Ports>(
                         tier,
                         locale: locale.cloned(),
                         pick: pick.cloned(),
+                        prompt_signature: prompt_signature
+                            .clone()
+                            .map(PromptSignature::into_string),
                     },
                     held,
                 )
@@ -738,6 +771,7 @@ async fn attempt<P: Ports>(
                 tier,
                 locale: locale.cloned(),
                 pick: pick.cloned(),
+                prompt_signature: prompt_signature.clone().map(PromptSignature::into_string),
             };
             match app
                 .create_thread_as(principal, thread, new, inbound)
@@ -900,6 +934,7 @@ mod tests {
             catalog: None,
             mentions: Vec::new(),
             tier: None,
+            prompt_signature: None,
         }
     }
 

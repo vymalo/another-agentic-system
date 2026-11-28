@@ -142,7 +142,7 @@ nonce=$(uuid)
 # --- what the interface reads ------------------------------------------------------------------------------------------
 echo "== the capabilities document says nothing new"
 caps() { curl -sS --max-time 30 -H "$id_header" "$base/agui/agents/$1/capabilities"; }
-expect "mock-locale: no custom[locale/v1] (nothing draws a locale control)" \
+expect "mock-locale: no custom[locale/v1] (the picker reads the deployment list, not the card)" \
   "$(caps mock-locale | jq -r --arg u "$locale_uri" '(.custom // {}) | has($u)')" "false"
 
 # --- a message that names a locale -------------------------------------------------------------------------------------

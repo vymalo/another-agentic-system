@@ -85,6 +85,7 @@ fn delegate() -> NewOutbox {
             tier_cap: None,
             locale: None,
             pick: None,
+            prompt_signature: None,
             text: "go".into(),
             release: None,
             new_job: false,
@@ -920,8 +921,9 @@ fn unique_ci_row() -> (NewInbox, WatchKey) {
     (row, key)
 }
 
-/// The SQL of the store's per-key lock (`lock_watch`), which this test takes by hand to hold the
-/// place of one side of the race.
+/// The SQL of the per-key lock that `orch_watch_arm` and `orch_inbox_park` take (and that earlier
+/// builds took in a statement of their own), which this test takes by hand to hold the place of one
+/// side of the race.
 const LOCK_WATCH: &str = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))";
 
 fn watch_lock_name(key: &WatchKey) -> String {
@@ -2810,6 +2812,7 @@ async fn migration_0013_upgrades_a_database_that_holds_an_outbox() {
             tier_cap: None,
             locale: None,
             pick: None,
+            prompt_signature: None,
             text: "you were wrong".to_owned(),
             release: None,
             ui_catalog: None,
@@ -2831,6 +2834,7 @@ async fn migration_0013_upgrades_a_database_that_holds_an_outbox() {
             tier_cap: None,
             locale: None,
             pick: None,
+            prompt_signature: None,
             text: "you were wrong".to_owned(),
             release: None,
             new_job: false,

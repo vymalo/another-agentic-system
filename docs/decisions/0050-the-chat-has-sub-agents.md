@@ -53,6 +53,7 @@ relayed web search) do not reach a sub-agent.** A sub-agent has the tools its ow
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the chat agent has sub-agents
   participant P as Person
   participant C as chat (adam-agent)
   participant S as planner (a child run of the chat)
@@ -66,6 +67,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the chat agent has sub-agents
   [*] --> Running: the chat calls a helper (a subagent step starts)
   Running --> Completed: the helper's final text is the tool result
   Running --> Failed: the helper failed: an error result, the chat goes on

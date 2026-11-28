@@ -368,6 +368,9 @@ impl<A: AgentClient, M: ChatModel, X: ArtifactStore, T: UserToolPorts> Embedded<
             tier_cap: None,
             locale: None,
             pick: None,
+            // The device path (ADR 0087): an embedded orchestrator runs in the app that holds the
+            // prompt key, so there is no cloud path to attest and no envelope to carry.
+            prompt_signature: None,
         };
         // a retry is not new work: only the first send asks the admission
         let key = format!("embed-message:{thread}:{client_message_id}");

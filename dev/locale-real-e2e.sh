@@ -25,7 +25,8 @@
 #     "The person's interface language is de-DE" as one of its messages, and `de-DE` nowhere in `system`;
 #   * a second thread of the chat naming no tag sends the model no such line;
 #   * a tag for the researcher, whose card lists no extension, is accepted (a hint never holds a message back),
-#     and its model request has no line either.
+#     and its model request has no line either;
+#   * `GET /api/config` carries `ui.languages` — the list the web's picker offers (ANR-957): ADR 0085's four by default.
 # Exit status 0 when every check passed.
 #
 # Environment (defaults match compose.yaml on one machine):
@@ -155,6 +156,11 @@ done
 expect "the web sends no member for a tag it refuses (never a 400 that holds the words back)" \
   "$(node "$web_props" locale en_CM)" "{}"
 expect "the web sends no member for a page that names no tag" "$(node "$web_props" locale "")" "{}"
+
+# --- the deployment's list -------------------------------------------------------------------------------------------
+echo "== the interface languages this deployment offers"
+expect "GET /api/config carries ui.languages, ADR 0085's four by default (the picker's source, ANR-957)" \
+  "$(api GET /api/config | jq -r '.ui.languages | join(",")')" "en-GB,fr-FR,gsw-CH,fur-IT"
 
 # --- the cards ---------------------------------------------------------------------------------------------------------
 echo "== the chat's card lists the extension with the deployment's tag"

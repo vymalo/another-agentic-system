@@ -163,6 +163,7 @@ pub enum AuthError { Missing, Invalid { credential, detail }, Unavailable { deta
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the JWT authenticator (orch-auth-jwt, auth.mode: jwt)
   participant C as Client
   participant P as oauth2-proxy / edge
   participant O as Orchestrator (JwtAuth)
@@ -182,6 +183,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the JWT authenticator (orch-auth-jwt, auth.mode: jwt)
   [*] --> NoKeys: the process starts (nothing is persisted)
   NoKeys --> Fresh: a fetch gives a usable key
   NoKeys --> NoKeys: the fetch fails (not again for 5 s): 503, /readyz 503

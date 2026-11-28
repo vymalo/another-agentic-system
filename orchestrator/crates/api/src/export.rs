@@ -59,7 +59,11 @@ pub fn web_revision(header: Option<&str>) -> String {
 ///   gate): `number` (which job of the thread this is, ADR 0020), the gate policy, the attempt,
 ///   the verification counter, the pushed commit, every result of the current attempt, any
 ///   hold, and `afterStop` (the text the next job starts with while a Stop & send is landing,
-///   ADR 0036; absent unless the thread is stopping). A job without a gate is `{}` apart from the defaults, exactly as the store keeps it.
+///   ADR 0036; absent unless the thread is stopping). A job without a gate is `{}` apart from the
+///   defaults. It is as the store keeps it **but for one member**: the prompt signature of a held
+///   message ([`Job::after_stop_prompt_signature`], ADR 0087) is never in it, because
+///   [`App::export_thread`](orch_app::App::export_thread) takes it out. *(Amended 2026-11-28,
+///   ANR-1376: this said the job is exported exactly as the store keeps it.)*
 /// * `binding`: the A2A agent, context and task the thread is bound to.
 /// * `events`: the append-only log in order, each exactly as the contract `Event` and the store
 ///   serialise it. Every card and line of the chat is derived from it.

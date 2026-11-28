@@ -8,6 +8,9 @@ tracks this repository's `HEAD` at `deploy/chart`; the deployment's own values a
 ([`examples/netcup.values.yaml`](examples/netcup.values.yaml)). The coder is **not** here: it is deployed by adam-rs's chart
 (`deploy/coder`, release `coder`, the same namespace) and named in `agents` by its card URL.
 
+**Installing it for the first time** on a cluster of your own: [Deploy to a Kubernetes cluster](../../docs/guides/deploy.md)
+is the task, from an empty namespace to a person signed in. This page is the reference.
+
 ```mermaid
 flowchart LR
   B[Browser] -->|https| T[Traefik<br/>TLS: cert-manager]
@@ -42,11 +45,12 @@ flowchart LR
 | `Deployment` edge + `ConfigMap` | Caddy 2.11.4, [`files/Caddyfile`](files/Caddyfile), `NET_BIND_SERVICE` added to the dropped capabilities; not rendered with `edge.enabled: false` |
 | `Ingress` | Traefik, host `host`, TLS from the `cert-manager` issuer `ingress.clusterIssuer`; not rendered with `edge.enabled: false` |
 | `Middleware` (Traefik) | **off by default** (`ingress.rateLimit.enabled`): [a limit per client address](#a-limit-per-client-at-the-edge) on that Ingress, a `RateLimit` the Ingress names in `traefik.ingress.kubernetes.io/router.middlewares` |
+| `PrometheusRule` (Prometheus Operator) | **off by default** (`alerts.enabled`): [example alert rules](#alert-rules) for running out of dispatcher slots, outbox age, pool connections and, by a second switch, the run-pod quota |
 | `Cluster` (CNPG) | **one**, `another-agentic-db`: the orchestrator's database (its connection string is the `uri` key of `another-agentic-db-app`) and, beside it, [a role and a database per agent](#one-database-cluster) |
 | `ObjectStore` + `ScheduledBackup` (CNPG), `ExternalSecret`, a plugin on the `Cluster` | **off by default** (`backup.enabled`): [continuous backups of that cluster to S3](#backups) by the barman-cloud plugin; a restore is a new cluster: [`examples/restore-cluster.yaml`](examples/restore-cluster.yaml) to try it, [`examples/restore-cutover.yaml`](examples/restore-cutover.yaml) to replace a lost one |
 | `Database` (CNPG) ×1 | `agent`, owned by the role `agent` (the chat agent's runs); one more per coder in `sharedDatabase.coders` (or `coder`, with the older `sharedDatabase.coder.enabled`) |
 | `ExternalSecret` ×4 | `ssegning-aws` / `prod/another-agentic/env`: [the properties](#the-aws-secret); the fourth makes the chat agent's database Secret, and one more each coder's (`sharedDatabase.coders`) |
-| `Deployment` chat + `ConfigMap` | `adam-agent` (the adam image, entrypoint replaced) over [`files/chat/`](files/chat/) (`instructions.md` and the `subagents/`), copies of `dev/agents/chat/agent/` that CI keeps equal; see [the chat agent's helpers](#the-chat-agents-helpers) |
+| `Deployment` chat + `ConfigMap` | `adam-agent` (the adam image, entrypoint replaced) over [`files/chat/`](files/chat/) (`instructions.md`, the `subagents/` and the `modes/` a person picks from, `agent-mode/v1`), copies of `dev/agents/chat/agent/` that CI keeps equal; see [the chat agent's helpers](#the-chat-agents-helpers) |
 | `Deployment` + `Service` + `ConfigMap` oauth2-redis, `ExternalSecret`, `NetworkPolicy` | **off by default** (`oauth2Proxy.sessionStore: redis`): [a small Redis for oauth2-proxy's sessions](#sessions-in-redis); uid 999, read-only root, no persistence unless asked; reached by oauth2-proxy only |
 | `Deployment` + `Service` websearch, `ExternalSecret`, `NetworkPolicy` | **off by default** (`webSearch.enabled`): [our search pod](#web-search-and-context7), `dev/searxng-mcp` on Brave; uid 1000, read-only root; probes `/healthz`; a fourth ExternalSecret and a sixth NetworkPolicy when on |
 | `NetworkPolicy` ×5 | ingress to each pod only from the pods that need it; egress open (the search pod's is closed: DNS and the public internet). Four with `web.enabled: false` (the web's goes), three with `edge.enabled: false` (the edge's and oauth2-proxy's go), and the orchestrator's admits `networkPolicy.bff` ([the BFF-only shape](#the-bff-only-shape-the-web-and-the-edge-off)) |
@@ -133,6 +137,7 @@ commented; the ones that matter:
 | `orchestrator.tasks.title.model`, `description.model` | `""` | the model's name at `model.baseUrl`; empty: off |
 | `orchestrator.history.windowed` | `true` | the kill switch of [opening a thread from its history](../../docs/api/history.md) ([ADR 0059](../../docs/decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md)): `false` writes `ui.history.windowed: false` and the web replays the whole log to open a thread, as it did before. On is the orchestrator's own default and is **not written**. Refused: a string or a number |
 | `orchestrator.history.initialTurns`, `.pageTurns`, `.maxTurns`, `.maxPageBytes` | `null` (the orchestrator's: 12, 20, 100, 4194304) | `ui.history.initialTurns` and `.pageTurns` (1 to 100, at most `maxTurns`) and `server.history.maxTurns` (1 to 1000) and `.maxPageBytes` (65 536 to 67 108 864), the largest page the server serves. Written only when set; refused when out of range, not an integer, or a first page above the largest page. **Set or switch off only once `orchestrator.image.tag` is at or after the history read's merge commit** ([the pinned image](#the-pinned-orchestrator-image)) |
+| `orchestrator.languages` | `[]` (the orchestrator's: `en-GB`, `fr-FR`, `gsw-CH`, `fur-IT`) | the interface languages the web offers ([ADR 0085](../../docs/decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md)): the picker in the account menu draws exactly these, and the tag a person picks rides each message as `locale/v1`. Each is a language, an optional script of 4 letters and an optional region of 2 letters or 3 digits (the shape the picker sends); 1 to 32 of them, none twice. Empty is the orchestrator's own four and is **not written**. Refused: a malformed tag, a duplicate, more than 32. **Set only once `orchestrator.image.tag` is at or after the picker's merge commit** |
 | `orchestrator.artifacts.store`, `.size`, `.storageClass` | `fs`, `5Gi`, `longhorn` | the files agents hand over: a directory on a volume (`fs`), or an S3 bucket (`s3`, [below](#artifacts-in-s3-and-rustfs)) |
 | `orchestrator.artifacts.s3.bucket`, `.region`, `.endpoint`, `.prefix`, `.timeoutSecs` | `""` (= `rustfs.bucket` with RustFS; **required** otherwise), `us-east-1`, `""` (AWS, or the RustFS Service), `""`, `60` | `artifacts.s3` of the configuration, read only with `store: s3`; with an endpoint the bucket is in the path, on AWS it is the host (no dot in it) |
 | `rustfs.enabled`, `.image`, `.bucket`, `.storage`, `.resources` | `false`, `docker.io/rustfs/rustfs:1.0.1-preview.17` by tag **and** digest, `artifacts`, longhorn 10Gi, 50m/256Mi and 1Gi | [an S3 server of this release](#artifacts-in-s3-and-rustfs), only with `store: s3`; nothing is rendered when off |
@@ -146,7 +151,7 @@ commented; the ones that matter:
 | `externalSecrets.properties.artifactsS3AccessKeyId`, `artifactsS3SecretAccessKey` | `artifacts_s3_access_key_id`, `artifacts_s3_secret_access_key` | [the two properties](#the-aws-secret); read with `store: s3`, and with `migrate.enabled` whichever the store (the Job's own ExternalSecret) |
 | `agents` | Adam (the coder: `name: Adam` under `id: coder`; `id: adam` with `aliases: [coder]` once `orchestrator.image.tag` reads `aliases`, ADR 0049), then the chat | `agents.yaml`; a list is replaced as a whole by an override; `cardUrl` is a template. `aliases` are other names of an agent ([ADR 0049](../../docs/decisions/0049-the-coder-is-shown-as-adam-agents-may-have-aliases.md)): a thread made before the rename says `coder`, and a link, a mention, a role or a tool server that says it is about Adam; the chart refuses an alias that is an id or another agent's alias, and a tool server's `agents` may name one. The release, the Service (`coder`), `tokenEnv` and `externalSecrets.agentTokens` keep the coder's name |
 | `chat.contextWindow` | `null` | the chat model's context window in tokens, rendered as `MODEL_CONTEXT_WINDOW` (an integer from 1 to 2^53-1; anything else is refused at render): the web's token ring fills against it ([ADR 0056](../../docs/decisions/0056-token-usage-per-model-call.md)). `null` renders no variable: the ring shows totals, no fill |
-| `chat.enabled`, `chat.model`, `chat.image` | `true`, `""` (**required** when enabled), the adam image by tag and digest: `sha-9f90f1e` at `sha256:8352a52c...` (A2UI v1.0 only: `a2uiRendererCapabilities["1.0"]`, `ui-catalog/v2`) | the chat agent. `chat.image` is **the pin of `compose.yaml`** (`x-adam-image`, and `dev/coder/UPSTREAM`), moved **by hand** in the adam-rs bump (`.agents/skills/bump-adam/SKILL.md`): the bump workflows (`bump-tag.sh`) move `orchestrator`, `web` and `webSearch`, not this. `sha-8e1133d` is adam-rs with ADR 0020 (since `588e9b5`): the agent streams its model's reasoning ([ADR 0044](../../docs/decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md)), with adam-rs ADR 0031 (since `8e1133d`): Swagger UI at `/docs` and `/openapi.json`, public (the calls need the token), which the chat's NetworkPolicy leaves reachable from the orchestrator only (the chart sets no `A2A_DOCS`), and with adam-rs ADR 0032 (since `09291a6`): the card lists `usage/v1`, so each model call's tokens reach the log and the web's ring ([ADR 0056](../../docs/decisions/0056-token-usage-per-model-call.md)), and with adam-rs ADR 0033 (since `0bfea49`): the browser's screenshots are files, and `A2A_ALLOW_INSECURE_REMOTES` lets the chat call the browser as a remote sub-agent ([the browser agent](#the-browser-agent-adr-0057)). The context window a report says is the chat's environment variable `MODEL_CONTEXT_WINDOW`, which `chat.contextWindow` sets (unset by default: the ring then shows the thread's totals but no fill); it needs `orchestrator.image.tag` at or after `sha-658b192` (#189), which the chart has. The chart sets no `MODEL_EXTRA_BODY`: a model that needs a flag to think shows no reasoning yet |
+| `chat.enabled`, `chat.model`, `chat.image` | `true`, `""` (**required** when enabled), the adam image by tag and digest: `sha-5883708` at `sha256:2c1fed0c...` (A2UI v1.0 only: `a2uiRendererCapabilities["1.0"]`, `ui-catalog/v2`; and `agent-mode/v1` with the chat's `direct` and `plan`, ADR 0109) | the chat agent. `chat.image` is **the pin of `compose.yaml`** (`x-adam-image`, and `dev/coder/UPSTREAM`), moved **by hand** in the adam-rs bump (`.agents/skills/bump-adam/SKILL.md`): the bump workflows (`bump-tag.sh`) move `orchestrator`, `web` and `webSearch`, not this. `sha-9f90f1e` (since 2026-11-26) is adam-rs `945208e` plus 99 commits: `model-pick/v1`, `reasoning/v1`, `prompt-statement/v1`, `uploads/v1` on the card, a kept-open child that asks, the session limits of `admit`, the plugin hooks of ADR 0050 and the TurnKeys port of ADR 0068 T1; `sha-5883708` (since 2026-11-28) adds `agent-mode/v1` (a folder's `modes/`), `uploads/v1` served by the coder's `share_file`, turn signing (unset), the activity route on a listener of its own (unset), a session's `start.config` bounds and adam-rs ADR 0082's PostgreSQL 18 floor with schema versions 7 to 9. `sha-8e1133d` is adam-rs with ADR 0020 (since `588e9b5`): the agent streams its model's reasoning ([ADR 0044](../../docs/decisions/0044-a-models-reasoning-is-shown-beside-the-answer-and-logged-once.md)), with adam-rs ADR 0031 (since `8e1133d`): Swagger UI at `/docs` and `/openapi.json`, public (the calls need the token), which the chat's NetworkPolicy leaves reachable from the orchestrator only (the chart sets no `A2A_DOCS`), and with adam-rs ADR 0032 (since `09291a6`): the card lists `usage/v1`, so each model call's tokens reach the log and the web's ring ([ADR 0056](../../docs/decisions/0056-token-usage-per-model-call.md)), and with adam-rs ADR 0033 (since `0bfea49`): the browser's screenshots are files, and `A2A_ALLOW_INSECURE_REMOTES` lets the chat call the browser as a remote sub-agent ([the browser agent](#the-browser-agent-adr-0057)). The context window a report says is the chat's environment variable `MODEL_CONTEXT_WINDOW`, which `chat.contextWindow` sets (unset by default: the ring then shows the thread's totals but no fill); it needs `orchestrator.image.tag` at or after `sha-658b192` (#189), which the chart has. The chart sets no `MODEL_EXTRA_BODY`: a model that needs a flag to think shows no reasoning yet |
 | `oauth2Proxy.image`, `edge.image`, `chat.image` | tag **and** digest | third-party images; never `latest` |
 | `oauth2Proxy.cookieRefresh`, `cookieExpire` | `10m`, `12h` | the refresh must be shorter than the access token's lifespan (15 minutes, [`deploy/keycloak`](../keycloak/README.md)) |
 | `oauth2Proxy.sessionStore` | `cookie` | `cookie` (the render is the one of a chart that has never heard of Redis) or `redis`: [the sessions in a small Redis](#sessions-in-redis). Refused: any other value, and `redis` without the AWS property of its password |
@@ -176,6 +181,10 @@ commented; the ones that matter:
 | `browser.allowFrom`, `.egressExcept`, `.egressExceptV6`, `.extraEgress` | `[]` (the coder only after [open question 69](../../docs/open-questions.md#open)), the search pod's ranges, `[]` | who may call it besides the orchestrator; what its egress to the internet excludes; more egress rules (a model gateway on a private address) |
 | `browser.chatSubagent` | `false` | the chat's remote sub-agent `browser` ([below](#the-browser-agent-adr-0057)): the chat's folder gets `subagents/browser.md` (its files passed on), the chat `A2A_ALLOW_INSECURE_REMOTES=true` and the browser's bearer, and the browser's NetworkPolicy admits the chat. Refused without `browser.enabled`, `chat.enabled` or the browser's bearer property |
 | `externalSecrets.agentTokens.BROWSER_A2A_TOKEN`, `externalSecrets.properties.obscuraMcpToken` | `browser_a2a_token`, `obscura_mcp_token` | [the two new properties](#the-aws-secret); read only with `browser.enabled` |
+| `alerts.enabled`, `.labels` | `false`, `{}` | [example alert rules](#alert-rules) as a Prometheus Operator `PrometheusRule`; off: nothing rendered. `labels` are added to the object for a Prometheus's `ruleSelector` (strings; the chart's own labels are refused) |
+| `alerts.dispatcherSlots.threshold`, `.for`; `alerts.dbPool.threshold`, `.for` | `0.9`, `10m` each | the share of the [slots](#dispatcher-slots-near-the-limit) busy, and of the [pool](#database-pool-near-its-size) in use: above 0, at most 1. `for`: a whole number above zero with `s`, `m` or `h` |
+| `alerts.outboxAge.seconds`, `.for` | `60`, `5m` | how long the [oldest due outbox row](#the-oldest-due-outbox-row-is-old) may wait: 1 to 86400 |
+| `alerts.runPodQuota.enabled`, `.namespace`, `.resource`, `.threshold`, `.for` | `false`, `""`, `pods`, `0.8`, `10m` | the [run-pod quota](#run-pod-quota-near-its-limit) rule, which needs an exporter that is not ours. Refused: on without `alerts.enabled` or without a namespace |
 | `networkPolicy.*` | on | `ingressControllerNamespace` limits the edge to Traefik's namespace (empty: the edge admits any source) and is **required with `rustfs.ingress.enabled`** (the files host's proxy trusts forwarding headers, [below](#the-files-host-adr-0058)); `orchestratorFrom` lists the agents of other charts |
 
 ## One database cluster
@@ -779,6 +788,122 @@ another is served, depth 1 on `X-Forwarded-For` (two forwarded addresses from on
 **That job is unverified until CI has run it**: its scenario was run against the pinned Traefik image under Docker with the same `Middleware` fields, not on a cluster.
 Not proven: the netcup Traefik, its address, its `safeNaming`, the starting numbers under real traffic.
 
+## Alert rules
+
+Four example alerts for "running out" (ANR-339). **They are examples, and every threshold is a starting point, not a measurement**: no load test and no
+production traffic chose one. Watch the expression on your own traffic before anybody is paged by it. All four are `severity: warning`.
+
+**The form is a `PrometheusRule` template, off by default** (`alerts.enabled`), rather than a file under `examples/`. Off, it renders nothing, so the chart
+still assumes no monitoring stack. As a template, its thresholds are values with refusals, and `tests/render-check.sh` can hold the rules to the
+orchestrator's metric names. On, it needs the Prometheus Operator's CRD (`monitoring.coreos.com/v1`): without it the sync fails on an unknown kind.
+Without the operator, `helm template -s templates/prometheus-rules.yaml` with `alerts.enabled=true` prints the object, and its `spec.groups` is a plain
+Prometheus rule file.
+
+**Turning the value on does not make Prometheus see anything.** Three things are the deployment's:
+
+1. **The scrape.** The chart renders no `ServiceMonitor` or `PodMonitor`. Every orchestrator process serves `GET /metrics` on port 8080 with no
+   identity ([observability](../../docs/orchestrator.md#observability-and-scaling)); scrape the pods, not the public host.
+2. **The NetworkPolicy.** With `networkPolicy.enabled`, the orchestrator admits only the pods it names. `networkPolicy.orchestratorFrom` is a pod
+   selector, so it reaches a Prometheus in the release's namespace only. One in another namespace needs a `NetworkPolicy` of the deployment's own
+   (policies add up). Either way the pods admitted reach the whole of port 8080, where the API still asks for sign-in.
+3. **The selection.** A Prometheus Operator loads the rules its `ruleSelector` and `ruleNamespaceSelector` match; put the label it wants in `alerts.labels`.
+
+The rules group by the label `namespace`, which the operator's scrape objects add. With a scrape that adds none, everything groups as one. The metric
+names of the first three rules carry no release name, so a Prometheus that scrapes two releases **in one namespace**, or another program that uses the
+names `db_pool_connections` or `dispatcher_slots_in_use` there, would be added in.
+
+**A rule on a missing series does not fire.** If the scrape breaks, or `/metrics` answers 503 because the store is unavailable (it does, for every
+sample), all of the first three go quiet. Alert on the target being down (`up == 0` for your scrape job) beside them; the chart cannot, as it does not
+know the job's name.
+
+| Rule | Metrics | Starting point | Values |
+|---|---|---|---|
+| `AgenticDispatcherSlotsNearLimit` | `dispatcher_slots_in_use`, `dispatcher_slots_configured` | 0.9 for 10m | `alerts.dispatcherSlots` |
+| `AgenticOutboxOldestDueTooOld` | `orch_outbox_oldest_due_age_seconds` | over 60 s for 5m | `alerts.outboxAge` |
+| `AgenticDbPoolNearSize` | `db_pool_connections`, `db_pool_max_connections` | 0.9 for 10m | `alerts.dbPool` |
+| `AgenticRunPodQuotaNearLimit` | `kube_resourcequota` (**not the orchestrator's**) | 0.8 for 10m | `alerts.runPodQuota` (its own switch) |
+
+### Dispatcher slots near the limit
+
+```promql
+sum by (namespace) (dispatcher_slots_in_use)
+  / (sum by (namespace) (dispatcher_slots_configured) > 0)
+  >= 0.9
+```
+
+The gauges are each process's own, so they are summed over the replicas. A process with no dispatcher reports 0 of 0.
+
+**Why this number.** A slot is busy with one outbox row, so with all of them busy the next row waits. At the default of 32 slots, 0.9 means 29 or more
+busy: late enough that a short burst does not reach it, early enough that a few are still free. `for: 10m` asks for it at every evaluation for ten
+minutes, so one dip starts the clock again. Neither number was measured.
+
+**When it fires.** Look at `orch_outbox_oldest_due_age_seconds`: if it is rising, work is waiting. Slots held by long agent runs call for more capacity
+(more processes, or a higher `dispatcher.concurrency`, which is the orchestrator's key and not a value of this chart; this chart runs one process).
+Slots held because an agent or a model answers slowly are not helped by more slots: look at that endpoint first. Check the database pool before adding
+slots, since more of them ask more of it.
+
+### The oldest due outbox row is old
+
+```promql
+max by (namespace) (orch_outbox_oldest_due_age_seconds) > 60
+```
+
+Every replica reads this from the store and reports the same queue, so it is `max`; a `sum` would multiply it by the replicas. It is `0` when nothing is
+due. A row waiting out a retry backoff is not due and does not count; a row whose worker's lease lapsed does.
+
+**Why this number.** A dispatcher with a free slot is meant to take a due row at once, so a minute is far from its normal behaviour, and `for: 5m` lets a
+restart or a rollout pass. What age is normal under your load was not measured: with long runs and every slot busy, rows wait without anything being broken.
+
+**When it fires.** Check that a process with a dispatcher is running and ready, then the slots (the rule above) and the pool (the rule below), then the
+orchestrator's log for rows that fail or lose their lease. `orch_outbox_rows` by `state` says how long the queue is.
+
+### Database pool near its size
+
+```promql
+sum by (namespace, pool) (db_pool_connections{state="in_use"})
+  / (sum by (namespace, pool) (db_pool_max_connections) > 0)
+  >= 0.9
+```
+
+The gauges are each process's own, so they are summed over the replicas; `pool` is a fixed name the binary chooses (`thread-store`). **A sum hides one full
+replica among idle ones**: with several processes, also look at `db_pool_waiting` and at the same ratio without the `sum`.
+
+**Why this number.** With the default `database.maxConnections` of 10 (the orchestrator's key), 0.9 means 9 or 10 in use. A pool that is briefly full is
+how a pool works; one that stays full for ten minutes is where callers start to queue, and a wait past 30 s fails the call. Not measured.
+
+**When it fires.** Look at `db_pool_waiting`: above `0` for long, the pool is the bottleneck. Find out why connections are held (a slow database, a long
+query) before making the pool larger. A larger pool, or more processes, takes more of PostgreSQL's `max_connections`: see
+[Scaling the database](#scaling-the-database-issue-290).
+
+### Run-pod quota near its limit
+
+```promql
+max by (namespace, resourcequota, resource) (kube_resourcequota{namespace="<ns>", resource="pods", type="used"})
+  / (max by (namespace, resourcequota, resource) (kube_resourcequota{namespace="<ns>", resource="pods", type="hard"}) > 0)
+  >= 0.8
+```
+
+**The orchestrator has no metric for this**, and does not talk to the cluster. The quota is a `ResourceQuota` of the coder's chart, and the series is the
+cluster's ([observability](../../docs/orchestrator.md#observability-and-scaling)). *Unverified:* that your cluster exports `kube_resourcequota`
+(kube-state-metrics is the exporter that name comes from; none was run here, and this chart installs none), its labels (`resourcequota`, `resource`,
+`type`), and the quota's `resource` names, which depend on what it sets: list them with `kube_resourcequota{type="hard"}`. For that reason the rule has a
+switch of its own, `alerts.runPodQuota.enabled`, off even with `alerts.enabled`, and without the series **it never fires and says nothing**. It asks for
+`namespace`, so that it does not watch every quota of the cluster. One resource per render: the default is `pods`.
+
+**Why this number.** 0.8 is lower than the other two because a full quota does not queue a pod, it refuses it, and the room left is what a person has to
+act in. How fast your quota fills was not measured; with a small quota one pod is a large step, so set the threshold to match its size.
+
+**When it fires.** See what holds the quota (`kubectl -n <ns> describe resourcequota`, `kubectl -n <ns> get pods`): run pods that should have ended, or
+real demand. Raise the quota (the coder chart's `runPods.quota`) only if the cluster has the room.
+
+### What is proven about the alert rules
+
+`tests/render-check.sh`: off, nothing is rendered; on, the three rules, the fourth only by its switch, the values in their places, the refusals, and
+**every metric a rule reads has a `# TYPE` line in `orchestrator/crates/api/src/metrics.rs`** above its tests (`kube_resourcequota` is the one named
+exception), so a metric renamed on either side fails it; `deploy.yml` runs it when that file changes too, and validates the object against the vendored
+CRD schema. **Not proven:** the PromQL itself (no `promtool` ran and no Prometheus evaluated a rule), that any alert fires or resolves, any threshold,
+the Prometheus Operator's selection of the object, and everything about `kube_resourcequota`.
+
 ## Tokens in the browser (ADR 0054)
 
 [ADR 0054](../../docs/decisions/0054-the-web-holds-its-own-tokens-dpop-bound-in-indexeddb.md): the web is a public OAuth client
@@ -1044,6 +1169,10 @@ are written only when `orchestrator.history` is not the orchestrator's own defau
 `render-check.sh` asserts that, the keys when they are set, and the refusals. Until the pinned tag is at or after the merge commit of that change
 (*unverified*: not recorded here yet), setting any of them makes the image refuse the configuration at startup (exit 78).
 
+`orchestrator.languages` follows the same rule for the same reason: `ui.languages` (the interface languages the picker offers, ADR 0085) is
+written only when the operator names its own list, so the default render carries no `languages` and an image built before the picker reads it.
+`render-check.sh` asserts that, the list when it is set, and the refusals.
+
 The one thing the pinned image **cannot** read is `model.baseUrlFromSecret: true`, which writes `baseUrl: { file }`: the key accepts
 only text in an image built before that change. So the option is off by default, `deploy.yml` lints, templates and kubeconforms it
 (and `render-check.sh` asserts it), and it is turned on only once the tag is at or after the change's merge commit
@@ -1302,7 +1431,7 @@ until Keycloak's keys are fetched); the certificate issued; `https://<host>/` re
 
 ## The chat agent's helpers
 
-The chat agent's folder has three sub-agents ([ADR 0050](../../docs/decisions/0050-the-chat-has-sub-agents.md)): `planner` and `writer` (files of the ConfigMap, no tools) and `researcher`. A sub-agent inherits nothing, not even the conversation's tools, so the researcher's web search is its **own**: with `webSearch.enabled` its `mcp.json` is rendered to name the search pod's Service on `/mcp` with `Authorization: Bearer ${SEARCH_MCP_TOKEN}` (the chat pod has that variable from its Secret, the AWS property `search_mcp_token`, and the search pod's NetworkPolicy lets the chat pod in). Without the search pod the researcher is rendered without `tools:` and without an `mcp.json`, and says it cannot search. The files are `files/chat/` (equal to `dev/agents/chat/agent/` by a CI check; the ConfigMap keys are `instructions.md` and `subagent-*`, mapped to `subagents/…` by the volume's `items`).
+The chat agent's folder has three sub-agents ([ADR 0050](../../docs/decisions/0050-the-chat-has-sub-agents.md)): `planner` and `writer` (files of the ConfigMap, no tools) and `researcher`. A sub-agent inherits nothing, not even the conversation's tools, so the researcher's web search is its **own**: with `webSearch.enabled` its `mcp.json` is rendered to name the search pod's Service on `/mcp` with `Authorization: Bearer ${SEARCH_MCP_TOKEN}` (the chat pod has that variable from its Secret, the AWS property `search_mcp_token`, and the search pod's NetworkPolicy lets the chat pod in). Without the search pod the researcher is rendered without `tools:` and without an `mcp.json`, and says it cannot search. The files are `files/chat/` (equal to `dev/agents/chat/agent/` by a CI check; the ConfigMap keys are `instructions.md`, `subagent-*` and `mode-*`, mapped to `subagents/…` and `modes/…` by the volume's `items`; its modes are `direct` (the default) and `plan`, which add their words to the instructions and narrow nothing, the chat having no tools).
 
 ## Artifacts in S3 and RustFS
 
@@ -2059,7 +2188,7 @@ A restore that is automated, and a cutover of the deployment to a restored clust
 **off by default**, and recommended before inviting more than a handful of people); a NetworkPolicy for
 the databases (CloudNativePG's operator and instances talk to each other, and the operator's namespace was not verified);
 a split into a control plane and workers (S3 for the artifacts is [an option now](#artifacts-in-s3-and-rustfs)); the MCP surface and the CI webhooks (they need keys, a
-route that skips sign-in and a decision on the edge); the researcher and its search; metrics (netcup has no Prometheus; the logs are JSON on stdout); a deletion of
+route that skips sign-in and a decision on the edge); the researcher and its search; a metrics stack and a scrape (netcup has no Prometheus; the logs are JSON on stdout; the [alert rules](#alert-rules) are off by default and add no scrape); a deletion of
 a person's threads (open question 28 and 46); Redis for oauth2-proxy's sessions is an option now
 ([`oauth2Proxy.sessionStore: redis`](#sessions-in-redis)), **off by default**: the cookie store is used (which splits large cookies; the size
 with three tokens is *unverified*) and loses a refresh behind the edge; a Redis that is highly available (Sentinel or a cluster) is not here.
@@ -2079,5 +2208,6 @@ across preview releases with data on the volume. With `rustfs.ingress.enabled`: 
 (it did under Docker), the browser's egress rules under Cilium (an `ipBlock` there matches traffic that leaves the cluster) and the sizes.
 With `orchestrator.artifacts.migrate.enabled`: the Job on netcup (Argo CD's reading of the hook, which *was verified 2026-10-14 against argo-cd.readthedocs.io*: `post-install`/`post-upgrade` are PostSync, `helm.sh/hook-weight` is a sync-wave, PostSync runs after all resources are Healthy, a failed hook fails the sync, and which is *unverified on netcup's own Argo CD*; that the required pod affinity puts the Job on the node where longhorn has attached the `ReadWriteOnce` claim the orchestrator holds, and that a read-only mount of it beside the orchestrator's read-write one works there; the NetworkPolicy under Cilium; and what the storage class does with the volume when the claim is deleted); the command itself ran against RustFS 1.0.1-preview.17 and the in-process S3 stub, not against AWS S3.
 With `orchestrator.userSecrets.enabled`: that the ExternalSecret syncs the extra properties on netcup (it does for the others), and that `kubectl exec ... /orchestrator secrets rewrap` runs as written in the pod (it runs as a process in CI). With `backup.enabled`: everything on netcup ([the list](#facts-and-where-they-come-from)): the plugin, a backup, the WAL, a restore; and, anywhere, the [kind end-to-end](#the-end-to-end-on-kind) until CI has run it once.
+With `alerts.enabled`: everything beyond the render ([what is proven](#what-is-proven-about-the-alert-rules)): no Prometheus, `promtool` or kube-state-metrics has seen the rules, and the thresholds are starting points.
 With `database.instances` above 1 and `database.pooler.enabled`: everything on netcup ([the list](#turn-it-on)), the resource sizes (starting points), PgBouncer 1.25.2 with the orchestrator (the orchestrator's CI ran 1.26.1 and 1.22.0), a failover under load, and the [kind end-to-end](#the-poolers-end-to-end-on-kind) until CI has run it once.
 With `oauth2Proxy.sessionStore: redis`: that the Redis pod runs as written on netcup, that Keycloak rotates refresh tokens in the realm, and what oauth2-proxy answers while Redis is down ([the list](#sessions-in-redis)).

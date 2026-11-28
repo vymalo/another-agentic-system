@@ -46,6 +46,8 @@ agent that clones a repository, works on a branch, runs checks, pushes and opens
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: adam-coder is the default agent
+  accDescr: A sequence diagram, between Orchestrator, adam-coder (A2A agent).
   participant O as Orchestrator
   participant C as adam-coder (A2A agent)
   O->>C: GET /.well-known/agent-card.json (no token)
@@ -80,6 +82,8 @@ further agent input.
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: adam-coder is the default agent
+  accDescr: A state diagram with 6 states: Queued, Working, Blocked, Done, Failed, Cancelled.
   [*] --> Queued: thread created
   Queued --> Working: working
   Blocked --> Working: working
@@ -968,3 +972,61 @@ is the one that raises it (ANR-983 and ANR-1001 build on this).
 *(2026-11-27: this repository's workspace moved from 1.94 to 1.98 — ANR-1328, `orchestrator/Cargo.toml` and
 `orchestrator/rust-toolchain.toml` — so the "next bump is the one that raises it" note above no longer applies: a pin at or
 after adam-rs `278b6999` now builds here. The 2026-11-26 sentence stays as it was written.)*
+
+### Status note, 2026-11-27: agent-mode/v1 on the real adam (adam-rs 5883708)
+
+The pin moves from `9f90f1e6` to `5883708`, 150 commits of adam-rs `main` and the newest commit whose `coder` image
+exists. It is the bump ADR 0109's proof waited for: its "Prerequisites of the proof" (the pin predates adam-rs
+`2c2b551d`, and `dev/agents/chat/agent/` needs a `modes/` folder) is met here, so ANR-913 can prove `agent-mode/v1` on
+the real adam. The workspace was already on 1.98 (ANR-1328), which is what B asks for, so no toolchain moved.
+
+- **What it brings that this stack sees.** `agent-mode/v1` (#465, adam-rs ADR 0039 decision 3): a folder's
+  `modes/<name>.md`, one of them `default: true`, a mode picked per message in `metadata[URI]`, refused with
+  `mode_not_offered` when the folder does not declare it, and a mode that only narrows the tools the model is shown and
+  adds its words to the instructions. `uploads/v1` is now **served in part** (the coder's `share_file` sends a file over
+  the inline threshold by reference through `request_upload` and a presigned `PUT`), turn signing (adam-rs ADR 0068:
+  `TURN_SIGNING_KEY_FILE`, `TURN_VERIFY_KEYS_FILE`, `Turn-Signature`), the activity route on a listener and tokens of its
+  own (`ACTIVITY_LISTEN_ADDR`, `ACTIVITY_BEARER_TOKENS`, adam-rs ADR 0083), a child session's `start.config` held to its
+  folder's bounds (adam-rs ADR 0054), `adam-agent --version`/`--help` before any configuration, custom events a tool
+  declares, and the SQL adapters' rules moved into the database (adam-rs ADR 0082: **PostgreSQL 18 is the store's
+  floor**, schema versions 7 to 9 add the claim function and the `served` virtual column). The dev stack's Postgres is
+  19.0 (`compose.yaml`) and the agent-local job of `orchestrator.yml` uses 18.7, so the migrate at startup finds the floor
+  it needs; the chart's CNPG cluster is 18.7 as well. An agent's own database now keeps 90 days of finished runs by
+  default (`RUN_RETENTION_DAYS`, adam-rs's sweep), which is destructive but irrelevant to the dev stack's throwaway
+  databases; the chart sets nothing, so a deployment of the chat gets the default.
+- **Nothing here is switched on by the bump alone.** This stack sets no `TURN_SIGNING_KEY_FILE`, no
+  `ACTIVITY_LISTEN_ADDR` and no `RUN_RETENTION_DAYS`, so nothing is signed, the activity route stays on `LISTEN_ADDR` in
+  its deprecated form, and the retention default is adam's own.
+- **The vendored files**: `git diff --stat 9f90f1e6 5883708 -- bin/adam-coder/agent` is two new files,
+  `modes/build.md` (`default: true`) and `modes/plan.md`, re-copied to `dev/coder/agent/modes/`; the third file of that
+  diff is upstream's own example agent (`dev/agents/assistant/agent/instructions.md`), which this repository does not
+  vendor. `dev/coder/check-vendored.sh` passes. So the coder's card now lists `agent-mode/v1` with `build` and `plan`.
+- **The chat declares its own modes** (`dev/agents/chat/agent/modes/`: `direct`, the default, and `plan`), mirrored into
+  `deploy/chart/files/chat/modes/` and rendered by the chart's ConfigMap, so `adam-agent` lists `agent-mode/v1` for the
+  chat on the dev stack and in a deployment. The chat has no tools, so neither mode names `tools:` (a mode with no
+  `tools:` narrows nothing); the difference a person sees is the mode's words in the instructions.
+- **What is not in it**: `trusted-components/v1`, `network-tier/v1` and `signed-turns/v1` are decided but not in this
+  commit — no card lists them. (`network-tier/v1` is adam-rs ADR 0085/ANR-907, and the vendored `adam-a2a-extensions`
+  skill says so.)
+- **The crates** name `5883708` on every `rev` line (ten) and `Cargo.lock` names that one rev on twenty packages. Nothing
+  else in the lock moved: no package added or removed, no other version changed. **No orchestrator change was needed**:
+  there is no `!:` commit between A and B, the `Store` additions (`activity`, `outlives_the_process`) are defaulted,
+  `RunEvent` gained no variant, and the new constructors (`RuntimeBuilder::turn_keys`,
+  `RuntimeTaskBackend::with_agent_modes`, `A2aServer::protected_router`) are additive. This repository implements none of
+  adam's traits; `orch-agent-adam` keeps using adam's Postgres store as it is.
+- **The vendored `adam-*` skills** move with the skills CLI (`skills@1.9.0 update -p -y`) from `50bee181`/`67dccc5d` to
+  adam-rs `e6ce6014` (2026-11-28), which is `5883708` plus 33 commits. `git diff 5883708 e6ce6014 -- .agents/skills` is
+  two files: `adam-a2a-extensions` adds the `network-tier/v1` row (decided, served nowhere) and `adam-agent-folder` adds
+  the `si_memory:` key and the `plugins:` note. **The vendored `adam-a2a-extensions` is also one slice ahead of this pin
+  on `child-sessions/v1`**: it describes `start.config`'s `tokenBudget`, `tools` and `denyTools`, which arrive after
+  `5883708` (the ADR 0054 slices); at this pin `start.config` takes the seven numbers only.
+- *Verified 2026-11-28* (anonymous ghcr API, HTTP 200): `coder:sha-5883708` is one `linux/amd64` OCI manifest (no index;
+  3.11 GB of compressed layers, thirteen layers), uid 10001, entrypoint `tini -- adam-coder`, label
+  `org.opencontainers.image.revision` `588370857dd8f1db3ab878e7ab41631d8e43f8ca`, digest `sha256:2c1fed0c...` (the
+  registry's `Docker-Content-Digest`). `dev/coder/check-vendored.sh` passes; `docker compose --profile app config -q` is
+  clean; `node tools/docs-check/check-docs.mjs` is clean; `cargo metadata --locked` is clean; `cargo fmt --all --check`
+  is clean; `deploy/chart/tests/render-check.sh` passes with Helm 4.3.2 (the chat's golden regenerated for the two
+  modes).
+- *Unverified where this was written*: no compiler ran, so `cargo clippy` and the `agent-local` tests are the pull
+  request's; the 3.11 GB image was not pulled locally, so every scenario on it (and `dev/mode-real-e2e.sh`, which
+  ANR-913 owns) is the Coder E2E workflow's.

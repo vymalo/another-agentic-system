@@ -31,6 +31,9 @@ pub struct StartChildSession {
     pub keep_open: bool,
     /// The access tier of round 1, as for a message.
     pub tier: Option<AccessTier>,
+    /// The person's prompt signature of `text` (ADR 0087), as it arrived. Its presence is the
+    /// surface's check; it goes to round 1's request and into no event.
+    pub prompt_signature: Option<String>,
 }
 
 /// What the orchestrator's record says after a close was asked (`closeChildSession`).
@@ -184,6 +187,7 @@ impl<P: Ports> App<P> {
             keep_open: start.keep_open,
             tier: pin.tier,
             tier_cap: pin.cap,
+            prompt_signature: start.prompt_signature.map(orch_core::PromptSignature::from),
         };
         match self.apply(parent, input, Some(key), None, None).await? {
             ApplyOutcome::Applied { .. } | ApplyOutcome::Duplicate => Ok(()),

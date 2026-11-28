@@ -100,6 +100,23 @@ describe("client_credentials", () => {
     }
   });
 
+  it("takes the client a script says the token was issued to, and the client id when it names none (ADR 0087)", async () => {
+    const asked = async (extra) => verified((await (await post("/token", { grant_type: "client_credentials", user: "dev@example.com", ...creds, ...extra })).json()).access_token);
+    // A signing client while authenticating as the confidential one: the audience is still the client it signed in as.
+    const signing = await asked({ azp: "dev-signing" });
+    assert.equal(signing.azp, "dev-signing");
+    assert.equal(signing.aud, "dev-chat");
+    // Absent, and present but empty, is the client id, as before.
+    assert.equal((await asked({})).azp, "dev-chat");
+    assert.equal((await asked({ azp: "" })).azp, "dev-chat");
+    // The bound `roles` has, and the one `auth.signingClients` puts on a client id: 1 to 256 printable characters, no space.
+    for (const bad of ["has space", "x".repeat(257), "a\tb", "é"]) {
+      const res = await post("/token", { grant_type: "client_credentials", user: "dev@example.com", azp: bad, ...creds });
+      assert.equal(res.status, 400, JSON.stringify(bad));
+      assert.equal((await res.json()).error, "invalid_request", JSON.stringify(bad));
+    }
+  });
+
   it("takes the roles of the request instead of the user's own: the same person, a role taken away", async () => {
     const asked = async (roles) => verified((await (await post("/token", { grant_type: "client_credentials", user: "tool-maker@example.com", roles, ...creds })).json()).access_token);
     const own = await verified((await (await post("/token", { grant_type: "client_credentials", user: "tool-maker@example.com", ...creds })).json()).access_token);

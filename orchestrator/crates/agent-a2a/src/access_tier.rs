@@ -147,6 +147,7 @@ mod tests {
             tier_cap: None,
             locale: None,
             pick: None,
+            prompt_signature: None,
         }
     }
 
@@ -201,6 +202,7 @@ mod tests {
             tier_cap: cap,
             locale: None,
             pick: None,
+            prompt_signature: None,
         }
     }
 

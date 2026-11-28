@@ -61,6 +61,7 @@ So a headless server needs no new core, and a terminal client needs no second or
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a terminal client and a headless server are clients of the one chat API
   participant T as Terminal client
   participant S as Server (local or remote)
   participant A as Agent (A2A)
@@ -76,6 +77,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a terminal client and a headless server are clients of the one chat API
   [*] --> Detached
   Detached --> Local: start a local server (profile local)
   Detached --> Remote: attach to an address with a token

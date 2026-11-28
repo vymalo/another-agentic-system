@@ -293,6 +293,18 @@ pub enum OutboxPayload {
         /// offers it: a pick is never dropped.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pick: Option<orch_core::ModelPick>,
+        /// The person's prompt signature for the message (ADR 0087, decision 2): the compact JWS
+        /// their app sent, checked for presence at intake and kept here byte for byte. It is
+        /// **not conversation content**: it is in no event, frame, step or export. The row keeps
+        /// it so that a redelivery sends the same bytes. The dispatcher puts it on the agent's
+        /// request and the adapter never decodes it. *(Amended 2026-11-28, ANR-1376: the row was
+        /// called the only durable place it has. The job ledger may hold it too, for the one held
+        /// message of a Stop & send, [`Job::after_stop_prompt_signature`](orch_core::Job), until
+        /// that message gets its row: the held text is in the ledger already, and a side table
+        /// would be a migration and a new store operation for one field. The thread export takes
+        /// it out of the ledger, and `Debug` shows its length.)*
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_signature: Option<orch_core::PromptSignature>,
     },
     /// Delegate the user's action on an A2UI surface (ADR 0013), with the time it happened. It is
     /// a `delegate` row like a message: the same claim, resume and retry rules apply.
@@ -393,6 +405,11 @@ pub enum OutboxPayload {
         /// offers it: a pick is never dropped.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pick: Option<orch_core::ModelPick>,
+        /// The person's prompt signature for the message (ADR 0087), as for
+        /// [`OutboxPayload::Delegate`]: a steer carries it into the running task, and the delegation
+        /// it becomes keeps it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_signature: Option<orch_core::PromptSignature>,
     },
     /// Ask `agent` to do `text` for the job's agent (`orch_core::Command::Ask`, ADR 0026). `job` and
     /// `ask` say which ask of which job this is: a row whose ask has ended (its deadline, a stop,
@@ -473,6 +490,11 @@ pub enum OutboxPayload {
         /// The cap that goes with `tier`, as for [`OutboxPayload::Delegate`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tier_cap: Option<orch_core::AccessTier>,
+        /// The person's prompt signature of `text`, as for [`OutboxPayload::Delegate`]: kept here
+        /// byte for byte and put on round 1's request. A row written before the field existed has
+        /// none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_signature: Option<orch_core::PromptSignature>,
     },
     /// Close the session this child thread is (`orch_core::Command::CloseSession`, ADR 0072): on
     /// the `steer` lane, so a close with `cancel` reaches a working round now. As
@@ -516,6 +538,7 @@ impl OutboxPayload {
                 tier_cap,
                 locale,
                 pick,
+                prompt_signature,
             } => Some(OutboxPayload::Delegate {
                 text: text.clone(),
                 release: release.clone(),
@@ -526,6 +549,7 @@ impl OutboxPayload {
                 tier_cap: *tier_cap,
                 locale: locale.clone(),
                 pick: pick.clone(),
+                prompt_signature: prompt_signature.clone(),
             }),
             OutboxPayload::Delegate { .. }
             | OutboxPayload::Action { .. }
@@ -1669,6 +1693,7 @@ mod payload_tests {
             tier_cap: None,
             locale: None,
             pick: None,
+            prompt_signature: None,
             text: "echo @coder".to_owned(),
             release: None,
             ui_catalog: None,

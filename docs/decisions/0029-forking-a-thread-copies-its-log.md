@@ -130,6 +130,8 @@ what was said, and to edit an earlier message and keep both versions, the way Ch
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: forking a thread copies its log
+  accDescr: A sequence diagram, between Web, API, Store, Dispatcher, Agent (A2A).
   participant W as Web
   participant A as API
   participant S as Store
@@ -149,6 +151,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: forking a thread copies its log
   [*] --> Copied: fork_thread copies 1..=cut
   Copied --> Done: thread_forked (a finished job)
   Done --> Queued: the next message (fork) or the replacing message (edit): job n+1

@@ -327,7 +327,7 @@ fn latin_language(text: &str) -> Option<Lang> {
         .iter()
         .map(|(lang, list)| (*lang, list.iter().filter(|w| seen.contains(**w)).count()))
         .collect();
-    scores.sort_by(|a, b| b.1.cmp(&a.1));
+    scores.sort_by_key(|a| std::cmp::Reverse(a.1));
     let (best, top) = scores.first().copied()?;
     let second = scores.get(1).map_or(0, |s| s.1);
     (top >= 2 && top > second).then_some(best)

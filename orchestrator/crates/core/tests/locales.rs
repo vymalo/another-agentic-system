@@ -34,6 +34,7 @@ fn said(text: &str, locale: Option<&str>) -> Input {
         tier_cap: None,
         locale: locale.map(tag),
         pick: None,
+        prompt_signature: None,
     }
 }
 
@@ -50,6 +51,7 @@ fn stop(text: &str, locale: Option<&str>) -> Input {
         tier_cap: None,
         locale: locale.map(tag),
         pick: None,
+        prompt_signature: None,
     }
 }
 
@@ -163,6 +165,7 @@ fn a_redelivery_carries_the_locale_its_message_recorded() {
             tier_cap: None,
             locale: Some(tag("fr-FR")),
             pick: None,
+            prompt_signature: None,
         },
     );
     assert_eq!(sent(&cmds), Some(tag("fr-FR")), "the delegation carries it");
@@ -188,6 +191,7 @@ fn a_redelivery_carries_the_locale_its_message_recorded() {
             tier_cap: None,
             locale: None,
             pick: None,
+            prompt_signature: None,
         },
     );
     assert_eq!(sent(&cmds), None);

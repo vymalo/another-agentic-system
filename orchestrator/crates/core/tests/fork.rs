@@ -296,6 +296,7 @@ fn the_next_message_of_a_fork_starts_the_next_job() {
             tier_cap: None,
             locale: None,
             pick: None,
+            prompt_signature: None,
             user: user(),
             text: "go on".into(),
             message_id: None,
@@ -458,6 +459,7 @@ fn a_fork_has_no_catalog_for_its_agent_has_been_sent_none() {
             tier_cap: None,
             locale: None,
             pick: None,
+            prompt_signature: None,
             user: user(),
             text: "next".into(),
             message_id: None,
@@ -542,6 +544,7 @@ fn an_edit_commits_the_event_then_the_message_as_the_next_job() {
             "and the docs?".into(),
             Some("m-edit".into()),
             None,
+            None,
         )),
     )
     .unwrap();
@@ -565,6 +568,49 @@ fn an_edit_commits_the_event_then_the_message_as_the_next_job() {
     assert_eq!(m.origin, Origin::Agui);
 }
 
+/// ADR 0087, decision 3: an edit writes the person's words too, so its envelope rides the fork's
+/// delegation — and, as for any message, it is in no event.
+#[test]
+fn an_edit_carries_the_persons_envelope_to_the_delegation_and_to_no_event() {
+    const ENVELOPE: &str = "eyJhbGciOiJFZERTQSJ9..c2lnbmF0dXJl";
+    let log = two_turns();
+    let (_, commands) = fork_commit(
+        &user(),
+        data(ForkKind::Edit, 4),
+        copied(&log, 4),
+        GatePolicy::default(),
+        TitleLedger::default(),
+        DescriptionLedger::default(),
+        Some(Replacement::edit(
+            "and the docs?".into(),
+            Some("m-edit".into()),
+            None,
+            Some(ENVELOPE.to_owned().into()),
+        )),
+    )
+    .unwrap();
+    let sent = commands.iter().find_map(|c| match c {
+        Command::Delegate {
+            prompt_signature, ..
+        } => Some(prompt_signature.clone()),
+        _ => None,
+    });
+    assert_eq!(sent, Some(Some(ENVELOPE.to_owned())));
+    let log = commands
+        .iter()
+        .filter_map(|c| match c {
+            Command::Append(draft) => serde_json::to_string(&draft.body).ok(),
+            _ => None,
+        })
+        .collect::<Vec<String>>()
+        .join("");
+    assert!(!log.contains(ENVELOPE), "the envelope is in the log: {log}");
+    assert!(
+        !log.contains("promptSignature") && !log.contains("prompt_signature"),
+        "the log names the envelope: {log}"
+    );
+}
+
 #[test]
 fn an_edit_of_the_first_message_copies_nothing() {
     let (snapshot, commands) = fork_commit(
@@ -574,7 +620,12 @@ fn an_edit_of_the_first_message_copies_nothing() {
         GatePolicy::default(),
         TitleLedger::default(),
         DescriptionLedger::default(),
-        Some(Replacement::edit("start differently".into(), None, None)),
+        Some(Replacement::edit(
+            "start differently".into(),
+            None,
+            None,
+            None,
+        )),
     )
     .unwrap();
     assert_eq!(
@@ -614,6 +665,7 @@ fn first_message() -> Replacement {
         tier_cap: None,
         locale: None,
         pick: None,
+        prompt_signature: None,
         text: "@researcher and the docs?".into(),
         message_id: Some("m-first".into()),
         catalog: Some(catalog_data()),
@@ -688,6 +740,7 @@ fn a_fork_made_with_its_first_message_commits_it_as_the_next_job() {
         tier_cap: None,
         locale: None,
         pick: None,
+        prompt_signature: None,
     } = commands.last().unwrap()
     else {
         panic!("{commands:?}")
@@ -739,7 +792,7 @@ fn an_edit_keeps_its_behaviour_no_mentions_no_run_from_the_screen() {
         GatePolicy::default(),
         TitleLedger::default(),
         DescriptionLedger::default(),
-        Some(Replacement::edit("x".into(), None, None)),
+        Some(Replacement::edit("x".into(), None, None, None)),
     )
     .unwrap();
     let Some(Command::Append(EventDraft {

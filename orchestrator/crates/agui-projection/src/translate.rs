@@ -12,11 +12,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use orch_agui_proto::{ContentPart, Message, MessageContent, ResumeStatus, RunAgentInput};
 use orch_core::{
-    AgentId, Delivery, Input, Origin, ThreadId, ThreadState, UiActionData, UiVersion, UserId,
+    AgentId, Delivery, Input, Origin, PromptSignature, ThreadId, ThreadState, UiActionData,
+    UiVersion, UserId,
 };
 use serde_json::{Map, Value};
 
-use crate::vocab::{RELEASE_CHANNELS_URI, SEND_KEY};
+use crate::vocab::{PROMPT_SIGNATURE_KEY, RELEASE_CHANNELS_URI, SEND_KEY};
 
 /// What [`translate`] needs to know about the thread the request names.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -485,6 +486,13 @@ pub fn translate_with_warnings(
             count: new_users.len(),
         });
     }
+    // The person's prompt signature (ADR 0087, decision 2), read here because this is where the
+    // raw source that produces the input is known: the new message's `metadata`, or an answer's
+    // `resume` entry (decision 3). It is passed on as it arrived; whether it must be there, and
+    // whether it is shaped like a compact JWS, is the surface's check.
+    let mut prompt_signature = new_users
+        .first()
+        .and_then(|u| envelope(u.metadata.as_ref()));
     let new_user = match new_users.first() {
         Some(u) => {
             let (text, skipped) = user_text(&u.content);
@@ -534,11 +542,17 @@ pub fn translate_with_warnings(
                     .ok_or_else(|| InputError::InvalidResumePayload {
                         interrupt_id: id.to_owned(),
                     })?;
+                // The first answer is the one that becomes the message: its entry carries the
+                // envelope (ADR 0087, decision 3).
+                if answer.is_none() {
+                    prompt_signature = envelope(entry.metadata.as_ref());
+                }
                 answer.get_or_insert(text);
             }
         }
     }
 
+    let prompt_signature = prompt_signature.map(PromptSignature::from);
     let user = thread.user().clone();
     let run_id = Some(input.run_id.to_string());
     if let Some(mut action) = action {
@@ -584,6 +598,7 @@ pub fn translate_with_warnings(
             tier_cap: None,
             locale: None,
             pick: None,
+            prompt_signature,
             user,
             text,
             message_id: None,
@@ -600,6 +615,7 @@ pub fn translate_with_warnings(
                 tier_cap: None,
                 locale: None,
                 pick: None,
+                prompt_signature,
                 user,
                 text,
                 message_id: Some(id),
@@ -614,6 +630,7 @@ pub fn translate_with_warnings(
             tier_cap: None,
             locale: None,
             pick: None,
+            prompt_signature,
             user,
             text,
             message_id: Some(id),
@@ -828,6 +845,17 @@ fn user_text(content: &MessageContent) -> (String, usize) {
 }
 
 /// The answer in a resume payload: `{"text": "…"}`, or a bare string.
+/// The person's prompt signature in `metadata` (ADR 0087, decision 2): the member
+/// `vymalo.promptSignature`, when it is text. A member of another type names none, which the
+/// surface's presence check refuses for a signing client (fail closed). The string is passed on
+/// as it arrived, never decoded or re-encoded.
+fn envelope(metadata: Option<&Map<String, Value>>) -> Option<String> {
+    metadata?
+        .get(PROMPT_SIGNATURE_KEY)?
+        .as_str()
+        .map(str::to_owned)
+}
+
 fn payload_text(payload: &Value) -> Option<String> {
     match payload {
         Value::String(text) => Some(text.clone()),

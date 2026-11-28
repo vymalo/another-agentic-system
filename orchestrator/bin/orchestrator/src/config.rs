@@ -1112,6 +1112,9 @@ pub struct AuthSettings {
     /// `auth.roles` and `auth.defaultRole`: what each role grants (the built-in `user` and `admin`
     /// without a file, as before roles existed everyone is a `user`).
     pub policy: Policy,
+    /// `auth.signingClients` (ADR 0087, decision 1): the clients whose prompts must carry
+    /// `vymalo.promptSignature`. Empty (no file, or a file that lists none) asks nobody.
+    pub signing_clients: Vec<String>,
 }
 
 /// `auth.jwt`: the token issuer and what is read from its tokens.
@@ -1175,6 +1178,9 @@ impl AuthSettings {
                 client_id: browser.client_id.clone(),
                 scope: browser.scope.clone(),
             }),
+            // The file's rules have already refused a client with a space, so the ids are taken as
+            // written (ADR 0087: an id is compared exactly).
+            signing_clients: auth.signing_clients.clone(),
         }
     }
 
@@ -3614,6 +3620,17 @@ mod tests {
         // and the JSON of the endpoint has the key exactly when the capability is there
         let json = serde_json::to_value(&app.public).unwrap();
         assert_eq!(json["ui"]["history"]["projection"], history.projection);
+        // ADR 0085: the languages are always in `ui`, the four of the design when the file names
+        // none, whether or not the process serves the history route. The app crate carries its own
+        // copy of the four (it does not depend on `orch-config`), so the two are held equal here.
+        assert_eq!(
+            json["ui"]["languages"],
+            serde_json::to_value(orch_config::DEFAULT_LANGUAGES).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&worker.public).unwrap()["ui"]["languages"],
+            serde_json::to_value(orch_config::DEFAULT_LANGUAGES).unwrap()
+        );
         assert!(
             serde_json::to_value(&worker.public).unwrap()["ui"]
                 .get("history")

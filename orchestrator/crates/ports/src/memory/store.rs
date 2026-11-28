@@ -1077,7 +1077,7 @@ fn list_recent(inner: &Inner, owner: &UserId, listing: &ThreadListing) -> Vec<Th
         })
         .filter(|r| listing.before.is_none_or(|b| r.id < b))
         .collect();
-    all.sort_by(|a, b| b.id.cmp(&a.id));
+    all.sort_by_key(|a| std::cmp::Reverse(a.id));
     all.into_iter()
         .take(listing.limit as usize)
         .cloned()
@@ -1144,7 +1144,7 @@ fn list_rail(inner: &Inner, owner: &UserId, listing: &ThreadListing) -> Vec<Thre
             .filter(|r| r.rail_parent == Some(unit.id))
             .filter(|r| listing.archived != ArchivedFilter::Exclude || r.archived_at.is_none())
             .collect();
-        children.sort_by(|a, b| b.id.cmp(&a.id));
+        children.sort_by_key(|a| std::cmp::Reverse(a.id));
         out.extend(children.into_iter().cloned());
     }
     out

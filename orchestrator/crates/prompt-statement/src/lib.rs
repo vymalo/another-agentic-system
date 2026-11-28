@@ -13,7 +13,9 @@
 //!   `props_sha256` of `user` with the AG-UI request ([`Received`]) and refuses a difference with ADR 0087's
 //!   `403 prompt_signature_invalid`; only then is there an [`AttestedPayload`], the one thing a signer takes;
 //! - RFC 8785 ([`canonical`]) and the hashes of the contract ([`hash_of`], [`props_hash`], [`sha256_b64u`]);
-//! - [`jws`]: the protected header with `x5c`, the signing input and the compact form, shared by the signer adapters.
+//! - [`jws`]: the protected header with `x5c`, the signing input and the compact form, shared by the signer adapters;
+//! - [`check_presence`] and [`requires_signature`]: the intake check of the cloud path — an envelope is there and
+//!   shaped like a compact JWS, and whether the token's client must send one at all (ADR 0087, decision 1).
 //!
 //! **Pure**: no I/O, no async, no clock (the caller gives `iat`), no randomness (the caller gives `jti`). It never
 //! verifies a signature.
@@ -47,7 +49,7 @@ mod presence;
 mod statement;
 
 pub use jcs::{canonical, hash_of, props_hash, sha256_b64u};
-pub use presence::{MAX_ENVELOPE_LEN, PresenceError, check_presence};
+pub use presence::{MAX_ENVELOPE_LEN, PresenceError, check_presence, requires_signature};
 pub use statement::{
     A2aIds, AttestedPayload, Field, JTI_LEN, MAX_LIFETIME_SECS, PERSON_TYP, Received,
     STATEMENT_TYP, Source, Statement, StatementError, UserClaims, statement_exp,

@@ -221,3 +221,104 @@ Different keys keep them apart, and the `typ` of each signature keeps them apart
 its rules, and the presence check of a signing client's envelope as a pure function
 (`orchestrator/crates/prompt-statement/src/presence.rs`). Nothing calls that check at intake yet, there is no PKI
 signer, and no statement goes with an agent's messages: no prompt is refused or attested today.
+
+*Added 2026-11-28 (ANR-1338, slices 1 and 2; the ordering and the gaps below as of the security review of the same
+day):* the check is called at intake. `Principal.client_id` carries the token's `azp`, else its `client_id`, else
+`Some("")` for a token that names neither — **by presence, not readability**, so an `azp` that is there and unusable
+is the sentinel and `client_id` is not consulted — and `requires_signature` decides from `auth.signingClients`.
+
+On the AG-UI run route the check runs **after the translation and before any write**, and only for an input that
+writes the person's words (`Input::UserMessage`, `Input::StopAndSend`): an attach, a cancel and an A2UI action write
+none and are never refused for a missing signature, and an unlisted agent answers its 404 before the check. The
+envelope is read from the **new message's `metadata["vymalo.promptSignature"]`**, and for an answer from the
+**`resume` entry's `metadata`** (decision 3) — not from `forwardedProps`, which the statement hashes whole as
+`props_sha256`. It is passed on as it arrived to `Input::UserMessage.prompt_signature`, the delegation's outbox row
+and the dispatcher's `SendRequest`, and it is in no event, frame, step, export or log line. **Nothing reads it off
+`SendRequest` yet**: the statement and the A2A wire are ANR-903, so today the bytes are kept for the send path and
+nothing more. The presence check runs before the message rate limit and the allowance, so an unsigned message that is
+also over the limit is the `403` and is not counted; the client-version refusal is a layer in front of the whole API
+and comes first.
+
+**Recorded, not built — every route that still writes a person's words unsigned** (the AG-UI run route is the only
+one that checks, and an answer on it is checked from its `resume` entry since the B1 fix):
+
+- **The REST fork and edit** (`POST /api/threads/{id}/fork`, both `after` with `text` and `replace`) writes and
+  delegates the person's words without an envelope, and the body has no metadata member to carry one: **ANR-1375**.
+- **The helper-session start** (`POST /api/threads/{id}/sessions`) writes the person's first round to a helper with
+  no envelope, and its body has no metadata member either: **ANR-1383**.
+- **A Stop & send's held text** (`Job.after_stop`) is unsigned: the job ledger is part of the export, so the
+  envelope is not stored there, and the next job's delegation — and a stop the agent refuses that becomes a steer —
+  carry none: **ANR-1376**.
+
+Still not built: the PKI signer, the statement on an agent's messages, and the `production` rule that refuses an
+empty `auth.signingClients`.
+
+*Verified 2026-11-28 by reading the code of this change (`23c667ee` plus the review's fixes); nothing was built or
+run on the reviewing host (owner ANR-Q79), so CI and the compose build are the compiler. Unverified: the five new
+route tests and the `azp` test have not been executed locally.*
+
+*Added 2026-11-28 (ANR-1383): the helper-session start is checked.* The second gap above is closed.
+`POST /api/threads/{id}/sessions` takes the envelope in its body's `metadata["vymalo.promptSignature"]` and runs the
+run route's check, now one function for both (`orch_api::check_prompt_signature`), with the same list
+(`auth.signingClients`) and the same `403`. It runs after the body is read and before the application reads the
+thread or the card, makes an agent ready or writes anything. The envelope goes from the body to the start's outbox
+row (`OutboxPayload::SessionStart`) and round 1's `SendRequest`; it is not in the job ledger, and the child's logged
+`user_message` has no place for it. As on the run route, nothing reads it off `SendRequest` yet (ANR-903). A later
+message **in** a helper's thread is a run, so the run route's check already covers it.
+
+**Two gaps remain:** the REST fork and edit (**ANR-1375**) and a Stop & send's held text (**ANR-1376**).
+
+*Verified 2026-11-28 by reading the code; the new tests have not been built or run.*
+
+*Amended 2026-11-28 (ANR-1376): a Stop & send's held message keeps its signature.* This closes that gap, and changes
+two things said above: that the envelope is not stored in the job ledger, and that the outbox row is the only durable
+place it has.
+
+- **The ledger may hold it,** for the one message a stop holds: `Job.after_stop_prompt_signature`, beside
+  `Job.after_stop`. The held text is in the ledger already, and both are saved by the same commit under the same version
+  check, so they survive a restart together. A side table would be a migration and a new store operation for one field,
+  and the ledger is JSON with defaults, so there is no migration. It goes, byte for byte, to the next job's delegation
+  (the task ends, the job is cancelled before it starts, or the delegation is given up), or to the steer of a stop the
+  agent refuses for good. It is cleared with the text, and by Stop.
+- **The export takes it out.** `App::export_thread` removes it, so the export document and any later user of a
+  `ThreadExport` never has it. It is in no event, frame or step, as before. `Input`, `Command`, `Job`, the outbox
+  payload, the fork's first message (`Replacement`) and the testkit's recorded send (`SendCall`) hold it as
+  `PromptSignature`, whose `Debug` shows its length, and the port's `SendRequest`, which holds a string, has a
+  `Debug` of its own that does the same. **Not every type does:** the application's `Inbound`, `FirstMessage` and
+  `StartChildSession` hold a plain string that their derived `Debug` prints, and so do the AG-UI wire types, in the
+  message `metadata` it arrives in. None of them may be put in a log line.
+- **Nothing signed is joined.** A signature covers one message, and the statement has one `user`. Keeping several
+  would need a form the statement does not have, and one signature on a joined text would present text that was not
+  signed as covered. So while a message is held, a second one (a Send or a Stop & send) is refused when **either** of
+  the two carries a signature: signed then signed, signed then unsigned, unsigned then signed. It is a `409`,
+  `code: stop_pending`, and nothing is written. The person sends it again once the held message is no longer waiting. Two unsigned
+  messages are joined as before, so a client that is not listed sees no change.
+- **A repeat is still a repeat.** Two copies of one request that race are answered as one: before the `409`, the commit
+  loop looks up the request's idempotency key.
+- **Limits:** a message refused this way is not counted against `messages_per_minute`, which is a count of the messages
+  in the log. The limit and the allowance are checked before the transition, so a person at either one gets that answer
+  instead. What the application does before the transition has run too, as for any message the core refuses: the card
+  is read, and a person's own agent is made ready.
+
+**Every client's envelope is bounded at intake.** A client that is not asked to sign is still never refused, but
+what it sends is carried only when it is not empty and at most 16 KiB, the presence check's bound; otherwise it is
+dropped, as if absent. Without this a Stop & send would keep a value of almost the whole request body in the job
+ledger. An empty string is no envelope for anyone, so it cannot make a message count as signed.
+
+**One gap remains:** the REST fork and edit (**ANR-1375**).
+
+*Unverified: nothing of this change was built or run where it was written; CI is the first build.*
+*Added 2026-11-28 (ANR-1375, after the note above; the first of the two remaining gaps is closed):* the REST
+fork and edit route is checked. `POST /api/threads/{id}/fork` reads the envelope from the **`promptSignature` of its
+body** — the member the body had no room for until now — and refuses a signing client's missing or malformed one with
+the same `403 prompt_signature_invalid` (reason `invalid`, the finer one logged) as the AG-UI run, **before anything is
+written**: for `after` with `text` (the fork's first message) and for `replace` with `text` (the edit). A fork with no
+`text` writes no words and is never checked, and `promptSignature` without `text` is a `400`. The check is **one
+function**, `orch_api::check_prompt_signature` (the one the AG-UI run and `startChildSession` already call), and the list
+is `ApiConfig.signing_clients`, the same `auth.signingClients` the AG-UI surface is given. The edit's envelope rides `ForkAt::Replace.prompt_signature` → `Replacement::edit` →
+`Input::UserMessage` → the delegation's outbox row, as a first message's does, and it is in no event, frame or export.
+A Stop & send's held text (ANR-1376) is the one gap still open.
+
+*Verified 2026-11-28 by reading the code of this change; nothing was compiled or run on this host (owner ANR-Q79), so
+CI is the compiler. Unverified: `crates/api/tests/fork_signature.rs`, the core test of an edit's envelope, and the
+`ApiConfig.signing_clients` wiring have not been executed.*

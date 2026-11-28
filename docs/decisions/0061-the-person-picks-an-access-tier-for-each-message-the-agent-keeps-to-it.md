@@ -110,6 +110,7 @@ What exists, and what the design rests on:
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the person picks an access tier for each message
   actor P as Person
   participant W as Web
   participant O as Orchestrator

@@ -1,7 +1,7 @@
 # A2A extension: mentions (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/mentions/v1`
-- **Status:** **contract accepted (2026-10-02, on the owner's delegation); the orchestrator's side is built (2026-10-02,
+- **Status:** ✅ built · **contract accepted (2026-10-02, on the owner's delegation); the orchestrator's side is built (2026-10-02,
   MVP slice 10):** the checks, the `user_message` event and the job's mentioned set, the metadata to an agent that lists the
   URI, the capabilities key and the projection. The owner may revisit anything here. **Built 2026-10-03 (PR-21, [#132](https://github.com/vymalo/another-agentic-system/pull/132)):** `ask_agent`
   and, with it, the `coordinate` member (below). **Built 2026-10-03:** the web's composer (#129) and the web's drawing of asked
@@ -28,6 +28,8 @@ the web says so before the person sends. The rest of this page is for agents tha
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram, between Web (composer), Orchestrator, Agent registry, Event log, Addressed agent (lists mentions/v1, thread-tools/v1), Mentioned agent.
   autonumber
   participant W as Web (composer)
   participant O as Orchestrator
@@ -54,6 +56,7 @@ A mention goes through these, from the composer to the agent:
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: A2A extension
   [*] --> Chosen: the person picks an agent from the list after "@"
   Chosen --> Dropped: the label is edited away or the text changes it: no reference at send
   Chosen --> Sent: the message goes with start and end recomputed in the text as it is

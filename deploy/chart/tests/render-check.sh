@@ -266,6 +266,18 @@ rm -f "$null_counts"
 check "a first page above the largest page is refused" fails renders --set orchestrator.history.initialTurns=60 --set orchestrator.history.maxTurns=50
 check "a first page above the default largest page is refused" fails renders --set orchestrator.history.pageTurns=100 --set orchestrator.history.maxTurns=99
 check "a first page at the largest page is accepted" renders --set orchestrator.history.initialTurns=50 --set orchestrator.history.maxTurns=50
+# ADR 0085, card ANR-957: the interface languages the deployment offers, written only when the operator sets its own list
+render
+config_of config.yaml "$cfg"
+check "languages: the default render writes no ui.languages (the orchestrator's four apply)" cfg_lacks 'languages'
+render --set 'orchestrator.languages[0]=en-GB' --set 'orchestrator.languages[1]=fr-FR'
+config_of config.yaml "$cfg"
+check "languages: ui.languages is the operator's list, in order" cfg_all '^  languages:$' '^    - "en-GB"$' '^    - "fr-FR"$'
+check "languages: the list sits under ui, beside showDescriptions" sh -c "awk '/^ui:\$/ {u=1; next} u && /^[^ ]/ {u=0} u' '$cfg' | grep -Eq '^  languages:\$'"
+for bad in 'orchestrator.languages[0]=en_CM' 'orchestrator.languages[0]=français' 'orchestrator.languages[0]=' 'orchestrator.languages[0]=en-GB-abcdefghi' 'orchestrator.languages[0]=en-12' 'orchestrator.languages[0]=en-GB-oed' 'orchestrator.languages[0]=x-twain'; do
+  check "a language value $bad is refused" fails renders --set "$bad"
+done
+check "a language named twice, case-insensitively, is refused" fails renders --set 'orchestrator.languages[0]=en-GB' --set 'orchestrator.languages[1]=EN-gb'
 render --set chat.enabled=false --set 'agents[0].id=coder' --set 'agents[0].name=Coder' --set 'agents[0].cardUrl=http://coder.x.svc:8080/c' --set 'agents[0].tokenEnv=CODER_A2A_TOKEN'
 check "without the chat agent: no chat Deployment, database or ExternalSecret" lacks 'another-agentic-chat'
 check "without the chat agent the other four pods remain" count '^kind: Deployment$' 4
@@ -2292,9 +2304,17 @@ render
 golden_chat() { sh "$chart/tests/golden/chat-objects.sh" < "$out" | cmp -s - "$chart/tests/golden/chat-default.yaml"; }
 check "everything off: the chat's folder and its checksum/agent are the golden's, byte for byte (the chat does not restart)" golden_chat
 check "files/chat/instructions.md is dev/agents/chat/agent/instructions.md" cmp -s "$chart/files/chat/instructions.md" "$repo/dev/agents/chat/agent/instructions.md"
-for f in subagents/planner.md subagents/writer.md subagents/researcher/instructions.md; do
+for f in subagents/planner.md subagents/writer.md subagents/researcher/instructions.md modes/direct.md modes/plan.md; do
   check "files/chat/$f is dev/agents/chat/agent/$f" cmp -s "$chart/files/chat/$f" "$repo/dev/agents/chat/agent/$f"
 done
+# The modes a person picks (`agent-mode/v1`, ADR 0109): the ConfigMap carries both and the volume mounts them at `modes/`.
+doc ConfigMap another-agentic-chat-agent > "$sec2"
+check "the chat's folder has its two modes, exactly one of them the default" sh -c "
+  grep -Eq '^  mode-direct.md: [|]\$' '$sec2' && grep -Eq '^  mode-plan.md: [|]\$' '$sec2' &&
+  [ \"\$(grep -c '^    default: true\$' '$sec2')\" = 1 ]"
+check "the chat mounts its modes at modes/ (direct, plan)" sh -c "
+  grep -Fq '{ key: mode-direct.md, path: modes/direct.md }' '$out' &&
+  grep -Fq '{ key: mode-plan.md, path: modes/plan.md }' '$out'"
 # Without the search pod the researcher has no search to name: its `tools:` line is dropped (a pattern that matches nothing is refused by
 # adam-agent at startup), it has no mcp.json, and the chat is not let into a pod that is not there.
 render
@@ -2415,6 +2435,108 @@ refused "rate limit: a wrong number is refused while the limit is off too (found
 refused "rate limit: ... a wrong period, off" --set-string ingress.rateLimit.period=soon
 check "rate limit: depth 0 and depth 5 are accepted (the bounds)" rl_bounds
 check "rate limit: the units ms, s, m and h are accepted" rl_units
+
+# ---- Example alert rules (ANR-339; README.md, "Alert rules"): `alerts.enabled`, off by default ---------------------------------------------------------
+# Off: no PrometheusRule and no resource of the Prometheus Operator at all. On: one PrometheusRule with three rules, a fourth (the run-pod quota) only by its own
+# switch. Every metric name a rule reads is one the orchestrator EMITS: it has a `# TYPE <name> ` line in metrics.rs above the unit tests (a golden in the tests
+# would otherwise still hold a renamed name). The one exception is named below: kube_resourcequota, the cluster's own, only in the quota rule. No promtool is
+# run: this reads the names, it does not parse PromQL.
+al_values="$chart/tests/alerts.values.yaml"
+metrics_rs="$repo/orchestrator/crates/api/src/metrics.rs"
+# al_exprs: the lines of every `expr: |-` block of the PrometheusRule in the last render.
+al_exprs() {
+  doc PrometheusRule | awk '
+    /^ *expr: \|-$/ { e = 1; match($0, /^ */); ind = RLENGTH; next }
+    e { match($0, /^ */); if (RLENGTH > ind) { print; next } e = 0 }'
+}
+# al_names: the metric names those expressions read, sorted. What is not a metric name is removed first: label matchers, grouping labels, numbers; then the
+# PromQL words the rules use. Any other word is taken for a metric name, so a new function must be added here (the check fails until it is).
+al_names() {
+  al_exprs | sed -E 's/\{[^}]*\}//g; s/(by|without|on|ignoring) *\([^)]*\)//g; s/(^|[^a-zA-Z0-9_:.])[0-9]+(\.[0-9]+)?/\1/g' |
+    grep -Eo '[a-zA-Z_:][a-zA-Z0-9_:]*' | grep -Evx 'sum|max|min|avg|and|or|unless' | LC_ALL=C sort -u
+}
+al_names_are() { [ "$(al_names | tr '\n' ' ')" = "$1 " ]; }
+al_emits() { sed '/^#\[cfg(test)\]/,$d' "$metrics_rs" | grep -Eq "# TYPE $1 (gauge|counter)"; }
+# al_all_emitted: there is at least one name, and each but the cluster's is emitted; the ones that are not are said.
+al_all_emitted() {
+  names=$(al_names); [ -n "$names" ] || return 1
+  missing=0
+  for n in $names; do
+    [ "$n" = kube_resourcequota ] && continue
+    al_emits "$n" || { echo "not a metric of metrics.rs: $n" >&2; missing=1; }
+  done
+  [ "$missing" -eq 0 ]
+}
+# the one label value a rule selects of ours: state="in_use" of db_pool_connections
+al_in_use_emitted() { al_exprs | grep -Fq 'db_pool_connections{state="in_use"}' && sed '/^#\[cfg(test)\]/,$d' "$metrics_rs" | grep -Fq 'state=\"in_use\"'; }
+al_check_names() { # al_check_names <description>: like check, but what is missing is printed
+  if why=$(al_all_emitted 2>&1); then echo "ok   $1"; else echo "FAIL $1"; printf '%s\n' "$why"; fail=1; fi
+}
+al_alerts() { doc PrometheusRule | sed -n 's/^ *- alert: //p' | tr '\n' ' '; }
+al_alerts_are() { [ "$(al_alerts)" = "$1 " ]; }
+al_base_alerts='AgenticDispatcherSlotsNearLimit AgenticOutboxOldestDueTooOld AgenticDbPoolNearSize'
+al_ours='dispatcher_slots_configured dispatcher_slots_in_use orch_outbox_oldest_due_age_seconds'
+
+render
+check "alerts off (default): no PrometheusRule and no resource of the Prometheus Operator" lacks '(^kind: PrometheusRule$|monitoring\.coreos\.com)'
+check "values.yaml: the alert rules are off by default" sh -c "grep -A1 '^alerts:\$' '$chart/values.yaml' | grep -qx '  enabled: false'"
+
+render --set alerts.enabled=true
+check "alerts on: one PrometheusRule, monitoring.coreos.com/v1" sh -c "
+  [ \"\$(grep -Ec '^kind: PrometheusRule\$' '$out')\" -eq 1 ] && grep -Eq '^apiVersion: monitoring\.coreos\.com/v1\$' '$out'"
+check "alerts on: the three rules, and no quota rule without its own switch" al_alerts_are "$al_base_alerts"
+check "alerts on: no kube_resourcequota without its own switch" dlacks PrometheusRule another-agentic-alerts 'kube_resourcequota'
+check "alerts on: the rules read these five metrics and no other word" al_names_are "db_pool_connections db_pool_max_connections $al_ours"
+al_check_names "alerts on: every metric a rule reads is emitted by metrics.rs"
+check "alerts on: the label value in_use is one metrics.rs writes" al_in_use_emitted
+check "alerts on: every rule is held for a while (a for clause each)" count '^          for: "[0-9]+[smh]"$' 3
+check "alerts on with no other value: the documented starting points (0.9 for 10m, 60 s for 5m, 0.9 for 10m)" sh -c "
+  [ \"\$(grep -Ec '^              >= 0\.9\$' '$out')\" -eq 2 ] && grep -Eq '^              > 60\$' '$out' &&
+  [ \"\$(grep -Ec '^          for: \"10m\"\$' '$out')\" -eq 2 ] && grep -Eq '^          for: \"5m\"\$' '$out'"
+check "alerts on: this process's gauges are summed, the outbox's (read from the store) is max, never sum" out_all 'sum by \(namespace\) \(dispatcher_slots_in_use\)' 'max by \(namespace\) \(orch_outbox_oldest_due_age_seconds\)'
+# shellcheck disable=SC2016 # the dollar is Prometheus's, not the shell's
+check "alerts on: Prometheus's own templating survives Helm" dhas PrometheusRule another-agentic-alerts '\{\{ \$labels\.namespace \}\}'
+
+render -f "$al_values"
+check "alerts on, values set: the four rules" al_alerts_are "$al_base_alerts AgenticRunPodQuotaNearLimit"
+check "alerts on, quota on: the one name that is not ours is kube_resourcequota" al_names_are "db_pool_connections db_pool_max_connections dispatcher_slots_configured dispatcher_slots_in_use kube_resourcequota orch_outbox_oldest_due_age_seconds"
+al_check_names "alerts on, quota on: every other metric a rule reads is emitted by metrics.rs"
+check "alerts on, values set: the slots' threshold" line_after "$out" '/ \(sum by \(namespace\) \(dispatcher_slots_configured\) > 0\)$' 1 '>= 0\.75$'
+check "alerts on, values set: the outbox's seconds" line_after "$out" '^            max by \(namespace\) \(orch_outbox_oldest_due_age_seconds\)$' 1 '> 123$'
+check "alerts on, values set: the pool's threshold" line_after "$out" '/ \(sum by \(namespace, pool\) \(db_pool_max_connections\) > 0\)$' 1 '>= 0\.85$'
+check "alerts on, values set: the quota's threshold, namespace and resource" out_all '>= 0\.7$' 'namespace="run-pods", resource="requests\.cpu", type="used"' 'namespace="run-pods", resource="requests\.cpu", type="hard"'
+check "alerts on, values set: each for is its rule's" sh -c "
+  [ \"\$(sed -n 's/^          for: //p' '$out' | tr '\n' ' ')\" = '\"7m\" \"3m\" \"11m\" \"13m\" ' ]"
+check "alerts on: the deployer's selector label is on the object, beside the chart's" sh -c "grep -Eq '^    release: monitoring\$' '$out' && grep -Eq '^    app\.kubernetes\.io/component: alerts\$' '$out'"
+check "alerts on: the chart adds no scrape object" lacks '^kind: (ServiceMonitor|PodMonitor)$'
+
+refused "alerts: enabled a string" --set-string alerts.enabled=true
+for bad in 0 -0.5 1.01 90 '"0.9"' null; do
+  refused "alerts: a slots threshold of $bad" --set alerts.enabled=true --set-json "alerts.dispatcherSlots.threshold=$bad"
+done
+refused_says 'alerts.dbPool.threshold' "alerts: a pool threshold of 90 (a percentage never fires)" --set alerts.enabled=true --set alerts.dbPool.threshold=90
+refused_says 'alerts.runPodQuota.threshold' "alerts: a quota threshold of 0 (always firing)" --set alerts.enabled=true --set alerts.runPodQuota.threshold=0
+for bad in 0 -1 1.5 86401 '"60"'; do
+  refused "alerts: an outbox age of $bad seconds" --set alerts.enabled=true --set-json "alerts.outboxAge.seconds=$bad"
+done
+for bad in '"0m"' '"00s"' '""' '"5"' '"5d"' '"1m30s"' 5; do
+  refused "alerts: for=$bad" --set alerts.enabled=true --set-json "alerts.outboxAge.for=$bad"
+done
+refused_says 'alerts.dispatcherSlots.for' "alerts: the slots' for of zero (not 'for a while')" --set alerts.enabled=true --set-string alerts.dispatcherSlots.for=0s
+refused_says 'alerts.dbPool.for' "alerts: the pool's for without a unit" --set alerts.enabled=true --set-string alerts.dbPool.for=10
+refused_says 'alerts.runPodQuota.for' "alerts: the quota's for empty" --set alerts.enabled=true --set-string alerts.runPodQuota.for=
+refused "alerts: a wrong number is refused while the rules are off too" --set alerts.dbPool.threshold=90
+refused_says 'needs alerts.runPodQuota.namespace' "alerts: the quota rule with no namespace" --set alerts.enabled=true --set alerts.runPodQuota.enabled=true
+refused_says 'needs alerts.enabled' "alerts: the quota rule with the rules off" --set alerts.runPodQuota.enabled=true --set alerts.runPodQuota.namespace=run-pods
+refused "alerts: the quota switch a string" --set alerts.enabled=true --set-string alerts.runPodQuota.enabled=false
+refused_says 'alerts.runPodQuota.namespace' "alerts: a quota namespace that would break out of the PromQL string" --set alerts.enabled=true --set alerts.runPodQuota.enabled=true --set-json 'alerts.runPodQuota.namespace="a\"} or up{x=\"b"'
+refused_says 'alerts.runPodQuota.resource' "alerts: a quota resource with a quote" --set alerts.enabled=true --set-json 'alerts.runPodQuota.resource="pods\""'
+refused "alerts: an empty quota resource" --set alerts.enabled=true --set alerts.runPodQuota.resource=
+refused_says 'a label the chart sets' "alerts: a label of the chart's own" --set alerts.enabled=true --set-json 'alerts.labels={"app.kubernetes.io/name":"x"}'
+refused "alerts: a label whose value is not a string" --set alerts.enabled=true --set-json 'alerts.labels={"release":1}'
+check "alerts: the bounds are accepted (a threshold of 1, 1 s and 86400 s)" renders --set alerts.enabled=true --set alerts.dbPool.threshold=1 --set alerts.outboxAge.seconds=86400 --set alerts.dispatcherSlots.for=1s
+check "alerts: ... and one second" renders --set alerts.enabled=true --set alerts.outboxAge.seconds=1
+render
 
 # ---- Scaling the database: `database.instances`, `database.resources` and the connection pooler (issue #290; README.md, "Scaling the database") -------------
 # Off by default, and then the render is the one of a chart that has never heard of it: the Cluster has `instances: 1` and no `resources`, there is no Pooler, and

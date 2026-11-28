@@ -78,7 +78,7 @@ pub use sharing::{
     DEFAULT_RECHECK, PublicView, ShareAction, ShareView, SharingError, SharingMode,
     SharingSettings, SharingStats,
 };
-pub use tasks::{PublicConfig, TaskSettings, UiHistory, UiSettings};
+pub use tasks::{DEFAULT_LANGUAGES, PublicConfig, TaskSettings, UiHistory, UiSettings};
 pub use teams::TeamPresetRefusal;
 pub use thread_sweep::{ThreadSweepConfig, ThreadSweepWorker};
 pub use tier::THREAD_TIER_KEY;

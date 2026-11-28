@@ -30,8 +30,13 @@ pub struct Problem {
     pub ext: Option<Box<ProblemExt>>,
 }
 
-/// The extension members of a problem of the prompt library (RFC 9457 allows them): where a save is
-/// refused, or which answer and which rule. Names positions and ids, never a word of a prompt.
+/// The extension members of a problem (RFC 9457 allows them), boxed beside `Problem::ext`: where a
+/// save of the prompt library is refused, or which answer and which rule (`at`, `offset`,
+/// `question`, `rule`); which models or levels an agent offers (`offered`); the lowest client
+/// version a deployment serves (`minClientVersion`); the limit a person reached and its usage
+/// (`limit`, `inUse`, `max`); and why a client should not retry (`reason`, `prompt_signature_invalid`).
+/// They name positions, ids, counts and codes, never a word of a prompt, an answer, a credential or
+/// a signature.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ProblemExt {
     /// Where a save is refused (`createPrompt`, `updatePrompt`): `name`, `body`,
@@ -64,6 +69,10 @@ pub struct ProblemExt {
     /// `over_limit`: the value of the limit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max: Option<u32>,
+    /// `prompt_signature_invalid` (ADR 0087, decision 7): the reason the client sees, `invalid` today.
+    /// The finer one (`missing`, `malformed`) is in the orchestrator's log and never in the response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl Problem {
@@ -159,6 +168,17 @@ impl Problem {
     pub fn forbidden(detail: impl Into<String>) -> Self {
         Self::new(StatusCode::FORBIDDEN, detail)
     }
+
+    /// The same problem saying why a client should not retry (ADR 0087, decision 7):
+    /// `prompt_signature_invalid` carries `invalid`; the finer reason is only logged.
+    #[must_use]
+    pub fn with_reason(mut self, reason: &str) -> Self {
+        self.ext = Some(Box::new(ProblemExt {
+            reason: Some(reason.to_owned()),
+            ..self.ext.map(|ext| *ext).unwrap_or_default()
+        }));
+        self
+    }
 }
 
 impl IntoResponse for Problem {
@@ -223,6 +243,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | a model or a reasoning effort the agent's live card does not offer (`AppError::PickNotOffered`, ADR 0086) | 422 with `code: model_not_offered` or `reasoning_not_offered` and `offered` |
 /// | a change of the person's list that cannot be made (`AppError::Arrangement`), a fork or a share of a child session's thread, or what a person asks of a helper session that its state or the card does not allow (ADR 0072) | 422 with `code: bad_anchor`, `code: nested_row`, `code: child_thread`, `child_mentions`, `session_closes_on_stop`, `not_child_thread`, `no_child_sessions`, `unknown_helper` or `bad_description` |
 /// | a helper session that is closed, a start the agent has no context for, or four starts that wait, or a thread that notes 256 sessions (`AppError::Blocked`) | 409 with `code: session_closed`, `no_context`, `too_many_starts` or `too_many_sessions` |
+/// | a message while a Stop & send holds one, when either carries a prompt signature (`AppError::Blocked`, ADR 0087) | 409 with `code: stop_pending` |
 /// | a cut the thread does not allow (`AppError::Fork`) | 422 for a point that is not in the log or not a person's message, 409 with `code: turn_open` for a turn that is still going on |
 /// | sharing under a `disabled` cap (`AppError::SharingDisabled`) | 403 with `code: sharing_disabled` |
 /// | a person who spent the token allowance of their roles for the month (`AppError::AllowanceSpent`, ADR 0081) | 403 with `code: allowance_spent` |

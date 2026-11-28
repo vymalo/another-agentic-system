@@ -1,7 +1,7 @@
 # A2A extension: signed turns (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/signed-turns/v1`
-- **Status:** **proposed (2026-11-27), card ANR-996; nothing is built on either side.** The agent's half is decided
+- **Status:** 🚧 planned · **proposed (2026-11-27), card ANR-996; nothing is built on either side.** The agent's half is decided
   ([adam-rs ADR 0068](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0068-adam-signs-its-own-history.md),
   accepted 2026-11-22, slice T4) and **not built**; the orchestrator reads no row. This page and
   [ADR 0111](../decisions/0111-the-orchestrator-verifies-the-rows-an-agent-signs-and-sends-them-back-on-a-fork.md) are
@@ -25,6 +25,8 @@ agent that does not list the extension is a plain A2A agent and works as before.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: who does what
+  accDescr: A sequence diagram, between Orchestrator, Agent (adam).
   autonumber
   participant O as Orchestrator
   participant A as Agent (adam)
@@ -47,6 +49,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: who does what
+  accDescr: A state diagram with 12 states: Unlisted, Listed, Plain, Activated, Received, NoRows, Verified, Unverified, Refused, Stored, SentBack, Continued.
   [*] --> Unlisted: the card lists no signed-turns/v1
   [*] --> Listed: the card lists it, params well formed
   Unlisted --> Plain: plain A2A, no activation, no rows
