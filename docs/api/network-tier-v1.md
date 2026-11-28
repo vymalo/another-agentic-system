@@ -1,7 +1,7 @@
 # A2A extension: network tier (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/network-tier/v1`
-- **Status:** **accepted (2026-11-26)**, with the ADR's two amendments; nothing is built. Proposed 2026-10-11, at the owner's request. Acceptance covers the ADR's
+- **Status:** 🚧 planned · **accepted (2026-11-26)**, with the ADR's two amendments; nothing is built. Proposed 2026-10-11, at the owner's request. Acceptance covers the ADR's
   decisions 1 to 10 and the three tier words `offline`, `allow-list` and `open`; the status codes, the error texts and the
   configuration keys here stay proposed, for the owner to confirm. The amendments:
   **`allow-list` is the deployment's list, never the person's**, and **a tier the agent cannot enforce is not listed on its card**.

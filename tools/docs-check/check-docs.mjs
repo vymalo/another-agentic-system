@@ -7,12 +7,14 @@
 //   5. every `#fragment` of such a link, from a README.md or a file under docs/, to a Markdown file
 //      names a heading (slugged as GitHub and the docs site do, github-slugger, -1, -2 for repeats) or an `id="..."` of an HTML tag of that file, and
 //   6. every Rust crate (a directory with a Cargo.toml under orchestrator/crates/ or
-//      orchestrator/bin/) has a README.md next to it.
+//      orchestrator/bin/) has a README.md next to it, and
+//   7. every extension contract page of docs/api says the status that its row of extensions.md says, both ways.
 // Usage (from the repo root):  npm --prefix tools/docs-check ci && node tools/docs-check/check-docs.mjs
 // Exits 1 on any failure, listing file:line for each.
 import fs from 'node:fs';
 import path from 'node:path';
 import { JSDOM } from 'jsdom';
+import { readExtensionIndex, STATUS_PATTERN } from '../../docs/.vitepress/extension-index.mjs';
 
 const root = process.cwd();
 // dist: the site's build output, which holds a generated .md per page (vitepress-plugin-llms), not sources.
@@ -176,6 +178,63 @@ for (const file of markdownFiles(root)) {
   }
 }
 
+// The extension contract pages say the status the index says (ANR-925). Each row of docs/api/extensions.md links its
+// contract page (A2UI: a section of agui.md); that page has exactly one `- **Status:**` line before its first section (or
+// in the linked section) that starts with the row's icon and word. A page that declares an extension URI must have a row.
+// These rows have no contract page in docs/api: a new row without a page is a failure until it is named here.
+const rowsWithoutPage = new Set(['Identity', 'Prompt statement', 'Build', 'Credential request']);
+let statuses = 0;
+const indexRel = path.join('docs', 'api', 'extensions.md');
+const apiDir = path.join(root, 'docs', 'api');
+if (fs.existsSync(path.join(root, indexRel))) {
+  const rows = readExtensionIndex(fs.readFileSync(path.join(root, indexRel), 'utf8'));
+  if (!rows.length) failures.push(`${indexRel}:1 no extension table (| Extension | URI suffix | Status | …) found`);
+  const listed = new Set();
+  for (const row of rows) {
+    const at = `${indexRel}:${row.line}`;
+    if (!row.status) failures.push(`${at} ${row.name}: status does not start with an icon and word of the legend`);
+    if (!row.page) {
+      if (!rowsWithoutPage.has(row.name)) failures.push(`${at} ${row.name}: the Contract column links no page of docs/api`);
+      continue;
+    }
+    if (rowsWithoutPage.has(row.name)) failures.push(`${at} ${row.name}: now links a page; take it off rowsWithoutPage in tools/docs-check`);
+    const { file, anchor } = row.page;
+    listed.add(file);
+    const rel = path.join('docs', 'api', file);
+    if (!fs.existsSync(path.join(root, rel))) {
+      failures.push(`${at} ${row.name}: its contract page ${rel} does not exist`);
+      continue;
+    }
+    const lines = fs.readFileSync(path.join(root, rel), 'utf8').split('\n');
+    // The part that holds the status line: before the first section, or the section the row links.
+    let from = 0;
+    if (anchor) {
+      from = lines.findIndex((l) => /^##+ /.test(l) && githubSlug(headingText(l.replace(/^#+ /, ''))) === anchor);
+      if (from < 0) {
+        failures.push(`${at} ${row.name}: ${rel} has no section #${anchor}`);
+        continue;
+      }
+    }
+    let to = lines.findIndex((l, i) => i > from && (anchor ? /^##+ / : /^## /).test(l));
+    if (to < 0) to = lines.length;
+    const found = [];
+    for (let i = from; i < to; i++) if (lines[i].startsWith('- **Status:**')) found.push(i);
+    if (found.length !== 1) {
+      failures.push(`${rel}:${(found[1] ?? from) + 1} ${found.length ? 'more than one status line' : 'no status line (- **Status:** …)'}; ${at} says ${row.status}`);
+      continue;
+    }
+    statuses++;
+    const says = lines[found[0]].slice('- **Status:** '.length).match(STATUS_PATTERN)?.[0];
+    if (!says) failures.push(`${rel}:${found[0] + 1} status line does not start with an icon and word of the legend; ${at} says ${row.status}`);
+    else if (row.status && says !== row.status) failures.push(`${rel}:${found[0] + 1} status is ${says}, but ${at} says ${row.status}`);
+  }
+  for (const name of fs.readdirSync(apiDir).filter((f) => f.endsWith('.md') && f !== 'README.md' && f !== 'extensions.md')) {
+    const head = fs.readFileSync(path.join(apiDir, name), 'utf8').split(/^## /m)[0];
+    const declares = /^# A2A extension:|^- \*\*(?:URI|A2A extension):\*\* `https:\/\/[^`]*\/a2a\/extensions\//m.test(head);
+    if (declares && !listed.has(name)) failures.push(`docs/api/${name}:1 an extension contract page that ${indexRel} does not list`);
+  }
+}
+
 // Every crate documents itself: a directory under these roots with a Cargo.toml needs a
 // README.md, updated in the same change as any change to its public API, environment
 // variables or tests (CLAUDE.md, "Code").
@@ -195,7 +254,7 @@ for (const crateRoot of crateRoots) {
   }
 }
 
-console.log(`${diagrams} diagrams, ${links} relative links, ${anchors} anchors, ${images} image paths, ${crates} crate READMEs checked`);
+console.log(`${diagrams} diagrams, ${links} relative links, ${anchors} anchors, ${images} image paths, ${crates} crate READMEs, ${statuses} extension statuses checked`);
 if (failures.length) {
   console.error(failures.join('\n'));
   console.error(`${failures.length} problem(s)`);

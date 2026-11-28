@@ -1,7 +1,7 @@
 # A2A extension: uploads (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/uploads/v1`
-- **Status:** **accepted as a design (2026-10-11); the orchestrator's side is built (step 6a, 2026-10-14; the downloads' redirect, step 6b, 2026-10-14) and proven on mocks; the S3 adapter's own cases were also run against a local RustFS (2026-10-14), not the whole chain and no live agent.** What is built:
+- **Status:** ⚠️ partial · **accepted as a design (2026-10-11); the orchestrator's side is built (step 6a, 2026-10-14; the downloads' redirect, step 6b, 2026-10-14) and proven on mocks; the S3 adapter's own cases were also run against a local RustFS (2026-10-14), not the whole chain and no live agent.** What is built:
   the tool, the extension on the card and in the message, the ingest of the reference, the S3 store's presigned `PUT` and `HEAD`, the keys
   `artifacts.upload.*` and `artifacts.s3.publicEndpoint`; and, for downloads, the S3 store's presigned `GET`, the three file routes' `302` to it, and the keys `artifacts.s3.downloads` (opt-in) and
   `artifacts.s3.presignTtlSecs` (A1, [below](#downloads-a1)). The chart's public files host and its `NetworkPolicy` (step 6c, 2026-10-14) are built, off by default, and were run against a local RustFS (not through Traefik): see

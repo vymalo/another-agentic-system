@@ -1,7 +1,7 @@
 # A2A extension: mentions (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/mentions/v1`
-- **Status:** **contract accepted (2026-10-02, on the owner's delegation); the orchestrator's side is built (2026-10-02,
+- **Status:** ✅ built · **contract accepted (2026-10-02, on the owner's delegation); the orchestrator's side is built (2026-10-02,
   MVP slice 10):** the checks, the `user_message` event and the job's mentioned set, the metadata to an agent that lists the
   URI, the capabilities key and the projection. The owner may revisit anything here. **Built 2026-10-03 (PR-21, [#132](https://github.com/vymalo/another-agentic-system/pull/132)):** `ask_agent`
   and, with it, the `coordinate` member (below). **Built 2026-10-03:** the web's composer (#129) and the web's drawing of asked
