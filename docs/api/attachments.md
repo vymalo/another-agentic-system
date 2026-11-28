@@ -184,6 +184,7 @@ read in this repository on 2026-11-28.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a named message hands the file to the agent
   autonumber
   participant C as Client
   participant O as Orchestrator (API)
@@ -206,6 +207,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: an attachment, from upload to a named message
   [*] --> Uploaded: 201 from the upload route
   Uploaded --> Named: a message that passes the check is committed
   Uploaded --> Uploaded: a refused message writes nothing
