@@ -2,19 +2,28 @@
 sidebarTitle: "0035 · Utility model tasks"
 ---
 
-# ADR 0035 — Utility model tasks: title and description, each with its endpoint, model, prompt and language rule
+# ADR 0035 — Utility model tasks: title, description and suggestions, each with its endpoint, model, prompt and language rule
 
 - **Status:** accepted (2026-10-02), on the owner's request of 2026-10-02; the details are the planner's (plan 10,
   section 3.6) and the owner may revisit them. Extends [ADR 0005](0005-openai-compatible-model-endpoint.md) and its
   two status notes (titles; the title's language). Configured through the file of
   [ADR 0034](0034-one-yaml-configuration-secrets-by-reference.md). **Built (2026-10-02, PR S18 of plan 10)**, as the
   decision says; the status note below lists what was decided while building it. **The web draws the description (2026-10-02, PR S19)**, see its status note. Amended (2026-10-04): `baseUrl` is the URL as text **or** `{ env: NAME }` or `{ file: PATH }`, read at startup and checked as a written one is, under the same key; the owner decided that the production gateway's address is kept in AWS Secrets Manager next to its key, not in git. A URL is not one of ADR 0034's fourteen secrets: it is shown as its reference, never redacted as a credential, and a `Debug` of the model adapter names the endpoint, not the address. A plain string is unchanged.
+  **Suggestions are the third task kind (2026-11-28)**, see the status note below.
 
   Status note (2026-11-24). The owner decided who chooses the utility model: titles, descriptions and suggestions are
   made by a model that **only the operator chooses**, nothing else uses it, and it must be very fast. So the operator's
   choice of each task's endpoint and model is the data rule, and no per-endpoint "allowed for conversations" mark is
   added. That closes [open question 45](../open-questions.md#closed). Checked on `main` that day: no route, card or
   setting lets a person or an agent pick a task's endpoint or model.
+
+  Amended (2026-11-28, suggestions). **Suggestions** are the short next prompts offered under an agent's finished
+  answer, which fill the message box and never send ([ADR 0013](0013-a2ui-generative-ui.md), rule 7). They are asked
+  for after a job's final answer, **at most once per job**, from **the conversation's last exchange only**, and
+  answered with **at most 3 suggestions of at most 80 characters each**, in the thread's language by the same language
+  rule as titles. Their endpoint and model follow the same operator-chosen rule as titles and descriptions: no
+  per-person and no per-agent pick (which model to use is the owner's decision, out of scope here). The code
+  follows in ANR-1407, the web in ANR-1408 and the dev scenario in ANR-1409.
 
   Status note (2026-10-02, PR S18). What is built is everything decided here: named endpoints
   (`ChatRequest.endpoint`; `OpenAiChat` over a map of endpoints, each with its own client, key and timeout; an unknown
@@ -115,12 +124,12 @@ that says what a thread is about now, which a title of six words cannot.
 
 ### 2. A closed set of tasks
 
-- `orch_core::TaskKind` is a closed enum (ADR 0004): **`Title`**, **`Description`**. The wire and configuration names
-  are `title` and `description`. Room is kept for **`TurnSummary`** (a one-line summary of a turn's working text, for
-  the turn's line, ADR 0031) and **`StepLabel`** (a readable label for a raw tool name); their configuration keys are
-  reserved and refused until they are built.
+- `orch_core::TaskKind` is a closed enum (ADR 0004): **`Title`**, **`Description`**, **`Suggestions`**. The wire and
+  configuration names are `title`, `description` and `suggestions` (2026-11-28). Room is kept for **`TurnSummary`** (a
+  one-line summary of a turn's working text, for the turn's line, ADR 0031) and **`StepLabel`** (a readable label for a
+  raw tool name); their configuration keys are reserved and refused until they are built.
 - `AppConfig` replaces `title_model` and `title_timeout` with `tasks: BTreeMap<TaskKind, TaskSettings>`; a task that
-  is absent is off. The dispatcher asks the model only for a task that is present.
+  is absent is off, suggestions included. The dispatcher asks the model only for a task that is present.
 
 ### 3. Per-task settings
 
@@ -144,6 +153,12 @@ tasks:
     maxChars: 300
     language: conversation
     recompute: { minNewMessages: 4 }
+  suggestions:
+    endpoint: small
+    model: small-model
+    system: { inline: "Offer up to three short next things to ask." }  # default: the core's guidance
+    maxTokens: 200
+    language: conversation
 ```
 
 | Setting | Tasks | Default | Rule |
@@ -151,13 +166,14 @@ tasks:
 | `endpoint` | all | required | a name in `models.endpoints` |
 | `model` | all | required | the model's name at that endpoint (a deployment's choice; never a secret) |
 | `system` | all | the core's guidance for the task | `{ inline: text }` or `{ file: path }` (relative to the configuration file), read once at startup, UTF-8, at most 4 KiB; empty is an error |
-| `maxTokens` | all | title 32, description 160 | 1 to 256 (title), 1 to 1024 (description) |
+| `maxTokens` | all | title 32, description 160, suggestions 200 | 1 to 256 (title), 1 to 1024 (description), 1 to 512 (suggestions) |
 | `language` | all | `conversation` | `conversation`, or a fixed language from the core's closed set (`english`, `french`, `german`, `spanish`, `portuguese`, `italian`, `chinese`, `japanese`, `korean`, `cyrillic`, `arabic`, `hebrew`, `greek`, `devanagari`, `thai`) |
 | `maxChars` | description | 300 | 40 to 500; the cleaned answer is cut to it at a word |
 | `recompute.minNewMessages` | description | 4 | at least 1: messages since the last description before a new one is asked for |
 
 The title keeps its limits as the core's constants: two asks per thread and one per reply (`MAX_TITLE_ASKS`), 80
-characters (`MAX_MODEL_TITLE_CHARS`), six messages and 4 KiB shown. The timeout of a try is its endpoint's
+characters (`MAX_MODEL_TITLE_CHARS`), six messages and 4 KiB shown. A suggestion's output limit is the core's fixed form
+too, not a setting: at most 3, of at most 80 characters each. The timeout of a try is its endpoint's
 `timeoutSecs`; the tries (3) and the backoff stay the dispatcher's.
 
 **The language rule.** `conversation` is the rule S2 built: the core finds the language of the **person's** messages,
