@@ -63,8 +63,11 @@
 #                     `vymalo.usage`, `vymalo.usage_total` and RUN_FINISHED.usage;
 #                     mock-coder, whose card does not list it, is asked for none and
 #                     its thread has none
-#   usage-ledger      the usage ledger of the people (ADR 0065): two threads of       usage-ledger-e2e.sh
-#                     mock-usage, each run to its end, by a user no other scenario
+#   usage-ledger      the usage ledger of the people (ADR 0065): first, a child     usage-ledger-e2e.sh
+#                     round of mock-sessions that outlives its parent's task is
+#                     counted once in the difference of a month (one task, the
+#                     helper's tokens once; this part runs on every run); then
+#                     two threads of mock-usage, each run to its end, by a user no other scenario
 #                     uses; GET /api/me/usage answers tasks 2, per model the sum of the
 #                     two tasks' totals priced by the table of orchestrator.yaml
 #                     (glm-5.3 priced by hand, glm-5.3-mini unpriced: price null,
@@ -268,7 +271,7 @@
 # `ci` passes once per database (a commit belongs to the first job that pushed it): on a second run it is
 # SKIPPED, not failed, and the summary says how to reset (`docker compose --profile app down -v`).
 # `usage-ledger` counts exactly its own two tasks of a user no other scenario uses, and the ledger is durable: on a second run on the same database it is
-# SKIPPED too, with the same reset.
+# SKIPPED too, with the same reset (its child round, which counts a difference, has run and passed by then).
 # `folder` restarts the coder (it runs last, and puts the coder back on its folder when it ends) and needs
 # `docker compose` on the machine that runs the stack: without it, it is SKIPPED too.
 # `share` restarts the orchestrator, and only it, twice: once on a copy of dev/orchestrator.yaml whose `sharing.mode` says `public`, once on the stack's
@@ -392,10 +395,12 @@ for s in "$@"; do
         esac
       done ;;
     usage-ledger)
-      case " $agents " in
-        *" mock-usage "*) ;;
-        *) echo "scenario usage-ledger needs the agent 'mock-usage', which GET /api/agents does not list (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
-      esac ;;
+      for a in mock-usage mock-sessions; do
+        case " $agents " in
+          *" $a "*) ;;
+          *) echo "scenario usage-ledger needs the agents mock-usage and mock-sessions; GET /api/agents does not list '$a' (it lists: ${agents:-none}): is this the app profile of compose.yaml, with dev/agents.yaml?" >&2; exit 2 ;;
+        esac
+      done ;;
     usage)
       for a in mock-usage mock-coder; do
         case " $agents " in
