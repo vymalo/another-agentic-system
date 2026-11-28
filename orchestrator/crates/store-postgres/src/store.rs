@@ -244,11 +244,11 @@ impl PgStore {
     /// Begins a transaction that waits for a lock and then reads what its holder committed:
     /// `READ COMMITTED`, whatever the database or the role defaults to. A commit and an admission
     /// with its commit (the person's lock in `orch_admit`, the thread's row in `orch_commit_open`),
-    /// the opening of a thread and any commit that arms watches (the key locks in `orch_watch_arm`),
-    /// and a park (the key lock in `orch_inbox_park`). Under `REPEATABLE READ` the snapshot would be
-    /// taken before the wait: the count would miss that holder's job, a lock on a row it changed
-    /// would fail with `40001` where the answer is a version conflict, and a watch and the row
-    /// parked for it would miss each other.
+    /// a commit that arms watches, a thread's first one included (the key locks in
+    /// `orch_watch_arm`), and a park (the key lock in `orch_inbox_park`). Under `REPEATABLE READ`
+    /// the snapshot would be taken before the wait: the count would miss that holder's job, a lock
+    /// on a row it changed would fail with `40001` where the answer is a version conflict, and a
+    /// watch and the row parked for it would miss each other.
     async fn begin_commit(&self) -> Result<Tx, StoreError> {
         self.pool
             .begin_with("BEGIN ISOLATION LEVEL READ COMMITTED")
@@ -264,7 +264,7 @@ impl PgStore {
         first: Commit,
         child: bool,
     ) -> Result<ChildThread, StoreError> {
-        // `READ COMMITTED`: the first commit's watches are armed under their keys' locks
+        // `READ COMMITTED`: the port lets the first commit arm watches, under their keys' locks
         let mut tx = self.begin_commit().await?;
         let cut = fork.map_or(0, |o| o.cut);
         if child && let Some(of) = &new.child_of {
@@ -1184,7 +1184,8 @@ fn plus(t: Timestamp, d: Duration) -> Timestamp {
 
 /// A row of the outbox is due at `$1`: `orch_outbox_due_at` (migration `0040`), which says it for
 /// both claims and for the statistics. The planner puts the function's one expression in its place,
-/// so the partial indexes of the open rows still serve these statements.
+/// so the partial indexes of the open rows can still serve these statements (`tests/claims.rs` asks
+/// `EXPLAIN`).
 macro_rules! outbox_due {
     () => {
         "orch_outbox_due_at(o.status, o.next_attempt_at, o.lease_until, $1)"
@@ -1553,6 +1554,46 @@ async fn insert_outbox(
     Ok(())
 }
 
+/// What a [`BindingUpdate`] writes to the thread's binding, as the `SET` list of the two statements
+/// that apply one ([`update_binding`] and [`MARK_SENT`]), each naming its own parameters. What is
+/// not given is left as it is, and the context is adopted once: the first one the agent assigned
+/// stands (ADR 0055).
+macro_rules! binding_set {
+    ($task:literal, $state:literal, $revision:literal, $now:literal, $context:literal) => {
+        concat!(
+            "task_id = COALESCE(",
+            $task,
+            ", task_id), task_state = COALESCE(",
+            $state,
+            ", task_state), revision = COALESCE(",
+            $revision,
+            ", revision), \
+             context_id = COALESCE(context_id, ",
+            $context,
+            "), updated_at = ",
+            $now
+        )
+    };
+}
+
+/// [`ThreadStore::mark_sent`] in one statement (ADR 0107 row 38): `$1` the outbox row, `$2` the
+/// owner and `$3` the attempt of its claim, `$4` the time, `$5` to `$8` the task id, task state,
+/// revision and context of the binding update. The binding is written only for the row the claim
+/// still holds, and after it (the join gives it nothing to update before), so the two are locked in
+/// the order they always were. One row comes back when the claim held, whether or not the thread has
+/// a binding.
+const MARK_SENT: &str = concat!(
+    "WITH sent AS ( \
+       UPDATE outbox SET sent_at = $4, updated_at = $4 \
+       WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight' \
+       RETURNING thread_id), \
+     bound AS ( \
+       UPDATE a2a_bindings b SET ",
+    binding_set!("$5", "$6", "$7", "$4", "$8"),
+    " FROM sent WHERE b.thread_id = sent.thread_id) \
+     SELECT thread_id FROM sent"
+);
+
 async fn update_binding(
     tx: &mut Tx,
     thread: ThreadId,
@@ -1560,12 +1601,11 @@ async fn update_binding(
     now: Timestamp,
 ) -> Result<(), StoreError> {
     let task_state = update.task_state.as_ref().map(enum_str).transpose()?;
-    query(
-        // The context is adopted once: the first one the agent assigned stands (ADR 0055).
-        "UPDATE a2a_bindings SET task_id = COALESCE($2, task_id), \
-         task_state = COALESCE($3, task_state), revision = COALESCE($4, revision), \
-         context_id = COALESCE(context_id, $6), updated_at = $5 WHERE thread_id = $1",
-    )
+    query(concat!(
+        "UPDATE a2a_bindings SET ",
+        binding_set!("$2", "$3", "$4", "$5", "$6"),
+        " WHERE thread_id = $1"
+    ))
     .bind(thread.0)
     .bind(update.task_id.as_deref())
     .bind(task_state)
@@ -2344,27 +2384,21 @@ impl ThreadStore for PgStore {
         binding: BindingUpdate,
         now: Timestamp,
     ) -> Result<bool, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_err)?;
-        let sent = query(
-            "UPDATE outbox SET sent_at = $4, updated_at = $4 \
-             WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'inflight' \
-             RETURNING thread_id",
-        )
-        .bind(lease.id.0)
-        .bind(&lease.owner)
-        .bind(attempt(lease))
-        .bind(to_db(now))
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_err)?;
-        let Some(sent) = sent else {
-            rollback(tx).await;
-            return Ok(false);
-        };
-        let thread = ThreadId(sent.try_get("thread_id").map_err(store_err)?);
-        update_binding(&mut tx, thread, &binding, now).await?;
-        tx.commit().await.map_err(store_err)?;
-        Ok(true)
+        let task_state = binding.task_state.as_ref().map(enum_str).transpose()?;
+        // One statement, so one transaction: the row and the binding are written, or neither.
+        query(MARK_SENT)
+            .bind(lease.id.0)
+            .bind(&lease.owner)
+            .bind(attempt(lease))
+            .bind(to_db(now))
+            .bind(binding.task_id.as_deref())
+            .bind(task_state)
+            .bind(binding.revision.as_deref())
+            .bind(binding.context_id.as_deref().filter(|c| !c.is_empty()))
+            .fetch_optional(&self.pool)
+            .await
+            .map(|sent| sent.is_some())
+            .map_err(store_err)
     }
 
     async fn mark_verify_sent(

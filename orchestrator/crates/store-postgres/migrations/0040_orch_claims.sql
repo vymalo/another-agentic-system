@@ -11,9 +11,10 @@
 -- never reads the database's clock (decision 3).
 --
 -- A SQL-standard `RETURN` body of one expression, so the planner puts the expression in place of the
--- call. The claims therefore still read the partial indexes on `status IN ('pending', 'inflight')`,
--- which the planner has to prove from the expression itself: this function must stay inlinable
--- (not STRICT, no `SET`, not SECURITY DEFINER).
+-- call. The claims can use the partial indexes on `status IN ('pending', 'inflight')` only if the
+-- planner proves that from the expression itself: this function must stay inlinable (not STRICT, no
+-- `SET`, not SECURITY DEFINER) and its body must keep each side under its own status, as an `OR`
+-- of the two (a `CASE` proves nothing). `tests/claims.rs` asks `EXPLAIN` for both.
 CREATE FUNCTION orch_outbox_due_at(
     p_status text,
     p_next_attempt_at timestamptz,

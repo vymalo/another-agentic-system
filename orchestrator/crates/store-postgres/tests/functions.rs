@@ -92,7 +92,9 @@ const ROUTINES: &[(&str, Option<&str>)] = &[
         "orch_watch_arm(p_thread uuid, p_keys text[], p_now timestamp with time zone)",
         // two seeded threads and a parked row, so a renamed column of `watches` or `inbox` fails
         // here: the first thread takes a key and re-arms nothing; the second is told that key is
-        // held, once although it asks twice, takes its own and re-arms the row parked for it
+        // held, once although it asks twice, takes its own and re-arms the row parked for it; and
+        // asking again for its own key, with the row parked again, it is told nothing is held and
+        // the row is re-armed
         Some(
             "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
              updated_at, rail_rank) SELECT ('00000000-0000-7000-8000-0000000000' || n)::uuid, 'o', \
@@ -112,7 +114,13 @@ const ROUTINES: &[(&str, Option<&str>)] = &[
              THEN RAISE EXCEPTION 'second'; END IF; \
              IF NOT EXISTS (SELECT 1 FROM inbox WHERE id = '00000000-0000-7000-8000-0000000000a3' \
              AND status = 'pending' AND parked_at IS NULL AND refunded = 3) \
-             THEN RAISE EXCEPTION 'arm'; END IF; END $$",
+             THEN RAISE EXCEPTION 'arm'; END IF; \
+             UPDATE inbox SET status = 'parked', parked_at = now() \
+             WHERE id = '00000000-0000-7000-8000-0000000000a3'; \
+             IF NOT EXISTS (SELECT 1 FROM orch_watch_arm(\
+             '00000000-0000-7000-8000-0000000000a2', '{arm-2}', now()) \
+             WHERE rearmed AND held_keys = '{}' AND held_by = '{}') \
+             THEN RAISE EXCEPTION 'own'; END IF; END $$",
         ),
     ),
     // 0040 (P3): parking a claimed inbox row.

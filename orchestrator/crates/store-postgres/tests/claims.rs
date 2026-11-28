@@ -10,10 +10,10 @@ use std::time::Duration;
 use jiff::{SignedDuration, Timestamp};
 use orch_core::{AgentId, AgentTarget, ThreadId, ThreadState, UserId, WatchKey};
 use orch_ports::{
-    ClaimOrder, Commit, InboxId, InboxLease, InboxPayload, InboxStatus, NewInbox, NewOutbox,
-    NewThreadRecord, OutboxId, OutboxPayload, Parking, ThreadStore,
+    BindingUpdate, ClaimOrder, Commit, InboxId, InboxLease, InboxPayload, InboxStatus, NewInbox,
+    NewOutbox, NewThreadRecord, OutboxId, OutboxPayload, Parking, ThreadStore,
 };
-use orch_store_postgres::sql::{query, query_scalar};
+use orch_store_postgres::sql::{query, query_as, query_scalar, raw_sql};
 use orch_store_postgres::{PgPool, PgStore};
 use support::TestDb;
 use uuid::Uuid;
@@ -223,10 +223,10 @@ async fn a_park_sees_the_watch_it_waited_for_whatever_the_default_isolation() {
     assert_eq!(row.status, InboxStatus::Pending);
 }
 
-/// The other way round, through the opening of a thread, which arms watches too: it waits for a
-/// park that holds the key and then re-arms the row that park set aside, whatever the database
-/// defaults to. The opening reads before it reaches the key, so under `REPEATABLE READ` its
-/// snapshot would be from before the wait and would not hold the parked row.
+/// The other way round, through the opening of a thread, whose first commit the port lets arm
+/// watches: it waits for a park that holds the key and then re-arms the row that park set aside,
+/// whatever the database defaults to. The opening reads before it reaches the key, so under
+/// `REPEATABLE READ` its snapshot would be from before the wait and would not hold the parked row.
 #[tokio::test]
 async fn opening_a_thread_re_arms_the_row_a_park_set_aside_whatever_the_default_isolation() {
     let db = db_or_skip!();
@@ -355,6 +355,46 @@ async fn the_due_function_is_inlined_into_the_statement() {
     assert!(!plan.contains("orch_outbox_due_at"), "{plan}");
 }
 
+/// The partial indexes of the open rows still serve the claims' due predicate. Inlined is not
+/// enough: the planner has to prove `status IN ('pending', 'inflight')` from the expression the
+/// function leaves behind, and `CLAIM_FIFO` says nothing else about the status. A body of another
+/// shape (a `CASE` on the status) is inlined too and proves nothing, so the claim would read the
+/// whole outbox. With sequential scans forbidden, in one session, a plan names an `outbox_open…`
+/// index only if the predicate implies the index's own; the `CASE` is the control that shows this
+/// assertion can fail. The predicate is the claims' without their `ORDER BY`, which would offer
+/// the planner an index of every row, and without the per-thread rule, whose subquery names an
+/// open index whatever the due predicate is.
+#[tokio::test]
+async fn the_due_predicate_uses_a_partial_index_of_the_open_rows() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let mut tx = store.pool().begin().await.unwrap();
+    query("SET LOCAL enable_seqscan = off")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let due: Vec<String> = query_scalar(
+        "EXPLAIN (COSTS OFF) SELECT o.id FROM outbox o \
+         WHERE orch_outbox_due_at(o.status, o.next_attempt_at, o.lease_until, now())",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    let due = due.join("\n");
+    assert!(due.contains("outbox_open"), "{due}");
+    let by_case: Vec<String> = query_scalar(
+        "EXPLAIN (COSTS OFF) SELECT o.id FROM outbox o \
+         WHERE CASE o.status WHEN 'pending' THEN o.next_attempt_at <= now() \
+                             WHEN 'inflight' THEN o.lease_until <= now() ELSE false END",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    let by_case = by_case.join("\n");
+    assert!(!by_case.contains("outbox_open"), "{by_case}");
+    tx.rollback().await.unwrap();
+}
+
 /// The keys are locked, and the held ones told, once each in bytewise order whatever the database
 /// collates by: the order earlier builds sorted them in.
 #[tokio::test]
@@ -372,21 +412,41 @@ async fn watch_keys_are_taken_once_each_in_bytewise_order() {
     let run = Uuid::now_v7().simple().to_string();
     // bytewise, `B` comes before `a`; a language's collation has it the other way round
     let keys = vec![format!("{run}:a"), format!("{run}:B"), format!("{run}:a")];
-    let arm = "SELECT array_to_string(held_keys, ',') FROM orch_watch_arm($1, $2, now())";
-    let held: String = query_scalar(arm)
-        .bind(first.id.0)
-        .bind(keys.clone())
-        .fetch_one(store.pool())
+    let arm = "SELECT array_to_string(held_keys, ','), rearmed FROM orch_watch_arm($1, $2, now())";
+    let answer = async |thread: Uuid| -> (String, bool) {
+        query_as(arm)
+            .bind(thread)
+            .bind(keys.clone())
+            .fetch_one(store.pool())
+            .await
+            .unwrap()
+    };
+    assert_eq!(answer(first.id.0).await, (String::new(), false), "new keys");
+
+    // Its own keys again, with a report parked behind one of them: nothing is held by another
+    // thread (every insert conflicts, so this is where the holder is compared), and the row is
+    // re-armed all the same.
+    let report = Uuid::now_v7();
+    receive(&store, report, &a_key(), t0()).await;
+    query("UPDATE inbox SET status = 'parked', parked_at = now(), correlation = $2 WHERE id = $1")
+        .bind(report)
+        .bind(format!("{run}:a"))
+        .execute(store.pool())
         .await
         .unwrap();
-    assert_eq!(held, "", "its own keys");
-    let held: String = query_scalar(arm)
-        .bind(second.id.0)
-        .bind(keys)
-        .fetch_one(store.pool())
-        .await
-        .unwrap();
-    assert_eq!(held, format!("{run}:B,{run}:a"));
+    assert_eq!(
+        answer(first.id.0).await,
+        (String::new(), true),
+        "its own keys"
+    );
+    let row = store.get_inbox(InboxId(report)).await.unwrap().unwrap();
+    assert_eq!(row.status, InboxStatus::Pending);
+
+    assert_eq!(
+        answer(second.id.0).await,
+        (format!("{run}:B,{run}:a"), false),
+        "another thread's keys"
+    );
 }
 
 /// A caller's bug is `OR002`, before anything is written.
@@ -407,4 +467,72 @@ async fn the_functions_refuse_missing_arguments() {
         let err = query(call).fetch_all(store.pool()).await.unwrap_err();
         assert_eq!(err.code(), Some("OR002"), "{call}: {err:?}");
     }
+}
+
+/// `mark_sent` writes the outbox row and the binding in one statement (ADR 0107 row 38): when the
+/// binding cannot be written, the row is not marked either. And a row that is not `inflight` has no
+/// claim, even one that still names the owner and the attempt (every way the store ends a claim also
+/// clears the owner, so the row is made by hand: only the status can refuse it).
+#[tokio::test]
+async fn mark_sent_writes_the_row_and_the_binding_together_or_neither() {
+    let db = db_or_skip!();
+    let store = db.store().await;
+    let id = Uuid::now_v7();
+    let (thread, _) = store
+        .create_thread(a_thread(), commit(vec![delegate(id)], Vec::new()))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim_outbox("w", t0(), LEASE, 1, ClaimOrder::Fifo)
+        .await
+        .unwrap();
+    let lease = claimed[0].lease().unwrap();
+    let update = BindingUpdate {
+        context_id: Some("agent-ctx".into()),
+        task_id: Some("task-1".into()),
+        ..BindingUpdate::default()
+    };
+    let conn = support::connect_with(&db.options()).await;
+    raw_sql(
+        "ALTER TABLE a2a_bindings ADD CONSTRAINT no_task CHECK (task_id IS NULL)",
+        &conn,
+    )
+    .await
+    .unwrap();
+    store
+        .mark_sent(&lease, update.clone(), at(1))
+        .await
+        .unwrap_err();
+    let row = store.get_outbox(OutboxId(id)).await.unwrap().unwrap();
+    assert_eq!(
+        row.sent_at, None,
+        "the row is not marked without its binding"
+    );
+
+    raw_sql("ALTER TABLE a2a_bindings DROP CONSTRAINT no_task", &conn)
+        .await
+        .unwrap();
+    assert!(store.mark_sent(&lease, update, at(2)).await.unwrap());
+    let row = store.get_outbox(OutboxId(id)).await.unwrap().unwrap();
+    assert_eq!(row.sent_at, Some(at(2)));
+    let binding = store.get_binding(thread.id).await.unwrap().unwrap();
+    assert_eq!(binding.task_id.as_deref(), Some("task-1"));
+    assert_eq!(binding.context_id.as_deref(), Some("agent-ctx"));
+
+    query("UPDATE outbox SET status = 'delivered' WHERE id = $1")
+        .bind(id)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    let late = BindingUpdate {
+        task_id: Some("late-task".into()),
+        ..BindingUpdate::default()
+    };
+    assert!(!store.mark_sent(&lease, late, at(4)).await.unwrap());
+    let row = store.get_outbox(OutboxId(id)).await.unwrap().unwrap();
+    assert_eq!(row.sent_at, Some(at(2)));
+    assert_eq!(
+        store.get_binding(thread.id).await.unwrap().unwrap(),
+        binding
+    );
 }
