@@ -140,6 +140,8 @@ pub struct MemoryStore {
     pub(super) prompts: Arc<Mutex<super::prompts::PromptShelf>>,
     /// The team presets (ADR 0074): every person's saved teams.
     pub(super) team_presets: Arc<Mutex<super::teams::TeamShelf>>,
+    /// The memory notes and grants (ADR 0091): every person's own.
+    pub(super) memory_notes: Arc<Mutex<super::notes::NoteShelf>>,
 }
 
 /// Test hooks of [`ThreadSearch::search_threads`]: a search can be made to fail as an unreachable store

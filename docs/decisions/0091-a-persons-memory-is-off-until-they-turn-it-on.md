@@ -11,6 +11,12 @@ sidebarTitle: "0091 · Memory off until they turn it on"
   on"*. Recorded in the owner's private decision log (2026-11-24). He also answered the second
   question: **memory works through the tools only**, never as a small pinned context.
 
+- **Status note, 2026-11-28 (ANR-294, slice M1, part 1):** the store exists. `orch_ports::MemoryNoteStore` (named so
+  because `orch_ports::memory::MemoryStore` is the in-memory thread store), its conformance testkit
+  (`memory_note_store_conformance!`), the in-memory implementation and the Postgres one (migration
+  `0038_user_memories.sql`: `user_memories`, with no `status` column, and `user_memory_settings`, both keyed by the
+  owner). The routes (`/api/me/memories`, `/api/me/memory-settings`) and the agent tools are not built.
+
 ## Context
 
 [ADR 0067](0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md)'s *Memory* section designed a person's

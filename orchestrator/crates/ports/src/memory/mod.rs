@@ -8,6 +8,7 @@ mod auth;
 mod entitlement;
 mod fixtures;
 mod model;
+mod notes;
 mod pending;
 mod platform_certificates;
 mod prompts;

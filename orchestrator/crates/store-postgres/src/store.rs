@@ -74,6 +74,7 @@ fn migrator() -> Result<Migrator, StoreError> {
         "0035_run_leases_tombstone.sql",
         "0036_outbox_open_owner_due.sql",
         "0037_orch_commit_open.sql",
+        "0038_user_memories.sql",
     )
     .map_err(migrate_err)?;
     Migrator::new(MIGRATIONS_TABLE, migrations).map_err(migrate_err)

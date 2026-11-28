@@ -10,7 +10,7 @@ Memory is **tools, not context**: nothing in this page is ever put into a prompt
 note only through the three built-in tools of [`thread-tools/v1`](thread-tools-v1.md), and every call is a step of the
 thread with its input and output.
 
-**Status:** contract accepted 2026-11-24 with the decision; **nothing is built**. Slice **M1** (the person's own notes
+**Status:** contract accepted 2026-11-24 with the decision; **the store is built** (2026-11-28: the port, its testkit, the in-memory and Postgres adapters; no route and no tool yet). Slice **M1** (the person's own notes
 and settings) comes first, then slice **M2** (the agent tools below).
 
 ## Constants
