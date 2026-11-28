@@ -138,6 +138,12 @@ pub const VIA_KEY: &str = "vymalo.via";
 /// 0036): `"steer"` or `"interrupt"`. Without it such a run is refused (409).
 pub const SEND_KEY: &str = "vymalo.send";
 
+/// Metadata key of the person's prompt signature (ADR 0087, decision 2): a compact JWS with a
+/// detached payload, on the **new user message** (`metadata`) or, for an answer, on the
+/// `resume` entry that carries it (decision 3). It is a message's own member and never a
+/// `forwardedProps` one: the statement hashes the whole of `forwardedProps` as `props_sha256`.
+pub use orch_core::PROMPT_SIGNATURE_KEY;
+
 /// Metadata key of how a message reached an agent that was working (ADR 0036): `"steer"` or
 /// `"interrupt"`, on the `TEXT_MESSAGE_START` of a user message the core logged with that
 /// `delivery`. Absent on every other message (and on every log written before the field existed).

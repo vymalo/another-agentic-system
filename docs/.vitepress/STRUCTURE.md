@@ -34,13 +34,23 @@ the page that says the rest.
 ## Diagrams
 
 Mermaid diagrams are drawn by `vitepress-mermaid-renderer` 1.2.3 (verified 2026-11-27: npm, `peerDependencies`
-`mermaid` `^11 || ^12`, `@mermaid-js/mermaid-zenuml` optional) with `mermaid` 11.17.2, both pinned exactly in
+`mermaid` `^11 || ^12`, `@mermaid-js/mermaid-zenuml` optional) with `mermaid` 12.3.0, both pinned exactly in
 `docs/package.json`. It replaces `vitepress-plugin-mermaid`, which has had no release since 2024-09. It adds zoom, pan,
 fullscreen, copy and download to each diagram, and the diagrams are drawn in the theme's Material 3 colours, redrawn when
 the scheme changes. Copy `docs/.vitepress/theme/mermaid.ts` (the layout that starts the renderer; `theme/index.ts` only
 names it as `Layout`) and `docs/.vitepress/theme/mermaid.css` into a site that uses `@vaam-apps/vitepress-md3`, and
 nothing else: `config.ts` has no Mermaid setting and needs no tag in `escapeUnknownTags`, because the renderer works on
 the page in the browser.
+
+**Every diagram names itself.** A diagram carries Mermaid's `accTitle:`, one short line saying what it shows, and an
+`accDescr:` on the larger ones. The house pair reads `Interaction: …` for the sequence diagram and `Lifecycle: …` for the
+state diagram, because that is what each shows; a diagram whose section heading says nothing on its own ("Decision",
+"Diagrams", "The flow") takes the page's subject. Mermaid puts the title and the description in the SVG's `<title>` and
+`<desc>` (`addA11yInfo`, run after every draw; *verified 2026-11-28* on `mermaid` 12.3.0), `mermaid.ts` gives the
+drawing's box that title as its `aria-label` and that description as its `aria-describedby` (the renderer's own
+"Interactive Mermaid diagram" says nothing, and its inner label is the first 80 characters of the source), and
+`tools/docs-check` fails on a diagram under `docs/` that has no `accTitle`. A site that copies these files copies the
+rule with them.
 
 ## Writing pages
 

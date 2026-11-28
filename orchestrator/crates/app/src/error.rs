@@ -97,8 +97,10 @@ pub enum AppError {
         /// What is in the way, fit to show the caller.
         detail: String,
     },
-    /// A request about a helper session that what it names is in the way of, with a stable `code`
-    /// a client acts on (ADR 0072, S3): `session_closed`, `no_context`, `too_many_starts`.
+    /// A request that the state of what it names is in the way of, with a stable `code` a client
+    /// acts on: about a helper session (ADR 0072, S3: `session_closed`, `no_context`,
+    /// `too_many_starts`), and a message a Stop & send cannot hold beside the one it holds
+    /// (ADR 0087: `stop_pending`).
     #[error("{detail}")]
     Blocked {
         /// The stable name.
@@ -298,6 +300,9 @@ impl From<TransitionError> for AppError {
             TransitionError::Finished { .. } => AppError::Finished,
             // well formed, but what it names cannot be done: 422 (ADR 0036)
             e @ TransitionError::TextTooLong { .. } => AppError::Unprocessable(e.to_string()),
+            // a Stop & send holds a message, and a signature forbids joining another to it
+            // (ADR 0087): 409, the client sends it again once the held message is no longer waiting
+            e @ TransitionError::StopPending => AppError::blocked("stop_pending", e.to_string()),
             // a helper session (ADR 0072, S3): each has the code a client acts on
             TransitionError::SessionClosed => AppError::blocked(
                 "session_closed",
@@ -385,7 +390,8 @@ impl Classify for AppError {
             AppError::Provisioning { source, .. } => match source {
                 ProvisionError::Refused
                 | ProvisionError::Invalid
-                | ProvisionError::Blocked { .. } => ErrorClass::Internal,
+                | ProvisionError::Blocked { .. }
+                | ProvisionError::AccountNotOpaque => ErrorClass::Internal,
                 _ => ErrorClass::Transient,
             },
             AppError::MessageLimit { .. } => ErrorClass::RateLimited,
@@ -440,9 +446,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn what_the_core_refuses_of_a_helper_session_has_the_code_a_client_acts_on() {
+    fn what_the_core_refuses_with_a_code_keeps_the_code_a_client_acts_on() {
         for (refusal, code) in [
             (TransitionError::SessionClosed, "session_closed"),
+            (TransitionError::StopPending, "stop_pending"),
             (
                 TransitionError::SessionClosesOnStop,
                 "session_closes_on_stop",
@@ -556,6 +563,10 @@ mod tests {
             },
             AppError::Provisioning {
                 kind: "coder",
+                source: ProvisionError::AccountNotOpaque,
+            },
+            AppError::Provisioning {
+                kind: "coder",
                 source: ProvisionError::Blocked {
                     reason: orch_ports::BlockedReason::NameConflict,
                 },
@@ -625,7 +636,8 @@ mod tests {
                 AppError::Provisioning { source, .. } => match source {
                     ProvisionError::Refused
                     | ProvisionError::Invalid
-                    | ProvisionError::Blocked { .. } => ErrorClass::Internal,
+                    | ProvisionError::Blocked { .. }
+                    | ProvisionError::AccountNotOpaque => ErrorClass::Internal,
                     _ => ErrorClass::Transient,
                 },
                 AppError::Contended => ErrorClass::Conflict,

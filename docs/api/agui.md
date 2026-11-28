@@ -482,6 +482,7 @@ github.com and gitlab.com), or the bare host when the URL names neither.
 | `forwardedProps["vymalo.mentions"]` (ADR 0026) on a run | The agents the message mentions, `[{agentId, label, start, end, cardUrl?}]` (at most 16; `null` or no member: none): `label` is `@` and 1 to 63 more characters and equals the message text at `start`..`end`, **counted in UTF-16 code units** (what a JavaScript string indexes), never beginning or ending inside a surrogate pair; the references are sorted by `start` and do not overlap. Read on every run, so one that is not an array of at most 16 objects with exactly those members of the right types is **400** before the stream. They go with the run's **message** (the one new message of the run, a stop included: they are the message's own) and are checked before it is written: a label that is not the text at its offsets, an offset past the end or inside a surrogate pair, references out of order or overlapping, an `agentId` the live registry does not list (`unknown agent '<id>' in mentions`), a `cardUrl` that is not the registry's (`the card of '<id>' moved; refresh the agent list`), an agent the caller's roles may not invoke (`you may not use '<id>'`) and the thread's own agent (`an agent cannot be mentioned in its own thread`) are **422**; a registry that cannot answer is **503** (`Retry-After`); nothing is written in any of them. Recorded in the `user_message` as sent, shown on the message (`vymalo.mentions`, [Mentions](#mentions)) and told to the addressed agent when its card lists `mentions/v1`. On a run with no message to carry them (an action, a cancel, an attach) the member is checked for its shape and ignored with a warning |
 | `forwardedProps["vymalo.tier"]` (ADR 0061) on a run | The access tier the person picked for the run's message: one of `plan`, `edits`, `auto`, `bypass`, spelled exactly (`null` or no member: none). Read on every run, so one that is not a string of those four words is **400** before the stream. It goes with the run's **message** (the one new message of the run, a stop and a fork's first message included: it is the message's own) and is checked before anything is written: a tier above what the caller's roles allow (`auth.roles.<role>.maxTier`) is **422** (`the tier 'bypass' is above what your role allows`), and so is one the thread's agent does not honour by its **live** card (`this agent does not take the tier 'plan'`: the card does not list `access-tier/v1`, lists it badly or lists other tiers); a card that cannot be read is **503** (`Retry-After`); nothing is written in any of them. A tier is never silently dropped. A run whose message names none is sent under none, except for a person whose roles cap the tier for this agent: the highest tier the agent offers that is not above the lower of its default and the cap (**422** `this agent has no tier your role allows` when there is none), so the cap holds when the chip is left alone; an answer to a blocked job continues the job's tier, lowered to the cap and rounded down to what the card honours (**422** `start a new chat` when it cannot be kept). Recorded in the `user_message` as sent (the tier the message was sent under, named, continued or decided), shown on the message (`vymalo.tier`, [Access tier](#access-tier)) and sent to the agent when the card read again at the send still honours it. On a run with no message to carry it (an action, a cancel, an attach) the member is checked for its shape and ignored with a warning |
 | `forwardedProps["vymalo.locale"]` (ADR 0085) on a run | The BCP 47 language tag of the interface the person reads, for the run's message: `"fr-FR"` (`null` or no member: none). Read on every run, so one that is not a tag is **400** before the stream (`vymalo.locale must be a BCP 47 language tag, for example en-GB`). It goes with the run's **message** (the one new message of the run, a stop included) and nothing else checks it: it is a **hint**, so there is no cap, no card read here and no refusal over it. It is sent to the agent when the card read again at the send lists `locale/v1` well formed, and dropped (the plain message) when it does not. **The log records it once**, on the `user_message` (`locale`, omitted when the run names none), so an export and a fork show it and a redelivery carries it; **no frame carries it and no activity is emitted for it**, so the interface shows nothing of it. On a run with no message to carry it (an action, a cancel, an attach) the member is checked for its shape and ignored with a warning. See [Locale](#locale) |
+| `metadata["vymalo.promptSignature"]` (ADR 0087) of the run's **new user message**, or of the `resume` entry that carries an answer | The person's prompt signature: a compact JWS (RFC 7515) with a **detached payload** — three base64url parts separated by two dots, the middle one (the payload) may be empty (`header..signature`), at most 16 KiB. It is the message's own **`metadata`** member and never a `forwardedProps` member: the statement hashes the whole of `forwardedProps` as `props_sha256`, so an envelope there would hash itself. A deployment that lists the caller's OAuth client in `auth.signingClients` (the token's `azp`, else its `client_id`; a token that names neither is one of them, fail closed) **requires** it on the run's **new user message**, or — for an answer — on the `resume` entry that carries it: a message without one, or with one of another shape, is **403** `code: prompt_signature_invalid`, `reason: invalid`, before the stream, and nothing is written. An **attach, a cancel and an A2UI action write no message of the person's and are never refused for it**; the check runs after the translation and before any write, and **before the message rate limit and the allowance** (an unsigned message that is also over the limit is the 403 and is not counted), while the client-version refusal is a layer in front of the whole API and comes first. No cryptography happens here: the verifier behind the model gateway checks the signature. The received bytes are **kept for the send path** — the delegation's outbox row and the dispatcher's `SendRequest` — and **nothing reads them off it yet**: the prompt statement and the A2A wire are ANR-903. **Claims computed at intake** go with them (ANR-1422), because the request cannot be rebuilt later: `aud` (the configured `server.publicOrigin`, never `Host` or `X-Forwarded-*`), `thread` (`threadId` as written), `agent` (the `agentId` path segment, percent-decoded once, before an alias is resolved), `msg` (the message id; for an answer, the `interruptId`), `content_sha256` (of the message's `content`; for an answer, of the whole `payload`) and `props_sha256` (of `forwardedProps`, `{}` when none). Both hashes are over the JSON **as it arrived**, members AG-UI does not define included, and are `base64url(SHA-256(JCS(value)))`. A Stop & send that holds its message keeps the envelope with it, in the job ledger, until the next job is delegated (the export takes it out), and then **nothing signed is joined**: while a message is held, another is a **409** `code: stop_pending` when either of the two is signed ([Sending while an agent works](#sending-while-an-agent-works)). They are **in no event, frame, step, export or log line**. A client that is not listed, and a deployment that lists none, is never checked. For **every** client an empty string is no envelope, and one over 16 KiB is never carried: a signing client gets the 403, and any other client's is **dropped**, the message being served as one without it |
 | `forwardedProps["vymalo.uiCatalog"]` (ADR 0023) on a run | The screen's component catalog, `{catalogId, version, digest, catalog}`: read on every run, refused (400, 413) when it breaks a rule, and applied only when the run applies an input (a message, an answer or an action). It is recorded as a `ui_catalog` event first in that input's commit when its digest is new to the thread. See [The UI catalog](#the-ui-catalog) |
 | `forwardedProps.a2uiAction.userAction` (ADR 0013) | `Input::UiAction{surfaceId, name, sourceComponentId, context, version, runId}`; on a blocked thread it answers the interrupt, as a message does. `name`, `surfaceId` and `sourceComponentId` are required strings and `context` an object (default `{}`); `timestamp`, `userMessage` and `type` are dropped. The id must be one the thread has now: an A2UI surface, whose version is the surface's, or a trusted card (`trusted-<seq>`, ADR 0083), which has no surface and no dialect and is accepted as it is. See [Actions](#actions) |
 | `a2uiAction` together with a new message, a `resume` or a cancel | 422 before the stream (one thing at a time) |
@@ -514,6 +515,7 @@ while the agent works. The consumer posts the message as a run like any other an
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: sending while an agent works
   autonumber
   participant P as Person (web)
   participant S as Run route
@@ -530,6 +532,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: sending while an agent works
   [*] --> RunOpen: RUN_STARTED run-1
   RunOpen --> RunOpen: agent events
   RunOpen --> NextRun: a user_message arrives, run-1 is finished and the invocation suspended
@@ -565,6 +568,12 @@ What each side reads:
   answer: no interrupt, and its invocation is closed by the task's end or by the job boundary. A stop the agent refused for good
   goes back to being judged (the core logs an `error` of the orchestrator's, which ends the projection's "stopping"). Golden:
   `stop-and-send`.
+- **A signed message and a stop** ([ADR 0087](../decisions/0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md),
+  amended 2026-11-28). A signature covers one message, so it is never joined to another. While a stop holds a message, a
+  further message of either kind (`steer` or `interrupt`) is refused with **409** `code: stop_pending` before the stream,
+  and nothing is written, when the held message or the new one is signed. The consumer sends it again, signed anew if it
+  must be, once the held message is no longer waiting. Two unsigned messages are joined as before. A retry of the
+  request that is held is not refused: it attaches, as any retry does.
 - **A message while the work is verified** (`verifying`) is not a steer (nothing runs; the core logs no `delivery`): it still ends
   the run and opens its own, and abandons the verification as before.
 - **Message metadata.** `TEXT_MESSAGE_START.metadata["vymalo.delivery"]` is `"steer"` or `"interrupt"` on a user message the core
@@ -607,6 +616,7 @@ with the findings while attempts are left, and only then finishes. A viewer sees
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: verification (the gate)
   participant W as Agent (A2A)
   participant O as Orchestrator
   participant U as AG-UI consumer
@@ -624,6 +634,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: verification (the gate)
   [*] --> Queued
   Queued --> Working: the agent works
   Working --> Verifying: completed (SUBAGENT_FINISHED, no RUN_FINISHED)
@@ -776,6 +787,7 @@ as long as its verdict is awaited:
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the verifier as a subagent
   participant O as Orchestrator
   participant V as Verifier agent (A2A)
   participant U as AG-UI consumer
@@ -790,6 +802,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the verifier as a subagent
   [*] --> Out: the pending vymalo.check of the verifier source (SUBAGENT_STARTED)
   Out --> Answered: a verdict, passed or failed (SUBAGENT_FINISHED with result passed)
   Out --> Abandoned: another source failed the round, the user wrote, the thread was cancelled (SUBAGENT_FINISHED with result status canceled)
@@ -847,6 +860,7 @@ subagents the protocol defines; one that does draws the tree from the activities
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: nested steps
   participant L as Event log
   participant P as Projection
   participant C as AG-UI consumer
@@ -862,6 +876,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: nested steps
   [*] --> Open: start of a sub-agent step (SUBAGENT_STARTED, the activity)
   Open --> Open: update (the activity again)
   Open --> Ended: end completed (SUBAGENT_FINISHED), failed (SUBAGENT_ERROR step_failed), canceled (SUBAGENT_FINISHED canceled)
@@ -919,6 +934,7 @@ after it, for as long as the ask runs, and a `vymalo.ask` activity that says wha
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: asked agents as subagents
   participant O as Orchestrator
   participant B as Asked agent (A2A)
   participant U as AG-UI consumer
@@ -933,6 +949,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: asked agents as subagents
   [*] --> Running: ask_started (SUBAGENT_STARTED, vymalo.ask running)
   Running --> Answered: completed, input_required, auth_required (SUBAGENT_FINISHED, result state)
   Running --> Canceled: the person stopped the job, or the asking task ended (SUBAGENT_FINISHED, result state canceled)
@@ -987,6 +1004,7 @@ child's log is the child thread's stream, which is read like any thread's.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: child sessions as subagents
   participant A as Parent agent (A2A)
   participant O as Orchestrator
   participant U as AG-UI consumer
@@ -1007,6 +1025,7 @@ Two lifecycles, the card's and the subagent's. **The card** (`state`) is `workin
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the child session card, from working to closed
   [*] --> working: child_session_opened with a round
   [*] --> idle: child_session_opened with none
   working --> idle: reported done, failed or canceled
@@ -1021,6 +1040,7 @@ stateDiagram-v2
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the subagent, from open to its end and a later report
   [*] --> Open: child_session_opened (SUBAGENT_STARTED)
   Open --> Finished: reported done or canceled, or closed
   Open --> Failed: reported failed (SUBAGENT_ERROR session_failed)
@@ -1086,6 +1106,7 @@ the contract was S3a). A person starts a helper from the parent (`startChildSess
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a person starts, sends and closes a session
   participant U as AG-UI consumer
   participant O as Orchestrator
   U->>O: POST /api/threads/{parent}/sessions
@@ -1099,6 +1120,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a person starts, sends and closes a session
   [*] --> starting: child_session_start_asked
   starting --> opened: child_session_start_ended opened
   starting --> failed: child_session_start_ended failed
@@ -1129,6 +1151,7 @@ log keeps them as `model_usage` and `model_usage_total` and the consumer reads t
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: token usage
   participant A as Agent (usage/v1)
   participant O as Orchestrator
   participant U as AG-UI consumer
@@ -1144,6 +1167,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: token usage
   [*] --> Calls: model_usage (counted in the open run)
   Calls --> Calls: model_usage
   Calls --> Totals: model_usage_total (the task's record)
@@ -1316,6 +1340,7 @@ parent's frames up to the cut, with the parent's ids and resume points, then the
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: forks
   participant W as Screen
   participant C as Connect stream
   participant R as Run route
@@ -1328,6 +1353,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: forks
   [*] --> Copied: the parent's events 1..cut, as projected
   Copied --> Done: thread_forked (the open run is cancelled, the job and the catalog are forgotten)
   Done --> Queued: the next message (job n+1), or the replacing message of an edit
@@ -1370,6 +1396,7 @@ answers, the parent's or another.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a fork made with its first message
   autonumber
   participant W as Screen (fork draft)
   participant R as Run route
@@ -1387,6 +1414,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a fork made with its first message
   [*] --> Absent: the draft is open, nothing exists
   Absent --> Absent: refused (404, 409 turn_open, 422, 400): nothing was written
   Absent --> Forked: the run is accepted: the fork and its message in one commit
@@ -1483,7 +1511,7 @@ contract [`locale-v1.md`](locale-v1.md)); adam lists the extension whenever `DEF
   no `vymalo.locale` on any frame and no activity is emitted for it. A reload, another tab, an export, a fork and a share link show
   nothing of the interface's language.
 - **Out:** nothing.
-- **Capabilities:** no key. Nothing in the interface draws a locale control: the tag is the client's own state.
+- **Capabilities:** no key. The interface draws one control for it — the language picker of the account menu, from the deployment's `ui.languages` of [`GET /api/config`](config.md#get-apiconfig) (ANR-957) — and nothing else: the tag is the client's own state.
 - **To the agent:** only when the live card read at the send lists `locale/v1` well formed; any other agent is sent the message it
   always was. The orchestrator's own messages (a rework, an ask, a verifier's task) carry none.
 
@@ -1657,10 +1685,10 @@ was streamed and nothing was written.
 |---|---|
 | 400 | The body is not JSON or not a `RunAgentInput`; a `vymalo.mentions` that is not an array of at most 16 references of the shape above (ADR 0026); `threadId` is not a UUID, or is a version 8 UUID for a thread that does not exist yet; `protocolVersion` names another major; an id is longer than 256 bytes; an unknown release, or an agent without releases asked for one (ADR 0008); a `vymalo.gate` that is malformed, removes a required source, asks for attempts outside `1..=cap`, or needs what this build does not honour yet (ADR 0018); a `vymalo.uiCatalog` that breaks a rule of [The UI catalog](#the-ui-catalog) (the reason is in `detail`); a `vymalo.tools` that is not an array of server ids, or holds an id that is not one (ADR 0024); a `vymalo.send` that is not `"steer"` or `"interrupt"` (ADR 0036); a `vymalo.fork` that is not exactly `{from: <thread UUID>, after: <integer>}`, or that comes with `vymalo.gate` or `vymalo.tools` (ADR 0042) |
 | 401 | No edge identity |
-| 403 | The caller's roles lack `thread.write`, or do not name the agent for `agent.invoke` (`code: forbidden`); their roles grant nothing (`code: no_access`) |
+| 403 | The caller's roles lack `thread.write`, or do not name the agent for `agent.invoke` (`code: forbidden`); their roles grant nothing (`code: no_access`); the caller's token was issued to one of `auth.signingClients`, or names no client at all (fail closed), and the run's new user message — for an answer, its `resume` entry — carries no `metadata["vymalo.promptSignature"]`, or one that is not a compact JWS: `code: prompt_signature_invalid`, `reason: invalid`, nothing written and no agent asked (ADR 0087). An attach, a cancel and an A2UI action are never refused for it |
 | 404 | The `agentId` is not listed (not in the deployment's own list, and the agent registry answered without it); the thread belongs to someone else and the caller may not read it (indistinguishable from one that does not exist, including a `threadId` the caller minted that collides with another owner's); with `vymalo.fork`, the thread to fork (`from`) is not the caller's or does not exist |
 | 406 | `Accept` does not admit `text/event-stream` (the protobuf framing is not offered) |
-| 409 | With `vymalo.fork`: the turn to copy is still going on (`code: turn_open`), or the thread exists and is not the fork this request made. The thread targets another agent; a run is open on it and the run is not a message that says `vymalo.send` (the `detail` says what would be served); the run carries an A2UI action and the thread is finished (`done`, `failed`, `cancelled`; a **message** on a finished thread is served, it starts the next job; a stop has nothing to stop there: 422); the run continues a thread and asks for a `vymalo.gate` different from the thread's (a thread's gate is fixed when it is created; this includes the loser of a race to create it) |
+| 409 | `code: stop_pending`: a stop holds a message, and it or this one carries a prompt signature (ADR 0087): send it again once the held message is no longer waiting. With `vymalo.fork`: the turn to copy is still going on (`code: turn_open`), or the thread exists and is not the fork this request made. The thread targets another agent; a run is open on it and the run is not a message that says `vymalo.send` (the `detail` says what would be served); the run carries an A2UI action and the thread is finished (`done`, `failed`, `cancelled`; a **message** on a finished thread is served, it starts the next job; a stop has nothing to stop there: 422); the run continues a thread and asks for a `vymalo.gate` different from the thread's (a thread's gate is fixed when it is created; this includes the loser of a race to create it) |
 | 413 | The body is larger than 8 MiB; an A2UI action is larger than the limits allow (`name`, `surfaceId`, `sourceComponentId` at most 256 bytes, `context` at most 16 KiB); a `vymalo.uiCatalog` whose `catalog` is larger than 64 KiB |
 | 415 | `Content-Type` is not `application/json` |
 | 422 | A `vymalo.fork` whose `after` is not an event of the parent; a `vymalo.mentions` reference that does not hold against the text, the registry or the caller's roles (see its row above); nothing to run (no new message, no answer, and a `runId` the thread does not hold — a resent message the log holds attaches to the run it opened, whatever `runId` it carries, ADR 0082); a message id the log holds sent with other words (`code: message_id_reused`: an id is bound to its text, so an edited message needs a new id); more than one new message; a new message that is not from the user; a message without text; a `resume` payload with no `text`; a `resume` answer together with a new message; a reused `runId`; an A2UI action that is malformed, names a surface the thread does not have, names one whose operations are not `"1.0"`, or comes with a message, an answer or a cancel; a `vymalo.tools` that names a server the deployment does not offer for the agent, or more than 16 (ADR 0024) |
@@ -1768,6 +1796,7 @@ stream never cancels a run.**
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: connect binding
   participant C as Client
   participant A as Replica A
   participant B as Replica B
@@ -1785,6 +1814,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: connect binding
   [*] --> Folding: connect (cursor c, 0 = none)
   Folding --> Writing: the event at c is folded (preamble if a run is open)
   Writing --> Writing: next event, frames with id seq
@@ -1890,6 +1920,8 @@ document is [the golden](examples/README.md#connect-streams) `capabilities-<agen
 
 ## A2UI (generative UI)
 
+- **Status:** ✅ built · **v1.0 only** ([the index](extensions.md#the-table))
+
 An agent's result is sometimes an interface: a form that answers its question, a card, a button that
 opens the pull request. [ADR 0013](../decisions/0013-a2ui-generative-ui.md) chose
 [A2UI](https://a2ui.org/) for it, end to end over standards: **agent → A2A (A2UI extension) →
@@ -1966,6 +1998,8 @@ that sends a message and for every capabilities request.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: capability detection
+  accDescr: A sequence diagram, between Web, Orchestrator, Postgres event log, A2A agent.
   participant W as Web
   participant O as Orchestrator
   participant DB as Postgres event log
@@ -2042,6 +2076,7 @@ stretch of the thread between two messages of a person, so that a plan the perso
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: surfaces in the projection
   [*] --> Live: first operation for a surfaceId (a2ui-seq is its message id)
   Live --> Live: operation, snapshot of the whole surface
   Live --> Live: createSurface, the surface starts over (earlier operations dropped)

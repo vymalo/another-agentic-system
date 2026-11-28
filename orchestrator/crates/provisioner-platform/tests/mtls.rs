@@ -16,6 +16,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use jiff::{SignedDuration, Timestamp};
+use orch_core::AccountId;
 use orch_ports::memory::FixedClock;
 use orch_ports::{
     AgentKind, AgentOwner, AgentProvisioner, Clock, PlatformCertificateFuture,
@@ -272,6 +273,10 @@ fn provisioner(server: &Server, certs: Arc<Stub>) -> PlatformProvisioner {
     PlatformProvisioner::new(config).unwrap()
 }
 
+fn account() -> AccountId {
+    AccountId::parse("3b1d7e52-6a40-4c18-9f0e-a1c2d3e4f501").unwrap()
+}
+
 fn owner() -> AgentOwner {
     AgentOwner::new("alice").unwrap()
 }
@@ -284,7 +289,7 @@ async fn the_leaf_and_its_intermediate_are_presented_and_no_authorization_is_sen
     let provisioner = provisioner(&server, Stub::new(Ok(cert)));
 
     let agent = provisioner
-        .ensure_ready(&owner(), AgentKind::Coder)
+        .ensure_ready(&owner(), AgentKind::Coder, &account())
         .await
         .unwrap();
     assert_eq!(agent.name, "coder-alice");
@@ -307,7 +312,7 @@ async fn no_identity_means_nothing_is_sent() {
         let stub = Stub::new(Err(failure));
         let provisioner = provisioner(&server, stub.clone());
         let error = provisioner
-            .ensure_ready(&owner(), AgentKind::Coder)
+            .ensure_ready(&owner(), AgentKind::Coder, &account())
             .await
             .unwrap_err();
         match failure {
@@ -335,11 +340,11 @@ async fn a_new_serial_opens_a_new_connection_and_the_same_serial_keeps_the_old_o
     let provisioner = provisioner(&server, stub.clone());
 
     provisioner
-        .ensure_ready(&owner(), AgentKind::Coder)
+        .ensure_ready(&owner(), AgentKind::Coder, &account())
         .await
         .unwrap();
     provisioner
-        .ensure_ready(&owner(), AgentKind::Coder)
+        .ensure_ready(&owner(), AgentKind::Coder, &account())
         .await
         .unwrap();
     assert_eq!(
@@ -353,12 +358,12 @@ async fn a_new_serial_opens_a_new_connection_and_the_same_serial_keeps_the_old_o
     let second_leaf = second.chain_der()[0].clone();
     stub.set(Ok(second));
     provisioner
-        .ensure_ready(&owner(), AgentKind::Coder)
+        .ensure_ready(&owner(), AgentKind::Coder, &account())
         .await
         .unwrap();
     assert_eq!(server.seen.tcp.load(Ordering::SeqCst), 2);
     provisioner
-        .ensure_ready(&owner(), AgentKind::Coder)
+        .ensure_ready(&owner(), AgentKind::Coder, &account())
         .await
         .unwrap();
     assert_eq!(server.seen.tcp.load(Ordering::SeqCst), 2);
@@ -375,7 +380,7 @@ async fn a_certificate_of_another_authority_is_refused_by_the_listener() {
     let stranger = authority("stranger");
     let provisioner = provisioner(&server, Stub::new(Ok(stranger.client(0x0a))));
     let error = provisioner
-        .ensure_ready(&owner(), AgentKind::Coder)
+        .ensure_ready(&owner(), AgentKind::Coder, &account())
         .await
         .unwrap_err();
     assert!(
@@ -414,7 +419,7 @@ async fn a_certificate_that_is_over_is_not_presented_and_nothing_is_sent() {
 
     // Before its end it is presented.
     provisioner
-        .ensure_ready(&owner(), AgentKind::Coder)
+        .ensure_ready(&owner(), AgentKind::Coder, &account())
         .await
         .unwrap();
     assert_eq!(server.seen.tcp.load(Ordering::SeqCst), 1);
@@ -423,7 +428,7 @@ async fn a_certificate_that_is_over_is_not_presented_and_nothing_is_sent() {
     for past in [10, 3_600] {
         clock.advance(std::time::Duration::from_secs(past));
         let error = provisioner
-            .ensure_ready(&owner(), AgentKind::Coder)
+            .ensure_ready(&owner(), AgentKind::Coder, &account())
             .await
             .unwrap_err();
         assert!(

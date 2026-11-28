@@ -1558,6 +1558,7 @@ fn project(
         public: Some(PublicConfig {
             ui: UiSettings {
                 show_descriptions: c.ui.show_descriptions,
+                languages: c.ui.languages.clone(),
                 // `projection` is the build's, set where the surfaces are known
                 // (`Config::public_config`)
                 history: Some(UiHistory {
@@ -1595,6 +1596,12 @@ fn project(
             .map(|cors| cors.allowed_origins.clone())
             .unwrap_or_default(),
         min_client_version: c.server.min_client_version.clone(),
+        // an empty value is none; the file's rules have refused it where one is needed
+        public_origin: c
+            .server
+            .public_origin
+            .clone()
+            .filter(|origin| !origin.is_empty()),
         // The run routes' own listener (ADR 0084 decision 5), only when the file has the section.
         internal: internal_settings(valid)?,
         #[cfg(feature = "surface-webhook")]
@@ -2979,7 +2986,7 @@ tasks:
     system: { file: prompts/description.md }
     maxChars: 200
     recompute: { minNewMessages: 6 }
-ui: { showDescriptions: false, history: { initialTurns: 5, pageTurns: 8, windowed: false } }
+ui: { showDescriptions: false, history: { initialTurns: 5, pageTurns: 8, windowed: false }, languages: [fr-FR, de-DE] }
 server: { history: { maxTurns: 30, maxPageBytes: 1048576 } }
 ";
         let mut pairs = base();
@@ -3011,6 +3018,7 @@ server: { history: { maxTurns: 30, maxPageBytes: 1048576 } }
         assert_eq!(description.max_tokens, 160);
         assert_eq!(description.timeout, Duration::from_secs(9));
         assert!(!app.public.ui.show_descriptions);
+        assert_eq!(app.public.ui.languages, ["fr-FR", "de-DE"]);
         // `ui.history` and `server.history` (ADR 0059) reach the application: the key of the
         // endpoint is the file's, with the build's projection; the bounds are the server's
         // the capability is the route's: a build without the AG-UI surface does not claim it
@@ -3721,7 +3729,11 @@ agents:
 
     #[test]
     fn a_provisioner_section_is_read_with_its_secret_and_no_section_changes_nothing() {
+        // a provisioner is read only where a person is the `sub` (ADR 0108)
         let section = "\
+auth:
+  mode: jwt
+  jwt: { issuer: 'https://idp.example/realms/main', audiences: [web], userClaim: sub }
 provisioner:
   url: http://platform-api:8080
   kinds: [coder]

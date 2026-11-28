@@ -1,7 +1,7 @@
 # A2A extension: model relay (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/model-relay/v1`
-- **Status:** **accepted (2026-11-26), kept by the owner's decision of that day ("the relay stays for agents that are not adam and do not sign their calls"); nothing is built.** Proposed 2026-10-11, at the owner's request. Acceptance keeps the relay and its scope; every name, status code, default and shape here, and the open questions, are still proposed, for the owner to confirm.
+- **Status:** 🚧 planned · **accepted (2026-11-26), kept by the owner's decision of that day ("the relay stays for agents that are not adam and do not sign their calls"); nothing is built.** Proposed 2026-10-11, at the owner's request. Acceptance keeps the relay and its scope; every name, status code, default and shape here, and the open questions, are still proposed, for the owner to confirm.
   The proof is not built either: ANR-912's scenario (the real adam with no model key of its own answers through the thread's endpoint; `mock-model`'s journal shows the orchestrator's key, never one from A2A). It uses adam as a stand-in; whether it proves the relay for agents that are not adam is the owner's to re-scope.
   (Where *Used by* below says adam-rs needs a client side, read it with that decision: an adam agent's calls are carried by ADR 0084 and ADR 0101; a note, not his decision.)
   Original status text: The direction is the owner's (the quote below, and the shape he listed: an OpenAI-compatible endpoint per thread, the card
@@ -36,6 +36,8 @@ An agent whose card does not list the extension uses its own model, as today, an
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram, between Orchestrator (adapter), Agent (card lists model-relay/v1), Relay (orchestrator surface), Model server (named endpoint), Event log.
   autonumber
   participant O as Orchestrator (adapter)
   participant A as Agent (card lists model-relay/v1)
@@ -58,6 +60,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: A2A extension
+  accDescr: A state diagram with 8 states: Refused, Forwarding, Streaming, Answered, UpstreamFailed, Finished, Cancelled, TimedOut.
   [*] --> Refused: bad token 401, Host or Origin 403, unknown model 404, too large 413, budget used 429, too many calls 429
   [*] --> Forwarding: every check passes
   Forwarding --> Streaming: the first upstream byte of a streamed call

@@ -44,6 +44,52 @@ function Probe() {
   return <p>{shown ? "shown" : "hidden"}</p>;
 }
 
+function LanguagesProbe() {
+  return <p>{hook.useLanguages().join("|")}</p>;
+}
+
+describe("languagesOf", () => {
+  it("takes an array of interface tags, deduped case-insensitively, and nothing else", () => {
+    expect(hook.languagesOf(["en-GB", "fr-FR"])).toEqual(["en-GB", "fr-FR"]);
+    // the first spelling wins; a repeat in another case is the same language
+    expect(hook.languagesOf(["fr-FR", "FR-fr", "en-GB"])).toEqual(["fr-FR", "en-GB"]);
+    for (const bad of [
+      undefined,
+      null,
+      "fr-FR",
+      { 0: "fr-FR" },
+      [],
+      ["fr-FR", 3],
+      ["fr-FR", ""],
+      ["en_CM"],
+      ["en-GB", null],
+    ])
+      expect(hook.languagesOf(bad), JSON.stringify(bad)).toBeUndefined();
+  });
+});
+
+describe("useLanguages", () => {
+  it("offers the four when the deployment names none (an older orchestrator)", async () => {
+    answer = { status: 200, body: { ui: { showDescriptions: true } } };
+    render(<LanguagesProbe />);
+    await waitFor(() => expect(asked).toBe(1));
+    await waitFor(() => expect(screen.getByText("en-GB|fr-FR|gsw-CH|fur-IT")).toBeTruthy());
+  });
+
+  it("offers the deployment's own list, in its order", async () => {
+    answer = { status: 200, body: { ui: { languages: ["de-DE", "fr-FR"] } } };
+    render(<LanguagesProbe />);
+    await waitFor(() => expect(screen.getByText("de-DE|fr-FR")).toBeTruthy());
+  });
+
+  it("ignores a malformed list and offers the four", async () => {
+    answer = { status: 200, body: { ui: { languages: ["fr-FR", 7] } } };
+    render(<LanguagesProbe />);
+    await waitFor(() => expect(asked).toBe(1));
+    await waitFor(() => expect(screen.getByText("en-GB|fr-FR|gsw-CH|fur-IT")).toBeTruthy());
+  });
+});
+
 describe("useShowDescriptions", () => {
   it("is off until the configuration is known, then follows ui.showDescriptions", async () => {
     answer = { status: 200, body: { ui: { showDescriptions: false } } };

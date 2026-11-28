@@ -39,6 +39,7 @@ fn request(ep: &AgentEndpoint, message: &str, context: Option<&str>) -> SendRequ
         tier_cap: None,
         locale: None,
         pick: None,
+        signed_prompt: None,
     }
 }
 

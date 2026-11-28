@@ -26,7 +26,7 @@ You implement changes in `orchestrator/`.
 
 ## Gates
 
-From `orchestrator/`, the commands of `.github/workflows/orchestrator.yml` (toolchain 1.94.1):
+From `orchestrator/`, the commands of `.github/workflows/orchestrator.yml` (toolchain 1.98.1):
 
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`

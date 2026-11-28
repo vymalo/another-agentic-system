@@ -140,6 +140,7 @@ impl Rig {
                 Arc::clone(&app),
                 keepalive,
                 lifetime,
+                orch_surface_agui::Intake::default(),
             )],
         );
         let server = tokio::spawn(async move {

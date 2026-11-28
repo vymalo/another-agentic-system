@@ -89,6 +89,21 @@ pub(crate) struct State<P: Ports> {
     pub(crate) app: Arc<App<P>>,
     pub(crate) keepalive: Duration,
     pub(crate) lifetime: Duration,
+    /// What the run route asks of a prompt.
+    pub(crate) intake: Intake,
+}
+
+/// What the run route asks of a person's prompt, and what it records beside a signed one
+/// (ADR 0087). The default lists no signing client and names no origin.
+#[derive(Debug, Clone, Default)]
+pub struct Intake {
+    /// `auth.signingClients` (decision 1): the clients whose prompts must carry
+    /// `vymalo.promptSignature`. Empty asks nobody.
+    pub signing_clients: Arc<[String]>,
+    /// `server.publicOrigin` (decision 2): the `aud` of the claims kept beside an envelope, never
+    /// taken from the request. `None`: an envelope is carried with no claims. A deployment that
+    /// lists a signing client does not start without one.
+    pub public_origin: Option<Arc<str>>,
 }
 
 impl<P: Ports> Clone for State<P> {
@@ -97,6 +112,7 @@ impl<P: Ports> Clone for State<P> {
             app: Arc::clone(&self.app),
             keepalive: self.keepalive,
             lifetime: self.lifetime,
+            intake: self.intake.clone(),
         }
     }
 }
@@ -107,15 +123,24 @@ impl<P: Ports> Clone for State<P> {
 /// `sse_lifetime` (ADR 0082), whichever credential they were opened with;
 /// `GET /agui/agents/{agentId}/capabilities` and `GET /agui/threads/{threadId}/history` (and its two
 /// shared variants) are ordinary requests.
+///
+/// `intake` is the deployment's `auth.signingClients` and `server.publicOrigin` (ADR 0087): the
+/// clients whose prompts must carry `vymalo.promptSignature`, and the `aud` kept beside an
+/// envelope. No signing client (the default of a deployment that lists none) asks nobody. A token
+/// that names no client at all — the `Some("")` sentinel — **is** a signing client's (fail
+/// closed); only a credential with no token (`None`: the proxy header, an MCP static token) is never
+/// checked.
 pub fn routes<P: Ports>(
     app: Arc<App<P>>,
     sse_keepalive: Duration,
     sse_lifetime: Duration,
+    intake: Intake,
 ) -> SurfaceRoutes {
     let state = State {
         app,
         keepalive: sse_keepalive,
         lifetime: sse_lifetime,
+        intake,
     };
     let streaming = Router::new()
         .route("/agui/agents/{agent_id}", post(run::run::<P>))

@@ -191,6 +191,8 @@ detected from the live card, never cached, fail closed, removable. **3, stateles
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the person reaches the agent as a signed assertion
+  accDescr: A sequence diagram, between Person, Orchestrator, Secret store and link table, GitHub, Agent (coder, lists identity/v1).
   autonumber
   actor P as Person
   participant O as Orchestrator
@@ -233,6 +235,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the person reaches the agent as a signed assertion
   [*] --> unlinked
   unlinked --> authorizing: POST start (state and PKCE kept 10 minutes)
   authorizing --> authorizing: POST start again (the first state is void)

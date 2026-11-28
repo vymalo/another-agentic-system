@@ -4,7 +4,7 @@ sidebarTitle: "trusted-components/v1"
 
 # `trusted-components/v1` — the agent names a component, the client draws it
 
-- **Status:** **proposed 2026-11-21** ([ADR 0083](../decisions/0083-trusted-components-the-agent-names-and-the-client-draws.md)).
+- **Status:** ⚠️ partial · **proposed 2026-11-21** ([ADR 0083](../decisions/0083-trusted-components-the-agent-names-and-the-client-draws.md)).
   The orchestrator's half is built: it reads the card, logs `trusted_request` and projects the
   `vymalo.trustedRequest` card. The web's half is built too (2026-11-21, the same day): it draws the
   card, its frame and its form for `McpCredential`, calls the API with the person's own credentials and
@@ -202,6 +202,8 @@ The person gets words and a link, never a plain form.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: what a client without the extension does
+  accDescr: A sequence diagram, between Agent, Orchestrator, Client, Orchestrator API.
   autonumber
   participant A as Agent
   participant O as Orchestrator

@@ -25,7 +25,8 @@
 #     "The person's interface language is de-DE" as one of its messages, and `de-DE` nowhere in `system`;
 #   * a second thread of the chat naming no tag sends the model no such line;
 #   * a tag for the researcher, whose card lists no extension, is accepted (a hint never holds a message back),
-#     and its model request has no line either.
+#     and its model request has no line either;
+#   * `GET /api/config` carries `ui.languages` — the list the web's picker offers (ANR-957): ADR 0085's four by default.
 # Exit status 0 when every check passed.
 #
 # Environment (defaults match compose.yaml on one machine):
@@ -46,7 +47,7 @@
 # no member at all.
 #
 # It EMPTIES the request journal of `mock-model` first, so run it on a stack you are not in the middle of another
-# scenario on. Needs node, curl and jq (and /proc or uuidgen for a UUID). CI runs it in .github/workflows/coder-e2e.yml,
+# scenario on. Needs node, curl and jq (and python3 for a v7 UUID; /proc or uuidgen, which make a v4, are the fallback). CI runs it in .github/workflows/coder-e2e.yml,
 # through dev/e2e-all.sh, with Node 24 from `actions/setup-node`.
 set -eu
 
@@ -98,7 +99,7 @@ api() { # api METHOD PATH: the body on stdout, non-zero when the status is not 2
   curl --fail-with-body -sS --max-time 60 -X "$1" "$base$2" -H "$id_header"
 }
 
-uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || { echo 'uuid: python3 is missing, so this is a v4 id and recent will not be creation order' >&2; cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }; }
 
 card() { # card URL TOKEN: the agent's card
   curl --fail-with-body -sS --max-time 30 "$1/.well-known/agent-card.json" -H "authorization: Bearer $2"
@@ -155,6 +156,11 @@ done
 expect "the web sends no member for a tag it refuses (never a 400 that holds the words back)" \
   "$(node "$web_props" locale en_CM)" "{}"
 expect "the web sends no member for a page that names no tag" "$(node "$web_props" locale "")" "{}"
+
+# --- the deployment's list -------------------------------------------------------------------------------------------
+echo "== the interface languages this deployment offers"
+expect "GET /api/config carries ui.languages, ADR 0085's four by default (the picker's source, ANR-957)" \
+  "$(api GET /api/config | jq -r '.ui.languages | join(",")')" "en-GB,fr-FR,gsw-CH,fur-IT"
 
 # --- the cards ---------------------------------------------------------------------------------------------------------
 echo "== the chat's card lists the extension with the deployment's tag"

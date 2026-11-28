@@ -1,7 +1,7 @@
 # A2A extension: uploads (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/uploads/v1`
-- **Status:** **accepted as a design (2026-10-11); the orchestrator's side is built (step 6a, 2026-10-14; the downloads' redirect, step 6b, 2026-10-14) and proven on mocks; the S3 adapter's own cases were also run against a local RustFS (2026-10-14), not the whole chain and no live agent.** What is built:
+- **Status:** ⚠️ partial · **accepted as a design (2026-10-11); the orchestrator's side is built (step 6a, 2026-10-14; the downloads' redirect, step 6b, 2026-10-14) and proven on mocks; the S3 adapter's own cases were also run against a local RustFS (2026-10-14), not the whole chain and no live agent.** What is built:
   the tool, the extension on the card and in the message, the ingest of the reference, the S3 store's presigned `PUT` and `HEAD`, the keys
   `artifacts.upload.*` and `artifacts.s3.publicEndpoint`; and, for downloads, the S3 store's presigned `GET`, the three file routes' `302` to it, and the keys `artifacts.s3.downloads` (opt-in) and
   `artifacts.s3.presignTtlSecs` (A1, [below](#downloads-a1)). The chart's public files host and its `NetworkPolicy` (step 6c, 2026-10-14) are built, off by default, and were run against a local RustFS (not through Traefik): see
@@ -37,6 +37,8 @@ never holds a store credential. The orchestrator never receives the bytes. An ag
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram, between Orchestrator (message), Agent (card lists uploads/v1), Thread tools (orchestrator), Bucket, at the public files host, Dispatcher (orchestrator), Event log.
   autonumber
   participant O as Orchestrator (message)
   participant A as Agent (card lists uploads/v1)
@@ -59,6 +61,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: A2A extension
   [*] --> Refused: too large, over the job's limits, no store that presigns, an asked agent
   [*] --> Issued: request_upload accepted
   Issued --> Uploaded: the agent's PUT (the URL works until it expires)
@@ -239,6 +242,8 @@ Not an extension: no card, no activation. The same bucket and the same public ho
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: downloads (A1)
+  accDescr: A sequence diagram, between Browser (or a reader of a link), File route (orch-api, deliver), App (readable*, redirectttl), ArtifactStore (S3, public signer), Bucket, at the public files host.
   autonumber
   participant W as Browser (or a reader of a link)
   participant R as File route (orch-api, deliver)
@@ -261,6 +266,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: downloads (A1)
   [*] --> Refused: a check fails (401, 403, the one 404): never a redirect
   [*] --> Readable: every check of the route passes
   Readable --> Streamed: downloads is stream, or the store cannot presign

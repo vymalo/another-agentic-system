@@ -12,6 +12,7 @@ readme = "README.md"
 orch-core.workspace = true
 orch-app.workspace = true
 orch-ports.workspace = true
+orch-prompt-statement.workspace = true
 orch-svg-clean.workspace = true
 futures.workspace = true
 tokio = { workspace = true, features = ["time", "sync"] }

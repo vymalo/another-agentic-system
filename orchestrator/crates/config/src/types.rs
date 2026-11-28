@@ -324,7 +324,7 @@ pub struct Provisioner {
     /// chat agent is never provisioned.
     #[schemars(length(min = 1, max = 2))]
     pub kinds: Vec<ProvisionedKind>,
-    /// The agent form of each kind (the platform's form without `name`, `owner` and `suspend`),
+    /// The agent form of each kind (the platform's form without `name`, `owner`, `account` and `suspend`),
     /// one for every kind in `kinds`.
     #[serde(default)]
     pub forms: BTreeMap<ProvisionedKind, serde_json::Map<String, serde_json::Value>>,
@@ -427,6 +427,16 @@ pub struct Server {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1))]
     pub surfaces: Option<Vec<Surface>>,
+    /// The deployment's canonical API origin, the `aud` a person's signed prompt is for (ADR 0087,
+    /// decision 2). It is taken from here and **never** from a request (`Host` and `X-Forwarded-*`
+    /// included); a signing app takes it from its own configuration. Written in its normal form: `http`
+    /// or `https`, a lower-case host (an international name as punycode), a port only when it is not the
+    /// scheme's default, and nothing after it, not even a slash, for example
+    /// `https://chat.example.com`; a `production` process takes `http` only for the loopback.
+    /// **Required when `auth.signingClients` lists a client** (absent or empty, the process does not
+    /// start); with none listed it may be absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_origin: Option<String>,
     /// The public origin of the chat, for example `https://chat.example.com`: the MCP surface
     /// gives `start_job` a `web_url` from it. Replaces `ORCH_PUBLIC_URL`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -575,6 +585,7 @@ impl Default for Server {
             role: Role::default(),
             instance_id: None,
             surfaces: None,
+            public_origin: None,
             public_url: None,
             shutdown_grace_secs: default_shutdown_grace_secs(),
             environment: Environment::default(),
@@ -1393,6 +1404,30 @@ pub struct Ui {
     /// the capability.
     #[serde(default)]
     pub history: UiHistory,
+    /// The interface languages this deployment offers (ADR 0085): the web draws a picker from them
+    /// and sends the person's choice with each message. Each is a language tag an interface offers —
+    /// a language, an optional script of four letters and an optional region of two letters or three
+    /// digits — and the list is the four of the design when the file names none. The schema refuses
+    /// an empty list and more than 32 entries; the rules pass refuses an entry that is not such a tag
+    /// and two entries that are the same tag case-insensitively.
+    #[serde(default = "default_languages")]
+    #[schemars(length(min = 1, max = 32), default = "default_languages")]
+    pub languages: Vec<String>,
+}
+
+/// The languages an interface offers from day 0 (ADR 0085): British English, French, Swiss
+/// German and Friulian.
+pub const DEFAULT_LANGUAGES: [&str; 4] = ["en-GB", "fr-FR", "gsw-CH", "fur-IT"];
+
+/// The most `ui.languages` may list, 32: a picker, not a directory. The schema attribute on
+/// [`Ui::languages`] carries the same number as a literal.
+pub const MAX_UI_LANGUAGES: usize = 32;
+
+fn default_languages() -> Vec<String> {
+    DEFAULT_LANGUAGES
+        .iter()
+        .map(|tag| (*tag).to_owned())
+        .collect()
 }
 
 impl Default for Ui {
@@ -1400,6 +1435,7 @@ impl Default for Ui {
         Ui {
             show_descriptions: true,
             history: UiHistory::default(),
+            languages: default_languages(),
         }
     }
 }

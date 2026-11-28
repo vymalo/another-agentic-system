@@ -12,6 +12,10 @@ sidebarTitle: "0015 · Control plane, workers on adam-rs"
   is embedded as a library in an application, a local agent runs adam in process through `adam-engine` on adam's
   SQLite store, not `adam-store-postgres`, and its run state is adam's file, not `orch_agent_*` tables; in a server
   build decision 6 stands.
+  *Amended (2026-11-27):* both workspaces are now on Rust 1.98 on purpose — the system's workspace moved
+  from 1.94 to **1.98** (ANR-1328, `orchestrator/Cargo.toml` and every workflow that installs a toolchain), because
+  adam-rs raised its own to 1.98 on 2026-11-25 (`278b6999`, adam#399). The sentence below about "both Rust 1.94" is
+  the planning note of 2026-09-29 and stays as written.
 
 ## Context
 
@@ -138,6 +142,7 @@ The topology. The web chat surface never talks to a worker. Workers never serve 
 
 ```mermaid
 flowchart LR
+  accTitle: Flow: control plane and workers on adam-rs
   you((You)) -- chat --> web["Web chat surface<br/>Next.js + assistant-ui"]
   web -- "AG-UI over HTTP + SSE" --> cp
   ext["Other systems · webhooks · MCP clients"] --> cp
@@ -161,6 +166,8 @@ One chat turn across the seam. The two roles never call each other.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: control plane and workers on adam-rs
+  accDescr: A sequence diagram, between You, Web chat surface, Control plane, Postgres, Worker, Agent (remote A2A, or local behind the port).
   actor U as You
   participant W as Web chat surface
   participant C as Control plane
@@ -189,6 +196,7 @@ The lifecycle of one process under the `adam-host` supervisor.
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: control plane and workers on adam-rs
   [*] --> Running: components for the role started
   Running --> Stopping: shutdown signal
   Running --> Stopping: a component ended on its own

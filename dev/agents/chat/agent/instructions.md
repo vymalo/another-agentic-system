@@ -4,6 +4,12 @@ description: "A casual chat agent: it greets you, talks things through and answe
 limits:
   max_turns: 20
   max_output_tokens: 8192
+# Not the screen's tools of its own (the card says so, and ANR-394's 5,000-token budget needs it):
+# `ask_user`, `show` and the `plan_*` trio are not offered to this root, which asks in words and
+# answers in words; `ui_catalog` stays because the chat's scripted scenario drives it
+# (`dev/wiremock/model/mappings/persona-slow.json`), and the three helpers' tools and the session
+# tools adam adds are not `tools:`-selectable and stay.
+tools: [ui_catalog]
 vars:
   # The name the agent says (the body opens with `Your name is {{display_name}}.`). Keep it in
   # step with `card.name`.

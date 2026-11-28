@@ -209,7 +209,7 @@ impl SendContent {
 }
 
 /// One message to deliver to the agent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SendRequest {
     /// Target agent.
     pub endpoint: AgentEndpoint,
@@ -297,6 +297,40 @@ pub struct SendRequest {
     pub locale: Option<orch_core::LocaleHint>,
     /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
     pub pick: Option<orch_core::ModelPick>,
+    /// The person's signed prompt for the message (ADR 0087, decision 2): the compact JWS their
+    /// app sent, checked for presence at intake and passed on **byte for byte** — never decoded,
+    /// re-encoded or verified here — with the claims computed at intake, when the route could say
+    /// them ([`SignedPrompt::claims`](orch_core::SignedPrompt::claims)). The cloud path's statement
+    /// (ANR-903) is made from it, and nothing of it is stored in the log. `None` for a message that
+    /// carries none and for the orchestrator's own messages (a rework, an ask, the verifier).
+    pub signed_prompt: Option<orch_core::SignedPrompt>,
+}
+
+impl fmt::Debug for SendRequest {
+    /// Every member. The person's signed prompt shows as the **lengths** of its strings, by its own
+    /// `Debug`: a credential-shaped string must not reach a log line through a `{:?}` of a request
+    /// (ADR 0087). [`AgentEndpoint`](Self::endpoint) redacts its bearer the same way.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SendRequest")
+            .field("endpoint", &self.endpoint)
+            .field("message_id", &self.message_id)
+            .field("context_id", &self.context_id)
+            .field("task_id", &self.task_id)
+            .field("reference_task_ids", &self.reference_task_ids)
+            .field("content", &self.content)
+            .field("release", &self.release)
+            .field("ui_catalog", &self.ui_catalog)
+            .field("thread_tools", &self.thread_tools)
+            .field("history", &self.history)
+            .field("steer", &self.steer)
+            .field("mentions", &self.mentions)
+            .field("tier", &self.tier)
+            .field("tier_cap", &self.tier_cap)
+            .field("locale", &self.locale)
+            .field("pick", &self.pick)
+            .field("signed_prompt", &self.signed_prompt)
+            .finish()
+    }
 }
 
 /// One mentioned agent as the addressed agent is told of it (`mentions/v1`,
@@ -612,6 +646,66 @@ mod tests {
         assert!(
             !format!("{:?}", AgentEndpoint::a2a(AgentId::new("a"), "u", None)).contains("redacted")
         );
+    }
+
+    #[test]
+    fn debug_never_prints_the_prompt_signature() {
+        let envelope = "eyJhbGciOiJFZERTQSJ9..c2lnbmF0dXJl";
+        let request = SendRequest {
+            endpoint: AgentEndpoint::a2a(
+                AgentId::new("coder"),
+                "https://coder.example.com/card.json",
+                None,
+            ),
+            message_id: "row-1".into(),
+            context_id: None,
+            task_id: None,
+            reference_task_ids: Vec::new(),
+            content: SendContent::Text("hi".into()),
+            release: None,
+            ui_catalog: None,
+            thread_tools: None,
+            history: None,
+            steer: false,
+            mentions: Vec::new(),
+            tier: None,
+            tier_cap: None,
+            locale: None,
+            pick: None,
+            signed_prompt: Some(orch_core::SignedPrompt {
+                envelope: envelope.to_owned().into(),
+                claims: Some(orch_core::PromptClaims {
+                    aud: "https://aud.test.invalid".into(),
+                    thread: "thread-as-sent".into(),
+                    agent: "agent-as-sent".into(),
+                    msg: "message-id-as-sent".into(),
+                    content_sha256: "content-hash".into(),
+                    props_sha256: "props-hash".into(),
+                }),
+            }),
+        };
+        let text = format!("{request:?}");
+        for value in [
+            envelope,
+            "https://aud.test.invalid",
+            "thread-as-sent",
+            "agent-as-sent",
+            "message-id-as-sent",
+            "content-hash",
+            "props-hash",
+        ] {
+            assert!(!text.contains(value), "{value}: {text}");
+        }
+        assert!(
+            text.contains(&format!("envelope: <{} bytes>", envelope.len()))
+                && text.contains("content_sha256: <12 bytes>"),
+            "{text}"
+        );
+        let none = SendRequest {
+            signed_prompt: None,
+            ..request
+        };
+        assert!(format!("{none:?}").contains("signed_prompt: None"));
     }
 
     #[test]

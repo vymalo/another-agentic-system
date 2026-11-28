@@ -114,6 +114,7 @@ tasks:
     recompute: { minNewMessages: 4 }
 ui:
   showDescriptions: true
+  languages: [en-GB, fr-FR, gsw-CH, fur-IT]
   history: { initialTurns: 12, pageTurns: 20, windowed: true }
 artifacts:
   store: fs
@@ -197,6 +198,7 @@ secret variable of today stands for a reference to itself: `ORCH_MODEL_API_KEY` 
 | `server.role` | `all` \| `control-plane` \| `worker`, `all` | `ORCH_ROLE` (**kept**: a process override, see below) | now |
 | `server.instanceId` | string, `$HOSTNAME-<uuid>` | `ORCH_INSTANCE_ID` (**kept**: a process override) | now |
 | `server.surfaces` | list of `agui`, `mcp`, `thread-tools`, `webhook-generic`, `webhook-github`; `[agui]` | `ORCH_SURFACES` (a comma list) | now |
+| `server.publicOrigin` | origin in its normal form (`http` or `https`, lower-case host, an international name as punycode, no default port, credentials, path, query, fragment or trailing slash); none | — | now; [ADR 0087](../decisions/0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md), card ANR-1422. The deployment's canonical API origin: the `aud` kept beside a person's signed prompt, **never** taken from a request. **Required when `auth.signingClients` lists a client**: absent or empty, the process does not start (78, naming the key). With none listed it may be absent, and an envelope an unlisted client sends is then carried with no claims. `production` refuses `http://` except for `localhost` and a loopback address. There is no variable. It is not `server.publicUrl`, which makes links |
 | `server.publicUrl` | origin, none | `ORCH_PUBLIC_URL` | now |
 | `server.minClientVersion` | one to four dotted decimal numbers of at most nine digits (`1.4.0`); none (no client is refused) | — | now. The lowest application version served: see [client-version.md](client-version.md). A request of the resource API whose client states a lower version in `X-Client-Version`, an unreadable one or none gets the problem `client_update_required` (426); the health, public-share and OAuth routes are not asked |
 | `server.cors.allowedOrigins` | list of at least one exact origin, `scheme://host[:port]` with no path, query, fragment, credentials or trailing slash, any scheme (`tauri://localhost`, `http://tauri.localhost`), an `http(s)` one as a browser sends it (lower case, no default port, the host in ASCII: `https://xn--bcher-kva.example`, not `https://bücher.example:443`), never `*` or `null`, each once; none (no CORS header at all) | — | now; [ADR 0047](../decisions/0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md). The pages of these origins may call every route (the desktop and mobile apps): a preflight is answered before identity (any origin's, but only a listed one gets `Access-Control-Allow-Origin`), the request headers `Authorization`, `DPoP`, `Content-Type`, `Accept`, `Last-Event-ID`, `X-Web-Revision` and `X-Client-Version` are allowed, `WWW-Authenticate`, `Date` and `Content-Disposition` are exposed, and **credentials never are** (no cookie crosses origins; the apps send DPoP-bound tokens). `production` refuses `http://` except for `localhost`, a loopback address and a name under `.localhost` |
@@ -349,6 +351,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `tasks.description.recompute.minNewMessages` | ≥ 1, `4`; the messages (the person's, and the agent's final words) since the last description before a new one is asked for; fewer is **no model call** | — | now |
 | `tasks.turnSummary`, `tasks.stepLabel` | names kept for later tasks | — | reserved, no PR yet: refused |
 | `ui.showDescriptions` | boolean, `true`; whether the web shows a thread's description (the API returns it either way) | — | now, served by [`GET /api/config`](#get-apiconfig); the web reads it (PR S19) |
+| `ui.languages` | a list of 1 to 32 language tags, none twice (subtags are case-insensitive); each a **language, an optional script of 4 letters and an optional region of 2 letters or 3 digits**, at most 35 bytes — the shape the picker sends, narrower than the tag a message may carry; default `en-GB`, `fr-FR`, `gsw-CH`, `fur-IT` ([ADR 0085](../decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md)). **The interface languages this deployment offers**: the web draws a picker for exactly these, and the tag a person picks rides each message as `locale/v1`. A tag is data, not a protocol variant, so a deployment names its own list | — | now, served by [`GET /api/config`](#get-apiconfig); the web reads it (ANR-957). An image that does not know the key refuses it (the `ui` section is closed), and a tag outside the picker's shape is refused at startup rather than offered to nobody |
 | `ui.history.initialTurns`, `.pageTurns`, `.windowed` | `initialTurns` 1 to 100, `12`: the turns the web asks for when it opens a thread; `pageTurns` 1 to 100, `20`: the turns of the first older page (each later one asks for more, up to `server.history.maxTurns`); `windowed` boolean, `true`: whether the web opens a thread from its history (the newest turns first, older ones as the person scrolls up); `false` replays the whole log as the web always did. Both counts may not exceed `server.history.maxTurns` (refused at startup) | — | now, served by [`GET /api/config`](#get-apiconfig) **with the build's `projection` version, and only by a process that serves the history route** (it mounts `agui` and serves routes): the presence of `ui.history` is the capability ([`history.md`](history.md)) |
 
 ### `threadTools`, `mcp`, `webhooks`, `auth`, `artifacts`
@@ -395,7 +398,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `auth.roles.<role>.limits.modelCallsInFlight` | the orchestrator's own model calls in flight for the person (titles, descriptions); at least 1 | `4` | now (ADR 0081, parsing only) |
 | `auth.roles.<role>.limits.admissionWaitSecs` | seconds a run waits for a slot before it parks; at least 1 | the dispatcher's short wait | now (ADR 0081, parsing only) |
 | `auth.defaultRole` | a role of `auth.roles`, or `null` for none. Absent: `user` when `auth.roles` is absent (the built-ins, so a deployment that configures nothing is as it was), `null` when `auth.roles` is given. The one key where `null` is a value | — | now (S15) |
-| `auth.signingClients` | the clients of the issuer (the token's `azp`, or `client_id`) whose prompts must carry `vymalo.promptSignature` ([ADR 0087](../decisions/0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md)): at most 64, each 1 to 256 printable characters with no space, none twice, none the `auth.browser.clientId`. Absent or `[]`: no signing client | — | now (ANR-719; the intake check that reads it, and the rule that production refuses an empty list, are not built yet) |
+| `auth.signingClients` | the clients of the issuer (the token's `azp`, or `client_id`) whose prompts must carry `vymalo.promptSignature` ([ADR 0087](../decisions/0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md)): at most 64, each 1 to 256 printable characters with no space, none twice, none the `auth.browser.clientId`. Absent or `[]`: no signing client | — | now (ANR-719; the **presence check at intake** reads it since ANR-1338: a prompt from a listed client — or from a token that names no client at all (fail closed, `Some("")`) — whose new user message (for an answer, its `resume` entry; for `startChildSession`, the body) carries no `metadata["vymalo.promptSignature"]`, or one that is not a compact JWS, is a **403** `prompt_signature_invalid` with `reason: invalid` before anything is written; an attach, a cancel and an A2UI action are never checked. No cryptography happens there; the rule that a `production` profile refuses an empty list is not built yet. A list that names a client needs `server.publicOrigin`) |
 | `artifacts` | the artifact store ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)). Absent: no store, and a file an agent hands over is refused with "no artifact store configured". Present: `store` is required | — | now (S10) |
 | `artifacts.store` | `fs` \| `s3`; required with the section. Names only what this build compiled in: `fs` needs the Cargo feature `artifacts-fs`, `s3` needs `artifacts-s3`, else exit 78 naming it. The section of the store chosen is required and the other one is an error | — | now |
 | `artifacts.fs.root` | path (relative to this file's directory); required with `store: fs`. Made (mode `0700`) when missing. Every role must see the same directory (one machine, or a shared volume) | — | now |
@@ -452,11 +455,23 @@ referent not made yet passes), except for a reason that waiting cannot clear (`N
 which is a 500 `code: agent_blocked`, "your coder agent is blocked: NameConflict". The shared `chat` agent and any other agent never go through it. A binary built without the Cargo feature `provisioner-platform` refuses
 the section (exit 78).
 
+**The account** (ADR 0108): the form the orchestrator sends carries `account`, which the platform charges the agent's pods
+to. It is the identity provider's `sub` (trimmed and lower-cased), so **a `provisioner` section needs `auth.mode: jwt`
+with `auth.jwt.userClaim: sub`, and startup refuses it otherwise** (exit 78 naming `provisioner`): under `email`, which
+is the default, under any other claim, and in a mode that reads the identity header (`proxy_header`, with or without
+`devUser`, and `jwt_or_proxy_header`). Moving a deployment to `sub` re-keys its people (their threads and their agents
+belong to the id the claim gives), so it is the deployment's own decision. A `sub` that is not
+`[A-Za-z0-9._:/-]{1,128}` (an `@` is never one) passes startup and gets a **500** for a message to a provisioned kind:
+the platform is not asked, nothing is written, and the cause is logged (`account_not_opaque`), without the person.
+The orchestrator sends the account only when it writes the agent: when it creates, resumes or suspends it. **An agent
+that is already `ready` is only read, so one made without an account keeps none until something suspends it and a
+message resumes it, and nothing in the orchestrator's application suspends an agent today.**
+
 | Key | Meaning |
 |---|---|
 | `url` | The Platform API's base URL: `http` or `https`, a host, no user name or password. |
 | `kinds` | The kinds made for each person: `coder`, `workspace`, each once, at least one. The shared chat agent is never provisioned. |
-| `forms.<kind>` | The agent form of each kind in `kinds` (the platform's form without `name`, `owner` and `suspend`, which the orchestrator sets). One per kind, and none for a kind that is not listed. |
+| `forms.<kind>` | The agent form of each kind in `kinds` (the platform's form without `name`, `owner`, `account` and `suspend`, which the orchestrator sets). One per kind, and none for a kind that is not listed. |
 | `credentials` | What the orchestrator presents. Two types. `dev-oidc`, the OAuth `client_credentials` grant for the local stack's `mock-oidc`: `tokenUrl`, `clientId`, `clientSecret` (a `{ env }` or `{ file }` reference), and optionally `user`, `audience`, `roles` (the token must carry `platform:agents.own`); a development adapter. `openbao-pki`, **the orchestrator's workload certificate** (ANR-809, [ADR 0110](../decisions/0110-the-orchestrator-presents-its-workload-certificate-to-the-platform.md)), presented on the TLS connection with no `Authorization` header: see below. |
 | `credentials.address` | `openbao-pki`, required. OpenBao: an `https` URL with a host and no user name, password, query or fragment. The pod's service-account token goes to it. |
 | `credentials.caFile` | `openbao-pki`, none. A file of PEM certificates OpenBao's certificate is also checked against, besides the system's roots; read at startup, relative to the file's directory. |
@@ -832,6 +847,7 @@ GET /api/config
 { "search": { "maxQueryLength": 200, "maxTerms": 8 },
   "prompts": { "limit": 100, "maxVariables": 8, "maxBodyBytes": 16384, "maxRenderedBytes": 32768 },
   "ui": { "showDescriptions": true,
+          "languages": ["en-GB", "fr-FR", "gsw-CH", "fur-IT"],
           "history": { "initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 2, "windowed": true } } }
 ```
 
@@ -852,6 +868,10 @@ GET /api/config
   ([`history.md`](history.md), [ADR 0059](../decisions/0059-a-thread-opens-at-its-end-and-older-turns-load-on-scroll-up.md)), so its
   presence is the capability and an orchestrator without it (older, or with no AG-UI surface, or a worker) leaves it out. Its
   `projection` is the version of the frames this build writes and `maxTurns` is `server.history.maxTurns`, the largest page the server accepts: neither is a key of `ui.history`.
+- `ui.languages` is the list the web offers as the interface's languages ([ADR 0085](../decisions/0085-the-interface-language-travels-with-the-message-as-a-hint.md), [`locale-v1.md`](locale-v1.md)):
+  the deployment's own, validated as BCP 47 tags at startup (a malformed, empty, duplicated or over-long list is refused, exit 78),
+  defaulting to `en-GB`, `fr-FR`, `gsw-CH` and `fur-IT`. The web draws a picker for exactly these and sends the tag a person
+  picks; a client that does not know the key offers no picker and sends the tag of the page it draws, as it always did.
 - It changes only when the process restarts. The web treats a missing key as its default and ignores a key it does not
   know, so the section grows additively; a key is never renamed or retyped in `version: 1`.
 - It is `getConfig` in [`chat-api.yaml`](chat-api.yaml), served by the resource API of every role that serves routes, and

@@ -158,7 +158,7 @@ async fn every_refusal_is_before_the_stream_and_a_dead_link_is_one_404() {
     // a person whose roles grant nothing is refused before the link is looked at
     let denied = Harness::start_sharing(
         orch_api::ApiConfig::default(),
-        orch_auth_header::HeaderAuth::new(),
+        TestAuth::new(),
         orch_app::Policy::deny_all(),
         sharing(SharingMode::Public),
     )
@@ -331,13 +331,7 @@ async fn start_public(files: bool) -> Harness {
         },
     )
     .unwrap();
-    Harness::start_sharing(
-        api,
-        orch_auth_header::HeaderAuth::new(),
-        orch_app::Policy::default(),
-        sharing,
-    )
-    .await
+    Harness::start_sharing(api, TestAuth::new(), orch_app::Policy::default(), sharing).await
 }
 
 /// A thread whose agent handed over one PNG, shared at `level`: `(thread, token)`.

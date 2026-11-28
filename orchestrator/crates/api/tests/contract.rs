@@ -931,7 +931,8 @@ async fn every_operation_of_the_resource_api_conforms_to_the_contract() {
             "teams": {"limit": 50, "minMembers": 2, "maxMembers": 8, "maxCharterBytes": 4096, "minMaxHandoffs": 6, "maxMaxHandoffs": 20, "defaultMaxHandoffs": 6, "minPushTokens": 4000, "maxPushTokens": 100000, "defaultPushTokens": 24000},
             "ui": {
                 "showDescriptions": true,
-                "history": {"initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 1, "windowed": false}
+                "history": {"initialTurns": 12, "pageTurns": 20, "maxTurns": 100, "projection": 1, "windowed": false},
+                "languages": ["en-GB", "fr-FR", "gsw-CH", "fur-IT"]
             }
         })
     );

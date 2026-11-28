@@ -17,11 +17,17 @@ const state = vi.hoisted(() => ({
   signOut: vi.fn(async () => {}),
   /** `prompts` of the configuration: its presence is the capability. */
   prompts: undefined as undefined | { limit: number },
+  /** `ui.languages` of the configuration: the four, unless a test says otherwise. */
+  languages: ["en-GB", "fr-FR", "gsw-CH", "fur-IT"] as readonly string[],
 }));
 vi.mock("@/features/me/hooks/use-me", () => ({ useMe: () => state.me }));
-vi.mock("@/features/chat/hooks/use-ui-config", () => ({ usePromptsConfig: () => state.prompts }));
+vi.mock("@/features/chat/hooks/use-ui-config", () => ({
+  usePromptsConfig: () => state.prompts,
+  useLanguages: () => state.languages,
+}));
 vi.mock("@/lib/auth/sign-out", () => ({ signOut: state.signOut, isSigningOut: () => false }));
 
+import { LANGUAGE_KEY, PAGE_LANGUAGE, resetLanguage } from "@/lib/language";
 import { AccountMenu, SIGN_OUT_LABEL, SignOutButton } from "./account-menu";
 
 // Radix measures its popper content; jsdom has no layout
@@ -45,6 +51,10 @@ beforeEach(() => {
   state.me = { status: "ready", me: ME };
   state.signOut.mockClear();
   state.prompts = undefined;
+  state.languages = ["en-GB", "fr-FR", "gsw-CH", "fur-IT"];
+  localStorage.clear();
+  resetLanguage();
+  document.documentElement.lang = PAGE_LANGUAGE;
   go = vi.spyOn(navigation, "go").mockImplementation(() => {});
 });
 afterEach(() => {
@@ -146,6 +156,58 @@ describe("the account menu", () => {
     const { container } = render(<AccountMenu />, { wrapper: TooltipProvider });
     expect(container.querySelector('[data-slot="account"]')).toBeNull();
     vi.unstubAllGlobals();
+  });
+});
+
+describe("the account menu's Language group", () => {
+  const names = (group: HTMLElement) =>
+    [...group.querySelectorAll('[role="menuitemradio"]')].map((item) => item.textContent);
+
+  it("offers the deployment's languages by their own names, and choosing one puts it on the page at once", async () => {
+    setBrowserAuth(null);
+    render(<AccountMenu />, { wrapper: TooltipProvider });
+    await openMenu();
+    const group = screen.getByRole("group", { name: "Language" });
+    expect(names(group)).toEqual([
+      "English (United Kingdom)",
+      "Français (France)",
+      "Schweizerdeutsch (Schweiz)",
+      "Furlan (Italie)",
+    ]);
+    // nothing chosen yet: the page is drawn in the export's own tag (`en`), which is not one of the four
+    for (const item of group.querySelectorAll('[role="menuitemradio"]'))
+      expect(item.getAttribute("aria-checked")).toBe("false");
+
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Français (France)" }));
+    await waitFor(() => expect(document.documentElement.lang).toBe("fr-FR"));
+    expect(localStorage.getItem(LANGUAGE_KEY)).toBe("fr-FR");
+    expect(
+      screen.getByRole("menuitemradio", { name: "Français (France)" }).getAttribute("aria-checked"),
+    ).toBe("true");
+    // the menu stays open: the person may go on with it
+    expect(screen.getByRole("group", { name: "Language" })).toBeTruthy();
+  });
+
+  it("draws a tag it has no name for as the tag itself, so a deployment's own list works", async () => {
+    setBrowserAuth(null);
+    state.languages = ["en-GB", "de-DE"];
+    render(<AccountMenu />, { wrapper: TooltipProvider });
+    await openMenu();
+    expect(names(screen.getByRole("group", { name: "Language" }))).toEqual([
+      "English (United Kingdom)",
+      "de-DE",
+    ]);
+  });
+
+  it("is not in the footer that has no account: the interface language is a person's setting", async () => {
+    setBrowserAuth(null);
+    state.me = { status: "unknown", me: null };
+    const { container } = render(<AccountMenu />, { wrapper: TooltipProvider });
+    expect(container.querySelector('[data-slot="theme"]')).not.toBeNull();
+    expect(container.querySelector('[data-slot="account"]')).toBeNull();
+    fireEvent.keyDown(screen.getByRole("button", { name: "Theme" }), { key: "Enter" });
+    await screen.findByRole("group", { name: "Theme" });
+    expect(screen.queryByRole("group", { name: "Language" })).toBeNull();
   });
 });
 

@@ -265,6 +265,7 @@ async fn a_fork_is_nested_under_the_row_the_person_sees() {
                 tier: None,
                 locale: None,
                 pick: None,
+                signed_prompt: None,
             },
         )
         .await
@@ -315,6 +316,7 @@ async fn an_edit_is_not_listed_and_a_fork_of_one_is_nested_under_its_root() {
                     tier: None,
                     locale: None,
                     pick: None,
+                    signed_prompt: None,
                 },
                 target: None,
                 id: None,

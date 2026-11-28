@@ -21,6 +21,58 @@ sidebarTitle: "0107 · Rules in SQL, PostgreSQL 18 floor"
   `tests/functions.rs` holds for every PL/pgSQL `orch_` function. For P2: a commit updates the `threads` row twice (the
   append's CTE advances `last_seq`, then the final `UPDATE`), which leaves an extra row version; computing the append's
   `base` from `cur_last_seq` and letting the final `UPDATE` write `last_seq` would avoid it. P2 is next.
+  *Status note (2026-11-27): slice P2 is built* (admission: `orch_admit`, in migration `0038_orch_admit.sql`).
+  `admit_commit` is now one transaction on one connection: `orch_admit` takes the person's lock, with the same key as
+  before, so a replica of the previous release and one of this build exclude each other, then counts; `no_room` rolls
+  back, and `admitted` runs the whole commit in that transaction. The function relies on that transaction being
+  `READ COMMITTED`, so that its count sees what the lock's previous holder committed: `admit_commit` and `commit` both
+  begin it with `BEGIN ISOLATION LEVEL READ COMMITTED`, whatever the database or the role defaults to, where they began
+  with a plain `BEGIN`. It refuses a missing or empty owner and a missing or
+  negative limit with `OR002`. The extra `threads` row version is gone: the append takes the seq it starts from (the
+  commit's `cur_last_seq`, a new thread's cut) and does not move `last_seq`, which the caller's final `UPDATE` writes
+  once. That replaces row 2's form of an `UPDATE` inside the append's `WITH`; the sequence is still gap-free because the
+  thread's row is held. `tests/admission.rs` shows what the shared suites cannot: a pool of one connection admits and
+  commits, and the session that holds the admission lock is the one whose commit waits for the thread's row. **The cost
+  was not measured**, although *Consequences* says P1 and P2 measure a commit and an admission before they merge: the
+  slice was written on a machine where it was not allowed to build or run the workspace, so it claims no timing of
+  either, and the P1 note records none. By reading the code only, an admission sends three fewer statements (the second transaction's `BEGIN` and
+  `ROLLBACK`, and the lock and the count as one call) and takes one connection instead of two. **The slice rule of
+  *Slices*, that each moved rule is broken once on purpose and the pull request records the mutation and the failing
+  case, was not met: no mutation was run and none of the new cases has been executed**, because the slice was written on
+  a machine where the workspace may not be built; CI is the first compile and the first run.
+  *Status note (2026-11-28): slice P3 is built* (claims, the inbox, the outbox and watches: `orch_outbox_due_at`,
+  `orch_watch_arm` and `orch_inbox_park`, in one migration, `0040_orch_claims.sql`).
+  `orch_outbox_due_at` takes a **fourth argument, `p_now`**, beside the three of row 34 and the *Slices* table: it
+  answers a boolean and reads no clock (decision 3), so the time must be passed. It is one expression. The FIFO claim
+  (`CLAIM_FIFO`) names no status in its due rows' `WHERE` beyond this call, so for the partial indexes of the open rows
+  to serve that scan the planner must inline the function **and** prove `status IN ('pending', 'inflight')` from what
+  is left; the fair claim's candidate and cancel scans and the statistics write that condition themselves.
+  `tests/claims.rs` asserts both with `EXPLAIN` (inlined; and, with sequential scans forbidden, an `outbox_open…` index
+  for the due predicate, and a sequential scan for a `CASE` on the status). It covers that predicate alone, not a whole
+  claim, and on an empty table. The claims
+  stay one statement each; since `RETURNING` has no order, each selects from its `UPDATE` and orders there (as row 31
+  says), and no order is restored in Rust. **Row 38 is built in this slice** (it is in the survey's section of P3, and
+  the *Slices* row had not named it): `mark_sent` is one statement, a data-modifying `WITH` over the outbox row and the
+  thread's binding, with the same fence and the same answer, and one `SET` list shared with the commit's binding
+  update; its cases are `mark_sent_is_atomic`, `stale_attempt_is_fenced` and
+  `mark_sent_writes_the_row_and_the_binding_together_or_neither`. **Row 35** (the per-thread rule) **stays inline**:
+  the survey allows P3 to move it only if `EXPLAIN` shows such a function inlined, a function for it is not among P3's,
+  and none was tried; the `EXPLAIN` cases above say nothing about a function that holds an `EXISTS`.
+  A commit that arms a watch, and the park, need `READ COMMITTED`, because both new PL/pgSQL functions read after a
+  wait for a key's lock and cannot set the level themselves. The port lets a thread's first commit arm watches (create,
+  fork, child), and that transaction began with a plain `BEGIN`: it now begins `READ COMMITTED` too. The core as it is
+  makes a watch in one place, for a pushed branch under a gate that requires CI, and no path of it that arms one in a
+  thread's first commit is known. The key lock's text is now only in the migration, the same as earlier releases take; a
+  unit test holds both functions to it.
+  **Migration order with pull request #662**, which adds `0039_user_memories.sql`: this slice took `0040`. The migrator
+  applies every version the history lacks, in order of version, so a database gets both whichever merges first.
+  **Whoever merges second** keeps both files in `migrator()` (`store-postgres/src/store.rs`), makes the count of
+  `the_migrations_listed_are_the_files_of_the_directory` **40**, and rewrites the sentence of
+  `docs/orchestrator.md` (*Data model*) that says there is no `0039` and counts 39 migrations. The crate's README
+  makes no such claim.
+  **As in P2, the slice rule of *Slices*, that each moved rule is broken once on purpose, was not met: no mutation was
+  run, and nothing was built or run** where the slice was written; CI is the first compile and the first run, so what
+  the `EXPLAIN` cases assert is measured only once CI has run them. No timing was measured.
   The owner decided on 2026-11-27 (the owner, 2026-11-27):
 
   > *"If something can be done in SQL, we better use SQL rather than rust."*
@@ -201,6 +253,8 @@ Categories, 18 documentation), which is what a read after another writer's commi
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a commit through the functions
+  accDescr: A sequence diagram, between Dispatcher (core transition), PgStore, orch_* functions, tables.
     participant D as Dispatcher (core transition)
     participant S as PgStore
     participant F as orch_* functions
@@ -226,6 +280,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a function across releases
     [*] --> Created: a migration adds it with its slice
     Created --> Replaced: same arguments and outcomes, CREATE OR REPLACE in a new migration
     Replaced --> Replaced: another such change, another migration
@@ -252,7 +307,7 @@ inline statement into a function unless decision 1 says it carries a rule.
 | P0 | the floor, the `OR` table, CI on 18.7 and 19.0, the chart's refusal below 18, the empty fresh-database tests | none | a server below the floor is refused before any DDL; `every_function_is_created_and_answers` with an empty list fails when a stray `orch_` function is added |
 | P1 | the event log's append | `orch_commit_open`, `orch_usage_counted_through`; the append statement computes `seq` | `commit_contiguous_seq`, `concurrent_writers_keep_seq_contiguous`, `version_conflict_writes_nothing`, `duplicate_key_writes_nothing`, `stale_attempt_is_fenced`, `commit_after_another_owner_reclaims_is_fenced`, `inbox_commit_is_fenced_and_marks_applied` |
 | P2 | admission (ADR 0081) | `orch_admit`, in the commit's own transaction | `two_messages_at_once_one_passes`, `a_person_under_the_limit_sees_no_change` |
-| P3 | claims, the inbox, the outbox and leases | `orch_outbox_due_at`, `orch_watch_arm`, `orch_inbox_park`; the claim order in the statements | `claim_once_and_concurrent_claimers`, the `a_fair_claim_*` cases, `inbox_parks_and_rearms_in_one_commit`, `inbox_park_finds_a_watch_that_appeared`, `watches_are_first_come`, `lease_expiry_reclaim` |
+| P3 | claims, the inbox, the outbox and leases | `orch_outbox_due_at`, `orch_watch_arm`, `orch_inbox_park`; the claim order in the statements; `mark_sent` in one statement (row 38) | `claim_once_and_concurrent_claimers`, the `a_fair_claim_*` cases, `inbox_parks_and_rearms_in_one_commit`, `inbox_park_finds_a_watch_that_appeared`, `watches_are_first_come`, `lease_expiry_reclaim`, `mark_sent_is_atomic` |
 | P4 | the usage ledger (ADR 0065) | `orch_usage_put_task` | `usage_ledger_conformance!`, `a_catch_up_of_many_events_gives_what_folding_them_one_by_one_gives` |
 | P5 | the search index's writes (ADR 0068) | none: the message write becomes one statement | `thread_search_conformance!`, `replaced_final_message_hits_once` |
 | P6 | opening a thread: create, fork, child (ADR 0029, 0072) | `orch_thread_open` | `fork_copies_the_parents_log_up_to_the_cut`, `a_refused_fork_writes_nothing`, `a_session_has_one_child_and_a_second_open_writes_nothing`, `a_child_is_refused_a_foreign_parent_a_child_parent_and_no_parent` |
@@ -472,5 +527,5 @@ Of the 77 rules, **36 move into SQL** (22 into functions, 3 into triggers, 11 in
 | PostgreSQL 18's classes are `00` to `58`, `F0`, `HV`, `P0`, `XX`; none is `OR` | *verified 2026-11-27* | postgresql.org, Appendix A, 18 documentation |
 | 18 is supported until 2030-11-14, 19 (released 2026-11-19) until 2031-11-19; 14 ended 2026-11-12 | *verified 2026-11-27* | postgresql.org, versioning policy |
 | adam-rs's ADR 0082 is accepted, its P0 built, its error class `AD001` to `AD004`, and its decision 10 amended so that each slice bumps the schema version | *verified 2026-11-27* | vymalo/another-adam-rs, `docs/decisions/0082-…` and `.agents/docs/decisions/0082-…` |
-| A SQL-standard function in a `WHERE` is inlined by the planner as a string body is | *unverified*: P3 reads `EXPLAIN` before it moves row 35 | — |
+| A SQL-standard function in a `WHERE` is inlined by the planner as a string body is | *unverified* until CI has run P3's `EXPLAIN` cases, which cover `orch_outbox_due_at` alone (one expression over its arguments). Row 35 stayed inline: it may move only after `EXPLAIN` shows its function inlined, and that function is not among P3's | — |
 | The cost of a function call against today's statements | *unverified*: P1 and P2 measure it | — |

@@ -349,6 +349,7 @@ impl Harness {
                     catalog: Some(catalog.clone()),
                     mentions: Vec::new(),
                     tier: None,
+                    signed_prompt: None,
                 },
                 None,
                 None,
@@ -385,6 +386,7 @@ impl Harness {
                     catalog: Some(catalog.clone()),
                     mentions: Vec::new(),
                     tier: None,
+                    signed_prompt: None,
                 },
                 None,
             )

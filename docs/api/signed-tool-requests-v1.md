@@ -36,6 +36,8 @@ A signed server is sent **no bearer**. A server that is not configured for signi
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: signed requests to a tool server (v1)
+  accDescr: A sequence diagram, between Agent, Relay (orchestrator), Signing key (configuration, by reference), Tool server (pins the public key).
   autonumber
   participant A as Agent
   participant R as Relay (orchestrator)
@@ -60,6 +62,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: signed requests to a tool server (v1)
   [*] --> Minted: the relay signs, just before the bytes are sent
   Minted --> Sent: the request leaves with the header
   Minted --> [*]: signing fails (nothing is sent)
@@ -225,6 +228,7 @@ keeps the value out of the logs and out of rmcp.
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: keys and rotation
   [*] --> OneKey: the server pins K1, the orchestrator signs with K1
   OneKey --> BothPinned: the server also pins K2 (K1 still signs)
   BothPinned --> Switched: the orchestrator's configuration names K2 and the pods roll
@@ -337,7 +341,7 @@ fails in the check named: `PUT` or `/mcp2` or one more space in the body (5); `a
 |---|---|
 | `orch-signed-request` (unit tests) | the bytes the orchestrator writes for the worked example are exactly the ones above; every field is bound (a different method, path, body, thread or owner fails); the limits above; a key that does not parse |
 | `orch-tools-mcp` (`tests/signed.rs`) | a real MCP server over HTTP that speaks only `2026-07-28` and verifies every request as the table above says: the handshake, the listing and the call are each signed, with a fresh `cti`; no bearer is sent; the body digest is of the bytes on the wire; tampering fails; the legacy path is unchanged |
-| `orchestrator/crates/signed-request/interop` (CI job `signed-request-interop`) | the orchestrator's bytes verify with the real `cratestack_cose::open_claims` at 0.17.2, and the real `sign_claims` writes the same bytes for the same inputs. It is its own crate with its own toolchain, because `cratestack-cose` needs Rust 1.98 and the orchestrator is on 1.94 |
+| `orchestrator/crates/signed-request/interop` (CI job `signed-request-interop`) | the orchestrator's bytes verify with the real `cratestack_cose::open_claims` at 0.17.2, and the real `sign_claims` writes the same bytes for the same inputs. It is its own crate with its own `Cargo.lock` and toolchain file (1.98.1). The workspace moved to 1.98 on 2026-11-27 (ANR-1328), so the real crate can now be used by `orch-signed-request`; folding this crate into the workspace is a change of its own |
 
 ## Verified and unverified (2026-11-02)
 
@@ -346,7 +350,7 @@ fails in the check named: `PUT` or `/mcp2` or one more space in the body (5); `a
 | The claim object is the `cratestack-cose` v0.17.2 format described above (header labels, CWT claims `aud`/`exp`/`iat`/`cti` only, `typ` mandatory, empty unprotected header, empty `external_aad`) | **Verified 2026-11-02** by reading `crates/cratestack-cose/src/claims/{header,sign,open,types}.rs` and `tbs.rs` at the tag `v0.17.2` (`ec92825`), and by running the real `sign_claims` and `open_claims` on the worked example |
 | `kid` is the first 8 bytes of the RFC 9679 thumbprint of the Ed25519 key | **Verified 2026-11-02**: `src/thumbprint.rs` at the tag, and the example (`34b84aeaf4b08543`) |
 | A cratestack MCP guard gives an `AuthProvider` the method, the resource's path, the query and the exact body bytes, and asks `AuthProvider::credential` before the body is read when the deployment uses `ask_provider()` | **Verified 2026-11-02**: `crates/cratestack-mcp/src/streamable_http/{guard,auth,credential,presence}.rs` and `cratestack-core/src/{context,credential}.rs` at the tag |
-| `cratestack-cose` 0.17.2 needs Rust 1.98 (`rust-version`), the orchestrator builds on 1.94.1 | **Verified 2026-11-02**: `cargo info cratestack-cose` and `orchestrator/rust-toolchain.toml` |
+| `cratestack-cose` 0.17.2 needs Rust 1.98 (`rust-version`); the orchestrator built on 1.94.1 when this page was written and **moved to 1.98 on 2026-11-27 (ANR-1328)** | **Verified 2026-11-02**: `cargo info cratestack-cose` and `orchestrator/rust-toolchain.toml`; **verified 2026-11-27** for the move: `orchestrator/Cargo.toml` (`rust-version = "1.98"`) and `orchestrator/rust-toolchain.toml` (`1.98.1`) |
 | The orchestrator's bytes open with the real `cratestack_cose::open_claims` at 0.17.2, the real `sign_claims` writes the same bytes, and the reference verifier accepts what the real `sign_claims` writes | **Verified 2026-11-02** by running `orchestrator/crates/signed-request/interop` (4 tests, Rust 1.98.1). and by the CI job `signed-request-interop` on the pull request that brought it (#311) |
 | A tool server on cratestack verifies all of the above in the order given | **Unverified**: not built yet. The steps are the contract; the first implementation will say where this page is wrong |
 | The orchestrator's clock and the server's agree within 30 seconds in the deployment | **Unverified**: an operational assumption (NTP) |

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use orch_core::AccountId;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
@@ -88,6 +89,7 @@ impl AgentProvisioner for MemoryProvisioner {
         &self,
         owner: &AgentOwner,
         kind: AgentKind,
+        _account: &AccountId,
     ) -> Result<ProvisionedAgent, ProvisionError> {
         let key = (owner.clone(), kind);
         let ready_at = {
@@ -142,7 +144,12 @@ impl AgentProvisioner for MemoryProvisioner {
         }))
     }
 
-    async fn suspend(&self, owner: &AgentOwner, kind: AgentKind) -> Result<(), ProvisionError> {
+    async fn suspend(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+        _account: &AccountId,
+    ) -> Result<(), ProvisionError> {
         if let Some(entry) = self.agents.lock().await.get_mut(&(owner.clone(), kind))
             && entry.state != AgentState::Deleting
         {

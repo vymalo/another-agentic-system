@@ -124,11 +124,21 @@ pub struct Principal {
     /// out (the proxy header, a static token). A stream opened with it ends no later than this
     /// (plus the leeway), and the client reconnects with a fresh credential (ADR 0033).
     pub expires_at: Option<Timestamp>,
+    /// The OAuth client the credential was issued to (ADR 0087, decision 1): a token's `azp`, or
+    /// its `client_id` when it carries no `azp`. It decides whether a prompt must be signed
+    /// (`auth.signingClients`), so it is not a display name and never comes from the request.
+    ///
+    /// `None` is a credential that names no client at all: the proxy header, an MCP static token,
+    /// [`Principal::of`]. `Some("")` is **the token-with-no-client sentinel**: a token this
+    /// deployment's issuer signed that carries neither `azp` nor `client_id`. Decision 1 makes such
+    /// a token a signing client's (it fails closed), which a `None` must not be — that is the whole
+    /// difference between "the token says nothing" and "there is no token".
+    pub client_id: Option<String>,
 }
 
 impl Principal {
-    /// A principal that is only a user: no e-mail beyond the key, no name, no roles, and a
-    /// credential that does not run out.
+    /// A principal that is only a user: no e-mail beyond the key, no name, no roles, no client,
+    /// and a credential that does not run out.
     pub fn of(user: UserId) -> Self {
         Principal {
             user,
@@ -136,6 +146,7 @@ impl Principal {
             name: None,
             roles: BTreeSet::new(),
             expires_at: None,
+            client_id: None,
         }
     }
 }

@@ -128,6 +128,7 @@ fn the_set_is_carried_to_the_next_job() {
             catalog: None,
             mentions: Vec::new(),
             tier: None,
+            signed_prompt: None,
         },
     )
     .unwrap();

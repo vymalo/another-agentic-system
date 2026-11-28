@@ -358,6 +358,8 @@ pub(crate) fn conclude(
                 tier_cap: job.tier_cap,
                 locale: None,
                 pick: None,
+                // the core's own words, not the person's: no envelope goes with them
+                signed_prompt: None,
             });
             job.attempt = next;
             // the agent goes again: a new turn

@@ -91,6 +91,7 @@ row 26 were found.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a project groups a workspace's repositories
   participant P as Person
   participant C as Client
   participant S as Server

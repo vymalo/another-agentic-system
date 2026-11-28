@@ -86,6 +86,7 @@ fn echo_request() -> SendRequest {
         tier_cap: None,
         locale: None,
         pick: None,
+        signed_prompt: None,
     }
 }
 
