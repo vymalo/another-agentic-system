@@ -7,6 +7,9 @@ update" one (*verified 2026-10-03*, <https://www.keycloak.org/operator/realm-imp
 Keycloak's own format, to import or to read as a checklist. **None holds a secret**: the client's secret is made by Keycloak and goes
 to AWS Secrets Manager (`oauth2_client_secret`), and CI fails if a file gets a secret-looking member.
 
+**For a realm and a host of your own:** the client exports carry this deployment's host. Write yours into a copy before you import it
+([Deploy to a Kubernetes cluster, "Keycloak"](../../docs/guides/deploy.md#2-keycloak) does it for the web's confidential client).
+
 | File | What | How to apply |
 |---|---|---|
 | [`client-another-agentic.json`](client-another-agentic.json) | the confidential client of oauth2-proxy | *Clients → Import client* |
@@ -17,7 +20,7 @@ to AWS Secrets Manager (`oauth2_client_secret`), and CI fails if a file gets a s
 | [`client-another-agentic-android.json`](client-another-agentic-android.json) | a public Android client: authorization code with PKCE, DPoP-bound tokens and one HTTPS App Link callback ([ADR 0047](../../docs/decisions/0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md)) | *Clients → Import client*, before a mobile release |
 | [`client-another-agentic-ios.json`](client-another-agentic-ios.json) | a public iOS client: authorization code with PKCE, DPoP-bound tokens and one HTTPS Universal Link callback ([ADR 0047](../../docs/decisions/0047-one-ui-for-web-desktop-and-mobile-each-signs-in-as-a-public-oauth-client.md)) | *Clients → Import client*, before a mobile release |
 
-All six exports import as written into Keycloak 26.6.1, the version of home-os's operator (*verified locally 2026-10-11*):
+The six client exports and the partial import import as written into Keycloak 26.6.1, the version of home-os's operator (*verified locally 2026-10-11*):
 [`tests/import-check.sh`](tests/import-check.sh) makes a throwaway realm `import-check` (never `vymalo`), imports the clients and partial import, reads
 back the public-client security settings, asks for the desktop app's loopback redirect on two ports, and verifies Android and iOS accept only the
 claimed callback. CI repeats it in `deploy.yml`’s `keycloak-import` job. Keep a client's `description` under 255 characters: Keycloak's column is that

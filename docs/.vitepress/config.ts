@@ -106,8 +106,8 @@ const sidebar = [
     ],
   },
   { text: "Get started", items: [page("getting-started", "Run it locally")] },
-  // Guides: one task per page. No page of the repository is one yet, so the four groups are empty and not drawn.
-  section("Guides", [group("Deploy", []), group("Operate", []), group("Use", []), group("Extend", [])]),
+  // Guides: one task per page. A group with no page is not drawn.
+  section("Guides", [group("Deploy", [page("guides/deploy")]), group("Operate", []), group("Use", []), group("Extend", [])]),
   section("Reference", [
     group("API", [referencePage, chatApiOperations, ...apiPages]),
     group("Extensions", extensionPages),
