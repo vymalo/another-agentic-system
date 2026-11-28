@@ -40,6 +40,19 @@ sidebarTitle: "0107 · Rules in SQL, PostgreSQL 18 floor"
   *Slices*, that each moved rule is broken once on purpose and the pull request records the mutation and the failing
   case, was not met: no mutation was run and none of the new cases has been executed**, because the slice was written on
   a machine where the workspace may not be built; CI is the first compile and the first run.
+  *Status note (2026-11-28): slice P3 is built* (claims, the inbox and watches: `orch_outbox_due_at`, `orch_watch_arm`
+  and `orch_inbox_park`, in one migration, `0040_orch_claims.sql`; `0039` was held by another change in review).
+  `orch_outbox_due_at` takes a **fourth argument, `p_now`**, beside the three of row 34 and the *Slices* table: it
+  answers a boolean and reads no clock (decision 3), so the time must be passed. It is one expression, which the
+  planner inlines, and the claims need that: only then do the partial indexes of the open rows serve them. The claims
+  stay one statement each; since `RETURNING` has no order, each selects from its `UPDATE` and orders there (as row 31
+  says), and no order is restored in Rust. The opening of a thread (create, fork, child) arms watches too and began
+  with a plain `BEGIN`: it now begins `READ COMMITTED`, as a commit and a park do, because both new PL/pgSQL
+  functions read after a wait for a key's lock and cannot set the level themselves. The key lock's text is now only in
+  the migration, the same as earlier releases take; a unit test holds both functions to it. Row 35 (the per-thread
+  rule) stays inline. **As in P2, the slice rule of *Slices* was not met: no mutation was run, and nothing was built or
+  run** where the slice was written; CI is the first compile and the first run, and the plan of the claims was not
+  measured.
   The owner decided on 2026-11-27 (the owner, 2026-11-27):
 
   > *"If something can be done in SQL, we better use SQL rather than rust."*

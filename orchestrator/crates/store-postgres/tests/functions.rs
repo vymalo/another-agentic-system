@@ -70,6 +70,79 @@ const ROUTINES: &[(&str, Option<&str>)] = &[
              THEN RAISE EXCEPTION 'admit'; END IF; END $$",
         ),
     ),
+    // 0040 (P3): when an outbox row is due.
+    (
+        "orch_outbox_due_at(p_status text, p_next_attempt_at timestamp with time zone, \
+         p_lease_until timestamp with time zone, p_now timestamp with time zone)",
+        // each side of both bounds; a finished row is never due, and an `inflight` row with no
+        // lease is not (NULL, which a `WHERE` leaves out)
+        Some(
+            "DO $$ DECLARE t timestamptz := '2026-01-01T00:00:00Z'; s interval := '1 microsecond'; \
+             BEGIN IF orch_outbox_due_at('pending', t, NULL, t) IS NOT TRUE \
+             OR orch_outbox_due_at('pending', t + s, t - s, t) IS NOT FALSE \
+             OR orch_outbox_due_at('inflight', t + s, t, t) IS NOT TRUE \
+             OR orch_outbox_due_at('inflight', t - s, t + s, t) IS NOT FALSE \
+             OR orch_outbox_due_at('inflight', t - s, NULL, t) IS TRUE \
+             OR orch_outbox_due_at('delivered', t - s, t - s, t) IS NOT FALSE \
+             THEN RAISE EXCEPTION 'due'; END IF; END $$",
+        ),
+    ),
+    // 0040 (P3): a commit's watches.
+    (
+        "orch_watch_arm(p_thread uuid, p_keys text[], p_now timestamp with time zone)",
+        // two seeded threads and a parked row, so a renamed column of `watches` or `inbox` fails
+        // here: the first thread takes a key and re-arms nothing; the second is told that key is
+        // held, once although it asks twice, takes its own and re-arms the row parked for it
+        Some(
+            "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+             updated_at, rail_rank) SELECT ('00000000-0000-7000-8000-0000000000' || n)::uuid, 'o', \
+             't', 'a', 'queued', 1, 0, now(), now(), n FROM unnest(ARRAY['a1', 'a2']) AS n; \
+             INSERT INTO inbox (id, source, idempotency_key, kind, payload, correlation, status, \
+             available_at, attempts, parked_at, created_at, updated_at) VALUES \
+             ('00000000-0000-7000-8000-0000000000a3', 's', 'arm', 'timer', '{}', 'arm-2', 'parked', \
+             now(), 3, now(), now(), now()); \
+             DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM orch_watch_arm(\
+             '00000000-0000-7000-8000-0000000000a1', '{arm-1}', now()) \
+             WHERE NOT rearmed AND held_keys = '{}' AND held_by = '{}') \
+             THEN RAISE EXCEPTION 'first'; END IF; \
+             IF NOT EXISTS (SELECT 1 FROM orch_watch_arm(\
+             '00000000-0000-7000-8000-0000000000a2', '{arm-2,arm-1,arm-1}', now()) \
+             WHERE rearmed AND held_keys = '{arm-1}' \
+             AND held_by = '{00000000-0000-7000-8000-0000000000a1}') \
+             THEN RAISE EXCEPTION 'second'; END IF; \
+             IF NOT EXISTS (SELECT 1 FROM inbox WHERE id = '00000000-0000-7000-8000-0000000000a3' \
+             AND status = 'pending' AND parked_at IS NULL AND refunded = 3) \
+             THEN RAISE EXCEPTION 'arm'; END IF; END $$",
+        ),
+    ),
+    // 0040 (P3): parking a claimed inbox row.
+    (
+        "orch_inbox_park(p_inbox uuid, p_owner text, p_attempts integer, \
+         p_now timestamp with time zone)",
+        // the three outcomes: a claim that is not the row's, a row whose watch is nowhere, and one
+        // whose watch is there
+        Some(
+            "INSERT INTO threads (id, owner, title, agent_id, state, version, last_seq, created_at, \
+             updated_at, rail_rank) VALUES ('00000000-0000-7000-8000-0000000000b1', 'o', 't', 'a', \
+             'queued', 1, 0, now(), now(), 'b1'); \
+             INSERT INTO watches (key, thread_id, created_at) VALUES \
+             ('park-2', '00000000-0000-7000-8000-0000000000b1', now()); \
+             INSERT INTO inbox (id, source, idempotency_key, kind, payload, correlation, status, \
+             available_at, attempts, lease_owner, lease_until, created_at, updated_at) \
+             SELECT ('00000000-0000-7000-8000-0000000000b' || n)::uuid, 's', 'park-' || n, 'timer', \
+             '{}', 'park-' || n, 'inflight', now(), 1, 'w', now() + interval '1 hour', now(), now() \
+             FROM unnest(ARRAY[2, 3]) AS n; \
+             DO $$ BEGIN IF (SELECT outcome FROM orch_inbox_park(\
+             '00000000-0000-7000-8000-0000000000b3', 'w', 2, now())) <> 'lost' \
+             THEN RAISE EXCEPTION 'lost'; END IF; \
+             IF (SELECT outcome FROM orch_inbox_park(\
+             '00000000-0000-7000-8000-0000000000b3', 'w', 1, now())) <> 'parked' \
+             THEN RAISE EXCEPTION 'parked'; END IF; \
+             IF (SELECT outcome FROM orch_inbox_park(\
+             '00000000-0000-7000-8000-0000000000b2', 'w', 1, now())) <> 'rearmed' \
+             THEN RAISE EXCEPTION 'park'; END IF; END $$",
+        ),
+    ),
 ];
 
 /// The functions (of any kind) and the views of `schema`, sorted.
