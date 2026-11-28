@@ -72,6 +72,8 @@ one: a card that cannot be read records nothing, and the export then says `unkno
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a thread export says which builds made it
+  accDescr: A sequence diagram, between Dispatcher, App::recordagentbuild, Agent (live card), ThreadStore (Job.builds), Web (Export JSON), GET /api/threads/{id}/export.
   participant D as Dispatcher
   participant A as App::record_agent_build
   participant G as Agent (live card)
@@ -90,6 +92,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a thread export says which builds made it
   [*] --> Unknown: a thread, or a ledger stored before the field
   Unknown --> Recorded: the dispatcher read the agent's card before giving it work
   Recorded --> Recorded: the card says something else, one more entry, the same card writes nothing

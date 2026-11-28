@@ -49,6 +49,8 @@ Facts about A2UI and MCP are marked *verified* (with a date and a source) or *un
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the handshake
+  accDescr: A sequence diagram, between Web (UI version 2), Orchestrator, Event log, Agent (card lists ui-catalog/v1), Web (UI version 1, older).
   autonumber
   participant W2 as Web (UI version 2)
   participant O as Orchestrator
@@ -80,6 +82,7 @@ A thread's catalog moves only forward. Older catalogs stay in the log, and never
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the handshake
   [*] --> NoCatalog: thread created
   NoCatalog --> CurrentV1: ui_catalog version 1 recorded
   NoCatalog --> CurrentV2: ui_catalog version 2 recorded
@@ -2345,6 +2348,8 @@ agent; the usual plan is a `Column` of a `Text` and a `Checklist`. The agent sen
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the plan
+  accDescr: A sequence diagram, between Agent, Orchestrator, Web (conversation), Web (Plan tab).
   autonumber
   participant A as Agent
   participant O as Orchestrator

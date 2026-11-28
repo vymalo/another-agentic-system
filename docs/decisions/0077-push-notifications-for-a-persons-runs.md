@@ -174,6 +174,8 @@ A run waits for the person, and their phone shows it:
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: push notifications for a person's runs
+  accDescr: A sequence diagram, between Agent, orch-app (commit), orch-core transition, Postgres, Dispatcher, PushSender adapter, Push service, Device, The app on the device, Chat API.
   participant Ag as Agent
   participant Ap as orch-app (commit)
   participant Co as orch-core transition
@@ -210,6 +212,7 @@ The life of one push to one device (one `notify` outbox row):
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: push notifications for a person's runs
   [*] --> Pending: the commit that appends the event
   Pending --> Sent: claimed, handed to the adapter
   Sent --> Delivered: the push service accepted it

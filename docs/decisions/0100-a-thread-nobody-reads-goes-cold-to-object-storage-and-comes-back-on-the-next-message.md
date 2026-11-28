@@ -98,6 +98,8 @@ relies on this. Unverified here: no server was run.)*
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a thread nobody reads goes cold to object storage and comes back on the next message
+  accDescr: A sequence diagram, between Archive sweep, ThreadStore (Postgres), ThreadArchive (S3), Person, Orchestrator.
   participant S as Archive sweep
   participant DB as ThreadStore (Postgres)
   participant A as ThreadArchive (S3)
@@ -117,6 +119,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a thread nobody reads goes cold to object storage and comes back on the next message
   [*] --> Hot
   Hot --> Cold: idle for coldAfterDays, object verified
   Cold --> Rehydrating: message, read, fork, export

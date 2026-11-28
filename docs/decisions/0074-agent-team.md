@@ -202,6 +202,8 @@ floor goes back to the person. Nothing runs unapproved.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the process, as amended
+  accDescr: A sequence diagram, between Person (web), Orchestrator: core (TeamLedger, new) and thread tools, Dispatcher, Member lead, Member coder-a, Member coder-b, Session of coder-a (ADR 0072).
   autonumber
   participant P as Person (web)
   participant C as Orchestrator: core (TeamLedger, new) and thread tools
@@ -248,6 +250,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the process, as amended
+  accDescr: A state diagram with 7 states: Idle, Working, AwaitingApproval, FanningIn, AtCheckpoint, Capped, Interrupted.
   [*] --> Idle
   Idle --> Working: a person's message (lead, or each member mentioned)
   Working --> Idle: the turns end with no hand-off
