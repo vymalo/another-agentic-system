@@ -27,6 +27,15 @@ Compose derives it from the directory the file is in: the main checkout's stack 
 worktree therefore cannot recreate another's containers with its own settings (sys#393), and the
 `COMPOSE_PROJECT_NAME` variable still overrides both when you want a name of your own.
 
+Host ports are not per project: a second stack, a local Postgres or anything else holding 5432, 8080 or one of the
+mocks' ports makes Compose fail with `port is already allocated` and no word about which variable moves it. Ask first —
+it names the variable and a free port beside it:
+
+```sh
+dev/check-ports.sh                      # every published port of compose.yaml
+POSTGRES_PORT=15432 dev/check-ports.sh  # what it would say with that variable set
+```
+
 ```sh
 docker compose --profile app up --build
 ```
@@ -541,7 +550,7 @@ Notes on going live:
 
 | You see | It is | Do |
 |---|---|---|
-| `port is already allocated` or `address already in use` | one of the ports above is taken (a local Postgres on 5432 is the usual one) | stop it, or set the variable of that port (`POSTGRES_PORT=5433 docker compose ...`, or in `.env`); the scripts read `EDGE_PORT` too, or take `BASE_URL` |
+| `port is already allocated` or `address already in use` | one of the ports above is taken (a local Postgres on 5432 is the usual one) | `dev/check-ports.sh` names the variable and a free port beside it before you start; or stop what holds it, or set the variable of that port (`POSTGRES_PORT=5433 docker compose ...`, or in `.env`); the scripts read `EDGE_PORT` too, or take `BASE_URL` |
 | `docker compose` rejects `compose.live.yaml` at an `!override` tag | Compose older than v2.24.4 | update Docker Compose |
 | the API answers `401` (a script) or the page loops through the issuer (a browser) | no token, an expired one (an hour), or one for another audience; or `mock-oidc` was recreated and signs with a new key your session predates | `dev/auth-header.sh` for a fresh token; in the browser reload, or `/oauth2/sign_out` and in again; `docker compose --profile app logs oauth2-proxy mock-oidc orchestrator` |
 | the API answers `503` with `Retry-After`, and `/readyz` is 503 | the orchestrator cannot read the issuer's keys (`mock-oidc` is not up or not healthy) | `docker compose --profile app up -d --wait mock-oidc`; the keys are fetched again within seconds |
@@ -578,6 +587,23 @@ Containers, networks and volumes are prefixed with it, so `docker compose up` in
 recreates another's stack, and `docker compose down -v` removes only that project's volumes.
 Host ports are not per project: two stacks side by side need different `*_PORT` values (`POSTGRES_PORT=15432`, ...).
 `sh tools/check-compose-project.sh` checks that two checkouts give two names (also in CI).
+
+**Two stacks side by side, in two checkouts** — the recipe, with a worktree `../wt-fix`:
+
+```sh
+# in the main checkout, on the default ports
+docker compose --profile app up -d --wait
+
+# in ../wt-fix, on ports of its own; its project name is `wt-fix`, from the directory
+POSTGRES_PORT=15432 EDGE_PORT=18080 MOCK_OIDC_PORT=18099 dev/check-ports.sh
+POSTGRES_PORT=15432 EDGE_PORT=18080 MOCK_OIDC_PORT=18099 docker compose --profile app up -d --wait
+```
+
+`docker compose down -v` in either one stops and forgets **that** stack only: the other keeps its containers, its
+network and its volumes. `dev/stack-isolation-e2e.sh` proves it — two projects from one checkout, a table written in
+each, `down -v` in one, the other's row still there — and then shows the failure the rule prevents: under **one shared
+project name**, `down -v` takes the other's data with it. It needs Docker, starts only `postgres`, and removes every
+project it makes.
 
 ## Services
 
