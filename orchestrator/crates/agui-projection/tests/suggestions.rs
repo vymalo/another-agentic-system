@@ -93,7 +93,7 @@ fn cards(frames: &[Frame]) -> Vec<(String, Value)> {
         .collect()
 }
 
-fn card<'a>(frames: &'a [Frame]) -> &'a ActivitySnapshotEvent {
+fn card(frames: &[Frame]) -> &ActivitySnapshotEvent {
     frames
         .iter()
         .find_map(|f| match &f.event {
