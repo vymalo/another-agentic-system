@@ -611,7 +611,7 @@ fn an_edit_carries_the_persons_envelope_to_the_delegation_and_to_no_event() {
     let log = commands
         .iter()
         .filter_map(|c| match c {
-            Command::Append(draft) => serde_json::to_string(&draft.body).ok(),
+            Command::Append(draft) => serde_json::to_string(&draft.body.data_value()).ok(),
             _ => None,
         })
         .collect::<Vec<String>>()
