@@ -28,7 +28,7 @@ cratestack at the tag `v0.17.2` (`ec92825`):*
 | The relay forwarded `ToolCall::new(tool).with_arguments(args)` and nothing else, with one static bearer and static headers for every thread and person: the server could learn who *the orchestrator* was, never the person | `orchestrator/crates/surface-thread-tools/src/relay.rs` (`relay`), `crates/tools-mcp/src/lib.rs` (`transport_config`) |
 | The relay *has* the person: `ToolCtx.owner` is the thread's owner and `ToolCtx.claims.thread` its id | `crates/surface-thread-tools/src/provider.rs` |
 | A cratestack MCP guard hands an `AuthProvider` the method, the resource's path, the query and the **exact body bytes**, and, with `CredentialPresence::ask_provider()`, asks the provider whether a request carries its credential before it reads the body | `crates/cratestack-mcp/src/streamable_http/{guard,auth,credential,presence}.rs` |
-| `cratestack-cose` 0.17.2 has `rust-version = "1.98.0"`; this workspace builds on 1.94.1 (`rust-toolchain.toml`, `Cargo.toml`, `Dockerfile`, six workflows) | `cargo info cratestack-cose`, `orchestrator/rust-toolchain.toml` |
+| `cratestack-cose` 0.17.2 has `rust-version = "1.98.0"`; this workspace built on 1.94.1 at the time (`rust-toolchain.toml`, `Cargo.toml`, `Dockerfile`, six workflows) — **the workspace moved to 1.98 on 2026-11-27 (ANR-1328)**, so the separate writer may now be replaced by the real crate in a change of its own | `cargo info cratestack-cose`, `orchestrator/rust-toolchain.toml` |
 
 Invariants (`CLAUDE.md`), checked first. **1, protocols only:** MCP over streamable HTTP and COSE (RFC 9052), both standards; no host SDK.
 **2, optional extensions:** a server that is not configured for it is called exactly as before; the new keys are optional. **3, stateless:**
@@ -86,7 +86,7 @@ a request is signed when it is sent and nothing is kept; the replay record is th
   authorises the owner itself; its clock agrees with the orchestrator's within 30 seconds. A deployment that turns `signing` on creates a key
   and gives the public half to the tool server's operator.
 - **Harder:** a second place writes the bytes of a format whose reference is another repository's. The known-answer vector and the
-  interoperability job are what keep the two honest, and the job needs a second toolchain in CI until the workspace moves to 1.98.
+  interoperability job are what keep the two honest, and the job needs a second toolchain in CI until the workspace moves to 1.98 (*met 2026-11-27, ANR-1328*).
 - **Risk:** the key holder can name any owner on its server. The contract says so; the key is one per server, held by reference, and rotated
   by the steps on the contract page.
 

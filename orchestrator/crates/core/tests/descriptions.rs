@@ -29,6 +29,7 @@ fn message(text: &str) -> Input {
         tier_cap: None,
         locale: None,
         pick: None,
+        prompt_signature: None,
         user: user(),
         text: text.into(),
         message_id: None,

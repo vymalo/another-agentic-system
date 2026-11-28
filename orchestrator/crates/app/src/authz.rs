@@ -836,6 +836,7 @@ mod tests {
             name: None,
             roles: roles.iter().map(|r| Role::new(*r)).collect(),
             expires_at: None,
+            client_id: None,
         }
     }
 

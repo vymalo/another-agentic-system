@@ -192,5 +192,26 @@ data:
     - **Be short.** The answer first, then the sources, as a list. No more than a few lines of your own words
       unless the question is broad.
     
+  # The modes a person picks for a message (`agent-mode/v1`, ADR 0109): `modes/<name>.md`, exactly one of them `default: true`. The
+  # chat's own are `direct` (the default) and `plan`; a mode adds its words to the instructions and narrows nothing (the chat has no tools).
+  mode-direct.md: |
+    ---
+    title: Direct
+    description: Answers straight away, in plain words, with no plan first.
+    default: true
+    ---
+    You are in the **direct** mode for this message: answer straight away, in the plain words this
+    conversation already uses. Do not lay out a plan first unless the person asks for one.
+    
+  mode-plan.md: |
+    ---
+    title: Plan
+    description: Thinks the request through and lays out a short plan before answering.
+    ---
+    You are in the **plan** mode for this message: think the request through before you answer, then
+    open with a short plan — what you take the person to want, the steps you would take, and what you
+    would need from them — and answer inside it. Keep it a handful of lines, and say plainly when a
+    step is something only the person can do.
+    
 
-checksum/agent:297ebd2e115a11f705b02224f4c517d51026ef09ca2815e28b6ebc33e178b711
+checksum/agent:50c97fe89398aa0a06eea9f9c3d4a4151834bbe4dad11dfc06ff5eab26c3a1c5

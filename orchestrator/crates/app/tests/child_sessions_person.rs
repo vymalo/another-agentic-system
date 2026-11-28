@@ -628,6 +628,7 @@ async fn a_helper_thread_takes_no_mentions() {
                 tier_cap: None,
                 locale: None,
                 pick: None,
+                prompt_signature: None,
             },
             None,
         )

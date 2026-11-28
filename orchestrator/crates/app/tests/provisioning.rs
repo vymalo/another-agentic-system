@@ -9,15 +9,26 @@ mod support;
 use std::time::Duration;
 
 use orch_app::{AppConfig, AppError, Creation, Inbound, NewThread, OUTER_SLACK, Provisioning};
-use orch_core::{Classify, ErrorClass, ThreadId};
+use orch_core::{AccountId, Classify, ErrorClass, ThreadId, UserId};
 use orch_ports::memory::MemoryProvisioner;
 use orch_ports::{
     AgentKind, AgentOwner, AgentProvisioner, AgentState, ProvisionError, ProvisionedAgent,
-    ThreadListing,
+    ThreadListing, account_of,
 };
 use support::*;
 
 const BOUND: Duration = Duration::from_secs(30);
+
+/// The people of this file are those of a deployment that reads the identity provider's `sub`:
+/// only such a person has an account, and without one no agent is made (ADR 0108). These shadow
+/// the e-mail people of `support`.
+fn alice() -> UserId {
+    alice_sub()
+}
+
+fn bob() -> UserId {
+    bob_sub()
+}
 
 fn app_with(w: &World, provisioner: impl AgentProvisioner, kinds: &[AgentKind]) -> TestApp {
     // `World::app_with` hands out an `Arc`; the config is what changes here.
@@ -50,6 +61,7 @@ impl AgentProvisioner for NeverReady {
         &self,
         _owner: &AgentOwner,
         _kind: AgentKind,
+        _account: &AccountId,
     ) -> Result<ProvisionedAgent, ProvisionError> {
         Err(ProvisionError::NotReady {
             last: AgentState::Saving,
@@ -62,7 +74,12 @@ impl AgentProvisioner for NeverReady {
     ) -> Result<Option<AgentState>, ProvisionError> {
         Ok(None)
     }
-    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+    async fn suspend(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+        _account: &AccountId,
+    ) -> Result<(), ProvisionError> {
         Ok(())
     }
     async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
@@ -78,6 +95,7 @@ impl AgentProvisioner for Refusing {
         &self,
         _owner: &AgentOwner,
         _kind: AgentKind,
+        _account: &AccountId,
     ) -> Result<ProvisionedAgent, ProvisionError> {
         Err(ProvisionError::Refused)
     }
@@ -88,7 +106,12 @@ impl AgentProvisioner for Refusing {
     ) -> Result<Option<AgentState>, ProvisionError> {
         Ok(None)
     }
-    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+    async fn suspend(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+        _account: &AccountId,
+    ) -> Result<(), ProvisionError> {
         Ok(())
     }
     async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
@@ -169,7 +192,10 @@ async fn a_message_to_a_suspended_agent_resumes_it_and_waits_until_ready() {
     let thread = create(&app, &alice(), "coder", "hello").await;
 
     let me = owner(&alice());
-    memory.suspend(&me, AgentKind::Coder).await.unwrap();
+    memory
+        .suspend(&me, AgentKind::Coder, &account_of(&alice()).unwrap())
+        .await
+        .unwrap();
     assert_eq!(
         memory.state(&me, AgentKind::Coder).await.unwrap(),
         Some(AgentState::Suspended)
@@ -234,7 +260,11 @@ async fn two_messages_at_once_to_a_suspended_agent_make_no_second_one() {
     let app = app_with(&w, memory.clone(), &[AgentKind::Coder]);
     let thread = create(&app, &alice(), "coder", "hello").await;
     memory
-        .suspend(&owner(&alice()), AgentKind::Coder)
+        .suspend(
+            &owner(&alice()),
+            AgentKind::Coder,
+            &account_of(&alice()).unwrap(),
+        )
         .await
         .unwrap();
 
@@ -359,16 +389,132 @@ async fn a_platform_refusal_is_the_deployments_fault_and_not_the_persons() {
     assert_eq!(thread_count(&app, &alice()).await, 0);
 }
 
+/// A provisioner that notes the account each call to make or wake an agent is given.
+#[derive(Clone, Default)]
+struct Accounts {
+    inner: MemoryProvisioner,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<(AgentOwner, AccountId)>>>,
+}
+
+impl AgentProvisioner for Accounts {
+    async fn ensure_ready(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+        account: &AccountId,
+    ) -> Result<ProvisionedAgent, ProvisionError> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push((owner.clone(), account.clone()));
+        self.inner.ensure_ready(owner, kind, account).await
+    }
+    async fn state(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+    ) -> Result<Option<AgentState>, ProvisionError> {
+        self.inner.state(owner, kind).await
+    }
+    async fn suspend(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+        account: &AccountId,
+    ) -> Result<(), ProvisionError> {
+        self.inner.suspend(owner, kind, account).await
+    }
+    async fn delete(&self, owner: &AgentOwner, kind: AgentKind) -> Result<(), ProvisionError> {
+        self.inner.delete(owner, kind).await
+    }
+}
+
+#[tokio::test]
+async fn the_provisioner_is_given_the_account_of_the_person_the_agent_is_for() {
+    let w = World::new();
+    let accounts = Accounts::default();
+    let app = app_with(&w, accounts.clone(), &[AgentKind::Coder]);
+
+    create(&app, &alice(), "coder", "hers").await;
+    create(&app, &bob(), "coder", "his").await;
+
+    let seen: Vec<(AgentOwner, String)> = accounts
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(o, a)| (o.clone(), a.as_str().to_owned()))
+        .collect();
+    // the person's `sub`, never the owner key, and each their own
+    assert_eq!(
+        seen,
+        [
+            (owner(&alice()), alice().as_str().to_owned()),
+            (owner(&bob()), bob().as_str().to_owned()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_person_who_is_not_an_account_id_is_refused_and_no_agent_is_made() {
+    let w = World::new();
+    let accounts = Accounts::default();
+    let app = app_with(&w, accounts.clone(), &[AgentKind::Coder]);
+    // what `auth.jwt.userClaim: email` makes a person
+    let by_mail = UserId::new("carol@example.com");
+
+    let err = app
+        .create_thread(
+            &by_mail,
+            NewThread {
+                title: None,
+                target: target("coder"),
+                text: "hello".to_owned(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            AppError::Provisioning {
+                kind: "coder",
+                source: ProvisionError::AccountNotOpaque,
+            }
+        ),
+        "{err:?}"
+    );
+    assert_eq!(err.class(), ErrorClass::Internal);
+    let shown = format!("{} {err:?}", orch_core::report(&err));
+    assert!(
+        !shown.contains("carol") && !shown.contains('@'),
+        "the refusal names nobody: {shown}"
+    );
+    assert!(
+        accounts.seen.lock().unwrap().is_empty(),
+        "the platform is not asked without an account"
+    );
+    assert!(accounts.inner.is_empty());
+    assert_eq!(thread_count(&app, &by_mail).await, 0, "nothing was written");
+    // an agent nobody provisions asks for no account
+    create(&app, &by_mail, "plain", "the shared agent").await;
+    assert_eq!(thread_count(&app, &by_mail).await, 1);
+}
+
 #[test]
 fn the_owner_key_is_stable_distinct_and_short_enough_for_every_kind() {
     let a = Provisioning::owner_of(&alice());
     assert_eq!(
         a,
-        Provisioning::owner_of(&orch_core::UserId::new(" Alice@Example.com "))
+        Provisioning::owner_of(&orch_core::UserId::new(
+            " 3B1D7E52-6A40-4C18-9F0E-A1C2D3E4F501 "
+        ))
     );
     assert_ne!(a, Provisioning::owner_of(&bob()));
     assert!(!a.as_str().contains('@'), "the key names nobody");
-    // the vector dev/provisioner-e2e.sh computes with `sha256sum | cut -c1-24`
+    // a fixed vector: dev/provisioner-e2e.sh computes the same with `sha256sum | cut -c1-24` of
+    // the user id its stack reads
     assert_eq!(
         Provisioning::owner_of(&orch_core::UserId::new("dev@example.com")).as_str(),
         "eb2b6c0d061bbd5caa545b6d"
@@ -441,6 +587,7 @@ fn message(text: &str, id: &str) -> Input {
         tier_cap: None,
         locale: None,
         pick: None,
+        prompt_signature: None,
     }
 }
 
@@ -597,6 +744,7 @@ async fn a_repeated_fork_with_its_message_is_not_a_reason_to_ask_the_platform() 
         tier: None,
         locale: None,
         pick: None,
+        prompt_signature: None,
     };
     let made = ready
         .fork_and_send(&alice(), parent.id, thread_n(43), 1, None, first())
@@ -689,6 +837,7 @@ impl AgentProvisioner for Slow {
         &self,
         _owner: &AgentOwner,
         _kind: AgentKind,
+        _account: &AccountId,
     ) -> Result<ProvisionedAgent, ProvisionError> {
         tokio::time::sleep(Duration::from_millis(300)).await;
         *self.ready_at.lock().unwrap() = Some(orch_ports::Clock::now(&orch_ports::SystemClock));
@@ -696,6 +845,7 @@ impl AgentProvisioner for Slow {
             .ensure_ready(
                 &AgentOwner::new("slow".to_owned()).unwrap(),
                 AgentKind::Coder,
+                &account_of(&alice()).unwrap(),
             )
             .await
     }
@@ -706,7 +856,12 @@ impl AgentProvisioner for Slow {
     ) -> Result<Option<AgentState>, ProvisionError> {
         Ok(None)
     }
-    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+    async fn suspend(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+        _account: &AccountId,
+    ) -> Result<(), ProvisionError> {
         Ok(())
     }
     async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
@@ -766,6 +921,7 @@ async fn a_fork_message_is_stamped_when_the_agent_is_ready_and_not_before_the_wa
                 tier: None,
                 locale: None,
                 pick: None,
+                prompt_signature: None,
             },
         )
         .await
@@ -882,6 +1038,7 @@ async fn two_people_reach_two_agents_and_a_fork_keeps_the_agent() {
                 tier: None,
                 locale: None,
                 pick: None,
+                prompt_signature: None,
             },
         )
         .await
@@ -1011,9 +1168,10 @@ impl AgentProvisioner for Listing {
         &self,
         owner: &AgentOwner,
         kind: AgentKind,
+        account: &AccountId,
     ) -> Result<ProvisionedAgent, ProvisionError> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
-        let agent = self.inner.ensure_ready(owner, kind).await?;
+        let agent = self.inner.ensure_ready(owner, kind, account).await?;
         if n >= self.list_from {
             self.registry.add(own_entry(&agent.name));
         }
@@ -1026,8 +1184,13 @@ impl AgentProvisioner for Listing {
     ) -> Result<Option<AgentState>, ProvisionError> {
         self.inner.state(owner, kind).await
     }
-    async fn suspend(&self, owner: &AgentOwner, kind: AgentKind) -> Result<(), ProvisionError> {
-        self.inner.suspend(owner, kind).await
+    async fn suspend(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+        account: &AccountId,
+    ) -> Result<(), ProvisionError> {
+        self.inner.suspend(owner, kind, account).await
     }
     async fn delete(&self, owner: &AgentOwner, kind: AgentKind) -> Result<(), ProvisionError> {
         self.inner.delete(owner, kind).await
@@ -1252,7 +1415,11 @@ async fn a_stop_for_a_task_at_an_unlisted_own_agent_cancels_locally_after_the_li
     wait_in(&w, id, ThreadState::Working).await;
     // the platform suspends the agent and stops listing it
     memory
-        .suspend(&owner(&alice()), AgentKind::Coder)
+        .suspend(
+            &owner(&alice()),
+            AgentKind::Coder,
+            &account_of(&alice()).unwrap(),
+        )
         .await
         .unwrap();
     registry.remove(&AgentId::new(mine()));
@@ -1358,11 +1525,12 @@ impl AgentProvisioner for Gated {
         &self,
         owner: &AgentOwner,
         kind: AgentKind,
+        account: &AccountId,
     ) -> Result<ProvisionedAgent, ProvisionError> {
         self.entered.fetch_add(1, Ordering::SeqCst);
         let mut open = self.open.clone();
         let _ = open.wait_for(|v| *v).await;
-        self.inner.ensure_ready(owner, kind).await
+        self.inner.ensure_ready(owner, kind, account).await
     }
     async fn state(
         &self,
@@ -1371,8 +1539,13 @@ impl AgentProvisioner for Gated {
     ) -> Result<Option<AgentState>, ProvisionError> {
         self.inner.state(owner, kind).await
     }
-    async fn suspend(&self, owner: &AgentOwner, kind: AgentKind) -> Result<(), ProvisionError> {
-        self.inner.suspend(owner, kind).await
+    async fn suspend(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+        account: &AccountId,
+    ) -> Result<(), ProvisionError> {
+        self.inner.suspend(owner, kind, account).await
     }
     async fn delete(&self, owner: &AgentOwner, kind: AgentKind) -> Result<(), ProvisionError> {
         self.inner.delete(owner, kind).await
@@ -1907,6 +2080,7 @@ impl AgentProvisioner for Uninterrupted {
         &self,
         owner: &AgentOwner,
         kind: AgentKind,
+        _account: &AccountId,
     ) -> Result<ProvisionedAgent, ProvisionError> {
         self.entered.fetch_add(1, Ordering::SeqCst);
         if !self.ready.load(Ordering::SeqCst) {
@@ -1925,7 +2099,12 @@ impl AgentProvisioner for Uninterrupted {
     ) -> Result<Option<AgentState>, ProvisionError> {
         Ok(None)
     }
-    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+    async fn suspend(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+        _account: &AccountId,
+    ) -> Result<(), ProvisionError> {
         Ok(())
     }
     async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
@@ -2013,6 +2192,7 @@ impl AgentProvisioner for Failing {
         &self,
         _owner: &AgentOwner,
         _kind: AgentKind,
+        _account: &AccountId,
     ) -> Result<ProvisionedAgent, ProvisionError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2025,7 +2205,12 @@ impl AgentProvisioner for Failing {
     ) -> Result<Option<AgentState>, ProvisionError> {
         Ok(None)
     }
-    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+    async fn suspend(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+        _account: &AccountId,
+    ) -> Result<(), ProvisionError> {
         Ok(())
     }
     async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
@@ -2209,6 +2394,7 @@ impl AgentProvisioner for Panicking {
         &self,
         _owner: &AgentOwner,
         _kind: AgentKind,
+        _account: &AccountId,
     ) -> Result<ProvisionedAgent, ProvisionError> {
         panic!("the provisioner broke");
     }
@@ -2219,7 +2405,12 @@ impl AgentProvisioner for Panicking {
     ) -> Result<Option<AgentState>, ProvisionError> {
         Ok(None)
     }
-    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+    async fn suspend(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+        _account: &AccountId,
+    ) -> Result<(), ProvisionError> {
         Ok(())
     }
     async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
@@ -2263,6 +2454,7 @@ impl AgentProvisioner for Hanging {
         &self,
         _owner: &AgentOwner,
         _kind: AgentKind,
+        _account: &AccountId,
     ) -> Result<ProvisionedAgent, ProvisionError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         std::future::pending().await
@@ -2274,7 +2466,12 @@ impl AgentProvisioner for Hanging {
     ) -> Result<Option<AgentState>, ProvisionError> {
         Ok(None)
     }
-    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+    async fn suspend(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+        _account: &AccountId,
+    ) -> Result<(), ProvisionError> {
         Ok(())
     }
     async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
@@ -2342,6 +2539,7 @@ impl AgentProvisioner for SlowThenReady {
         &self,
         owner: &AgentOwner,
         kind: AgentKind,
+        _account: &AccountId,
     ) -> Result<ProvisionedAgent, ProvisionError> {
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
             tokio::time::sleep(Duration::from_secs(20)).await;
@@ -2363,7 +2561,12 @@ impl AgentProvisioner for SlowThenReady {
     ) -> Result<Option<AgentState>, ProvisionError> {
         Ok(None)
     }
-    async fn suspend(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
+    async fn suspend(
+        &self,
+        _owner: &AgentOwner,
+        _kind: AgentKind,
+        _account: &AccountId,
+    ) -> Result<(), ProvisionError> {
         Ok(())
     }
     async fn delete(&self, _owner: &AgentOwner, _kind: AgentKind) -> Result<(), ProvisionError> {
@@ -2849,7 +3052,11 @@ async fn a_message_steered_into_a_suspended_own_agent_wakes_it_first() {
     let id = new_coder_thread(&app, "gate refactor the parser").await;
     wait_in(&w, id, ThreadState::Working).await;
     memory
-        .suspend(&owner(&alice()), AgentKind::Coder)
+        .suspend(
+            &owner(&alice()),
+            AgentKind::Coder,
+            &account_of(&alice()).unwrap(),
+        )
         .await
         .unwrap();
     registry.remove(&AgentId::new(mine()));

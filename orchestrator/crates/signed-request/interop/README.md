@@ -10,10 +10,9 @@ Holds [`orch-signed-request`](../README.md) to the real **`cratestack-cose` 0.17
   the same ones from the same inputs;
 * what the real `sign_claims` writes for a request of its own, the orchestrator's reference verifier accepts.
 
-It is a crate of its own, **outside the orchestrator's workspace**, because `cratestack-cose` 0.17.2 has `rust-version = "1.98.0"` and the
-workspace builds on 1.94.1 (`rust-toolchain.toml` here pins 1.98.1). CI job `signed-request-interop` runs it. When the workspace moves to
-Rust 1.98 (a change of its own: the Dockerfile, six workflows and the adam-rs pin), `orch-signed-request` can use the real crate and these tests
-become ordinary tests of the workspace.
+It is a crate of its own, **outside the orchestrator's workspace**: it keeps its own `Cargo.lock` and pins its own toolchain file
+(1.98.1), and CI job `signed-request-interop` runs it. The workspace moved to Rust 1.98 on 2026-11-27 (ANR-1328), so
+`orch-signed-request` can now use the real crate and these tests can become ordinary tests of the workspace; that swap is its own change.
 
 ```sh
 cd orchestrator/crates/signed-request/interop

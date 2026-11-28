@@ -30,8 +30,13 @@ pub struct Problem {
     pub ext: Option<Box<ProblemExt>>,
 }
 
-/// The extension members of a problem of the prompt library (RFC 9457 allows them): where a save is
-/// refused, or which answer and which rule. Names positions and ids, never a word of a prompt.
+/// The extension members of a problem (RFC 9457 allows them), boxed beside `Problem::ext`: where a
+/// save of the prompt library is refused, or which answer and which rule (`at`, `offset`,
+/// `question`, `rule`); which models or levels an agent offers (`offered`); the lowest client
+/// version a deployment serves (`minClientVersion`); the limit a person reached and its usage
+/// (`limit`, `inUse`, `max`); and why a client should not retry (`reason`, `prompt_signature_invalid`).
+/// They name positions, ids, counts and codes, never a word of a prompt, an answer, a credential or
+/// a signature.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ProblemExt {
     /// Where a save is refused (`createPrompt`, `updatePrompt`): `name`, `body`,
@@ -64,6 +69,10 @@ pub struct ProblemExt {
     /// `over_limit`: the value of the limit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max: Option<u32>,
+    /// `prompt_signature_invalid` (ADR 0087, decision 7): the reason the client sees, `invalid` today.
+    /// The finer one (`missing`, `malformed`) is in the orchestrator's log and never in the response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl Problem {
@@ -159,6 +168,17 @@ impl Problem {
     pub fn forbidden(detail: impl Into<String>) -> Self {
         Self::new(StatusCode::FORBIDDEN, detail)
     }
+
+    /// The same problem saying why a client should not retry (ADR 0087, decision 7):
+    /// `prompt_signature_invalid` carries `invalid`; the finer reason is only logged.
+    #[must_use]
+    pub fn with_reason(mut self, reason: &str) -> Self {
+        self.ext = Some(Box::new(ProblemExt {
+            reason: Some(reason.to_owned()),
+            ..self.ext.map(|ext| *ext).unwrap_or_default()
+        }));
+        self
+    }
 }
 
 impl IntoResponse for Problem {
@@ -235,7 +255,7 @@ fn retry_after_secs(wait: Option<Duration>, default: u64) -> u64 {
 /// | the agent registry cannot say whether an agent exists | 503 "the agent registry is unreachable" + `Retry-After: 5` |
 /// | the live card of an agent cannot be read, and the request needs to know whether it honours an access tier (`AppError::CardUnavailable`, ADR 0061) | 503 "the card of the agent <id> could not be read" + `Retry-After: 5` |
 /// | the person's own agent is not ready within the wait-ready bound (`AppError::AgentNotReady`, ANR-806) | 503 `code: agent_not_ready`, "your <kind> agent is not ready after <n>s" + `Retry-After: 5`; nothing was written |
-/// | the platform cannot make or wake the person's own agent (`AppError::Provisioning`) | 503 "your <kind> agent could not be made ready" + `Retry-After: 5` when it may pass (the platform is down or the agent is being deleted), 500 when the platform refused the orchestrator or its form |
+/// | the platform cannot make or wake the person's own agent (`AppError::Provisioning`) | 503 "your <kind> agent could not be made ready" + `Retry-After: 5` when it may pass (the platform is down or the agent is being deleted), 500 when the platform refused the orchestrator or its form, or (`ProvisionError::AccountNotOpaque`, ADR 0108) when the person is not an account id (their `sub` is outside its alphabet; startup requires `auth.jwt.userClaim: sub`); nothing was written and the platform was not asked |
 /// | the person's own agent is blocked for a reason that waiting cannot fix (`AppError::Provisioning` with `ProvisionError::Blocked`, ANR-1062: `NameConflict`, `CNPGNotInstalled`) | 500 `code: agent_blocked`, "your <kind> agent is blocked: <reason>"; the reason is the platform's condition reason, no secret; nothing was written |
 /// | an agent that rate limits | 503 + its `Retry-After` |
 /// | any other agent failure | 502 |

@@ -9,6 +9,7 @@ import { groupIconMdPlugin, groupIconVitePlugin } from "vitepress-plugin-group-i
 import { DEFAULT_BASE, rewriteDocLinks } from "./openapi/shared";
 import { loadSpec } from "./openapi/spec";
 import { llmsSidebar } from "./llms";
+import { readExtensionIndex } from "./extension-index.mjs";
 import { inDepth } from "./theme/in-depth";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -58,7 +59,7 @@ function group(text: string, items: SidebarItem[], collapsed = true) {
 const referencePage = { text: "Chat API reference", link: "/api/reference" };
 const apiPages: { text: string; link: string }[] = [
   { text: "API index", link: "/api/" },
-  ...["agui", "attachments", "history", "memory-v1", "message-text-v1", "missions-v1", "notifications-v1", "projects-v1", "prompts-v1", "teams-v1", "thread-markdown-v1", "thread-search-v1", "webhooks", "windows-v1"].map((f) => page(`api/${f}`)),
+  ...["attachments", "history", "memory-v1", "message-text-v1", "missions-v1", "notifications-v1", "projects-v1", "prompts-v1", "signed-tool-requests-v1", "teams-v1", "thread-markdown-v1", "thread-search-v1", "webhooks", "windows-v1"].map((f) => page(`api/${f}`)),
 ];
 // The operations of the chat API, one page each under /api/operations/: dynamic routes, so not files the guard reads.
 const chatApiOperations: SidebarItem = {
@@ -66,18 +67,23 @@ const chatApiOperations: SidebarItem = {
   collapsed: true,
   items: useSidebar({ spec: loadSpec(), linkPrefix: "/api/operations/", tagLinkPrefix: "/api/tags/" }).generateSidebarGroups(),
 };
-// Reference > Extensions: the A2A extensions and the other contracts a tool server or an agent implements.
+// Reference > Extensions: only the extensions. The index first, then each contract page its table links, in the table's
+// order (a page that two rows share is listed once), then the AG-UI binding and A2UI, which is a section of that page.
+// The pages and their order come from the table itself (extension-index.mjs), so a new row is a new sidebar entry;
+// tools/docs-check holds each page's status to its row.
+const AGUI = "agui";
+const contractPages = [...new Set(readExtensionIndex(readFileSync(join(root, "api", "extensions.md"), "utf8")).flatMap((r) => (r.page ? [r.page.file.replace(/\.md$/, "")] : [])))].filter((f) => f !== AGUI);
 const extensionPages = [
-  "extensions", "access-tier-v1", "agent-mode-v1", "child-sessions-v1", "commands-v1", "locale-v1", "mentions-v1", "model-pick-v1", "model-relay-v1",
-  "network-tier-v1", "signed-tool-requests-v1", "signed-turns-v1", "steer-v1", "steps-v1", "text-stream-v1", "thread-tools-v1", "trusted-components-v1",
-  "ui-catalog-v1", "ui-catalog-v2", "uploads-v1", "usage-v1",
-].map((f) => page(`api/${f}`));
+  ...["extensions", ...contractPages].map((f) => page(`api/${f}`)),
+  page(`api/${AGUI}`, "AG-UI binding"),
+  { text: "A2UI (generative UI)", link: `/api/${AGUI}#a2ui-generative-ui` },
+];
 // Reference > Configuration: what an operator sets or a deployment must honour.
 const configurationPages = ["config", "client-version", "model-injector"].map((f) => page(`api/${f}`));
 
 // Every page of docs/api/ must be placed: a page in none of the groups would be on the site and in no sidebar.
 {
-  const placed = new Set([referencePage, ...apiPages, ...extensionPages, ...configurationPages].map((p) => p.link.replace(/^\/api\/?/, "")));
+  const placed = new Set([referencePage, ...apiPages, ...extensionPages, ...configurationPages].map((p) => p.link.replace(/^\/api\/?|#.*$/g, "")));
   const missing = readdirSync(join(root, "api"))
     .filter((f) => f.endsWith(".md") && f !== "README.md")
     .filter((f) => !placed.has(f.replace(/\.md$/, "")));

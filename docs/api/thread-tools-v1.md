@@ -1,7 +1,7 @@
 # A2A extension: thread tools (v1)
 
 - **URI:** `https://agents.vymalo.com/a2a/extensions/thread-tools/v1`
-- **Status:** **built (MVP slice 3, 2026-10-01), apart from the tools of later slices.** Accepted on the owner's
+- **Status:** ⚠️ partial · **built (MVP slice 3, 2026-10-01), apart from the tools of later slices.** Accepted on the owner's
   delegation; the owner may revisit anything here. Built: `orch-thread-token` (the token, with the known-answer vectors
   below), `orch-surface-thread-tools` (the route, the guard, `get_ui_catalog`, the seam for later tools), the binary's
   `thread-tools` surface and `THREAD_TOOLS_*` settings, and the grant in the A2A message (the adapter mints at send

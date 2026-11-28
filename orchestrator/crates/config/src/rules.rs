@@ -644,6 +644,16 @@ impl Checker<'_> {
         // provisioner
         if let Some(section) = &cfg.provisioner {
             self.provisioner(section);
+            // ADR 0108: a person's own agent carries their account, and the account is the `sub`.
+            // The alphabet alone cannot tell: a user name or another claim passes it.
+            if !reads_sub(&cfg.auth) {
+                self.invalid(
+                    "provisioner",
+                    "needs auth.mode jwt with auth.jwt.userClaim: sub: a person's own agent is \
+                     charged to the identity provider's sub, never an e-mail address or another \
+                     claim (ADR 0108)",
+                );
+            }
         }
 
         // userToolServers
@@ -784,21 +794,12 @@ impl Checker<'_> {
         // ADR 0108: the meter is answered the person's `sub`, and only a deployment that reads `sub`
         // has one. An e-mail is not an account id (the platform's alphabet has no `@`), so a meter
         // token with any other claim could only ever be refused at the route: it is refused here.
-        if internal.meter.is_some() {
-            // A mode that also reads the identity header gives some people an e-mail for an id.
-            let reads_sub = !cfg.auth.mode.reads_header()
-                && cfg
-                    .auth
-                    .jwt
-                    .as_ref()
-                    .is_some_and(|jwt| jwt.user_claim.trim() == "sub");
-            if !reads_sub {
-                self.invalid(
-                    "server.internal.meter",
-                    "needs auth.mode jwt with auth.jwt.userClaim: sub: the meter is answered the \
-                     identity provider's sub, never an e-mail address (ADR 0108)",
-                );
-            }
+        if internal.meter.is_some() && !reads_sub(&cfg.auth) {
+            self.invalid(
+                "server.internal.meter",
+                "needs auth.mode jwt with auth.jwt.userClaim: sub: the meter is answered the \
+                 identity provider's sub, never an e-mail address (ADR 0108)",
+            );
         }
         for agent in internal.agents.keys() {
             if !is_agent_id(agent) {
@@ -1903,13 +1904,13 @@ impl Checker<'_> {
                     "a kind that is provisioned needs its agent form",
                 ),
                 Some(form) => {
-                    if let Some(key) = ["name", "owner", "suspend"]
+                    if let Some(key) = ["name", "owner", "account", "suspend"]
                         .into_iter()
                         .find(|key| form.contains_key(*key))
                     {
                         self.invalid(
                             format!("provisioner.forms.{}.{key}", kind.as_str()),
-                            "the orchestrator sets name, owner and suspend: leave it out",
+                            "the orchestrator sets name, owner, account and suspend: leave it out",
                         );
                     }
                 }
@@ -2736,6 +2737,17 @@ fn is_slug(name: &str) -> bool {
         && name
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// Whether every person's id is the identity provider's `sub` (ADR 0108): a mode that reads tokens
+/// only, and `auth.jwt.userClaim: sub`. A mode that also reads the identity header gives some
+/// people an e-mail for an id. What the meter and a `provisioner` section are held to.
+fn reads_sub(auth: &Auth) -> bool {
+    !auth.mode.reads_header()
+        && auth
+            .jwt
+            .as_ref()
+            .is_some_and(|jwt| jwt.user_claim.trim() == "sub")
 }
 
 /// An agent id, the rule of `orch_core::is_valid_agent_id` (this crate depends on no core crate):

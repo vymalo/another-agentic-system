@@ -3720,7 +3720,11 @@ agents:
 
     #[test]
     fn a_provisioner_section_is_read_with_its_secret_and_no_section_changes_nothing() {
+        // a provisioner is read only where a person is the `sub` (ADR 0108)
         let section = "\
+auth:
+  mode: jwt
+  jwt: { issuer: 'https://idp.example/realms/main', audiences: [web], userClaim: sub }
 provisioner:
   url: http://platform-api:8080
   kinds: [coder]

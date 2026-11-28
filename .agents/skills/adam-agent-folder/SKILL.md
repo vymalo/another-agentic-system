@@ -40,6 +40,9 @@ before you rely on a detail here.
      its model's profile in `MODEL_ALIASES_FILE`: the alias the run continues on, once, when the endpoint refuses
      `model` as locked; not the agent's own alias, else exit 78; a subagent resolves its own, so an `inherit` subagent
      takes its model's profile fallback and needs no key; ADR 0064 amended 2026-11-23),
+     `si_memory:` (`off`, `on`, or a map of `recall`, `record`, `preload_kib`, `scopes`: the agent's
+     self-improvement memory, ADR 0081; the deployment's `SI_MEMORY=off` beats it, an unknown or secret-looking
+     option is a load error, and `memory:` is a different, ignored key),
      `reasoning_effort:` (one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) and
      `model_preset:` (a name in `MODEL_ALIASES_FILE`'s `presets`): the level this agent asks for and
      the preset it starts from. The effort resolves folder, its preset, the model's profile, then the
@@ -63,9 +66,18 @@ before you rely on a detail here.
      the process at startup.
    * Secrets and endpoints never go in the file: the validator rejects `api_key`, `apiKey`,
      `token`, `secret`, `password` and `base_url` (`docs/reference/agent-files.md`, "File formats").
+   * `plugins:` names **compiled hooks the deployment registered**, never a program: each entry is a
+     name or `{name, options}` of scalars, and it must be one the serving binary or the embedding host
+     registered (`AgentDef::plugin`, or `plugin_with` when the entry's options decide how the plugin is
+     made). A name nobody registered stops startup (exit 78), a subagent runs its parent's plugins and
+     then its own, and an option whose name looks like a secret is refused. **No shipped binary
+     registers one yet** (*verified 2026-11-27*), so `plugins:` in a folder `adam-agent` serves is exit
+     78: `adam-plugin`'s `Audit` (one JSON line per observed event) and the `adam-hooks/1` program
+     adapter (`adam-hook-exec`) are for a host that registers them. `hooks:` stays an ignored key.
 3. **Body**: the system prompt. Optional `skills/<name>/SKILL.md` (Agent Skills format, loaded on
    demand by `load_skill` and `read_skill_file`, which take a plain string name and page; a folder with no `skills:` has all of them, `skills: []` none) and `subagents/` (each one tool of the parent, a
    child run with only the tools it lists and never `ask_user`; registered as `<name>/<subagent>`).
+   A root with subagents also gets the five session tools (`subagent_start` .. `subagent_list`) and a fixed *Child sessions* section at the end of its prompt, after the skills catalog (the tools, the helpers sorted, what `config` takes): do not write a paragraph about them in the instructions.
    A subagent file with `a2a: <agent-card URL>` is a **remote subagent** (another A2A agent): render the URL into
    the file, and give its token through `auth: bearer:VAR` (a variable of the process, from a Secret; unset is exit
    78). Plain `http` to a service of the same cluster needs `A2A_ALLOW_INSECURE_REMOTES=true` on `adam-agent`, and
@@ -74,6 +86,7 @@ before you rely on a detail here.
    `files: true` in a remote's file shares the file parts of its answer (a browser's screenshot) as files of the
    calling run; without it they are described and dropped. A subagent's files never reach the person.
    Optional `commands/<name>.md` are prompt templates the agent serves (`description`, `argument-hint`, a body with `$ARGUMENTS` and `$1` to `$9`; at most 50, `$$` is a literal `$`, never executed, any `!` right before a backtick is refused; a file is `*.md`, regular, at most 40 KiB): the card lists them (`commands/v1`) and a message `/name arguments` or its metadata invokes one; a subagent's `commands/` is ignored.
+   Optional `modes/<name>.md` are the modes a person picks **for one message** (`title`, `description`, `default: true` on exactly one, `tools:` — an allowlist over the agent's own, absent: no narrowing — and a body added to the instructions while it is in force; at most 16; a name the agent does not have is left out with a warning, a pattern that matches nothing is exit 78, and a `permission:` key is **refused** until ADR 0039 decision 4 is built). The card lists them (`agent-mode/v1`: `params {modes: [{name, title, description}], default}`) and a message that activates the extension names one (`metadata[URI] = {"mode": ..}`); an unknown one is refused as `mode_not_offered` before anything runs, and the choice holds until another message names another. **A mode only narrows**: the access tier still caps every tool it allows, and a mode can neither raise the tier nor offer a tool the agent does not have. A subagent starts in its parent's mode. A folder with no `modes/` lists no extension and works as before (ADR 0039 decision 3; the client side is `adam-a2a-extensions`).
    `references:` in the frontmatter of the root `instructions.md` (a list of `name`, `url`, optional `branch`, `description`;
    at most 16; no credentials in the `url`) names repositories the **coder** may read beside the one it works on and never
    write; a deployment adds more with `ADAM_REFERENCES_FILE` (a name both declare is exit 78) and `adam-agent` has no

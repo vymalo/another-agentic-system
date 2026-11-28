@@ -397,7 +397,7 @@ with the same member names as an agent entry's `gate` in the agents file, plus t
 | `auth.roles.<role>.limits.modelCallsInFlight` | the orchestrator's own model calls in flight for the person (titles, descriptions); at least 1 | `4` | now (ADR 0081, parsing only) |
 | `auth.roles.<role>.limits.admissionWaitSecs` | seconds a run waits for a slot before it parks; at least 1 | the dispatcher's short wait | now (ADR 0081, parsing only) |
 | `auth.defaultRole` | a role of `auth.roles`, or `null` for none. Absent: `user` when `auth.roles` is absent (the built-ins, so a deployment that configures nothing is as it was), `null` when `auth.roles` is given. The one key where `null` is a value | — | now (S15) |
-| `auth.signingClients` | the clients of the issuer (the token's `azp`, or `client_id`) whose prompts must carry `vymalo.promptSignature` ([ADR 0087](../decisions/0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md)): at most 64, each 1 to 256 printable characters with no space, none twice, none the `auth.browser.clientId`. Absent or `[]`: no signing client | — | now (ANR-719; the intake check that reads it, and the rule that production refuses an empty list, are not built yet) |
+| `auth.signingClients` | the clients of the issuer (the token's `azp`, or `client_id`) whose prompts must carry `vymalo.promptSignature` ([ADR 0087](../decisions/0087-a-signing-app-signs-each-prompt-and-the-orchestrator-refuses-an-unsigned-one.md)): at most 64, each 1 to 256 printable characters with no space, none twice, none the `auth.browser.clientId`. Absent or `[]`: no signing client | — | now (ANR-719; the **presence check at intake** reads it since ANR-1338: a prompt from a listed client — or from a token that names no client at all (fail closed, `Some("")`) — whose new user message (for an answer, its `resume` entry) carries no `metadata["vymalo.promptSignature"]`, or one that is not a compact JWS, is a **403** `prompt_signature_invalid` with `reason: invalid` before anything is written; an attach, a cancel and an A2UI action are never checked. No cryptography happens there; the rule that a `production` profile refuses an empty list is not built yet) |
 | `artifacts` | the artifact store ([ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md)). Absent: no store, and a file an agent hands over is refused with "no artifact store configured". Present: `store` is required | — | now (S10) |
 | `artifacts.store` | `fs` \| `s3`; required with the section. Names only what this build compiled in: `fs` needs the Cargo feature `artifacts-fs`, `s3` needs `artifacts-s3`, else exit 78 naming it. The section of the store chosen is required and the other one is an error | — | now |
 | `artifacts.fs.root` | path (relative to this file's directory); required with `store: fs`. Made (mode `0700`) when missing. Every role must see the same directory (one machine, or a shared volume) | — | now |
@@ -454,11 +454,23 @@ referent not made yet passes), except for a reason that waiting cannot clear (`N
 which is a 500 `code: agent_blocked`, "your coder agent is blocked: NameConflict". The shared `chat` agent and any other agent never go through it. A binary built without the Cargo feature `provisioner-platform` refuses
 the section (exit 78).
 
+**The account** (ADR 0108): the form the orchestrator sends carries `account`, which the platform charges the agent's pods
+to. It is the identity provider's `sub` (trimmed and lower-cased), so **a `provisioner` section needs `auth.mode: jwt`
+with `auth.jwt.userClaim: sub`, and startup refuses it otherwise** (exit 78 naming `provisioner`): under `email`, which
+is the default, under any other claim, and in a mode that reads the identity header (`proxy_header`, with or without
+`devUser`, and `jwt_or_proxy_header`). Moving a deployment to `sub` re-keys its people (their threads and their agents
+belong to the id the claim gives), so it is the deployment's own decision. A `sub` that is not
+`[A-Za-z0-9._:/-]{1,128}` (an `@` is never one) passes startup and gets a **500** for a message to a provisioned kind:
+the platform is not asked, nothing is written, and the cause is logged (`account_not_opaque`), without the person.
+The orchestrator sends the account only when it writes the agent: when it creates, resumes or suspends it. **An agent
+that is already `ready` is only read, so one made without an account keeps none until something suspends it and a
+message resumes it, and nothing in the orchestrator's application suspends an agent today.**
+
 | Key | Meaning |
 |---|---|
 | `url` | The Platform API's base URL: `http` or `https`, a host, no user name or password. |
 | `kinds` | The kinds made for each person: `coder`, `workspace`, each once, at least one. The shared chat agent is never provisioned. |
-| `forms.<kind>` | The agent form of each kind in `kinds` (the platform's form without `name`, `owner` and `suspend`, which the orchestrator sets). One per kind, and none for a kind that is not listed. |
+| `forms.<kind>` | The agent form of each kind in `kinds` (the platform's form without `name`, `owner`, `account` and `suspend`, which the orchestrator sets). One per kind, and none for a kind that is not listed. |
 | `credentials` | What the orchestrator presents. Two types. `dev-oidc`, the OAuth `client_credentials` grant for the local stack's `mock-oidc`: `tokenUrl`, `clientId`, `clientSecret` (a `{ env }` or `{ file }` reference), and optionally `user`, `audience`, `roles` (the token must carry `platform:agents.own`); a development adapter. `openbao-pki`, **the orchestrator's workload certificate** (ANR-809, [ADR 0110](../decisions/0110-the-orchestrator-presents-its-workload-certificate-to-the-platform.md)), presented on the TLS connection with no `Authorization` header: see below. |
 | `credentials.address` | `openbao-pki`, required. OpenBao: an `https` URL with a host and no user name, password, query or fragment. The pod's service-account token goes to it. |
 | `credentials.caFile` | `openbao-pki`, none. A file of PEM certificates OpenBao's certificate is also checked against, besides the system's roots; read at startup, relative to the file's directory. |

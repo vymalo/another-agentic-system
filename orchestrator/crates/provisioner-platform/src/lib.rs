@@ -12,7 +12,10 @@
 //! * A **resume** is `PUT` with `If-Match` and `suspend: false`; a `412` re-reads and decides again.
 //! * **Ready** is the agent's `state`, polled until [`PlatformConfig::ready_timeout`].
 //! * The form of each kind is the deployment's ([`PlatformConfig::with_form`]): the adapter adds
-//!   `name`, `owner` and `suspend` and nothing else, so it holds no model, image or secret.
+//!   `name`, `owner`, `account` and `suspend` and nothing else, so it holds no model, image or
+//!   secret. `account` is the [`AccountId`] the caller passes (the platform's
+//!   `AgentService.spec.account`, ADR 0108); it names a person, so it is in the request body and in
+//!   no error and no `Debug` of this crate, which logs nothing.
 //! * What the orchestrator presents is one of two modes ([`PlatformAuth`]): a bearer token from a
 //!   [`PlatformCredentials`], or a **client certificate** on the TLS connection from a
 //!   [`PlatformClientCertificates`] (ANR-809). A mode is chosen when the provisioner is built and
@@ -30,7 +33,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use orch_core::BoxError;
+use orch_core::{AccountId, BoxError};
 use orch_ports::{
     AgentKind, AgentOwner, AgentProvisioner, AgentState, BlockedReason, Clock,
     PlatformClientCertificate, PlatformClientCertificates, PlatformCredentials,
@@ -82,7 +85,7 @@ pub struct PlatformConfig {
     /// PEM certificates the listener's certificate is also checked against, besides the system's
     /// roots (a private authority). `None`: the system's roots alone.
     pub server_ca_pem: Option<String>,
-    /// The agent form of each kind, without `name`, `owner` and `suspend`.
+    /// The agent form of each kind, without `name`, `owner`, `account` and `suspend`.
     pub forms: HashMap<AgentKind, Value>,
     /// How long one request may take.
     pub timeout: Duration,
@@ -205,7 +208,7 @@ pub enum BuildError {
     #[error("the platform's server CA is not a PEM certificate bundle")]
     BadServerCa,
     /// A form is not a JSON object, or sets a field the adapter owns.
-    #[error("the form of {0:?} must be a JSON object without name, owner or suspend")]
+    #[error("the form of {0:?} must be a JSON object without name, owner, account or suspend")]
     BadForm(AgentKind),
     /// The HTTP client could not be built.
     #[error("cannot build the platform HTTP client")]
@@ -351,7 +354,7 @@ impl PlatformProvisioner {
         }
         for (kind, form) in &cfg.forms {
             let object = form.as_object().ok_or(BuildError::BadForm(*kind))?;
-            if ["name", "owner", "suspend"]
+            if ["name", "owner", "account", "suspend"]
                 .iter()
                 .any(|k| object.contains_key(*k))
             {
@@ -402,6 +405,7 @@ impl PlatformProvisioner {
         owner: &AgentOwner,
         kind: AgentKind,
         name: &str,
+        account: &AccountId,
         suspend: bool,
     ) -> Result<Value, ProvisionError> {
         let mut form = self
@@ -412,6 +416,7 @@ impl PlatformProvisioner {
         if let Some(object) = form.as_object_mut() {
             object.insert("name".into(), json!(name));
             object.insert("owner".into(), json!(owner.as_str()));
+            object.insert("account".into(), json!(account.as_str()));
             object.insert("suspend".into(), json!(suspend));
         }
         Ok(form)
@@ -536,8 +541,9 @@ impl PlatformProvisioner {
         owner: &AgentOwner,
         kind: AgentKind,
         name: &str,
+        account: &AccountId,
     ) -> Result<(), ProvisionError> {
-        let form = self.form(owner, kind, name, false)?;
+        let form = self.form(owner, kind, name, account, false)?;
         let response = self
             .send(
                 Method::PUT,
@@ -564,17 +570,18 @@ impl PlatformProvisioner {
         }
     }
 
-    /// Replaces the agent with the owner's form and `suspend`. `false`: the agent changed or went
-    /// away, read again.
+    /// Replaces the agent with the owner's form, their account and `suspend`. `false`: the agent
+    /// changed or went away, read again.
     async fn replace(
         &self,
         owner: &AgentOwner,
         kind: AgentKind,
         name: &str,
         etag: &HeaderValue,
+        account: &AccountId,
         suspend: bool,
     ) -> Result<bool, ProvisionError> {
-        let form = self.form(owner, kind, name, suspend)?;
+        let form = self.form(owner, kind, name, account, suspend)?;
         let response = self
             .send(
                 Method::PUT,
@@ -647,6 +654,7 @@ impl AgentProvisioner for PlatformProvisioner {
         &self,
         owner: &AgentOwner,
         kind: AgentKind,
+        account: &AccountId,
     ) -> Result<ProvisionedAgent, ProvisionError> {
         let name = kind.agent_name(owner);
         let deadline = Instant::now() + self.ready_timeout;
@@ -660,7 +668,7 @@ impl AgentProvisioner for PlatformProvisioner {
                         // Made, and still not ours to read: the name is held by another owner.
                         return Err(ProvisionError::Invalid);
                     }
-                    self.create(owner, kind, &name).await?;
+                    self.create(owner, kind, &name, account).await?;
                 }
                 Some(seen) => {
                     last = seen.state;
@@ -684,7 +692,8 @@ impl AgentProvisioner for PlatformProvisioner {
                                 return Err(raced());
                             }
                             let etag = seen.etag.ok_or_else(raced)?;
-                            self.replace(owner, kind, &name, &etag, false).await?;
+                            self.replace(owner, kind, &name, &etag, account, false)
+                                .await?;
                         }
                         // Saving and Degraded (applied, not ready: a rollout or a crash loop that
                         // goes back to Ready by itself) are waited for, up to the bound.
@@ -714,7 +723,12 @@ impl AgentProvisioner for PlatformProvisioner {
             .map(|s| s.state))
     }
 
-    async fn suspend(&self, owner: &AgentOwner, kind: AgentKind) -> Result<(), ProvisionError> {
+    async fn suspend(
+        &self,
+        owner: &AgentOwner,
+        kind: AgentKind,
+        account: &AccountId,
+    ) -> Result<(), ProvisionError> {
         let name = kind.agent_name(owner);
         for _ in 0..MAX_RACES {
             let Some(seen) = self.get(owner, &name).await? else {
@@ -724,7 +738,10 @@ impl AgentProvisioner for PlatformProvisioner {
                 return Ok(());
             }
             let etag = seen.etag.ok_or_else(raced)?;
-            if self.replace(owner, kind, &name, &etag, true).await? {
+            if self
+                .replace(owner, kind, &name, &etag, account, true)
+                .await?
+            {
                 return Ok(());
             }
         }

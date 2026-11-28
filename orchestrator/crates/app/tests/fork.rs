@@ -860,6 +860,7 @@ fn first(text: &str) -> FirstMessage {
         tier: None,
         locale: None,
         pick: None,
+        prompt_signature: None,
     }
 }
 
