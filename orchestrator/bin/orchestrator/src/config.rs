@@ -1408,6 +1408,9 @@ pub struct Config {
     /// `server.minClientVersion`: the lowest application version served. `None`: no client is
     /// refused.
     pub min_client_version: Option<String>,
+    /// `server.publicOrigin` (ADR 0087): the `aud` kept beside a signed prompt. `None` when the
+    /// file gives none or an empty one, which a file that lists a signing client may not.
+    pub public_origin: Option<String>,
     /// `server.history` (ADR 0059): what one page of a thread's history may hold. The defaults from
     /// the environment alone (the section has no variable).
     pub history: orch_app::HistorySettings,
@@ -1457,6 +1460,7 @@ impl fmt::Debug for Config {
             .field("public_limits", &self.public_limits)
             .field("cors_allowed_origins", &self.cors_allowed_origins)
             .field("min_client_version", &self.min_client_version)
+            .field("public_origin", &self.public_origin)
             .field("history", &self.history)
             .field("internal", &self.internal)
             .field("dispatcher_order", &self.dispatcher_order)
@@ -1902,6 +1906,7 @@ impl Config {
             public_limits: resolved.public_limits,
             cors_allowed_origins: resolved.cors_allowed_origins,
             min_client_version: resolved.min_client_version,
+            public_origin: resolved.public_origin,
             history: resolved.history,
             internal: resolved.internal,
             dispatcher_order: resolved.dispatcher_order,
@@ -2977,6 +2982,8 @@ struct Resolved {
     cors_allowed_origins: Vec<String>,
     /// `server.minClientVersion`.
     min_client_version: Option<String>,
+    /// `server.publicOrigin`.
+    public_origin: Option<String>,
     /// `server.history`.
     history: orch_app::HistorySettings,
     /// `server.internal` (ADR 0084 decision 5): the listener, its tokens and the agents' read.

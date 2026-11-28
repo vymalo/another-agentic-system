@@ -1,19 +1,19 @@
 //! `POST /agui/agents/{agentId}`.
 
 use axum::Extension;
-use axum::body::to_bytes;
+use axum::body::{Bytes, to_bytes};
 use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
 use axum::response::sse::Sse;
 use axum::response::{IntoResponse, Response};
 use orch_agui_projection::{Audience, Projector};
 use orch_agui_projection::{
-    InputError, ThreadMeta, ThreadView, Translation, held_message_ids, release_selector,
-    thread_id_of, translate_with_warnings,
+    InputError, SignedSource, ThreadMeta, ThreadView, Translation, held_message_ids,
+    release_selector, thread_id_of, translate_with_warnings,
 };
 use orch_agui_proto::RunAgentInput;
 use orch_api::sse::{bounded, hold, keep_alive, stream_budget, stream_headers};
-use orch_api::{ApiError, Problem, check_prompt_signature};
+use orch_api::{ApiError, Problem, Received, check_prompt_signature, prompt_claims};
 use orch_app::{
     App, AppError, ApplyOutcome, Creation, FirstMessage, GateLayer, Inbound, NewThread,
     THREAD_GATE_KEY, THREAD_LOCALE_KEY, THREAD_MENTIONS_KEY, THREAD_MODEL_KEY,
@@ -22,13 +22,13 @@ use orch_app::{
 };
 use orch_core::{
     AccessTier, AgentId, AgentTarget, Event, Input, LocaleHint, Mention, ModelPick, Origin,
-    PromptSignature, ThreadId, ThreadRecord, UiCatalogData, fork_message, is_fork_at, report,
+    PromptClaims, ThreadId, ThreadRecord, UiCatalogData, fork_message, is_fork_at, report,
 };
 use orch_ports::{Clock, Ports, Principal};
 
 use crate::refuse::{check_accept, check_json, input_error};
 use crate::stream::{Feed, Start, frames};
-use crate::{MAX_BODY_BYTES, State as SurfaceState};
+use crate::{Intake, MAX_BODY_BYTES, State as SurfaceState};
 
 /// `forwardedProps["vymalo.fork"]` (ADR 0042): the run creates its thread as a fork.
 const THREAD_FORK_KEY: &str = "vymalo.fork";
@@ -71,7 +71,14 @@ pub(crate) async fn run<P: Ports>(
     let fork = fork_request(&input, gate.is_some(), &tools)?;
     let thread = thread_id_of(&input).map_err(|e| input_error(&e))?;
     // A request that names an agent by an alias is about the agent (ADR 0049).
-    let agent = state.app.canonical_agent(&AgentId::new(agent_id));
+    let agent = state.app.canonical_agent(&AgentId::new(agent_id.as_str()));
+    // What a signature covers is what was sent (ADR 0087): the segment before the alias, and the
+    // body's own bytes.
+    let arrived = Arrived {
+        body: &bytes,
+        agent: &agent_id,
+        intake: &state.intake,
+    };
     // Read from the registry now (ADR 0022): an agent the platform removed is "no such agent",
     // and a registry that cannot say is a 503, never a 404. So is an agent whose audience leaves
     // the person out (ADR 0045): what they may not read is, to them, not there. The one exception
@@ -90,7 +97,7 @@ pub(crate) async fn run<P: Ports>(
             &agent,
             thread,
             &input,
-            &state.signing_clients,
+            &arrived,
             &Requested {
                 gate: gate.as_ref(),
                 catalog: catalog.as_ref(),
@@ -549,6 +556,57 @@ struct Requested<'a> {
     fork: Option<ForkRun>,
 }
 
+/// What the check of a prompt signature needs (ADR 0087): the request as it arrived, which is what
+/// a signature covers, and the deployment's [`Intake`].
+struct Arrived<'a> {
+    /// The body's bytes.
+    body: &'a Bytes,
+    /// The `agentId` path segment, percent-decoded once (by the router), alias and all.
+    agent: &'a str,
+    /// Who must sign, and the `aud` of the claims. Never read from the request.
+    intake: &'a Intake,
+}
+
+/// The claims of the person's signed message (ADR 0087, decision 2), made from the part of the
+/// request `source` names, **as it arrived**.
+///
+/// **The body is read again as plain JSON, and nothing here is hashed from the typed
+/// [`RunAgentInput`].** [`RunAgentInput::parse`] drops every member AG-UI does not define, inside a
+/// content part too (and inside a `resume` entry), so `content` serialised from the typed view can
+/// differ from what the person's app hashed, and the verifier would refuse a message nobody
+/// touched. The raw `forwardedProps` is read the same way.
+fn claims_of(
+    arrived: &Arrived<'_>,
+    aud: &str,
+    thread: &str,
+    source: &SignedSource,
+    envelope: &str,
+) -> Result<PromptClaims, ApiError> {
+    // the same bytes the typed view was parsed from, so none of this can fail
+    let unreadable = || AppError::internal("the signed part of a parsed request is not there");
+    let body: serde_json::Value = serde_json::from_slice(arrived.body).map_err(|_| unreadable())?;
+    let (array, index, member) = match source {
+        SignedSource::Message { index, .. } => ("messages", *index, "content"),
+        SignedSource::Resume { index, .. } => ("resume", *index, "payload"),
+    };
+    let content = body
+        .get(array)
+        .and_then(|entries| entries.get(index))
+        .and_then(|entry| entry.get(member))
+        .ok_or_else(unreadable)?;
+    Ok(prompt_claims(
+        aud,
+        &Received {
+            thread,
+            agent: arrived.agent,
+            msg: source.msg(),
+            content,
+            forwarded_props: body.get("forwardedProps"),
+        },
+        envelope,
+    ))
+}
+
 /// One look at the thread and one try at doing what the request asks. `None` means "look
 /// again": a concurrent request with the same ids got there first, and this one is now a retry
 /// of it (an attach).
@@ -558,7 +616,7 @@ async fn attempt<P: Ports>(
     agent: &AgentId,
     thread: ThreadId,
     input: &RunAgentInput,
-    signing_clients: &[String],
+    arrived: &Arrived<'_>,
     requested: &Requested<'_>,
 ) -> Result<Option<Feed>, ApiError> {
     let Requested {
@@ -649,6 +707,7 @@ async fn attempt<P: Ports>(
         mut inputs,
         warnings,
         attach,
+        signed_source,
     } = translate_with_warnings(input, &view).map_err(|e| input_error(&e))?;
     for warning in &warnings {
         tracing::warn!(%thread, %warning, "part of the run input was ignored");
@@ -661,19 +720,31 @@ async fn attempt<P: Ports>(
     // raw source (the new message's `metadata`, or an answer's `resume` entry), passed on as it
     // arrived or not at all: every client's is bounded here, before a Stop & send can hold it.
     let prompt = inputs.iter_mut().find_map(|input| match input {
-        Input::UserMessage {
-            prompt_signature, ..
+        Input::UserMessage { signed_prompt, .. } | Input::StopAndSend { signed_prompt, .. } => {
+            Some(signed_prompt)
         }
-        | Input::StopAndSend {
-            prompt_signature, ..
-        } => Some(prompt_signature),
         _ => None,
     });
-    if let Some(prompt_signature) = prompt {
-        let received = prompt_signature.as_ref().map(PromptSignature::as_str);
+    if let Some(signed_prompt) = prompt {
+        let received = signed_prompt.as_ref().map(|p| p.envelope.as_str());
         // an empty or over-long value of a client that is not asked for one is not carried
-        if check_prompt_signature(principal, signing_clients, received)?.is_none() {
-            *prompt_signature = None;
+        if check_prompt_signature(principal, &arrived.intake.signing_clients, received)?.is_none() {
+            *signed_prompt = None;
+        }
+        // What a verifier needs beside the envelope is computed here, where the request is still
+        // in hand. Without a public origin there is no `aud`, and none is taken from the request:
+        // the envelope then goes alone (a deployment that lists a signing client has one).
+        if let Some(signed) = signed_prompt
+            && let Some(aud) = arrived.intake.public_origin.as_deref()
+            && let Some(source) = &signed_source
+        {
+            signed.claims = Some(claims_of(
+                arrived,
+                aud,
+                input.thread_id.as_str(),
+                source,
+                signed.envelope.as_str(),
+            )?);
         }
     }
     let held = held_message_ids(input);
@@ -719,7 +790,7 @@ async fn attempt<P: Ports>(
                     text,
                     message_id,
                     run_id,
-                    prompt_signature,
+                    signed_prompt,
                     ..
                 },
             ] = inputs.as_slice()
@@ -750,9 +821,7 @@ async fn attempt<P: Ports>(
                         tier,
                         locale: locale.cloned(),
                         pick: pick.cloned(),
-                        prompt_signature: prompt_signature
-                            .clone()
-                            .map(PromptSignature::into_string),
+                        signed_prompt: signed_prompt.clone(),
                     },
                     held,
                 )
@@ -775,7 +844,7 @@ async fn attempt<P: Ports>(
                 tier,
                 locale: locale.cloned(),
                 pick: pick.cloned(),
-                prompt_signature: prompt_signature.clone().map(PromptSignature::into_string),
+                signed_prompt: signed_prompt.clone(),
             };
             match app
                 .create_thread_as(principal, thread, new, inbound)
@@ -938,7 +1007,7 @@ mod tests {
             catalog: None,
             mentions: Vec::new(),
             tier: None,
-            prompt_signature: None,
+            signed_prompt: None,
         }
     }
 

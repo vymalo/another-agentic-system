@@ -42,7 +42,7 @@
 # It signs in as `prompt-signature@example.com`, a user no other scenario uses, and UNSETS `OIDC_ROLES`, `OIDC_AZP`, `OIDC_AUDIENCE`
 # and `AUTH_BEARER` of your shell: any of them would change every token the script asks for, and the two `azp` values are what the
 # scenario is about. It EMPTIES the request journal of `mock-agent` first, so run it on a stack you are not in the middle of another
-# scenario on. Needs curl and jq (and /proc or uuidgen for a UUID). Run against the `app` profile built from this branch on
+# scenario on. Needs curl and jq (and python3 for a v7 UUID; /proc or uuidgen, which make a v4, are the fallback). Run against the `app` profile built from this branch on
 # 2026-11-28 (39 ok, no FAIL), before the four checks of the helper-session start were added, which have not been run there; CI
 # runs it too, in .github/workflows/coder-e2e.yml.
 set -eu
@@ -75,7 +75,7 @@ for tool in curl jq base64; do
   command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required and was not found" >&2; exit 2; }
 done
 
-uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }
+uuid() { python3 -c 'import os,time;m=time.time_ns()//1000000;print("%08x-%04x-7%03x-%04x-%012x"%(m>>16,m&65535,int.from_bytes(os.urandom(2),"big")&4095,32768|int.from_bytes(os.urandom(2),"big")&16383,int.from_bytes(os.urandom(6),"big")))' 2>/dev/null || { echo 'uuid: python3 is missing, so this is a v4 id and recent will not be creation order' >&2; cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-F' 'a-f'; }; }
 
 # claims_of HEADER: the claims of the bearer token in HEADER, as JSON (a JWT's payload is base64url, unpadded).
 claims_of() {
@@ -221,7 +221,7 @@ expect "the export holds the message (the checks below are not of an empty file)
   "$(jq -r --arg t "$accepted" '[.events[] | select(.kind == "user_message" and ((.data.text // "") | contains($t)))] | length' "$tmp/export.json" 2>/dev/null || echo unreadable)" "1"
 expect "the envelope is in no export" "$(grep -c -F "$envelope" "$tmp/export.json" || true)" "0"
 expect "the part that names the envelope's header is in no export" "$(grep -c -F "$header_part" "$tmp/export.json" || true)" "0"
-expect "the export names no envelope member" "$(grep -E -c 'promptSignature|prompt_signature' "$tmp/export.json" || true)" "0"
+expect "the export names no envelope member" "$(grep -E -i -c 'promptSignature|prompt_signature|signedPrompt|signed_prompt' "$tmp/export.json" || true)" "0"
 expect "the envelope is in none of the run's own frames" "$(grep -c -F "$envelope" "$tmp/run.out" || true)" "0"
 frames "$thread" "$signing" "$tmp/frames.json"
 expect "the replay holds the message (the checks below are not of an empty stream)" \

@@ -20,7 +20,7 @@ use crate::ids::{AgentId, ThreadId, UserId};
 use crate::locale::LocaleHint;
 use crate::mention::Mention;
 use crate::pick::ModelPick;
-use crate::prompt_signature::PromptSignature;
+use crate::prompt_signature::SignedPrompt;
 use crate::suggestions::SuggestionsLedger;
 use crate::thread::{AgentTarget, ThreadRecord, ThreadState};
 use crate::title::{TitleLedger, agent_words};
@@ -387,10 +387,11 @@ pub struct Replacement {
     pub locale: Option<LocaleHint>,
     /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
     pub pick: Option<ModelPick>,
-    /// The person's prompt signature for the message (ADR 0087), as for
+    /// The person's signed prompt for the message (ADR 0087), as for
     /// [`Input::UserMessage`](crate::Input::UserMessage): carried to the fork's delegation, never to
-    /// the log. `None` for an edit, which the orchestrator's own words do not carry.
-    pub prompt_signature: Option<PromptSignature>,
+    /// the log. An edit carries one too: what it replaces is the person's words, written by them
+    /// through the route that edits (ADR 0087, decision 3).
+    pub signed_prompt: Option<SignedPrompt>,
     /// The run (AG-UI `runId`) the message opens, which names the response that streams it.
     pub run_id: Option<String>,
     /// Where the message came from.
@@ -398,9 +399,15 @@ pub struct Replacement {
 }
 
 impl Replacement {
-    /// The replacement of an edit: the screen's message with its catalog, no mentions, no run,
-    /// from the AG-UI surface (the only one that edits).
-    pub fn edit(text: String, message_id: Option<String>, catalog: Option<UiCatalogData>) -> Self {
+    /// The replacement of an edit: the screen's message with its catalog and the person's signed
+    /// prompt (ADR 0087: an edit is the person's words too), no mentions, no run, from the AG-UI
+    /// surface (the only one that edits).
+    pub fn edit(
+        text: String,
+        message_id: Option<String>,
+        catalog: Option<UiCatalogData>,
+        signed_prompt: Option<SignedPrompt>,
+    ) -> Self {
         Self {
             text,
             message_id,
@@ -410,7 +417,7 @@ impl Replacement {
             tier_cap: None,
             locale: None,
             pick: None,
-            prompt_signature: None,
+            signed_prompt,
             run_id: None,
             origin: Origin::Agui,
         }
@@ -453,7 +460,7 @@ pub fn fork_commit(
             tier_cap: replacement.tier_cap,
             locale: replacement.locale,
             pick: replacement.pick,
-            prompt_signature: replacement.prompt_signature,
+            signed_prompt: replacement.signed_prompt,
         },
     )?;
     commands.extend(more);

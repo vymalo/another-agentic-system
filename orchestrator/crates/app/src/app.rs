@@ -296,7 +296,7 @@ const CARD_READS_AT_ONCE: usize = 16;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadExport {
     /// The thread, with its job ledger: all of it but
-    /// [`Job::after_stop_prompt_signature`](orch_core::Job), which is never exported (ADR 0087).
+    /// [`Job::after_stop_signed_prompt`](orch_core::Job), which is never exported (ADR 0087).
     pub thread: ThreadRecord,
     /// The A2A side: agent, context and task; `None` for a thread with none.
     pub binding: Option<AgentBinding>,
@@ -371,7 +371,7 @@ pub struct Inbound {
     pub pick: Option<ModelPick>,
     /// The person's prompt signature for the first message (ADR 0087, decision 2), already checked
     /// for presence at intake: it rides the delegation's outbox row and never the log.
-    pub prompt_signature: Option<String>,
+    pub signed_prompt: Option<orch_core::SignedPrompt>,
 }
 
 /// Result of [`App::create_thread_as`].
@@ -420,6 +420,10 @@ pub enum ForkAt {
         locale: Option<LocaleHint>,
         /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
         pick: Option<ModelPick>,
+        /// The person's signed prompt for the replacement (ADR 0087, decision 3): an edit writes
+        /// the person's words too. Checked for presence by the route that edits, carried to the
+        /// delegation, and never recorded in the log.
+        signed_prompt: Option<orch_core::SignedPrompt>,
     },
 }
 
@@ -450,8 +454,8 @@ pub struct FirstMessage {
     /// The model and reasoning effort picked for the message (ADR 0086), checked against the live card before anything is written, and carried as the tier is.
     pub pick: Option<ModelPick>,
     /// The person's prompt signature for the fork's first message (ADR 0087), as for
-    /// [`Inbound::prompt_signature`].
-    pub prompt_signature: Option<String>,
+    /// [`Inbound::signed_prompt`].
+    pub signed_prompt: Option<orch_core::SignedPrompt>,
 }
 
 /// What a person asks of [`App::fork_thread`].
@@ -1316,9 +1320,7 @@ impl<P: Ports> App<P> {
                 tier_cap: tier.cap,
                 locale: inbound.locale,
                 pick,
-                prompt_signature: inbound
-                    .prompt_signature
-                    .map(orch_core::PromptSignature::from),
+                signed_prompt: inbound.signed_prompt,
             },
         )?;
         // the route is recorded with the thread: where every message of it is sent from now on
@@ -1833,9 +1835,7 @@ impl<P: Ports> App<P> {
                         tier_cap: None,
                         locale: first.locale,
                         pick: first.pick,
-                        prompt_signature: first
-                            .prompt_signature
-                            .map(orch_core::PromptSignature::from),
+                        signed_prompt: first.signed_prompt,
                         run_id: first.run_id,
                         origin: first.origin,
                     }),
@@ -1848,9 +1848,10 @@ impl<P: Ports> App<P> {
                 tier,
                 locale,
                 pick,
+                signed_prompt,
             } => {
                 validate_text(&text)?;
-                let mut edit = Replacement::edit(text, message_id, None);
+                let mut edit = Replacement::edit(text, message_id, None, signed_prompt);
                 edit.tier = tier;
                 edit.locale = locale;
                 edit.pick = pick;
@@ -2470,7 +2471,7 @@ impl<P: Ports> App<P> {
         // (ADR 0087). It is not part of what a person is handed, so it leaves here, where every
         // user of an export reads it from.
         let mut thread = thread;
-        thread.job.after_stop_prompt_signature = None;
+        thread.job.after_stop_signed_prompt = None;
         Ok(ThreadExport {
             thread,
             binding,
@@ -2555,7 +2556,7 @@ impl<P: Ports> App<P> {
                 tier_cap: None,
                 locale: None,
                 pick: None,
-                prompt_signature: None,
+                signed_prompt: None,
             }
         } else {
             Input::UserMessage {
@@ -2570,7 +2571,7 @@ impl<P: Ports> App<P> {
                 tier_cap: None,
                 locale: None,
                 pick: None,
-                prompt_signature: None,
+                signed_prompt: None,
             }
         };
         // like any message of a person: the checks, the mentions and the access tier (ADR 0061)
@@ -3202,7 +3203,7 @@ impl<P: Ports> App<P> {
                     tier_cap,
                     locale,
                     pick,
-                    prompt_signature,
+                    signed_prompt,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Delegate {
@@ -3217,7 +3218,7 @@ impl<P: Ports> App<P> {
                         pick,
                         // The person's envelope rides the row, never the log (ADR 0087): the
                         // dispatcher puts it on the agent's request, byte for byte.
-                        prompt_signature,
+                        signed_prompt,
                     },
                 }),
                 // A message to a running job (ADR 0036): the dispatcher sends it into the agent's
@@ -3234,7 +3235,7 @@ impl<P: Ports> App<P> {
                     tier_cap,
                     locale,
                     pick,
-                    prompt_signature,
+                    signed_prompt,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Steer {
@@ -3246,7 +3247,7 @@ impl<P: Ports> App<P> {
                         tier_cap,
                         locale,
                         pick,
-                        prompt_signature,
+                        signed_prompt,
                     },
                 }),
                 Command::DelegateAction {
@@ -3295,7 +3296,7 @@ impl<P: Ports> App<P> {
                     keep_open,
                     tier,
                     tier_cap,
-                    prompt_signature,
+                    signed_prompt,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::SessionStart {
@@ -3306,7 +3307,7 @@ impl<P: Ports> App<P> {
                         keep_open,
                         tier,
                         tier_cap,
-                        prompt_signature,
+                        signed_prompt,
                     },
                 }),
                 Command::CloseSession { cancel } => outbox.push(NewOutbox {

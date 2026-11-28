@@ -46,8 +46,8 @@ pub use live::{LiveOverlay, MAX_LIVE_MESSAGE_BYTES};
 pub use projector::{ChildMeta, Projector, ThreadMeta};
 pub use route::{FileRoute, LinkToken};
 pub use translate::{
-    InputError, KnownThread, SurfaceDialect, ThreadView, Translation, Warning, held_message_ids,
-    release_selector, thread_id_of, translate, translate_with_warnings,
+    InputError, KnownThread, SignedSource, SurfaceDialect, ThreadView, Translation, Warning,
+    held_message_ids, release_selector, thread_id_of, translate, translate_with_warnings,
 };
 pub use vocab::{
     A2UI_OPERATIONS_KEY, ACTIVITY_A2UI_SURFACE, ACTIVITY_ACTION, ACTIVITY_ARTIFACT, ACTIVITY_CHECK,

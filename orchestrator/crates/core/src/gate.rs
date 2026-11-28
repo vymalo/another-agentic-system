@@ -23,7 +23,7 @@ use crate::ids::{AgentId, ThreadId};
 use crate::locale::LocaleHint;
 use crate::mention::Mention;
 use crate::pick::ModelPick;
-use crate::prompt_signature::PromptSignature;
+use crate::prompt_signature::SignedPrompt;
 use crate::step::StepLedger;
 use crate::suggestions::SuggestionsLedger;
 use crate::thread::ThreadState;
@@ -401,7 +401,7 @@ pub struct Job {
     /// the thread export takes it out, and `Debug` shows its length. A ledger stored before the
     /// field existed has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub after_stop_prompt_signature: Option<PromptSignature>,
+    pub after_stop_signed_prompt: Option<SignedPrompt>,
     /// The agents the person's messages of **this job** mentioned (ADR 0026, `mentions/v1`): the
     /// agents the addressed agent may ask in this job. The union of the mentions of every message
     /// that reached the job (the first, those sent while it ran, an answer to a blocked job);
@@ -532,7 +532,7 @@ impl Default for Job {
             tools: Vec::new(),
             builds: Vec::new(),
             after_stop: None,
-            after_stop_prompt_signature: None,
+            after_stop_signed_prompt: None,
             mentioned: BTreeSet::new(),
             mentioned_caps: BTreeMap::new(),
             after_stop_mentions: Vec::new(),
