@@ -461,6 +461,9 @@ pub struct Call {
     pub message_id: Option<String>,
     /// The user message's text.
     pub text: String,
+    /// Every part of the message as it came over the wire (its JSON), in order: how a test sees the
+    /// URL parts of a message's files, and that no bytes came with them.
+    pub parts: Vec<Value>,
     /// `referenceTaskIds` of the message: the earlier tasks it says it is about (ADR 0021).
     pub reference_task_ids: Vec<String>,
     /// The task was waiting for input and this message continues it.
@@ -1320,6 +1323,7 @@ impl Front {
             requested_context: message.context_id.clone().filter(|c| !c.is_empty()),
             message_id: Some(message.message_id.clone()),
             text: text_of(Some(message)),
+            parts: parts_of(Some(message)),
             reference_task_ids: message.reference_task_ids.clone().unwrap_or_default(),
             resuming: false,
             extensions_header: params.get("a2a-extensions").cloned().unwrap_or_default(),
@@ -2001,6 +2005,15 @@ fn a2ui_messages(message: Option<&Message>) -> Vec<Value> {
         .collect()
 }
 
+/// The parts of `message`, each as its JSON.
+fn parts_of(message: Option<&Message>) -> Vec<Value> {
+    message
+        .into_iter()
+        .flat_map(|m| m.parts.iter())
+        .map(|p| serde_json::to_value(p).unwrap_or(Value::Null))
+        .collect()
+}
+
 /// The user's text; for a message that is an A2UI action, `ui-action <name>`, so scripts can
 /// tell what was done.
 fn text_of(message: Option<&Message>) -> String {
@@ -2218,6 +2231,7 @@ impl Shared {
                 .filter(|c| !c.is_empty()),
             message_id: ctx.message.as_ref().map(|m| m.message_id.clone()),
             text: text_of(ctx.message.as_ref()),
+            parts: parts_of(ctx.message.as_ref()),
             reference_task_ids: ctx
                 .message
                 .as_ref()

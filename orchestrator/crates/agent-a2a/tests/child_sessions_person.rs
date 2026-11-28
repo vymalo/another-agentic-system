@@ -42,6 +42,7 @@ fn request(ep: &AgentEndpoint, context: &str, content: SendContent) -> SendReque
         task_id: None,
         reference_task_ids: Vec::new(),
         content,
+        attachments: Vec::new(),
         release: None,
         ui_catalog: None,
         thread_tools: None,

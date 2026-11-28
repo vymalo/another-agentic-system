@@ -6,7 +6,8 @@ sidebarTitle: "Attachments (v1)"
 
 - **Status:** **the server half of the upload is built** (2026-11-24): the route, its checks and its tests. **The
   message side is not**: no message names an uploaded file. Its decisions and contract are written under
-  [*The message side*](#the-message-side-planned) (2026-11-28), and nothing of them is built. The web has no control
+  [*The message side*](#the-message-side-planned) (2026-11-28). Of them only the **transport** to an agent is built
+  ([*What of it is built*](#what-of-it-is-built)), and nothing switches it on. The web has no control
   (see [*What is not built*](#what-is-not-built)).
 - **The decision is not taken.** Question 9 of
   [ADR 0067](../decisions/0067-the-plan-to-librechat-grade-and-the-client-agnostic-rule.md) — "may a browser send
@@ -174,7 +175,7 @@ with the deployment's own cap.
 
 ## The message side (planned)
 
-**Nothing in this section is built.** It is what the code that lets a message carry an uploaded file has to do. It
+**Only [the transport](#what-of-it-is-built) is built; the rest of this section is not.** It is what the code that lets a message carry an uploaded file has to do. It
 builds on the artifact store of [ADR 0032](../decisions/0032-files-from-agents-live-in-an-artifact-store.md), the
 presigned `GET` of [ADR 0058](../decisions/0058-large-files-go-up-through-a-presigned-url-the-orchestrator-gives-the-agent.md)
 (the port's `presign_get`), forks as [ADR 0029](../decisions/0029-forking-a-thread-copies-its-log.md) and
@@ -191,6 +192,7 @@ sequenceDiagram
   participant S as Artifact store
   participant L as Event log and outbox
   participant D as Dispatcher
+  participant X as Agent adapter
   participant A as Agent
 
   C->>O: a run: one new message, vymalo.attachments [{sha256}]
@@ -199,9 +201,10 @@ sequenceDiagram
   S-->>O: size, media type, name
   O->>L: commit user_message.attachments (no URL)
   D->>L: take the delivery
-  D->>S: presign_get(threads/{thread}/{sha256}), the agents' lifetime
-  S-->>D: a signed link
-  D->>A: the message, one URL part per file
+  D->>X: send: each file's key, media type and name, no URL
+  X->>S: presign_get(threads/{thread}/{sha256}), the agents' lifetime
+  S-->>X: a signed link
+  X->>A: the message, one URL part per file
   A->>S: GET the link, before it expires (open item 5)
 ```
 
@@ -212,7 +215,7 @@ stateDiagram-v2
   Uploaded --> Named: a message that passes the check is committed
   Uploaded --> Uploaded: a refused message writes nothing
   Uploaded --> Erased: the thread is deleted
-  Named --> Linked: the dispatcher signs a link when it sends
+  Named --> Linked: a link is signed while the message is sent
   Linked --> Expired: the link's lifetime ends
   Expired --> Linked: another send signs a new link
   Named --> Erased: the thread is deleted
@@ -220,6 +223,27 @@ stateDiagram-v2
   Expired --> Erased: the thread is deleted
   Erased --> [*]
 ```
+
+### What of it is built
+
+The transport, with nothing switched on (ANR-1434): the dispatcher puts no file in a request, and the binary gives no
+adapter a way to sign.
+
+- **The port.** `SendRequest.attachments` is a list of `{key, mediaType, filename?}`, `key` being the store's
+  `threads/<thread>/<sha256>`. It holds **no URL**.
+- **Who signs.** Decision 1 says the link is minted by the dispatcher when it sends. In the code it is minted **during
+  the dispatcher's send, by the agent adapter**, which asks a port, `AttachmentLinks`, that it is configured with
+  (`PresignedLinks` is that port over the store's `presign_get`, with a lifetime of its own, decision 2; no
+  configuration key sets it yet). So a request never holds a URL, and a retry signs again.
+- **A2A.** The text part, then one URL part per file with `mediaType` and `filename`, never bytes; a steer likewise. No
+  card is read for it (open item 5).
+- **A file is never dropped.** If a link cannot be made, the message is not sent: retried when the store failed for
+  now, refused when it never will sign or the adapter has no way to. Files on anything but a text message are refused.
+- **An agent hosted in the orchestrator's process refuses** a message with files and asks for no link: as read under
+  open item 5, adam would put the link in the model's text, and its journal, in the orchestrator's Postgres, would keep
+  it, against decision 1.
+- **Logs.** The adapter logs no link and no file name. A request's `Debug` shows a file's key and media type, and of
+  its name only the length. What an agent says back is not scrubbed.
 
 ### Five decisions
 
@@ -359,8 +383,10 @@ names a file:
 ## What is not built
 
 - **The message side: no file is attached to a message yet.** The upload route stores a file and hands back its hash;
-  no request member, event, agent part or log entry names it. [*The message side*](#the-message-side-planned) is the
-  plan, and open item 5 comes before the pull request that sends a file.
+  no request member, event or log entry names it. An adapter can send a file as an agent part
+  ([*What of it is built*](#what-of-it-is-built)), but nothing gives it one.
+  [*The message side*](#the-message-side-planned) is the plan, and open item 5 comes before the pull request that sends
+  a file.
 - **A file nothing references is left in the store.** The orphan sweep of open question 46 is not built, and nothing
   here changes that: an upload the person never sends is bytes with no reference, like an agent's unused upload.
 - **No web control, and no second client.** The composer's attachment control and its previews are not built, and

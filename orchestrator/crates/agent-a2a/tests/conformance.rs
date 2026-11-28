@@ -5,7 +5,7 @@
 use orch_agent_a2a::{A2aAgentClient, A2aConfig};
 use orch_core::AgentId;
 use orch_ports::AgentEndpoint;
-use orch_ports::testkit::agent_client::AgentFixture;
+use orch_ports::testkit::agent_client::{AgentFixture, ReceivedFile, TestLinks};
 use orch_testsupport::{FakeAgent, FakeAgentOptions};
 
 struct Fixture {
@@ -36,6 +36,29 @@ impl AgentFixture for Fixture {
         Some(self.tiered.endpoint("tiered", None))
     }
 
+    fn carries_attachments(&self) -> bool {
+        true
+    }
+
+    fn received_files(&self, message_id: &str) -> Vec<ReceivedFile> {
+        let text = |part: &serde_json::Value, key: &str| {
+            part.get(key).and_then(|v| v.as_str()).map(str::to_owned)
+        };
+        self.agent
+            .executions()
+            .into_iter()
+            .filter(|call| call.message_id.as_deref() == Some(message_id))
+            .flat_map(|call| call.parts)
+            .filter_map(|part| {
+                Some(ReceivedFile {
+                    url: text(&part, "url")?,
+                    media_type: text(&part, "mediaType"),
+                    filename: text(&part, "filename"),
+                })
+            })
+            .collect()
+    }
+
     fn release_gate(&self) {
         self.agent.release_gate();
     }
@@ -51,6 +74,7 @@ async fn make() -> Option<Fixture> {
     Some(Fixture {
         client: A2aAgentClient::new(A2aConfig {
             use_system_proxy: false,
+            attachment_links: Some(std::sync::Arc::new(TestLinks)),
             ..A2aConfig::default()
         })
         .unwrap(),

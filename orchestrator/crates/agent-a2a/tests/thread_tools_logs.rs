@@ -96,6 +96,7 @@ async fn the_token_is_in_the_message_and_nowhere_else() {
         task_id: None,
         reference_task_ids: Vec::new(),
         content: SendContent::Text("echo hi".to_owned()),
+        attachments: Vec::new(),
         release: None,
         ui_catalog: None,
         thread_tools: Some(grant()),

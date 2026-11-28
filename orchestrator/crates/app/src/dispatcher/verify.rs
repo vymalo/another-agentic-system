@@ -254,6 +254,7 @@ impl<P: Ports, B: RunBindings> Dispatcher<P, B> {
             // the author's tasks (ADR 0002, ADR 0021)
             reference_task_ids: Vec::new(),
             content: SendContent::Text(text),
+            attachments: Vec::new(),
             release: None,
             // the verifier is told nothing of the author's screen and gets no tools on the
             // author's thread
