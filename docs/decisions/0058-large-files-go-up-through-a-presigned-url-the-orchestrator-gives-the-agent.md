@@ -52,6 +52,8 @@ SignedUrlOptions)` folds query parameters and **headers** into a SigV4 query sig
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: decision (accepted 2026-10-11)
+  accDescr: A sequence diagram of decision (accepted 2026-10-11), between Agent, Thread tools (orchestrator), Dispatcher (orchestrator) and S3 bucket.
   autonumber
   participant A as Agent
   participant T as Thread tools (orchestrator)
@@ -70,6 +72,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: decision (accepted 2026-10-11)
   [*] --> Issued: request_upload accepted
   [*] --> Refused: too large, over the job's limits, no store that presigns
   Issued --> Uploaded: the agent's PUT (the URL works until it expires)
@@ -136,6 +139,8 @@ Decisions 1 to 7 above stand, with one change: decision 7 (the agent must reach 
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: amendment (2026-10-11)
+  accDescr: A sequence diagram of amendment (2026-10-11), between Web (or a reader of a shared link), Orchestrator (API), Event log, Files host (Ingress) and RustFS bucket.
   autonumber
   participant W as Web (or a reader of a shared link)
   participant O as Orchestrator (API)
@@ -156,6 +161,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: amendment (2026-10-11)
   [*] --> Authorized: the route's checks pass (404 for any miss)
   Authorized --> Streamed: the store cannot presign, or the file is an inline SVG
   Authorized --> Redirected: 302 to a presigned GET

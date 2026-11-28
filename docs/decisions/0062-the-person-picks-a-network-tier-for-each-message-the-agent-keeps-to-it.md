@@ -69,6 +69,8 @@ What exists, and what the design rests on:
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the person picks a network tier for each message
+  accDescr: A sequence diagram of the person picks a network tier for each message, between Person, Web, Orchestrator, Agent (lists network-tier/v1), Its run pod and Egress proxy.
   actor P as Person
   participant W as Web
   participant O as Orchestrator

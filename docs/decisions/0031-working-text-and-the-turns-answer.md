@@ -74,6 +74,8 @@ What the exported chats show, and what the code does:
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: working text and the turn's answer
+  accDescr: A sequence diagram of working text and the turn's answer, between Agent (A2A), a2a-mapping, core + log, projection and live overlay and Screen.
   participant A as Agent (A2A)
   participant M as a2a-mapping
   participant C as core + log
@@ -92,6 +94,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: working text and the turn's answer
   [*] --> Unmarked: a plain A2A Message, or words with no stream
   [*] --> Working: stated on a working status
   [*] --> Answer: stated on completed, input_required or auth_required
@@ -193,6 +196,7 @@ it works as before, by the rule above). No new A2A extension and no new event: `
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: amendment
   participant A as Agent
   participant T as thread-tools endpoint
   participant C as core + log
@@ -210,6 +214,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: amendment
   [*] --> Open: a delegation (message, action, rework, new job)
   Open --> Announced: turn_output (queued or working, current job)
   Announced --> Announced: turn_output again (the later is the answer)

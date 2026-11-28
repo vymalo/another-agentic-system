@@ -147,6 +147,8 @@ neither a ledger entry nor an event, and putting bytes in Postgres would make ev
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: files from agents live in an artifact store
+  accDescr: A sequence diagram of files from agents live in an artifact store, between Agent (any A2A agent), Worker (dispatcher), ArtifactStore, Event log (Postgres), API (control plane) and Web.
   participant A as Agent (any A2A agent)
   participant W as Worker (dispatcher)
   participant S as ArtifactStore
@@ -168,6 +170,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: files from agents live in an artifact store
   [*] --> Offered: an agent hands over a file
   Offered --> Refused: over the cap, or no store configured
   Refused --> [*]: error event, an artifact entry without a file

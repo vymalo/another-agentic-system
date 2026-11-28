@@ -39,6 +39,8 @@ An agent that does not list the extension reports nothing, and the screen shows 
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram of A2A extension, between Orchestrator, Agent (card lists usage/v1), Model, Event log and Screen.
   autonumber
   participant O as Orchestrator
   participant A as Agent (card lists usage/v1)

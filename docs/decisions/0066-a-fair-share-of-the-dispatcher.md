@@ -76,6 +76,8 @@ and the conformance cases of `thread_store_conformance!` hold them to the same o
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a fair share of the dispatcher
+  accDescr: A sequence diagram of a fair share of the dispatcher, between Dispatcher (a replica), ThreadStore::claim_outbox and Postgres (outbox).
   participant D as Dispatcher (a replica)
   participant S as ThreadStore::claim_outbox
   participant DB as Postgres (outbox)
@@ -95,6 +97,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a fair share of the dispatcher
   [*] --> Pending: written in the commit of the state change (outbox.owner = the thread's owner)
   Pending --> Waiting: due, but an older open row of its thread and kind comes first (the per-thread rule)
   Waiting --> Candidate: the older row ends

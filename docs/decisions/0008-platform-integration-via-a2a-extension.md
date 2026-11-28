@@ -29,6 +29,7 @@ the another-agentic-platform repository):
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: optional another-agentic-platform integration via an A2A extension
   [*] --> Discovering: target selected
   Discovering --> PlainA2A: no release-channels extension in the card
   Discovering --> PlatformAware: extension present

@@ -269,6 +269,8 @@ text above is as it was accepted. What was built, and where it needed a choice:
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: implemented 2026-10-16 (D8a) — decision 1 in the orchestrator
+  accDescr: A sequence diagram of implemented 2026-10-16 (D8a) — decision 1 in the orchestrator, between Person, App and Registry.
   participant P as Person
   participant A as App
   participant R as Registry
@@ -293,6 +295,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: implemented 2026-10-16 (D8a) — decision 1 in the orchestrator
   [*] --> Writable: created while a role and the audience cover the agent
   Writable --> ReadOnly: the audience, or the roles, stop covering the agent
   ReadOnly --> Writable: they cover it again

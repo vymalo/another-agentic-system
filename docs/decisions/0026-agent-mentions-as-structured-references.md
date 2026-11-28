@@ -264,6 +264,7 @@ vendor's wording, ADR 0007 and ADR 0008).
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: status note, 2026-10-17
     [*] --> Running: ask_started, the job's UI catalog is sent
     Running --> Done: the agent answers
     Running --> Asking: it asks in words (input_required)

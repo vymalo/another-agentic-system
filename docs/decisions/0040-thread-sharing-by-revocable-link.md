@@ -492,6 +492,8 @@ edge routes are unchanged.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the processes
+  accDescr: A sequence diagram of the processes, between Owner, Web (/s page, share dialog), Edge (Caddy, oauth2-proxy), Orchestrator, Postgres and Reader (internal or public).
   autonumber
   actor Owner
   participant Web as Web (/s page, share dialog)
@@ -552,6 +554,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the processes
   [*] --> Private: a thread is created (a fork or an edit branch starts here too)
   Private --> Internal: share internal (cap is internal or public)
   Private --> Public: share public (cap is public)

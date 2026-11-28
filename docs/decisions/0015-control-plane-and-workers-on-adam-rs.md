@@ -142,6 +142,8 @@ The topology. The web chat surface never talks to a worker. Workers never serve 
 
 ```mermaid
 flowchart LR
+  accTitle: Flow: control plane and workers on adam-rs
+  accDescr: A flowchart of control plane and workers on adam-rs.
   you((You)) -- chat --> web["Web chat surface<br/>Next.js + assistant-ui"]
   web -- "AG-UI over HTTP + SSE" --> cp
   ext["Other systems · webhooks · MCP clients"] --> cp
@@ -165,6 +167,8 @@ One chat turn across the seam. The two roles never call each other.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: control plane and workers on adam-rs
+  accDescr: A sequence diagram of control plane and workers on adam-rs, between You, Web chat surface, Control plane, Postgres, Worker and Agent (remote A2A, or local behind the port).
   actor U as You
   participant W as Web chat surface
   participant C as Control plane
@@ -193,6 +197,7 @@ The lifecycle of one process under the `adam-host` supervisor.
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: control plane and workers on adam-rs
   [*] --> Running: components for the role started
   Running --> Stopping: shutdown signal
   Running --> Stopping: a component ended on its own

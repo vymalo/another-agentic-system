@@ -132,6 +132,8 @@ The nine decisions of the design comment, in its order, each with what PR 1 buil
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a usage ledger per person
+  accDescr: A sequence diagram of a usage ledger per person, between Dispatcher (apply), ThreadStore (commit), orch-core (pure), Log (events) and Ledger (usagetasks, usagelines, usage_sandbox).
   autonumber
   participant D as Dispatcher (apply)
   participant S as ThreadStore (commit)
@@ -157,6 +159,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a usage ledger per person
   [*] --> Calls: first model_usage of the task
   [*] --> Total: first model_usage_total
   Calls --> Calls: model_usage adds its counts

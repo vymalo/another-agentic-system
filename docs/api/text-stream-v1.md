@@ -39,6 +39,8 @@ Facts about A2A are marked *verified* (with a date and a source) or *unverified*
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram of A2A extension, between Orchestrator (worker), Agent (card lists text-stream/v1), Event log and Other replicas (viewers).
   autonumber
   participant O as Orchestrator (worker)
   participant A as Agent (card lists text-stream/v1)
@@ -61,6 +63,7 @@ A stream is in one of these, and the whole text is what ends it:
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: A2A extension
   [*] --> Streaming: first chunk (offset 0)
   Streaming --> Streaming: another chunk
   Streaming --> Ended: lastChunk: true

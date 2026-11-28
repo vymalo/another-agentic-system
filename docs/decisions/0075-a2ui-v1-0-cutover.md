@@ -230,6 +230,8 @@ What A2UI v1.0 is (*verified 2026-11-19* unless marked; sources: <https://a2ui.o
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the cutover across the repositories
+  accDescr: A sequence diagram of the cutover across the repositories, between sys main, sys branch a2ui-v1, adam-rs branch a2ui-v1, adam-rs main, ghcr.io coder image and A deployment.
   autonumber
   participant SM as sys main
   participant SB as sys branch a2ui-v1
@@ -257,6 +259,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the cutover across the repositories
   [*] --> V091: both mains speak v0.9.1
   V091 --> ContractPublished: C0 merged to sys main
   ContractPublished --> AdamOnV1: adam-rs a2ui-v1 merged, sha-A pushed

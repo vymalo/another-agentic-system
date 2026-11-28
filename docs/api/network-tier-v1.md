@@ -35,6 +35,8 @@ An agent whose card does not list the extension is unchanged: the same request a
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram of A2A extension, between Person, Web (composer), Orchestrator, Event log and Agent (card lists network-tier/v1).
   autonumber
   actor P as Person
   participant W as Web (composer)
@@ -60,6 +62,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: A2A extension
+  accDescr: A state diagram of A2A extension, with 11 states: Hidden, Offered, Unpicked, Picked, PlainSent, Refused, and 5 more.
   [*] --> Hidden: the card does not list the extension, or lists it badly
   [*] --> Offered: the card lists it with tiers and a default
   Offered --> Unpicked: the person picks nothing
@@ -218,6 +222,8 @@ the pin `5581d40`, read with `git show` in a local clone).
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: adam's way: a sketch
+  accDescr: A sequence diagram of adam's way: a sketch, between Coder (agent process), Run pod (its code), Egress proxy and The network.
   autonumber
   participant C as Coder (agent process)
   participant R as Run pod (its code)

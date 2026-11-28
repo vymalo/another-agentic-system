@@ -112,6 +112,8 @@ that could read the password), no client secret, `state` checked.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: 3. Sign-in per platform: a public client with PKCE (RFC 8252)
+  accDescr: A sequence diagram of 3. Sign-in per platform: a public client with PKCE (RFC 8252), between Person, Client (web, desktop or mobile), Browser (edge, system browser or in-app tab), Keycloak and Orchestrator.
   participant U as Person
   participant C as Client (web, desktop or mobile)
   participant B as Browser (edge, system browser or in-app tab)
@@ -150,6 +152,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: 3. Sign-in per platform: a public client with PKCE (RFC 8252)
   [*] --> signed_out
   signed_out --> signing_in: sign in (verifier, state)
   signing_in --> signed_in: code exchanged, tokens stored
@@ -277,6 +280,7 @@ per-platform callback path.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: amendment (2026-10-11)
   actor P as Person
   participant A as Android or iOS app
   participant B as Custom Tab or ASWebAuthenticationSession
@@ -292,6 +296,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: amendment (2026-10-11)
   [*] --> unclaimed: chart values absent
   unclaimed --> claimed: real Android certificate fingerprints + Apple Team ID render association files
   claimed --> authorizing: app opens system-provided auth session

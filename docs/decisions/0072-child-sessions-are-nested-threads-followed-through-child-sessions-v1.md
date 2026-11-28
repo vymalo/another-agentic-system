@@ -71,6 +71,8 @@ What this system has to build on, *verified 2026-11-18* at `470e156`:
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: child sessions are nested threads
+  accDescr: A sequence diagram of child sessions are nested threads, between Web, Orchestrator (new: child threads) and Agent (lists child-sessions/v1).
   autonumber
   participant W as Web
   participant O as Orchestrator (new: child threads)
@@ -89,6 +91,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: child sessions are nested threads
   [*] --> Open: child_session_opened, a child thread is made
   Open --> Open: a round reported, or the person's round
   Open --> Closed: child_session_closed
@@ -214,6 +217,8 @@ nothing has run against a real adam (S5).
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: amended (2026-11-19, S3)
+  accDescr: A sequence diagram of amended (2026-11-19, S3), between Web, Orchestrator and Agent (child-sessions/v1).
   autonumber
   participant W as Web
   participant O as Orchestrator
@@ -237,6 +242,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: amended (2026-11-19, S3)
   [*] --> Asked: startChildSession (child_session_start_asked)
   Asked --> Opened: the agent answered with round 1 (child_session_start_ended opened)
   Asked --> Failed: the agent refused, or could not be reached (child_session_start_ended failed)

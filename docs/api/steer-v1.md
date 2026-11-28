@@ -28,6 +28,8 @@ The rest of this page is for agents that do list it.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram of A2A extension, between Orchestrator (steer row), Agent (card lists steer/v1) and Task T1 (working).
   autonumber
   participant O as Orchestrator (steer row)
   participant A as Agent (card lists steer/v1)
@@ -51,6 +53,7 @@ A steered message is in one of these, from the agent's point of view:
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: A2A extension
   [*] --> Refused: not activated, a terminal task, an unknown task, another context
   [*] --> Accepted: activated, task submitted or working, same context
   Accepted --> Accepted: the same messageId again (a retry): no second copy

@@ -514,6 +514,7 @@ while the agent works. The consumer posts the message as a run like any other an
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: sending while an agent works
   autonumber
   participant P as Person (web)
   participant S as Run route
@@ -530,6 +531,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: sending while an agent works
   [*] --> RunOpen: RUN_STARTED run-1
   RunOpen --> RunOpen: agent events
   RunOpen --> NextRun: a user_message arrives, run-1 is finished and the invocation suspended
@@ -607,6 +609,7 @@ with the findings while attempts are left, and only then finishes. A viewer sees
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: verification (the gate)
   participant W as Agent (A2A)
   participant O as Orchestrator
   participant U as AG-UI consumer
@@ -624,6 +627,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: verification (the gate)
   [*] --> Queued
   Queued --> Working: the agent works
   Working --> Verifying: completed (SUBAGENT_FINISHED, no RUN_FINISHED)
@@ -776,6 +780,7 @@ as long as its verdict is awaited:
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: the verifier as a subagent
   participant O as Orchestrator
   participant V as Verifier agent (A2A)
   participant U as AG-UI consumer
@@ -790,6 +795,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: the verifier as a subagent
   [*] --> Out: the pending vymalo.check of the verifier source (SUBAGENT_STARTED)
   Out --> Answered: a verdict, passed or failed (SUBAGENT_FINISHED with result passed)
   Out --> Abandoned: another source failed the round, the user wrote, the thread was cancelled (SUBAGENT_FINISHED with result status canceled)
@@ -847,6 +853,7 @@ subagents the protocol defines; one that does draws the tree from the activities
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: nested steps
   participant L as Event log
   participant P as Projection
   participant C as AG-UI consumer
@@ -862,6 +869,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: nested steps
   [*] --> Open: start of a sub-agent step (SUBAGENT_STARTED, the activity)
   Open --> Open: update (the activity again)
   Open --> Ended: end completed (SUBAGENT_FINISHED), failed (SUBAGENT_ERROR step_failed), canceled (SUBAGENT_FINISHED canceled)
@@ -919,6 +927,7 @@ after it, for as long as the ask runs, and a `vymalo.ask` activity that says wha
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: asked agents as subagents
   participant O as Orchestrator
   participant B as Asked agent (A2A)
   participant U as AG-UI consumer
@@ -933,6 +942,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: asked agents as subagents
   [*] --> Running: ask_started (SUBAGENT_STARTED, vymalo.ask running)
   Running --> Answered: completed, input_required, auth_required (SUBAGENT_FINISHED, result state)
   Running --> Canceled: the person stopped the job, or the asking task ended (SUBAGENT_FINISHED, result state canceled)
@@ -987,6 +997,7 @@ child's log is the child thread's stream, which is read like any thread's.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: child sessions as subagents
   participant A as Parent agent (A2A)
   participant O as Orchestrator
   participant U as AG-UI consumer
@@ -1007,6 +1018,7 @@ Two lifecycles, the card's and the subagent's. **The card** (`state`) is `workin
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: child sessions as subagents
   [*] --> working: child_session_opened with a round
   [*] --> idle: child_session_opened with none
   working --> idle: reported done, failed or canceled
@@ -1021,6 +1033,7 @@ stateDiagram-v2
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: child sessions as subagents
   [*] --> Open: child_session_opened (SUBAGENT_STARTED)
   Open --> Finished: reported done or canceled, or closed
   Open --> Failed: reported failed (SUBAGENT_ERROR session_failed)
@@ -1086,6 +1099,7 @@ the contract was S3a). A person starts a helper from the parent (`startChildSess
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a person starts, sends and closes a session
   participant U as AG-UI consumer
   participant O as Orchestrator
   U->>O: POST /api/threads/{parent}/sessions
@@ -1099,6 +1113,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a person starts, sends and closes a session
   [*] --> starting: child_session_start_asked
   starting --> opened: child_session_start_ended opened
   starting --> failed: child_session_start_ended failed
@@ -1129,6 +1144,7 @@ log keeps them as `model_usage` and `model_usage_total` and the consumer reads t
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: token usage
   participant A as Agent (usage/v1)
   participant O as Orchestrator
   participant U as AG-UI consumer
@@ -1144,6 +1160,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: token usage
   [*] --> Calls: model_usage (counted in the open run)
   Calls --> Calls: model_usage
   Calls --> Totals: model_usage_total (the task's record)
@@ -1316,6 +1333,7 @@ parent's frames up to the cut, with the parent's ids and resume points, then the
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: forks
   participant W as Screen
   participant C as Connect stream
   participant R as Run route
@@ -1328,6 +1346,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: forks
   [*] --> Copied: the parent's events 1..cut, as projected
   Copied --> Done: thread_forked (the open run is cancelled, the job and the catalog are forgotten)
   Done --> Queued: the next message (job n+1), or the replacing message of an edit
@@ -1370,6 +1389,7 @@ answers, the parent's or another.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a fork made with its first message
   autonumber
   participant W as Screen (fork draft)
   participant R as Run route
@@ -1387,6 +1407,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a fork made with its first message
   [*] --> Absent: the draft is open, nothing exists
   Absent --> Absent: refused (404, 409 turn_open, 422, 400): nothing was written
   Absent --> Forked: the run is accepted: the fork and its message in one commit
@@ -1768,6 +1789,7 @@ stream never cancels a run.**
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: connect binding
   participant C as Client
   participant A as Replica A
   participant B as Replica B
@@ -1785,6 +1807,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: connect binding
   [*] --> Folding: connect (cursor c, 0 = none)
   Folding --> Writing: the event at c is folded (preamble if a run is open)
   Writing --> Writing: next event, frames with id seq
@@ -1966,6 +1989,8 @@ that sends a message and for every capabilities request.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: capability detection
+  accDescr: A sequence diagram of capability detection, between Web, Orchestrator, Postgres event log and A2A agent.
   participant W as Web
   participant O as Orchestrator
   participant DB as Postgres event log
@@ -2042,6 +2067,7 @@ stretch of the thread between two messages of a person, so that a plan the perso
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: surfaces in the projection
   [*] --> Live: first operation for a surfaceId (a2ui-seq is its message id)
   Live --> Live: operation, snapshot of the whole surface
   Live --> Live: createSurface, the surface starts over (earlier operations dropped)

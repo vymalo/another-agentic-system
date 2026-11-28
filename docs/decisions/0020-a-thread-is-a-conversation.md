@@ -71,6 +71,8 @@ job changes.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a thread is a conversation
+  accDescr: A sequence diagram of a thread is a conversation, between Person, Orchestrator, Event log and Agent (A2A).
   participant U as Person
   participant O as Orchestrator
   participant L as Event log
@@ -89,6 +91,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a thread is a conversation
   [*] --> Queued: first message (job 1)
   Queued --> Working
   Working --> Blocked: the agent asks

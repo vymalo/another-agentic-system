@@ -147,6 +147,8 @@ One job, from the agent's completion to green, through one rework:
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: configurable verification gate and a bounded rework loop
+  accDescr: A sequence diagram of configurable verification gate and a bounded rework loop, between Worker agent (A2A), Orchestrator (transition, pure), CI (webhook), Verifier agent (A2A) and Chat.
   participant W as Worker agent (A2A)
   participant O as Orchestrator (transition, pure)
   participant CI as CI (webhook)
@@ -175,6 +177,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: configurable verification gate and a bounded rework loop
+  accDescr: A state diagram of configurable verification gate and a bounded rework loop, with 7 states: Queued, Working, Done, Verifying, Failed, Blocked, and 1 more.
   [*] --> Queued
   Queued --> Working: the agent reports working
   Working --> Done: completed, gate requires nothing

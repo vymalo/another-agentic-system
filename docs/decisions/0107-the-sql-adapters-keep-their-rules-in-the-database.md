@@ -201,6 +201,8 @@ Categories, 18 documentation), which is what a read after another writer's commi
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: a commit through the functions
+  accDescr: A sequence diagram of a commit through the functions, between Dispatcher (core transition), PgStore, orch_* functions and tables.
     participant D as Dispatcher (core transition)
     participant S as PgStore
     participant F as orch_* functions
@@ -226,6 +228,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: a function across releases
     [*] --> Created: a migration adds it with its slice
     Created --> Replaced: same arguments and outcomes, CREATE OR REPLACE in a new migration
     Replaced --> Replaced: another such change, another migration

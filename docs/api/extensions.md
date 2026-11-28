@@ -55,6 +55,7 @@ registry contract (`agent-registry/v1`) is not an A2A extension: it is a linkset
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: how they all work
   autonumber
   participant W as Web (or another client)
   participant O as Orchestrator
@@ -69,6 +70,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: how they all work
   [*] --> Unlisted: the card does not list the URI
   [*] --> Listed: the card lists the exact URI, params well formed
   Unlisted --> Plain: plain A2A, nothing sent, no control in the web

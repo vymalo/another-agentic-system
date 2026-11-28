@@ -70,6 +70,7 @@ artifact updates, and the whole text once, in a status message, as the durable c
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: live text is relayed
   participant A as Agent (A2A)
   participant W as Worker: dispatcher
   participant PG as Postgres
@@ -87,6 +88,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: live text is relayed
   [*] --> Streaming: first piece (offset 0)
   Streaming --> Streaming: piece / refresh from offset 0 every second
   Streaming --> Persisted: agent_message S in the log

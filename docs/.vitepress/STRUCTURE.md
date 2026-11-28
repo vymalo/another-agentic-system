@@ -42,6 +42,14 @@ names it as `Layout`) and `docs/.vitepress/theme/mermaid.css` into a site that u
 nothing else: `config.ts` has no Mermaid setting and needs no tag in `escapeUnknownTags`, because the renderer works on
 the page in the browser.
 
+**Every diagram names itself.** A diagram carries Mermaid's `accTitle:`, one short line saying what it shows, and an
+`accDescr:` on the larger ones. The house pair reads `Interaction: …` for the sequence diagram and `Lifecycle: …` for the
+state diagram, because that is what each shows; a diagram whose section heading says nothing on its own ("Decision",
+"Diagrams", "The flow") takes the page's subject. Mermaid puts the title and the description in the SVG's `<title>` and
+`<desc>`, `mermaid.ts` gives the drawing's box that title as its `aria-label` (the renderer's own "Interactive Mermaid
+diagram" says nothing, and its inner label is the first 80 characters of the source), and `tools/docs-check` fails on a
+diagram under `docs/` that has no `accTitle`. A site that copies these files copies the rule with them.
+
 ## Writing pages
 
 A page is read in layers, so it is progressive: the reader stops when they have enough.

@@ -50,6 +50,8 @@ image is pushed. The coder stays in adam-rs's chart and is named here only by it
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: deployed with Helm on Kubernetes
+  accDescr: A sequence diagram of deployed with Helm on Kubernetes, between Pull request, CI (Orchestrator, Web, Deploy), ghcr.io, main (deploy/chart/values.yaml), Argo CD (home-os, netcup-k8s), External Secrets + AWS SM, and 1 more.
   participant PR as Pull request
   participant CI as CI (Orchestrator, Web, Deploy)
   participant GHCR as ghcr.io
@@ -71,6 +73,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: deployed with Helm on Kubernetes
   [*] --> Built: main builds an image
   Built --> Pushed: the smoke test passed
   Pushed --> Bumped: values.yaml names sha-7 (a no-op if it already does)

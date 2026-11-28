@@ -36,6 +36,8 @@ An agent whose card does not list the extension uses its own model, as today, an
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram of A2A extension, between Orchestrator (adapter), Agent (card lists model-relay/v1), Relay (orchestrator surface), Model server (named endpoint) and Event log.
   autonumber
   participant O as Orchestrator (adapter)
   participant A as Agent (card lists model-relay/v1)
@@ -58,6 +60,8 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: A2A extension
+  accDescr: A state diagram of A2A extension, with 8 states: Refused, Forwarding, Streaming, Answered, UpstreamFailed, Finished, and 2 more.
   [*] --> Refused: bad token 401, Host or Origin 403, unknown model 404, too large 413, budget used 429, too many calls 429
   [*] --> Forwarding: every check passes
   Forwarding --> Streaming: the first upstream byte of a streamed call

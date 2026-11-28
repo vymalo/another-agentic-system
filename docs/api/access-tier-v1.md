@@ -40,6 +40,8 @@ before, with no header and no metadata, and the web shows no control for them. T
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: A2A extension
+  accDescr: A sequence diagram of A2A extension, between Person, Web (composer), Orchestrator, Event log and Agent (card lists access-tier/v1).
   autonumber
   actor P as Person
   participant W as Web (composer)
@@ -68,6 +70,8 @@ One message's tier goes through these states:
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: A2A extension
+  accDescr: A state diagram of A2A extension, with 12 states: Hidden, Offered, Unpicked, Picked, PlainSent, Resolved, and 6 more.
   [*] --> Hidden: the card does not list the extension, or lists it badly
   [*] --> Offered: the card lists it with tiers and a default
   Offered --> Unpicked: the person picks nothing

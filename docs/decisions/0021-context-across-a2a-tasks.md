@@ -51,6 +51,7 @@ done, invented a repository and asked "What was the original task?".
 
 ```mermaid
 sequenceDiagram
+  accTitle: Interaction: context across A2A tasks
   participant D as Dispatcher
   participant A as Agent
   D->>A: SendMessage(context C, no taskId) - task T1
@@ -63,6 +64,7 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Lifecycle: context across A2A tasks
   [*] --> NoTask: a new thread
   NoTask --> Task1: first message (no references)
   Task1 --> Task2: rework, follow-up, new job (references Task1)
